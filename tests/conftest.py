@@ -145,3 +145,17 @@ def menubar_module(mock_pyobjc):
     mod = importlib.import_module("dictate.menubar")
     yield mod
     sys.modules.pop("dictate.menubar", None)
+
+
+@pytest.fixture
+def main_module(mock_pyobjc):
+    """Import dictate.__main__ with mocked PyObjC and sub-modules."""
+    # Clear all cached dictate modules so they re-import against fakes
+    for name in list(sys.modules):
+        if name.startswith("dictate."):
+            sys.modules.pop(name, None)
+    mod = importlib.import_module("dictate.__main__")
+    yield mod
+    for name in list(sys.modules):
+        if name.startswith("dictate."):
+            sys.modules.pop(name, None)

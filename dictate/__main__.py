@@ -55,7 +55,17 @@ class DictateAppDelegate(NSObject):
         model = os.environ.get(
             "DICTATE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
         )
-        hold_ms = int(os.environ.get("DICTATE_HOLD_MS", "400"))
+        hold_ms_raw = os.environ.get("DICTATE_HOLD_MS", "400")
+        try:
+            hold_ms = int(hold_ms_raw)
+        except ValueError:
+            logger.error("DICTATE_HOLD_MS must be an integer, got %r", hold_ms_raw)
+            print(
+                f"ERROR: DICTATE_HOLD_MS must be an integer, got {hold_ms_raw!r}.\n"
+                "  Example: DICTATE_HOLD_MS=400 uv run dictate",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
         self._capture = AudioCapture()
         self._client = TranscriptionClient(base_url=whisper_url, model=model)
@@ -66,6 +76,7 @@ class DictateAppDelegate(NSObject):
         )
         self._menubar: MenuBarIcon | None = None
         self._transcribing = False
+        self._transcription_token = 0
         return self
 
     # ── NSApplication delegate ──────────────────────────────
@@ -105,39 +116,48 @@ class DictateAppDelegate(NSObject):
                 self._menubar.set_status_text("Ready — hold spacebar")
             return
 
-        # Transcribe on a background thread
+        # Invalidate any in-flight transcription so its result is discarded
+        self._transcription_token += 1
+        token = self._transcription_token
+
         self._transcribing = True
         thread = threading.Thread(
-            target=self._transcribe_worker, args=(wav_bytes,), daemon=True
+            target=self._transcribe_worker, args=(wav_bytes, token), daemon=True
         )
         thread.start()
 
-    def _transcribe_worker(self, wav_bytes: bytes) -> None:
+    def _transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: send audio to Whisper, marshal result to main thread."""
         try:
             text = self._client.transcribe(wav_bytes)
         except Exception:
             logger.exception("Transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "transcriptionFailed:", None, False
+                "transcriptionFailed:", {"token": token}, False
             )
             return
 
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
-            "transcriptionComplete:", text, False
+            "transcriptionComplete:", {"token": token, "text": text}, False
         )
 
-    def transcriptionComplete_(self, text: str) -> None:
+    def transcriptionComplete_(self, payload: dict) -> None:
         """Main thread: inject transcribed text at cursor."""
+        if payload["token"] != self._transcription_token:
+            logger.info("Discarding stale transcription (token %d)", payload["token"])
+            return
         self._transcribing = False
+        text = payload["text"]
         if text:
             inject_text(text)
             logger.info("Injected: %r", text)
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
 
-    def transcriptionFailed_(self, _: object) -> None:
+    def transcriptionFailed_(self, payload: dict) -> None:
         """Main thread: handle transcription error."""
+        if payload["token"] != self._transcription_token:
+            return  # stale failure, ignore
         self._transcribing = False
         logger.error("Transcription failed — no text injected")
         if self._menubar is not None:
