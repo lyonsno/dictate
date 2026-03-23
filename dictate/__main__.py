@@ -1,0 +1,188 @@
+"""Entry point for dictate — macOS global hold-to-dictate.
+
+Run with:  uv run dictate
+    or:    uv run python -m dictate
+
+Configure via environment variables:
+    DICTATE_WHISPER_URL    Sidecar Whisper server URL (required)
+    DICTATE_WHISPER_MODEL  Model name (default: mlx-community/whisper-large-v3-turbo)
+    DICTATE_HOLD_MS        Hold threshold in ms (default: 400)
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+import threading
+
+import objc
+from AppKit import (
+    NSAlert,
+    NSApp,
+    NSApplication,
+    NSApplicationActivationPolicyAccessory,
+)
+from Foundation import NSObject
+
+from .capture import AudioCapture
+from .inject import inject_text
+from .input_tap import SpacebarHoldDetector
+from .menubar import MenuBarIcon
+from .transcribe import TranscriptionClient
+
+logger = logging.getLogger(__name__)
+
+
+class DictateAppDelegate(NSObject):
+    """Main application delegate — wires input → capture → transcribe → inject."""
+
+    def init(self):
+        self = objc.super(DictateAppDelegate, self).init()
+        if self is None:
+            return None
+
+        whisper_url = os.environ.get("DICTATE_WHISPER_URL", "")
+        if not whisper_url:
+            logger.error("DICTATE_WHISPER_URL is required")
+            print(
+                "ERROR: Set DICTATE_WHISPER_URL to your sidecar Whisper server URL.\n"
+                "  Example: DICTATE_WHISPER_URL=http://192.168.68.125:8000 uv run dictate",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        model = os.environ.get(
+            "DICTATE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
+        )
+        hold_ms = int(os.environ.get("DICTATE_HOLD_MS", "400"))
+
+        self._capture = AudioCapture()
+        self._client = TranscriptionClient(base_url=whisper_url, model=model)
+        self._detector = SpacebarHoldDetector.alloc().initWithHoldStart_holdEnd_holdMs_(
+            self._on_hold_start,
+            self._on_hold_end,
+            hold_ms,
+        )
+        self._menubar: MenuBarIcon | None = None
+        self._transcribing = False
+        return self
+
+    # ── NSApplication delegate ──────────────────────────────
+
+    def applicationDidFinishLaunching_(self, notification) -> None:
+        self._menubar = MenuBarIcon.alloc().initWithQuitCallback_(self._quit)
+        self._menubar.setup()
+
+        if not self._detector.install():
+            self._show_accessibility_alert()
+            self._quit()
+            return
+
+        logger.info("dictate ready — hold spacebar to record")
+        self._menubar.set_status_text("Ready — hold spacebar")
+
+    # ── hold callbacks (called on main thread) ──────────────
+
+    def _on_hold_start(self) -> None:
+        logger.info("Hold started — recording")
+        if self._menubar is not None:
+            self._menubar.set_recording(True)
+            self._menubar.set_status_text("Recording…")
+        self._capture.start()
+
+    def _on_hold_end(self) -> None:
+        logger.info("Hold ended — transcribing")
+        wav_bytes = self._capture.stop()
+
+        if self._menubar is not None:
+            self._menubar.set_recording(False)
+            self._menubar.set_status_text("Transcribing…")
+
+        if not wav_bytes:
+            logger.warning("No audio captured")
+            if self._menubar is not None:
+                self._menubar.set_status_text("Ready — hold spacebar")
+            return
+
+        # Transcribe on a background thread
+        self._transcribing = True
+        thread = threading.Thread(
+            target=self._transcribe_worker, args=(wav_bytes,), daemon=True
+        )
+        thread.start()
+
+    def _transcribe_worker(self, wav_bytes: bytes) -> None:
+        """Background thread: send audio to Whisper, marshal result to main thread."""
+        try:
+            text = self._client.transcribe(wav_bytes)
+        except Exception:
+            logger.exception("Transcription failed")
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "transcriptionFailed:", None, False
+            )
+            return
+
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "transcriptionComplete:", text, False
+        )
+
+    def transcriptionComplete_(self, text: str) -> None:
+        """Main thread: inject transcribed text at cursor."""
+        self._transcribing = False
+        if text:
+            inject_text(text)
+            logger.info("Injected: %r", text)
+        if self._menubar is not None:
+            self._menubar.set_status_text("Ready — hold spacebar")
+
+    def transcriptionFailed_(self, _: object) -> None:
+        """Main thread: handle transcription error."""
+        self._transcribing = False
+        logger.error("Transcription failed — no text injected")
+        if self._menubar is not None:
+            self._menubar.set_status_text("Error — try again")
+
+    # ── helpers ─────────────────────────────────────────────
+
+    def _quit(self) -> None:
+        self._detector.uninstall()
+        self._client.close()
+        NSApp.terminate_(None)
+
+    def _show_accessibility_alert(self) -> None:
+        """Show a dialog explaining the Accessibility permission requirement."""
+        alert = NSAlert.new()
+        alert.setMessageText_("Accessibility Permission Required")
+        alert.setInformativeText_(
+            "dictate needs Accessibility access to detect spacebar holds.\n\n"
+            "Go to System Settings → Privacy & Security → Accessibility "
+            "and enable access for your terminal app (Terminal, iTerm2, etc.).\n\n"
+            "Then relaunch dictate."
+        )
+        alert.addButtonWithTitle_("OK")
+        # Temporarily become a regular app so the alert is visible
+        NSApp.setActivationPolicy_(1)  # NSApplicationActivationPolicyRegular
+        alert.runModal()
+
+
+def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    app = NSApplication.sharedApplication()
+    app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+
+    delegate = DictateAppDelegate.alloc().init()
+    app.setDelegate_(delegate)
+
+    from PyObjCTools import AppHelper
+
+    AppHelper.runEventLoop()
+
+
+if __name__ == "__main__":
+    main()

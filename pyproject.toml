@@ -1,0 +1,25 @@
+[project]
+name = "dictate"
+version = "0.1.0"
+description = "Global hold-to-dictate for macOS — spacebar → record → transcribe → paste"
+requires-python = ">=3.13"
+dependencies = [
+    "pyobjc-framework-Cocoa",
+    "pyobjc-framework-Quartz",
+    "sounddevice",
+    "numpy",
+    "httpx",
+]
+
+[project.scripts]
+dictate = "dictate.__main__:main"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

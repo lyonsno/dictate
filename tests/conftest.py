@@ -1,0 +1,147 @@
+"""Shared fixtures for dictate tests.
+
+Stubs out PyObjC/Quartz/AppKit so tests run without macOS GUI runtime.
+"""
+
+import importlib
+import sys
+import types
+from unittest.mock import MagicMock, Mock
+
+import pytest
+
+
+def _make_fake_quartz():
+    """Create a fake Quartz module with all constants and functions used."""
+    q = types.ModuleType("Quartz")
+    # Constants — use actual macOS values where it matters for logic
+    q.kCGEventKeyDown = 10
+    q.kCGEventKeyUp = 11
+    q.kCGEventFlagMaskCommand = 0x00100000
+    q.kCGEventFlagMaskControl = 0x00040000
+    q.kCGEventFlagMaskAlternate = 0x00080000
+    q.kCGEventFlagMaskShift = 0x00020000
+    q.kCGKeyboardEventKeycode = 9
+    q.kCGSessionEventTap = 1
+    q.kCGHeadInsertEventTap = 0
+    q.kCGHIDEventTap = 0
+    q.kCGEventTapOptionDefault = 0
+    q.kCFRunLoopCommonModes = "kCFRunLoopCommonModes"
+    q.kCGEventFlagMaskCommand = 0x00100000
+
+    # Functions — all mocked
+    q.CGEventTapCreate = MagicMock(return_value=MagicMock())  # non-None = success
+    q.CGEventTapEnable = MagicMock()
+    q.CGEventMaskBit = lambda x: 1 << x
+    q.CGEventGetIntegerValueField = MagicMock(return_value=0)
+    q.CGEventGetFlags = MagicMock(return_value=0)
+    q.CGEventCreateKeyboardEvent = MagicMock(return_value=MagicMock())
+    q.CGEventSetFlags = MagicMock()
+    q.CGEventPost = MagicMock()
+    q.CFMachPortCreateRunLoopSource = MagicMock(return_value=MagicMock())
+    q.CFRunLoopAddSource = MagicMock()
+    q.CFRunLoopGetMain = MagicMock(return_value=MagicMock())
+    return q
+
+
+def _make_fake_foundation():
+    """Create a fake Foundation module."""
+    f = types.ModuleType("Foundation")
+    f.NSObject = type("NSObject", (), {
+        "alloc": classmethod(lambda cls: cls()),
+        "init": lambda self: self,
+    })
+    f.NSTimer = MagicMock()
+    f.NSData = MagicMock()
+    f.NSRunLoop = MagicMock()
+    f.NSDefaultRunLoopMode = "NSDefaultRunLoopMode"
+    return f
+
+
+def _make_fake_appkit():
+    """Create a fake AppKit module."""
+    a = types.ModuleType("AppKit")
+    for name in [
+        "NSApp",
+        "NSAlert",
+        "NSApplication",
+        "NSImage",
+        "NSMenu",
+        "NSMenuItem",
+        "NSPasteboard",
+        "NSStatusBar",
+    ]:
+        setattr(a, name, MagicMock())
+    a.NSApplicationActivationPolicyAccessory = 2
+    a.NSVariableStatusItemLength = -1
+    a.NSPasteboardTypeString = "public.utf8-plain-text"
+    return a
+
+
+def _make_fake_objc():
+    """Create a fake objc module."""
+    o = types.ModuleType("objc")
+    o.super = super  # Python super is fine for testing
+    o.IBAction = lambda func: func
+    return o
+
+
+@pytest.fixture
+def mock_pyobjc():
+    """Install fake PyObjC modules and yield them. Restores originals on teardown."""
+    fakes = {
+        "objc": _make_fake_objc(),
+        "Quartz": _make_fake_quartz(),
+        "Foundation": _make_fake_foundation(),
+        "AppKit": _make_fake_appkit(),
+        "PyObjCTools": types.ModuleType("PyObjCTools"),
+    }
+    fakes["PyObjCTools"].AppHelper = MagicMock()
+
+    # Also need to handle sub-frameworks that PyObjC sometimes imports
+    fakes["Quartz.CoreGraphics"] = fakes["Quartz"]
+
+    # Save originals
+    saved = {}
+    for name in fakes:
+        saved[name] = sys.modules.get(name)
+
+    # Install fakes
+    sys.modules.update(fakes)
+
+    yield fakes
+
+    # Restore
+    for name, original in saved.items():
+        if original is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = original
+
+
+@pytest.fixture
+def input_tap_module(mock_pyobjc):
+    """Import dictate.input_tap with mocked PyObjC."""
+    # Remove cached module if present
+    sys.modules.pop("dictate.input_tap", None)
+    mod = importlib.import_module("dictate.input_tap")
+    yield mod
+    sys.modules.pop("dictate.input_tap", None)
+
+
+@pytest.fixture
+def inject_module(mock_pyobjc):
+    """Import dictate.inject with mocked PyObjC."""
+    sys.modules.pop("dictate.inject", None)
+    mod = importlib.import_module("dictate.inject")
+    yield mod
+    sys.modules.pop("dictate.inject", None)
+
+
+@pytest.fixture
+def menubar_module(mock_pyobjc):
+    """Import dictate.menubar with mocked PyObjC."""
+    sys.modules.pop("dictate.menubar", None)
+    mod = importlib.import_module("dictate.menubar")
+    yield mod
+    sys.modules.pop("dictate.menubar", None)
