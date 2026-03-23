@@ -84,11 +84,40 @@ uv run pytest -v
 
 ## Roadmap
 
-- [ ] Menubar amplitude animation (Phase 2)
-- [ ] Frosted overlay with interim transcription text (Phase 2)
-- [ ] Incremental transcription during recording (Phase 3)
-- [ ] LaunchAgent for auto-start at login (Phase 4)
-- [ ] Config file (`~/.config/dictate/config.json`) (Phase 4)
+### Phase 1 — Core dictation ✅
+
+Global hold-to-dictate: spacebar hold detection, audio capture, Whisper transcription, paste at cursor. Menubar accessory with mic icon. 45 tests, all headless.
+
+### Phase 2 — Visual feedback
+
+**Menubar amplitude animation.** The menubar icon becomes a live visualizer while recording — a glowing bar that oscillates with voice amplitude, inspired by Claude Code's hold-to-dictate cursor. The RMS amplitude callback in `capture.py` already fires per-chunk; this phase connects it to a visual.
+
+- [ ] Animated NSStatusItem that responds to amplitude in real time
+- [ ] Smooth interpolation between amplitude samples (avoid jitter)
+- [ ] Idle/recording state transitions with visual continuity
+
+**Frosted transcription overlay.** A semi-transparent, system-font overlay appears on screen showing the transcription as it's produced. When recording ends and text is pasted at the cursor, the overlay fades out — the fade distracts from the paste so it feels seamless rather than jarring.
+
+- [ ] Borderless `NSWindow` overlay with frosted/vibrancy background
+- [ ] System font text rendering (SF Pro, matched to system appearance)
+- [ ] Smooth fade-out animation timed to coincide with paste injection
+- [ ] Overlay centered horizontally, fixed near bottom of screen (not cursor-tracking)
+- [ ] Dark mode / light mode support via system appearance
+
+### Phase 3 — Streaming transcription
+
+**Incremental transcription during recording.** Instead of waiting for the recording to finish before transcribing, send audio buffer snapshots to the Whisper server while still recording. The overlay shows interim (partial) results that refine as more audio arrives, so you see your words appearing in near-real-time.
+
+- [ ] Periodic `get_buffer()` snapshots sent during recording (infrastructure already in `capture.py`)
+- [ ] Interim vs. final transcription state in the overlay (partial results shown in lighter weight or opacity)
+- [ ] Debounce/interval tuning to balance responsiveness vs. server load
+- [ ] Graceful degradation if the server can't keep up (fall back to final-only)
+
+### Phase 4 — Polish
+
+- [ ] LaunchAgent for auto-start at login
+- [ ] Config file (`~/.config/dictate/config.json`) — hold threshold, server URL, model, overlay preferences
+- [ ] Configurable hotkey (alternatives to spacebar hold)
 
 ## License
 
