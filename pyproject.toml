@@ -9,7 +9,6 @@ dependencies = [
     "sounddevice",
     "numpy",
     "httpx",
-    "pyobjc-framework-applicationservices>=12.1",
 ]
 
 [project.scripts]

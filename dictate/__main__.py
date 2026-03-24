@@ -28,7 +28,7 @@ from AppKit import (
 from Foundation import NSObject
 
 from .capture import AudioCapture
-from .inject import inject_text, focused_field_is_empty
+from .inject import inject_text
 from .input_tap import SpacebarHoldDetector
 from .menubar import MenuBarIcon
 from .transcribe import TranscriptionClient
@@ -168,9 +168,7 @@ class DictateAppDelegate(NSObject):
                 if self._menubar is not None:
                     self._menubar.set_status_text("Ready — hold spacebar")
 
-            # Prepend space unless the focused field is empty
-            prefix = "" if focused_field_is_empty() else " "
-            inject_text(prefix + text, on_restored=_on_clipboard_restored)
+            inject_text(text, on_restored=_on_clipboard_restored)
             elapsed_ms = payload.get("elapsed_ms", 0)
             logger.info("Injected: %r (%.0fms)", text, elapsed_ms)
             if self._menubar is not None:

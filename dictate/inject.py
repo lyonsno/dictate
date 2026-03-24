@@ -12,10 +12,6 @@ import os
 
 import objc as _objc
 from AppKit import NSPasteboard, NSPasteboardTypeString
-from ApplicationServices import (
-    AXUIElementCopyAttributeValue,
-    AXUIElementCreateSystemWide,
-)
 from Foundation import NSObject, NSTimer
 from Quartz import (
     CGEventCreateKeyboardEvent,
@@ -26,35 +22,6 @@ from Quartz import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def focused_field_is_empty() -> bool:
-    """Check if the currently focused text field is empty.
-
-    Uses the Accessibility API to read the focused element's AXValue.
-    Returns True if the field is empty or if the check fails (safe default:
-    no space prepended on failure).
-    """
-    try:
-        system = AXUIElementCreateSystemWide()
-        err, focused = AXUIElementCopyAttributeValue(
-            system, "AXFocusedUIElement", None
-        )
-        if err != 0 or focused is None:
-            logger.debug("focused_field_is_empty: no focused element (err=%d)", err)
-            return False  # can't determine — assume non-empty, prepend space
-
-        err, value = AXUIElementCopyAttributeValue(focused, "AXValue", None)
-        if err != 0:
-            logger.debug("focused_field_is_empty: no AXValue (err=%d)", err)
-            return False  # field doesn't expose AXValue — assume non-empty
-
-        is_empty = value is None or (isinstance(value, str) and value == "")
-        logger.debug("focused_field_is_empty: %s (value=%r)", is_empty, value[:50] if isinstance(value, str) and len(value) > 50 else value)
-        return is_empty
-    except Exception:
-        logger.debug("Failed to check focused field", exc_info=True)
-        return False  # safe default: prepend space
 
 _V_KEYCODE = 9
 

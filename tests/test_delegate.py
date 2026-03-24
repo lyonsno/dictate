@@ -91,31 +91,17 @@ class TestTranscriptionToken:
         assert d._transcribing is False  # was never set to True in this test
 
     def test_current_token_is_accepted(self, main_module, monkeypatch):
-        """Result with matching token should be injected with space prefix."""
+        """Result with matching token should be injected."""
         d = _make_delegate(main_module, monkeypatch)
         d._transcription_token = 5
         d._transcribing = True
 
-        with patch.object(main_module, "inject_text") as mock_inject, \
-             patch.object(main_module, "focused_field_is_empty", return_value=False):
-            d.transcriptionComplete_({"token": 5, "text": "hello world"})
-
-        mock_inject.assert_called_once()
-        assert mock_inject.call_args[0][0] == " hello world"
-        assert d._transcribing is False
-
-    def test_current_token_no_space_when_field_empty(self, main_module, monkeypatch):
-        """Result injected into an empty field should not have space prefix."""
-        d = _make_delegate(main_module, monkeypatch)
-        d._transcription_token = 5
-        d._transcribing = True
-
-        with patch.object(main_module, "inject_text") as mock_inject, \
-             patch.object(main_module, "focused_field_is_empty", return_value=True):
+        with patch.object(main_module, "inject_text") as mock_inject:
             d.transcriptionComplete_({"token": 5, "text": "hello world"})
 
         mock_inject.assert_called_once()
         assert mock_inject.call_args[0][0] == "hello world"
+        assert d._transcribing is False
 
     def test_stale_failure_is_ignored(self, main_module, monkeypatch):
         """Failed transcription with old token should be silently ignored."""
