@@ -28,6 +28,7 @@ from AppKit import (
 from Foundation import NSObject
 
 from .capture import AudioCapture
+from .glow import GlowOverlay
 from .inject import inject_text
 from .input_tap import SpacebarHoldDetector
 from .menubar import MenuBarIcon
@@ -86,6 +87,7 @@ class DictateAppDelegate(NSObject):
             hold_ms,
         )
         self._menubar: MenuBarIcon | None = None
+        self._glow: GlowOverlay | None = None
         self._transcribing = False
         self._transcription_token = 0
         return self
@@ -95,6 +97,9 @@ class DictateAppDelegate(NSObject):
     def applicationDidFinishLaunching_(self, notification) -> None:
         self._menubar = MenuBarIcon.alloc().initWithQuitCallback_(self._quit)
         self._menubar.setup()
+
+        self._glow = GlowOverlay.alloc().initWithScreen_(None)
+        self._glow.setup()
 
         if not self._detector.install():
             self._show_accessibility_alert()
@@ -111,12 +116,32 @@ class DictateAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
-        self._capture.start()
+        if self._glow is not None:
+            self._glow.show()
+        self._capture.start(amplitude_callback=self._on_amplitude)
+
+    def _on_amplitude(self, rms: float) -> None:
+        """Called from PortAudio thread — marshal to main thread.
+
+        PyObjC's performSelectorOnMainThread requires an ObjC-bridgeable
+        object, so we wrap the float in a NSNumber-compatible wrapper.
+        """
+        from Foundation import NSNumber
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "amplitudeUpdate:", NSNumber.numberWithFloat_(rms), False
+        )
+
+    def amplitudeUpdate_(self, rms_number) -> None:
+        """Main thread: forward amplitude to glow overlay."""
+        if self._glow is not None:
+            self._glow.update_amplitude(float(rms_number))
 
     def _on_hold_end(self) -> None:
         logger.info("Hold ended — transcribing")
         wav_bytes = self._capture.stop()
 
+        if self._glow is not None:
+            self._glow.hide()
         if self._menubar is not None:
             self._menubar.set_recording(False)
             self._menubar.set_status_text("Transcribing…")

@@ -41,6 +41,17 @@ def _make_fake_quartz():
     q.CFMachPortCreateRunLoopSource = MagicMock(return_value=MagicMock())
     q.CFRunLoopAddSource = MagicMock()
     q.CFRunLoopGetMain = MagicMock(return_value=MagicMock())
+
+    # Glow module (Core Animation / Quartz)
+    q.CAGradientLayer = MagicMock()
+    q.CALayer = MagicMock()
+    q.CAShapeLayer = MagicMock()
+    q.kCAGravityCenter = "center"
+    q.CGPathCreateWithRoundedRect = MagicMock(return_value=MagicMock())
+    q.CGPathCreateMutableCopy = MagicMock(return_value=MagicMock())
+    q.CGPathAddPath = MagicMock()
+    q.CGAffineTransformIdentity = MagicMock()
+    q.kCAFillRuleEvenOdd = "even-odd"
     return q
 
 
@@ -65,17 +76,25 @@ def _make_fake_appkit():
         "NSApp",
         "NSAlert",
         "NSApplication",
+        "NSBezierPath",
+        "NSColor",
         "NSImage",
         "NSMenu",
         "NSMenuItem",
         "NSPasteboard",
         "NSPasteboardItem",
+        "NSScreen",
         "NSStatusBar",
+        "NSView",
+        "NSWindow",
     ]:
         setattr(a, name, MagicMock())
     a.NSApplicationActivationPolicyAccessory = 2
     a.NSVariableStatusItemLength = -1
     a.NSPasteboardTypeString = "public.utf8-plain-text"
+    a.NSWindowCollectionBehaviorCanJoinAllSpaces = 1 << 0
+    a.NSWindowCollectionBehaviorFullScreenAuxiliary = 1 << 8
+    a.NSWindowCollectionBehaviorStationary = 1 << 4
     return a
 
 
