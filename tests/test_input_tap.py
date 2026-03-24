@@ -19,6 +19,7 @@ class TestSpacebarStateMachine:
         det._hold_timer = None
         det._safety_timer = None
         det._forwarding = False
+        det._forwarding_timer = None
         det._tap = None
         det._tap_source = None
         return det, on_start, on_end
@@ -202,3 +203,62 @@ class TestEventTapCallback:
         event = MagicMock()
         mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
         assert det._forwarding is False
+
+
+class TestForwardingRecovery:
+    """Test that _forwarding recovers via timeout if synthetic events are lost."""
+
+    def _make_detector(self, input_tap_module, hold_ms=400):
+        mod = input_tap_module
+        on_start = MagicMock()
+        on_end = MagicMock()
+        det = mod.SpacebarHoldDetector.__new__(mod.SpacebarHoldDetector)
+        det._on_hold_start = on_start
+        det._on_hold_end = on_end
+        det._hold_s = hold_ms / 1000.0
+        det._state = mod._State.IDLE
+        det._hold_timer = None
+        det._safety_timer = None
+        det._forwarding = False
+        det._forwarding_timer = None
+        det._tap = None
+        det._tap_source = None
+        return det, on_start, on_end
+
+    def test_forwarding_timer_clears_stuck_flag(self, input_tap_module):
+        """If the forwarded keyUp is never seen, the forwarding timer should
+        auto-clear _forwarding so hold detection keeps working."""
+        mod = input_tap_module
+
+        det, _, _ = self._make_detector(input_tap_module)
+
+        # Quick tap → forward space → _forwarding = True
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.handle_key_up(mod.SPACEBAR_KEYCODE)
+        assert det._forwarding is True
+
+        # Simulate: forwarded keyUp never arrives, but timer fires
+        det.forwardingTimerFired_(None)
+        assert det._forwarding is False
+
+    def test_forwarding_timer_noop_if_already_cleared(self, input_tap_module):
+        """Timer firing after forwarding was already cleared should be a no-op."""
+        mod = input_tap_module
+
+        det, _, _ = self._make_detector(input_tap_module)
+        det._forwarding = False
+
+        # Should not raise or change state
+        det.forwardingTimerFired_(None)
+        assert det._forwarding is False
+
+    def test_shift_space_passes_through(self, input_tap_module):
+        """Shift+Space should pass through, not trigger hold detection."""
+        mod = input_tap_module
+
+        det, _, _ = self._make_detector(input_tap_module)
+        shift_flag = 0x00020000  # kCGEventFlagMaskShift
+
+        result = det.handle_key_down(mod.SPACEBAR_KEYCODE, shift_flag)
+        assert result is False
+        assert det._state == mod._State.IDLE

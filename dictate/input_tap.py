@@ -35,6 +35,7 @@ from Quartz import (
     kCGEventFlagMaskAlternate,
     kCGEventFlagMaskCommand,
     kCGEventFlagMaskControl,
+    kCGEventFlagMaskShift,
     kCGEventKeyDown,
     kCGEventKeyUp,
     kCGEventTapOptionDefault,
@@ -50,9 +51,11 @@ _MODIFIER_MASK = (
     kCGEventFlagMaskCommand
     | kCGEventFlagMaskControl
     | kCGEventFlagMaskAlternate
+    | kCGEventFlagMaskShift
 )
 _DEFAULT_HOLD_MS = 400
-_SAFETY_TIMEOUT_S = 30.0
+_SAFETY_TIMEOUT_S = 300.0  # 5 minutes — covers long dictations, only for truly stuck keyUp
+_FORWARDING_TIMEOUT_S = 0.1  # auto-clear _forwarding if events never arrive
 
 
 class _State(Enum):
@@ -91,6 +94,7 @@ class SpacebarHoldDetector(NSObject):
         self._hold_timer: NSTimer | None = None
         self._safety_timer: NSTimer | None = None
         self._forwarding = False
+        self._forwarding_timer: NSTimer | None = None
         self._tap = None
         self._tap_source = None
         return self
@@ -134,6 +138,8 @@ class SpacebarHoldDetector(NSObject):
             self._tap_source = None
         self._cancel_hold_timer()
         self._cancel_safety_timer()
+        self._cancel_forwarding_timer()
+        self._forwarding = False
         self._state = _State.IDLE
 
         global _active_detector  # noqa: PLW0603
@@ -224,12 +230,33 @@ class SpacebarHoldDetector(NSObject):
     def _forward_space(self) -> None:
         """Synthesize a space tap (keyDown + keyUp) and post it."""
         self._forwarding = True
+        self._start_forwarding_timer()
         src = None  # use default source
         down = CGEventCreateKeyboardEvent(src, SPACEBAR_KEYCODE, True)
         up = CGEventCreateKeyboardEvent(src, SPACEBAR_KEYCODE, False)
         CGEventPost(kCGHIDEventTap, down)
         CGEventPost(kCGHIDEventTap, up)
-        # _forwarding is cleared after both events pass through the tap
+        # _forwarding is cleared after both events pass through the tap,
+        # or by the forwarding timer if they never arrive
+
+    def _start_forwarding_timer(self) -> None:
+        """Auto-clear _forwarding if synthetic events are lost."""
+        self._cancel_forwarding_timer()
+        self._forwarding_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _FORWARDING_TIMEOUT_S, self, "forwardingTimerFired:", None, False
+        )
+
+    def forwardingTimerFired_(self, timer: NSTimer) -> None:
+        """Clear stuck _forwarding flag."""
+        self._forwarding_timer = None
+        if self._forwarding:
+            logger.warning("Forwarding timeout — clearing stuck _forwarding flag")
+            self._forwarding = False
+
+    def _cancel_forwarding_timer(self) -> None:
+        if self._forwarding_timer is not None:
+            self._forwarding_timer.invalidate()
+            self._forwarding_timer = None
 
 
 # ── module-level callback ────────────────────────────────────
@@ -250,6 +277,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
             if keycode == SPACEBAR_KEYCODE:
                 det._forwarding = False
+                det._cancel_forwarding_timer()
         return event
 
     keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)

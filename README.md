@@ -42,14 +42,17 @@ Each layer is independent and testable in isolation.
 brew install portaudio
 ```
 
-### Whisper server
+### Transcription server
 
-Any server that implements OpenAI's audio transcription API works. For local inference on Apple Silicon:
+Any server that implements OpenAI's `/v1/audio/transcriptions` API works. Options for Apple Silicon:
 
 ```sh
-# On your sidecar machine (or locally):
+# mlx-audio (Whisper on MLX):
 uv tool install "mlx-audio[server]"
 mlx-audio-server --host 0.0.0.0 --port 8000
+
+# mlx-qwen3-asr (Qwen3-ASR on MLX — faster for short audio, no 30s padding):
+# See https://github.com/moona3k/mlx-qwen3-asr
 ```
 
 ## Usage
@@ -72,7 +75,8 @@ On first run, macOS will prompt for Accessibility permission. Grant it to your t
 |---|---|---|---|
 | `DICTATE_WHISPER_URL` | Yes | — | Whisper server base URL |
 | `DICTATE_WHISPER_MODEL` | No | `mlx-community/whisper-large-v3-turbo` | Model identifier |
-| `DICTATE_HOLD_MS` | No | `400` | Hold threshold in milliseconds |
+| `DICTATE_HOLD_MS` | No | `400` | Hold threshold in milliseconds (must be > 0) |
+| `DICTATE_RESTORE_DELAY_MS` | No | `1000` | Pasteboard restore delay in milliseconds |
 
 ## Tests
 
@@ -80,7 +84,7 @@ On first run, macOS will prompt for Accessibility permission. Grant it to your t
 uv run pytest -v
 ```
 
-45 tests covering the state machine, WAV encoding, HTTP client, injection, and menubar — all run headless with mocked PyObjC.
+67 tests covering the state machine, WAV encoding, HTTP client, injection, and menubar — all run headless with mocked PyObjC.
 
 ## Roadmap
 
@@ -96,6 +100,18 @@ Global hold-to-dictate: spacebar hold detection, audio capture, Whisper transcri
 - [ ] Smooth interpolation between amplitude samples (avoid jitter)
 - [ ] Idle/recording state transitions with visual continuity
 
+**Screen-border amplitude glow.** A subtle, ambient glow around the entire screen border that pulses with voice amplitude while recording. Invisible at idle; fades in on hold-start, breathes with speech, fades out on release. The goal is peripheral awareness — you feel it more than you see it.
+
+- [ ] Borderless, transparent, click-through `NSWindow` at screen frame size, above all other windows
+- [ ] Core Animation layer for the border glow (GPU-composited, no per-frame redraws)
+- [ ] Amplitude-driven opacity/intensity: rise fast, decay slow (exponential moving average on RMS)
+- [ ] Match screen corner radius (Big Sur+ rounded corners)
+- [ ] Warm/neutral color — system accent or soft warm white, not attention-grabbing
+- [ ] Fade in on recording start (~100ms), fade out on release (~200-300ms)
+- [ ] Multi-display support (one window per screen, listen for display config changes)
+- [ ] `setIgnoresMouseEvents_(True)` — must not intercept clicks
+- [ ] `fullScreenAuxiliary` collection behavior for full-screen app compatibility
+
 **Frosted transcription overlay.** A semi-transparent, system-font overlay appears on screen showing the transcription as it's produced. When recording ends and text is pasted at the cursor, the overlay fades out — the fade distracts from the paste so it feels seamless rather than jarring.
 
 - [ ] Borderless `NSWindow` overlay with frosted/vibrancy background
@@ -104,14 +120,21 @@ Global hold-to-dictate: spacebar hold detection, audio capture, Whisper transcri
 - [ ] Overlay centered horizontally, fixed near bottom of screen (not cursor-tracking)
 - [ ] Dark mode / light mode support via system appearance
 
-### Phase 3 — Streaming transcription
+### Phase 3 — Two-tier transcription
 
-**Incremental transcription during recording.** Instead of waiting for the recording to finish before transcribing, send audio buffer snapshots to the Whisper server while still recording. The overlay shows interim (partial) results that refine as more audio arrives, so you see your words appearing in near-real-time.
+**Local preview + sidecar final.** A two-tier architecture for low-latency feedback without stitching complexity:
 
-- [ ] Periodic `get_buffer()` snapshots sent during recording (infrastructure already in `capture.py`)
-- [ ] Interim vs. final transcription state in the overlay (partial results shown in lighter weight or opacity)
-- [ ] Debounce/interval tuning to balance responsiveness vs. server load
-- [ ] Graceful degradation if the server can't keep up (fall back to final-only)
+- **Preview tier (local):** A small model (MLX Whisper Tiny, ~75MB) runs on the local machine during recording, producing fast interim results shown in the overlay. Preview text is disposable — it exists only for visual feedback while you speak.
+- **Final tier (sidecar):** On spacebar release, the full audio buffer is sent to a high-accuracy model on the sidecar (Qwen3-ASR 0.6B Q8, ~150-200ms for short clips) for a single clean transcription pass. This is what gets injected. No stitching, no chunk boundary reconciliation.
+
+This avoids the fundamental problem with streaming STT stitching: chunk boundaries split words, context is lost between segments, and reconciling overlapping partial results is fragile. Full-buffer final transcription sees the complete utterance with full context.
+
+- [ ] Local preview model integration (MLX Whisper Tiny) — modular, swappable
+- [ ] Sidecar model switch from Whisper to Qwen3-ASR 0.6B Q8 (OpenAI-compatible API)
+- [ ] Preview text shown in overlay during recording (lighter weight / lower opacity)
+- [ ] Final transcription replaces preview on release
+- [ ] Graceful fallback if local preview model is unavailable (amplitude-only feedback)
+- [ ] Future: swap local preview from MLX to CoreML for ANE offload (zero unified memory pressure, lower power)
 
 ### Phase 4 — Polish
 

@@ -91,16 +91,31 @@ class TestTranscriptionToken:
         assert d._transcribing is False  # was never set to True in this test
 
     def test_current_token_is_accepted(self, main_module, monkeypatch):
-        """Result with matching token should be injected."""
+        """Result with matching token should be injected with space prefix."""
         d = _make_delegate(main_module, monkeypatch)
         d._transcription_token = 5
         d._transcribing = True
 
-        with patch.object(main_module, "inject_text") as mock_inject:
+        with patch.object(main_module, "inject_text") as mock_inject, \
+             patch.object(main_module, "focused_field_is_empty", return_value=False):
             d.transcriptionComplete_({"token": 5, "text": "hello world"})
 
-        mock_inject.assert_called_once_with("hello world")
+        mock_inject.assert_called_once()
+        assert mock_inject.call_args[0][0] == " hello world"
         assert d._transcribing is False
+
+    def test_current_token_no_space_when_field_empty(self, main_module, monkeypatch):
+        """Result injected into an empty field should not have space prefix."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcription_token = 5
+        d._transcribing = True
+
+        with patch.object(main_module, "inject_text") as mock_inject, \
+             patch.object(main_module, "focused_field_is_empty", return_value=True):
+            d.transcriptionComplete_({"token": 5, "text": "hello world"})
+
+        mock_inject.assert_called_once()
+        assert mock_inject.call_args[0][0] == "hello world"
 
     def test_stale_failure_is_ignored(self, main_module, monkeypatch):
         """Failed transcription with old token should be silently ignored."""
@@ -133,6 +148,80 @@ class TestTranscriptionToken:
             d.transcriptionComplete_({"token": 1, "text": ""})
 
         mock_inject.assert_not_called()
+
+
+class TestServerCrashResilience:
+    """Test that the app survives server errors without crashing."""
+
+    def test_transcribe_worker_catches_connection_error(self, main_module, monkeypatch):
+        """Server going down mid-request should not crash the app."""
+        import httpx
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._client.transcribe.side_effect = httpx.ConnectError("Connection refused")
+
+        # Call the worker directly (normally runs on background thread)
+        d._transcribe_worker(b"wav", token=1)
+
+        # Should have posted failure to main thread, not crashed
+        d.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_once()
+        call_args = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args
+        assert call_args[0][0] == "transcriptionFailed:"
+        assert call_args[0][1]["token"] == 1
+
+    def test_transcribe_worker_catches_http_error(self, main_module, monkeypatch):
+        """HTTP 500 from server should not crash the app."""
+        import httpx
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._client.transcribe.side_effect = httpx.HTTPStatusError(
+            "Internal Server Error", request=MagicMock(), response=MagicMock()
+        )
+
+        d._transcribe_worker(b"wav", token=1)
+
+        d.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_once()
+        call_args = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args
+        assert call_args[0][0] == "transcriptionFailed:"
+
+    def test_transcribe_worker_catches_json_decode_error(self, main_module, monkeypatch):
+        """Server returning invalid JSON should not crash the app."""
+        import json
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._client.transcribe.side_effect = json.JSONDecodeError("", "", 0)
+
+        d._transcribe_worker(b"wav", token=1)
+
+        d.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_once()
+        call_args = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args
+        assert call_args[0][0] == "transcriptionFailed:"
+
+
+class TestHoldMsBounds:
+    """Test that hold_ms rejects zero and negative values."""
+
+    def test_zero_hold_ms_exits(self, main_module, monkeypatch):
+        """DICTATE_HOLD_MS=0 should be rejected."""
+        monkeypatch.setenv("DICTATE_WHISPER_URL", "http://test:8000")
+        monkeypatch.setenv("DICTATE_HOLD_MS", "0")
+        import pytest
+
+        with pytest.raises(SystemExit) as exc_info:
+            d = main_module.DictateAppDelegate.__new__(main_module.DictateAppDelegate)
+            d.init()
+        assert exc_info.value.code == 1
+
+    def test_negative_hold_ms_exits(self, main_module, monkeypatch):
+        """DICTATE_HOLD_MS=-500 should be rejected."""
+        monkeypatch.setenv("DICTATE_WHISPER_URL", "http://test:8000")
+        monkeypatch.setenv("DICTATE_HOLD_MS", "-500")
+        import pytest
+
+        with pytest.raises(SystemExit) as exc_info:
+            d = main_module.DictateAppDelegate.__new__(main_module.DictateAppDelegate)
+            d.init()
+        assert exc_info.value.code == 1
 
 
 class TestEnvValidation:

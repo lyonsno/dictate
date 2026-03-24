@@ -82,6 +82,49 @@ class TestTranscriptionClient:
 
         assert client.transcribe(b"wav") == ""
 
+    def test_server_returns_http_error(self):
+        """HTTP 500/404/etc should raise, not crash."""
+        import httpx
+
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "Server Error", request=MagicMock(), response=MagicMock()
+        )
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        with pytest.raises(httpx.HTTPStatusError):
+            client.transcribe(b"wav")
+
+    def test_server_connection_refused(self):
+        """ConnectError (server down) should raise, not crash."""
+        import httpx
+
+        client = TranscriptionClient(base_url="http://x")
+        mock_client = MagicMock()
+        mock_client.post.side_effect = httpx.ConnectError("Connection refused")
+        client._client = mock_client
+
+        with pytest.raises(httpx.ConnectError):
+            client.transcribe(b"wav")
+
+    def test_server_returns_invalid_json(self):
+        """Server returning non-JSON (e.g. HTML error page) should raise."""
+        import json
+
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.side_effect = json.JSONDecodeError("", "", 0)
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        with pytest.raises(json.JSONDecodeError):
+            client.transcribe(b"wav")
+
     def test_close(self):
         """close() should close the underlying httpx client."""
         client = TranscriptionClient(base_url="http://x")

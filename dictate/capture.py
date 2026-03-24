@@ -51,6 +51,13 @@ class AudioCapture:
             Called with RMS amplitude (float, 0.0–1.0) per audio chunk.
             Called from the PortAudio thread — keep it fast.
         """
+        # Stop any existing stream to avoid leaking PortAudio resources
+        if self._stream is not None:
+            logger.warning("start() called while already recording — stopping previous stream")
+            self._stream.stop()
+            self._stream.close()
+            self._stream = None
+
         self._frames = []
         self._amplitude_cb = amplitude_callback
         self._stream = sd.InputStream(
@@ -69,8 +76,12 @@ class AudioCapture:
             self._stream.stop()
             self._stream.close()
             self._stream = None
-        logger.info("Audio capture stopped (%d chunks)", len(self._frames))
-        return self._encode_wav(self._get_all_frames())
+            logger.info("Audio capture stopped (%d chunks)", len(self._frames))
+            return self._encode_wav(self._get_all_frames())
+
+        # No active stream — clear any stale frames and return empty
+        self._frames = []
+        return b""
 
     def get_buffer(self) -> bytes:
         """Return the current recording buffer as WAV bytes (non-destructive).

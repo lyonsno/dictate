@@ -157,3 +157,32 @@ class TestStartStop:
         buf2 = cap.get_buffer()
         assert buf1 == buf2
         assert len(cap._frames) == 1  # frames not consumed
+
+    @patch("dictate.capture.sd")
+    def test_double_start_stops_previous_stream(self, mock_sd):
+        """Calling start() twice should stop and close the first stream."""
+        cap = AudioCapture()
+        cap.start()
+        first_stream = mock_sd.InputStream.return_value
+
+        # Create a distinct mock for the second stream
+        second_stream = MagicMock()
+        mock_sd.InputStream.return_value = second_stream
+        cap.start()
+
+        first_stream.stop.assert_called_once()
+        first_stream.close.assert_called_once()
+
+    @patch("dictate.capture.sd")
+    def test_stop_without_start_clears_stale_frames(self, mock_sd):
+        """stop() when stream is None should clear leftover frames and return
+        empty bytes, not stale audio from a previous session."""
+        cap = AudioCapture()
+
+        # Simulate leftover frames from a previous recording
+        cap._frames = [np.ones(1024, dtype=np.float32)]
+
+        # stop() without start() — stream is None
+        wav = cap.stop()
+        assert wav == b""
+        assert len(cap._frames) == 0

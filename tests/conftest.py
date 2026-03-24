@@ -69,6 +69,7 @@ def _make_fake_appkit():
         "NSMenu",
         "NSMenuItem",
         "NSPasteboard",
+        "NSPasteboardItem",
         "NSStatusBar",
     ]:
         setattr(a, name, MagicMock())
@@ -89,11 +90,16 @@ def _make_fake_objc():
 @pytest.fixture
 def mock_pyobjc():
     """Install fake PyObjC modules and yield them. Restores originals on teardown."""
+    fake_app_services = types.ModuleType("ApplicationServices")
+    fake_app_services.AXUIElementCreateSystemWide = MagicMock(return_value=MagicMock())
+    fake_app_services.AXUIElementCopyAttributeValue = MagicMock(return_value=(0, None))
+
     fakes = {
         "objc": _make_fake_objc(),
         "Quartz": _make_fake_quartz(),
         "Foundation": _make_fake_foundation(),
         "AppKit": _make_fake_appkit(),
+        "ApplicationServices": fake_app_services,
         "PyObjCTools": types.ModuleType("PyObjCTools"),
     }
     fakes["PyObjCTools"].AppHelper = MagicMock()

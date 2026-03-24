@@ -6,7 +6,8 @@ Run with:  uv run dictate
 Configure via environment variables:
     DICTATE_WHISPER_URL    Sidecar Whisper server URL (required)
     DICTATE_WHISPER_MODEL  Model name (default: mlx-community/whisper-large-v3-turbo)
-    DICTATE_HOLD_MS        Hold threshold in ms (default: 400)
+    DICTATE_HOLD_MS        Hold threshold in ms (default: 400, must be > 0)
+    DICTATE_RESTORE_DELAY_MS  Pasteboard restore delay in ms (default: 1000)
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import logging
 import os
 import sys
 import threading
+import time
 
 import objc
 from AppKit import (
@@ -26,7 +28,7 @@ from AppKit import (
 from Foundation import NSObject
 
 from .capture import AudioCapture
-from .inject import inject_text
+from .inject import inject_text, focused_field_is_empty
 from .input_tap import SpacebarHoldDetector
 from .menubar import MenuBarIcon
 from .transcribe import TranscriptionClient
@@ -62,6 +64,15 @@ class DictateAppDelegate(NSObject):
             logger.error("DICTATE_HOLD_MS must be an integer, got %r", hold_ms_raw)
             print(
                 f"ERROR: DICTATE_HOLD_MS must be an integer, got {hold_ms_raw!r}.\n"
+                "  Example: DICTATE_HOLD_MS=400 uv run dictate",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        if hold_ms <= 0:
+            logger.error("DICTATE_HOLD_MS must be > 0, got %d", hold_ms)
+            print(
+                f"ERROR: DICTATE_HOLD_MS must be > 0, got {hold_ms}.\n"
                 "  Example: DICTATE_HOLD_MS=400 uv run dictate",
                 file=sys.stderr,
             )
@@ -121,6 +132,7 @@ class DictateAppDelegate(NSObject):
         token = self._transcription_token
 
         self._transcribing = True
+        self._transcribe_start = time.monotonic()
         thread = threading.Thread(
             target=self._transcribe_worker, args=(wav_bytes, token), daemon=True
         )
@@ -137,8 +149,11 @@ class DictateAppDelegate(NSObject):
             )
             return
 
+        elapsed_ms = (time.monotonic() - self._transcribe_start) * 1000
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
-            "transcriptionComplete:", {"token": token, "text": text}, False
+            "transcriptionComplete:",
+            {"token": token, "text": text, "elapsed_ms": elapsed_ms},
+            False,
         )
 
     def transcriptionComplete_(self, payload: dict) -> None:
@@ -149,8 +164,18 @@ class DictateAppDelegate(NSObject):
         self._transcribing = False
         text = payload["text"]
         if text:
-            inject_text(text)
-            logger.info("Injected: %r", text)
+            def _on_clipboard_restored():
+                if self._menubar is not None:
+                    self._menubar.set_status_text("Ready — hold spacebar")
+
+            # Prepend space unless the focused field is empty
+            prefix = "" if focused_field_is_empty() else " "
+            inject_text(prefix + text, on_restored=_on_clipboard_restored)
+            elapsed_ms = payload.get("elapsed_ms", 0)
+            logger.info("Injected: %r (%.0fms)", text, elapsed_ms)
+            if self._menubar is not None:
+                self._menubar.set_status_text("Pasted!")
+            return
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
 
