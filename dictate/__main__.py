@@ -32,6 +32,7 @@ from .glow import GlowOverlay
 from .inject import inject_text
 from .input_tap import SpacebarHoldDetector
 from .menubar import MenuBarIcon
+from .overlay import TranscriptionOverlay
 from .transcribe import TranscriptionClient
 
 logger = logging.getLogger(__name__)
@@ -81,6 +82,7 @@ class DictateAppDelegate(NSObject):
 
         self._capture = AudioCapture()
         self._client = TranscriptionClient(base_url=whisper_url, model=model)
+        self._preview_client = TranscriptionClient(base_url=whisper_url, model=model)
         self._detector = SpacebarHoldDetector.alloc().initWithHoldStart_holdEnd_holdMs_(
             self._on_hold_start,
             self._on_hold_end,
@@ -88,8 +90,11 @@ class DictateAppDelegate(NSObject):
         )
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
+        self._overlay: TranscriptionOverlay | None = None
         self._transcribing = False
         self._transcription_token = 0
+        self._preview_active = False
+        self._preview_thread: threading.Thread | None = None
         return self
 
     # ── NSApplication delegate ──────────────────────────────
@@ -100,6 +105,9 @@ class DictateAppDelegate(NSObject):
 
         self._glow = GlowOverlay.alloc().initWithScreen_(None)
         self._glow.setup()
+
+        self._overlay = TranscriptionOverlay.alloc().initWithScreen_(None)
+        self._overlay.setup()
 
         if not self._detector.install():
             self._show_accessibility_alert()
@@ -118,7 +126,14 @@ class DictateAppDelegate(NSObject):
             self._menubar.set_status_text("Recording…")
         if self._glow is not None:
             self._glow.show()
+        if self._overlay is not None:
+            self._overlay.show()
         self._capture.start(amplitude_callback=self._on_amplitude)
+
+        # Start the adaptive preview loop
+        self._preview_active = True
+        self._preview_thread = threading.Thread(target=self._preview_loop, daemon=True)
+        self._preview_thread.start()
 
     def _on_amplitude(self, rms: float) -> None:
         """Called from PortAudio thread — marshal to main thread.
@@ -136,8 +151,52 @@ class DictateAppDelegate(NSObject):
         if self._glow is not None:
             self._glow.update_amplitude(float(rms_number))
 
+    def _preview_loop(self) -> None:
+        """Background thread: adaptive-interval preview transcription.
+
+        Sends the growing audio buffer to the sidecar, waits for the response,
+        posts the preview text to the main thread, then waits a minimum interval
+        before sending the next buffer. Stops when _preview_active is cleared.
+        """
+        _MIN_INTERVAL = 0.75  # minimum seconds between preview requests
+
+        # Wait for some audio to accumulate before first preview
+        time.sleep(0.3)
+
+        while self._preview_active:
+            loop_start = time.monotonic()
+
+            wav_bytes = self._capture.get_buffer()
+            if not wav_bytes:
+                time.sleep(0.2)
+                continue
+
+            try:
+                text = self._preview_client.transcribe(wav_bytes)
+            except Exception:
+                logger.debug("Preview transcription failed", exc_info=True)
+                time.sleep(0.5)
+                continue
+
+            if text and self._preview_active:
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "previewTextUpdate:", text, False
+                )
+
+            # Enforce minimum interval between requests
+            elapsed = time.monotonic() - loop_start
+            remaining = _MIN_INTERVAL - elapsed
+            if remaining > 0 and self._preview_active:
+                time.sleep(remaining)
+
+    def previewTextUpdate_(self, text: str) -> None:
+        """Main thread: update the overlay with preview transcription text."""
+        if self._overlay is not None:
+            self._overlay.set_text(text)
+
     def _on_hold_end(self) -> None:
         logger.info("Hold ended — transcribing")
+        self._preview_active = False
         wav_bytes = self._capture.stop()
 
         if self._glow is not None:
@@ -148,6 +207,8 @@ class DictateAppDelegate(NSObject):
 
         if not wav_bytes:
             logger.warning("No audio captured")
+            if self._overlay is not None:
+                self._overlay.hide()
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
             return
@@ -165,6 +226,11 @@ class DictateAppDelegate(NSObject):
 
     def _transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: send audio to Whisper, marshal result to main thread."""
+        # Wait for preview loop to finish so we don't hit the sidecar concurrently
+        if self._preview_thread is not None:
+            self._preview_thread.join(timeout=2.0)
+            self._preview_thread = None
+
         try:
             text = self._client.transcribe(wav_bytes)
         except Exception:
@@ -193,12 +259,25 @@ class DictateAppDelegate(NSObject):
                 if self._menubar is not None:
                     self._menubar.set_status_text("Ready — hold spacebar")
 
+            # Show final text in overlay briefly before fading
+            if self._overlay is not None:
+                self._overlay.set_text(text)
+
             inject_text(text, on_restored=_on_clipboard_restored)
             elapsed_ms = payload.get("elapsed_ms", 0)
             logger.info("Injected: %r (%.0fms)", text, elapsed_ms)
             if self._menubar is not None:
                 self._menubar.set_status_text("Pasted!")
+
+            # Fade overlay out after a brief display of final text
+            if self._overlay is not None:
+                from Foundation import NSTimer
+                NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                    0.5, self, "hideOverlayAfterInject:", None, False
+                )
             return
+        if self._overlay is not None:
+            self._overlay.hide()
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
 
@@ -208,14 +287,23 @@ class DictateAppDelegate(NSObject):
             return  # stale failure, ignore
         self._transcribing = False
         logger.error("Transcription failed — no text injected")
+        if self._overlay is not None:
+            self._overlay.hide()
         if self._menubar is not None:
             self._menubar.set_status_text("Error — try again")
+
+    def hideOverlayAfterInject_(self, timer) -> None:
+        """Hide the overlay after briefly showing the final transcription."""
+        if self._overlay is not None:
+            self._overlay.hide()
 
     # ── helpers ─────────────────────────────────────────────
 
     def _quit(self) -> None:
         self._detector.uninstall()
+        self._preview_active = False
         self._client.close()
+        self._preview_client.close()
         NSApp.terminate_(None)
 
     def _show_accessibility_alert(self) -> None:

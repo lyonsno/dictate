@@ -18,8 +18,12 @@ def _make_delegate(main_module, monkeypatch):
     delegate._detector = MagicMock()
     delegate._menubar = MagicMock()
     delegate._glow = MagicMock()
+    delegate._overlay = MagicMock()
     delegate._transcribing = False
     delegate._transcription_token = 0
+    delegate._preview_active = False
+    delegate._preview_thread = None
+    delegate._preview_client = MagicMock()
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate

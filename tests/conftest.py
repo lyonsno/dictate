@@ -68,6 +68,8 @@ def _make_fake_foundation():
         "alloc": classmethod(lambda cls: cls()),
         "init": lambda self: self,
     })
+    f.NSMakeRect = MagicMock(return_value=MagicMock())
+    f.NSNumber = MagicMock()
     f.NSTimer = MagicMock()
     f.NSData = MagicMock()
     f.NSRunLoop = MagicMock()
@@ -90,7 +92,9 @@ def _make_fake_appkit():
         "NSPasteboard",
         "NSPasteboardItem",
         "NSScreen",
+        "NSScrollView",
         "NSStatusBar",
+        "NSTextView",
         "NSView",
         "NSWindow",
     ]:
@@ -98,6 +102,10 @@ def _make_fake_appkit():
     a.NSApplicationActivationPolicyAccessory = 2
     a.NSVariableStatusItemLength = -1
     a.NSPasteboardTypeString = "public.utf8-plain-text"
+    a.NSBackingStoreBuffered = 2
+    a.NSFont = MagicMock()
+    a.NSMutableParagraphStyle = MagicMock()
+    a.NSTextField = MagicMock()
     a.NSWindowCollectionBehaviorCanJoinAllSpaces = 1 << 0
     a.NSWindowCollectionBehaviorFullScreenAuxiliary = 1 << 8
     a.NSWindowCollectionBehaviorStationary = 1 << 4
