@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import time
 
 import objc
@@ -46,6 +47,8 @@ _GLOW_BASE_OPACITY = 0.10  # clear presence in silence
 # source stays close to the corners — the bezel hides the overshoot.
 _CORNER_RADIUS_TOP = 10.0  # slightly tighter than physical ~18pt to fill corners
 _CORNER_RADIUS_BOTTOM = 6.0  # slightly tighter than physical ~10pt
+
+_GLOW_MULTIPLIER = float(os.environ.get("DT_GLOW_MULTIPLIER", "30.0"))
 
 # Amplitude smoothing: rise fast, decay slow
 _RISE_FACTOR = 0.90  # near-instant response to voice
@@ -312,7 +315,7 @@ class GlowOverlay(NSObject):
 
         # Map smoothed amplitude to opacity range [base, max]
         # Fixed multiplier — ceiling is absolute, floor is adaptive
-        amplitude_linear = min(self._smoothed_amplitude * 25.0, 1.0)
+        amplitude_linear = min(self._smoothed_amplitude * _GLOW_MULTIPLIER, 1.0)
         # Perceptual correction: log curve so glow tracks perceived loudness.
         # All smoothing math above stays linear; this is the last step
         # before "rendering" — the display gamma, essentially.
