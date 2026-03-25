@@ -94,18 +94,11 @@ class TestLocalTranscriptionClient:
         assert client.transcribe(buf.getvalue()) == ""
 
     @patch("dictate.transcribe_local.mlx_whisper", create=True)
-    def test_temp_file_cleaned_up(self, mock_mlx_whisper):
-        """Temp WAV file should be deleted after transcription."""
+    def test_passes_numpy_array_not_file_path(self, mock_mlx_whisper):
+        """transcribe() should pass a numpy array, not a file path."""
         from dictate.transcribe_local import LocalTranscriptionClient
 
-        created_paths = []
-        original_transcribe = mock_mlx_whisper.transcribe
-
-        def capture_path(path, **kwargs):
-            created_paths.append(path)
-            return {"text": "test"}
-
-        mock_mlx_whisper.transcribe.side_effect = capture_path
+        mock_mlx_whisper.transcribe.return_value = {"text": "test"}
         client = LocalTranscriptionClient()
 
         import io, wave, numpy as np
@@ -117,21 +110,17 @@ class TestLocalTranscriptionClient:
             wf.writeframes(np.zeros(1000, dtype=np.int16).tobytes())
 
         client.transcribe(buf.getvalue())
-        assert len(created_paths) == 1
-        assert not os.path.exists(created_paths[0])
+        call_args = mock_mlx_whisper.transcribe.call_args
+        # First positional arg should be a numpy array, not a string path
+        assert isinstance(call_args[0][0], np.ndarray)
+        assert call_args[0][0].dtype == np.float32
 
     @patch("dictate.transcribe_local.mlx_whisper", create=True)
-    def test_temp_file_cleaned_up_on_error(self, mock_mlx_whisper):
-        """Temp WAV file should be deleted even if transcription fails."""
+    def test_inference_error_propagates(self, mock_mlx_whisper):
+        """Errors from mlx_whisper should propagate to caller."""
         from dictate.transcribe_local import LocalTranscriptionClient
 
-        created_paths = []
-
-        def capture_and_fail(path, **kwargs):
-            created_paths.append(path)
-            raise RuntimeError("inference failed")
-
-        mock_mlx_whisper.transcribe.side_effect = capture_and_fail
+        mock_mlx_whisper.transcribe.side_effect = RuntimeError("inference failed")
         client = LocalTranscriptionClient()
 
         import io, wave, numpy as np
@@ -144,8 +133,6 @@ class TestLocalTranscriptionClient:
 
         with pytest.raises(RuntimeError):
             client.transcribe(buf.getvalue())
-        assert len(created_paths) == 1
-        assert not os.path.exists(created_paths[0])
 
     def test_close_is_noop(self):
         """close() should not raise."""

@@ -140,9 +140,13 @@ class DictateAppDelegate(NSObject):
     def _on_amplitude(self, rms: float) -> None:
         """Called from PortAudio thread — marshal to main thread.
 
-        PyObjC's performSelectorOnMainThread requires an ObjC-bridgeable
-        object, so we wrap the float in a NSNumber-compatible wrapper.
+        Throttled to every 3rd callback (~5Hz instead of ~16Hz) to avoid
+        flooding the main run loop, which can cause macOS to disable the
+        event tap.
         """
+        self._amplitude_counter = getattr(self, '_amplitude_counter', 0) + 1
+        if self._amplitude_counter % 3 != 0:
+            return
         from Foundation import NSNumber
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "amplitudeUpdate:", NSNumber.numberWithFloat_(rms), False

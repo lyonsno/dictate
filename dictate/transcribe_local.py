@@ -1,16 +1,17 @@
 """Local MLX Whisper transcription — no server required.
 
 Runs mlx-whisper in-process on the local machine. Downloads the model
-from HuggingFace on first use.
+from HuggingFace on first use. Decodes WAV in-process via numpy to
+avoid requiring ffmpeg.
 """
 
 from __future__ import annotations
 
 import io
 import logging
-import tempfile
-import os
+import wave
 
+import numpy as np
 import mlx_whisper
 
 logger = logging.getLogger(__name__)
@@ -41,30 +42,37 @@ class LocalTranscriptionClient:
     def transcribe(self, wav_bytes: bytes) -> str:
         """Transcribe WAV audio bytes and return text.
 
-        Writes to a temp file because mlx_whisper expects a file path.
+        Decodes WAV to numpy float32 array in-process (no ffmpeg needed),
+        then passes directly to mlx_whisper.transcribe().
         """
         if not wav_bytes:
             return ""
 
         self._ensure_model()
 
-        # mlx_whisper.transcribe() expects a file path, not bytes
-        tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        try:
-            tmp.write(wav_bytes)
-            tmp.close()
+        # Decode WAV bytes to float32 numpy array — bypass ffmpeg entirely
+        audio = self._decode_wav(wav_bytes)
 
-            result = mlx_whisper.transcribe(
-                tmp.name,
-                path_or_hf_repo=self._model,
-                language="en",
-            )
+        result = mlx_whisper.transcribe(
+            audio,
+            path_or_hf_repo=self._model,
+            language="en",
+        )
 
-            text = result.get("text", "").strip()
-            logger.info("Local transcription: %r (%d bytes audio)", text, len(wav_bytes))
-            return text
-        finally:
-            os.unlink(tmp.name)
+        text = result.get("text", "").strip()
+        logger.info("Local transcription: %r (%d bytes audio)", text, len(wav_bytes))
+        return text
+
+    @staticmethod
+    def _decode_wav(wav_bytes: bytes) -> np.ndarray:
+        """Decode WAV bytes to float32 numpy array at 16kHz mono."""
+        buf = io.BytesIO(wav_bytes)
+        with wave.open(buf, "rb") as wf:
+            assert wf.getnchannels() == 1, "Expected mono audio"
+            assert wf.getsampwidth() == 2, "Expected 16-bit audio"
+            frames = wf.readframes(wf.getnframes())
+            pcm = np.frombuffer(frames, dtype=np.int16)
+            return pcm.astype(np.float32) / 32768.0
 
     def close(self) -> None:
         """No-op — no persistent resources to clean up."""

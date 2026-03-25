@@ -20,11 +20,22 @@ mlx_datas, mlx_binaries, mlx_hiddenimports = collect_all('mlx')
 mlx_whisper_datas, mlx_whisper_binaries, mlx_whisper_hiddenimports = collect_all('mlx_whisper')
 certifi_datas, certifi_binaries, certifi_hiddenimports = collect_all('certifi')
 
+# Find the metallib so we can place it adjacent to libmlx.dylib at the top level
+import glob as _glob
+_metallib_paths = _glob.glob(os.path.join(
+    os.path.dirname(os.path.abspath(SPEC)),
+    '.venv/lib/python*/site-packages/mlx_metal/lib/mlx.metallib'
+))
+_extra_datas = []
+if _metallib_paths:
+    # Place metallib in the root of the bundle's Frameworks dir
+    _extra_datas.append((_metallib_paths[0], '.'))
+
 a = Analysis(
     ['entry_point.py'],
     pathex=[],
     binaries=mlx_binaries + mlx_whisper_binaries + certifi_binaries,
-    datas=mlx_datas + mlx_whisper_datas + certifi_datas,
+    datas=mlx_datas + mlx_whisper_datas + certifi_datas + _extra_datas,
     hiddenimports=mlx_hiddenimports + mlx_whisper_hiddenimports + certifi_hiddenimports + [
         # dictate modules
         'dictate',
@@ -64,9 +75,6 @@ a = Analysis(
         'IPython',
         'jupyter',
         'pytest',
-        'torch',
-        'sympy',
-        'mlx_whisper.torch_whisper',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

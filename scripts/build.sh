@@ -40,6 +40,18 @@ fi
 echo "==> Running PyInstaller..."
 uv run pyinstaller Dictate.spec $CLEAN_FLAG --noconfirm
 
+# Ensure metallib is adjacent to EVERY libmlx.dylib in the bundle
+METALLIB=$(find "$APP_PATH/Contents" -name "mlx.metallib" -print -quit 2>/dev/null)
+if [ -n "$METALLIB" ]; then
+    while IFS= read -r dylib; do
+        target_dir=$(dirname "$dylib")
+        if [ ! -f "$target_dir/mlx.metallib" ]; then
+            cp "$METALLIB" "$target_dir/mlx.metallib"
+            echo "==> Copied metallib to $target_dir/"
+        fi
+    done < <(find "$APP_PATH/Contents" -name "libmlx.dylib")
+fi
+
 if [ "$SIGN_MODE" = "identity" ]; then
     echo "==> Signing app bundle (identity: $SIGN_IDENTITY)..."
     codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_PATH"
