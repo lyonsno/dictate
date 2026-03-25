@@ -29,7 +29,8 @@ if getattr(sys, '_MEIPASS', None):
 # If an old instance is stuck (e.g., mid-inference crash), kill it
 # and take the lock.
 _lock_path = os.path.expanduser("~/Library/Logs/.donttype.lock")
-_lock_file = open(_lock_path, "w+")
+_lock_file = open(_lock_path, "a+")
+_lock_file.seek(0)
 try:
     fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except OSError:
@@ -39,14 +40,18 @@ except OSError:
         old_pid = int(_lock_file.read().strip())
         print(f"Killing old instance (pid={old_pid})", file=sys.stderr)
         os.kill(old_pid, signal.SIGTERM)
-        time.sleep(0.5)
     except (ValueError, ProcessLookupError, PermissionError):
         pass
 
-    # Retry the lock
-    try:
-        fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    # Retry with backoff — old process needs time to die and release lock
+    for _attempt in range(10):
+        time.sleep(0.2)
+        try:
+            fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except OSError:
+            continue
+    else:
         print("DontType is already running. Exiting.", file=sys.stderr)
         sys.exit(0)
 
