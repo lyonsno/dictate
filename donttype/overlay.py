@@ -9,6 +9,7 @@ out after final injection. Text opacity breathes with voice amplitude.
 from __future__ import annotations
 
 import logging
+import os
 
 import objc
 from AppKit import (
@@ -38,9 +39,18 @@ _FADE_IN_S = 0.75  # slow ease-in — overlay materializes gradually
 _FADE_OUT_S = 0.35
 _FADE_STEPS = 12  # number of steps for manual fade animation
 _TYPEWRITER_INTERVAL = 0.02  # seconds between characters (~50 chars/sec)
-_TEXT_ALPHA_MIN = 0.45  # text opacity floor (silence)
-_TEXT_ALPHA_MAX = 1.00  # text opacity ceiling (loud speech)
-_TEXT_AMP_SATURATION = 0.5  # amplitude at which text reaches full brightness
+def _env(name: str, default: float) -> float:
+    v = os.environ.get(name)
+    return float(v) if v is not None else default
+
+_TEXT_ALPHA_MIN = _env("DT_TEXT_ALPHA_MIN", 0.18)
+_TEXT_ALPHA_MAX = _env("DT_TEXT_ALPHA_MAX", 1.00)
+_TEXT_AMP_SATURATION = _env("DT_TEXT_AMP_SATURATION", 0.5)
+_BG_ALPHA_MIN = _env("DT_BG_ALPHA_MIN", 0.25)
+_BG_ALPHA_MAX = _env("DT_BG_ALPHA_MAX", 0.55)
+_BG_AMP_SATURATION = _env("DT_BG_AMP_SATURATION", 0.25)
+_SMOOTH_RISE = _env("DT_SMOOTH_RISE", 0.08)
+_SMOOTH_DECAY = _env("DT_SMOOTH_DECAY", 0.96)
 
 
 class TranscriptionOverlay(NSObject):
@@ -101,7 +111,7 @@ class TranscriptionOverlay(NSObject):
         content.layer().setCornerRadius_(_OVERLAY_CORNER_RADIUS)
         content.layer().setMasksToBounds_(True)
         content.layer().setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, 0.55).CGColor()
+            NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, _BG_ALPHA_MIN).CGColor()
         )
 
         # Scroll view with text view for scrollable transcription text
@@ -278,14 +288,21 @@ class TranscriptionOverlay(NSObject):
         # Heavy smoothing — rise slow, decay slow. Text should breathe,
         # not flicker. Rise 0.15, decay 0.92 gives ~1s response time.
         if amplitude > self._text_amplitude:
-            self._text_amplitude += (amplitude - self._text_amplitude) * 0.15
+            self._text_amplitude += (amplitude - self._text_amplitude) * _SMOOTH_RISE
         else:
-            self._text_amplitude *= 0.92
+            self._text_amplitude *= _SMOOTH_DECAY
 
         scaled = min(self._text_amplitude / _TEXT_AMP_SATURATION, 1.0)
-        alpha = _TEXT_ALPHA_MIN + scaled * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
+
+        text_alpha = _TEXT_ALPHA_MIN + scaled * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
         self._text_view.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, alpha)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, text_alpha)
+        )
+
+        bg_scaled = min(self._text_amplitude / _BG_AMP_SATURATION, 1.0)
+        bg_alpha = _BG_ALPHA_MIN + bg_scaled * (_BG_ALPHA_MAX - _BG_ALPHA_MIN)
+        self._window.contentView().layer().setBackgroundColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, bg_alpha).CGColor()
         )
 
     # ── layout helpers ───────────────────────────────────────
