@@ -10,6 +10,7 @@ dependencies = [
     "numpy",
     "httpx",
     "mlx-whisper>=0.4.3",
+    "mlx-qwen3-asr>=0.3.2",
 ]
 
 [project.scripts]

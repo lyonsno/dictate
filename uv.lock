@@ -237,6 +237,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
+    { name = "mlx-qwen3-asr" },
     { name = "mlx-whisper" },
     { name = "numpy" },
     { name = "pyobjc-framework-cocoa" },
@@ -254,6 +255,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx" },
+    { name = "mlx-qwen3-asr", specifier = ">=0.3.2" },
     { name = "mlx-whisper", specifier = ">=0.4.3" },
     { name = "numpy" },
     { name = "pyobjc-framework-cocoa" },
@@ -534,6 +536,21 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/39/66/2313497fdbc7fbadf8e026c09366e3f049f9114e65ca4edc23cdb8699186/mlx_metal-0.31.1-py3-none-macosx_14_0_arm64.whl", hash = "sha256:70741174131dbf7fdd479cb730e06e08c358eac3bf7905d9e884e7960cfdd5b8", size = 38624074, upload-time = "2026-03-12T02:15:48.036Z" },
     { url = "https://files.pythonhosted.org/packages/c7/34/4c3c6890ce6095b2ab2ba2f5f15c9a7ba17208d47f8cacb572885a2dc0eb/mlx_metal-0.31.1-py3-none-macosx_15_0_arm64.whl", hash = "sha256:6c56bd8cd27743e635f5a90a22535af7c31bd22b4b126d46b6da2da52d72e413", size = 38618950, upload-time = "2026-03-12T02:15:51.908Z" },
     { url = "https://files.pythonhosted.org/packages/51/bc/987cb99e3aafb296aa11ce5133838a10eae8447edd53168d0804d4fb3a14/mlx_metal-0.31.1-py3-none-macosx_26_0_arm64.whl", hash = "sha256:e7324b7c56b519ae67c025d3ced07e5d35bc3a9f19d4c45fe4927f385148c59e", size = 49256543, upload-time = "2026-03-12T02:15:54.851Z" },
+]
+
+[[package]]
+name = "mlx-qwen3-asr"
+version = "0.3.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "mlx" },
+    { name = "numpy" },
+    { name = "regex" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e6/37/0a85b07e533a53a7f46ff9719c734241042c454e6626687d7c68541b3b62/mlx_qwen3_asr-0.3.2.tar.gz", hash = "sha256:348e647056f2552c75b015af1a88930cf87f9342065de2602b3ed35ff057b89a", size = 234127, upload-time = "2026-03-24T11:13:38.457Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/70/c9/9d70ec98ce13df945d34140613ce2350096ebfc3e93248fae2ea4f2b0a7f/mlx_qwen3_asr-0.3.2-py3-none-any.whl", hash = "sha256:1603ea2b6b0c14b0c68552e29741c844a9d2edd8239d4c9971e3cc26d26dfa66", size = 163128, upload-time = "2026-03-24T11:13:37.201Z" },
 ]
 
 [[package]]
