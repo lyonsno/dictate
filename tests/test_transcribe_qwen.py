@@ -133,7 +133,7 @@ class TestLocalQwenStreaming:
         client.start_stream()
 
         mock_session.init_streaming.assert_called_once_with(
-            language="English", chunk_size_sec=2.0
+            language="English", chunk_size_sec=1.0
         )
         assert client._stream_state is mock_state
 

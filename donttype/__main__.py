@@ -53,7 +53,7 @@ def _get_ram_gb() -> float:
 # Recording cap: 20s on machines with < 36GB RAM to avoid Metal GPU crashes
 # on long MLX inference buffers. No cap in sidecar mode (inference is remote).
 _RAM_GB = _get_ram_gb()
-_MAX_RECORD_SECS: float | None = 15.0 if _RAM_GB < 36 else None
+_MAX_RECORD_SECS: float | None = 60.0 if _RAM_GB < 36 else None
 
 
 class DontTypeAppDelegate(NSObject):
