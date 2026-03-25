@@ -1,7 +1,7 @@
-"""Entry point for donttalk — macOS global hold-to-dictate.
+"""Entry point for donttype — macOS global hold-to-dictate.
 
-Run with:  uv run donttalk
-    or:    uv run python -m donttalk
+Run with:  uv run donttype
+    or:    uv run python -m donttype
 
 Configure via environment variables:
     DICTATE_WHISPER_URL    Sidecar server URL (optional — if unset, uses local MLX Whisper)
@@ -39,11 +39,11 @@ from .transcribe_local import LocalTranscriptionClient
 logger = logging.getLogger(__name__)
 
 
-class DontTalkAppDelegate(NSObject):
+class DontTypeAppDelegate(NSObject):
     """Main application delegate — wires input → capture → transcribe → inject."""
 
     def init(self):
-        self = objc.super(DontTalkAppDelegate, self).init()
+        self = objc.super(DontTypeAppDelegate, self).init()
         if self is None:
             return None
 
@@ -58,7 +58,7 @@ class DontTalkAppDelegate(NSObject):
             logger.error("DICTATE_HOLD_MS must be an integer, got %r", hold_ms_raw)
             print(
                 f"ERROR: DICTATE_HOLD_MS must be an integer, got {hold_ms_raw!r}.\n"
-                "  Example: DICTATE_HOLD_MS=400 uv run donttalk",
+                "  Example: DICTATE_HOLD_MS=400 uv run donttype",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -67,7 +67,7 @@ class DontTalkAppDelegate(NSObject):
             logger.error("DICTATE_HOLD_MS must be > 0, got %d", hold_ms)
             print(
                 f"ERROR: DICTATE_HOLD_MS must be > 0, got {hold_ms}.\n"
-                "  Example: DICTATE_HOLD_MS=400 uv run donttalk",
+                "  Example: DICTATE_HOLD_MS=400 uv run donttype",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -115,7 +115,7 @@ class DontTalkAppDelegate(NSObject):
             self._quit()
             return
 
-        logger.info("donttalk ready — hold spacebar to record")
+        logger.info("donttype ready — hold spacebar to record")
         self._menubar.set_status_text("Ready — hold spacebar")
 
     # ── hold callbacks (called on main thread) ──────────────
@@ -318,10 +318,10 @@ class DontTalkAppDelegate(NSObject):
         alert = NSAlert.new()
         alert.setMessageText_("Accessibility Permission Required")
         alert.setInformativeText_(
-            "DontTalk needs Accessibility access to detect spacebar holds.\n\n"
+            "DontType needs Accessibility access to detect spacebar holds.\n\n"
             "Go to System Settings → Privacy & Security → Accessibility "
             "and enable access for your terminal app (Terminal, iTerm2, etc.).\n\n"
-            "Then relaunch DontTalk."
+            "Then relaunch DontType."
         )
         alert.addButtonWithTitle_("OK")
         # Temporarily become a regular app so the alert is visible
@@ -339,7 +339,7 @@ def main() -> None:
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
-    delegate = DontTalkAppDelegate.alloc().init()
+    delegate = DontTypeAppDelegate.alloc().init()
     app.setDelegate_(delegate)
 
     from PyObjCTools import AppHelper

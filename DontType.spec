@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for DontTalk.app — macOS global hold-to-dictate."""
+"""PyInstaller spec for DontType.app — macOS global hold-to-dictate."""
 
 import os
 import sys
@@ -37,17 +37,17 @@ a = Analysis(
     binaries=mlx_binaries + mlx_whisper_binaries + certifi_binaries,
     datas=mlx_datas + mlx_whisper_datas + certifi_datas + _extra_datas,
     hiddenimports=mlx_hiddenimports + mlx_whisper_hiddenimports + certifi_hiddenimports + [
-        # donttalk modules
-        'donttalk',
-        'donttalk.__main__',
-        'donttalk.capture',
-        'donttalk.glow',
-        'donttalk.inject',
-        'donttalk.input_tap',
-        'donttalk.menubar',
-        'donttalk.overlay',
-        'donttalk.transcribe',
-        'donttalk.transcribe_local',
+        # donttype modules
+        'donttype',
+        'donttype.__main__',
+        'donttype.capture',
+        'donttype.glow',
+        'donttype.inject',
+        'donttype.input_tap',
+        'donttype.menubar',
+        'donttype.overlay',
+        'donttype.transcribe',
+        'donttype.transcribe_local',
         # third-party
         'sounddevice',
         'numpy',
@@ -89,7 +89,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='DontTalk',
+    name='DontType',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -107,22 +107,22 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name='DontTalk',
+    name='DontType',
 )
 
 app = BUNDLE(
     coll,
-    name='DontTalk.app',
+    name='DontType.app',
     icon=None,  # TODO: add icon.icns
-    bundle_identifier='com.noahlyons.donttalk',
+    bundle_identifier='com.noahlyons.donttype',
     codesign_identity=os.environ.get('CODESIGN_IDENTITY', ''),
     info_plist={
-        'CFBundleName': 'DontTalk',
-        'CFBundleDisplayName': 'DontTalk',
+        'CFBundleName': 'DontType',
+        'CFBundleDisplayName': 'DontType',
         'CFBundleVersion': _version,
         'CFBundleShortVersionString': _version,
         'LSUIElement': True,
-        'NSMicrophoneUsageDescription': 'DontTalk needs microphone access to record speech for transcription.',
-        'NSAppleEventsUsageDescription': 'DontTalk needs accessibility access to type transcribed text.',
+        'NSMicrophoneUsageDescription': 'DontType needs microphone access to record speech for transcription.',
+        'NSAppleEventsUsageDescription': 'DontType needs accessibility access to type transcribed text.',
     },
 )
