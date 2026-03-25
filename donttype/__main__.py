@@ -206,13 +206,16 @@ class DontTypeAppDelegate(NSObject):
         rms = float(rms_number)
         if self._glow is not None:
             self._glow.update_amplitude(rms)
-        if self._overlay is not None:
-            # Use the glow's smoothed amplitude for text breathing
-            # (already noise-floor-normalized and smoothed)
-            if self._glow is not None:
-                self._overlay.update_text_amplitude(
-                    min(self._glow._smoothed_amplitude * 18.0, 1.0)
-                )
+        if self._overlay is not None and self._glow is not None:
+            # Text breathing: glow's smoothed amplitude, scaled independently
+            self._overlay.update_text_amplitude(
+                min(self._glow._smoothed_amplitude * 18.0, 1.0)
+            )
+            # Inner glow: track screen glow, saturate aggressively
+            glow_opacity = self._glow._glow_layer.opacity()
+            self._overlay.update_glow_amplitude(
+                min(glow_opacity * 2.5, 1.0)
+            )
 
     def _preview_loop(self) -> None:
         """Background thread: adaptive-interval preview transcription.

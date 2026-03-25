@@ -26,6 +26,7 @@ from AppKit import (
     NSWindowCollectionBehaviorStationary,
 )
 from Foundation import NSMakeRect, NSObject, NSTimer
+from Quartz import CAGradientLayer, CALayer, CAShapeLayer, CGPathCreateWithRoundedRect, CGAffineTransformIdentity
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +46,18 @@ def _env(name: str, default: float) -> float:
 
 _TEXT_ALPHA_MIN = _env("DT_TEXT_ALPHA_MIN", 0.18)
 _TEXT_ALPHA_MAX = _env("DT_TEXT_ALPHA_MAX", 1.00)
-_TEXT_AMP_SATURATION = _env("DT_TEXT_AMP_SATURATION", 0.4)
-_BG_ALPHA_MIN = _env("DT_BG_ALPHA_MIN", 0.25)
-_BG_ALPHA_MAX = _env("DT_BG_ALPHA_MAX", 0.55)
-_BG_AMP_SATURATION = _env("DT_BG_AMP_SATURATION", 0.25)
+_TEXT_AMP_SATURATION = _env("DT_TEXT_AMP_SATURATION", 0.10)
+_BG_ALPHA_MIN = _env("DT_BG_ALPHA_MIN", 0.30)
+_BG_ALPHA_MAX = _env("DT_BG_ALPHA_MAX", 0.6)
+_BG_AMP_SATURATION = _env("DT_BG_AMP_SATURATION", 0.17)
 _SMOOTH_RISE = _env("DT_SMOOTH_RISE", 0.115)
 _SMOOTH_DECAY = _env("DT_SMOOTH_DECAY", 0.94)
+
+# Inner glow — matches screen border glow, scaled to overlay size
+_GLOW_COLOR = (0.7, 0.92, 0.95)  # same as screen glow
+_INNER_GLOW_WIDTH = 3.0  # proportional to overlay vs screen size
+_INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
+_OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
 
 
 class TranscriptionOverlay(NSObject):
@@ -85,10 +92,13 @@ class TranscriptionOverlay(NSObject):
         screen_frame = self._screen.frame()
         sw = screen_frame.size.width
 
-        # Center horizontally, fixed near bottom
-        x = (sw - _OVERLAY_WIDTH) / 2
-        y = _OVERLAY_BOTTOM_MARGIN
-        frame = NSMakeRect(x, y, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
+        # Window is oversized by _OUTER_FEATHER on each side for the feather bleed
+        f = _OUTER_FEATHER
+        x = (sw - _OVERLAY_WIDTH) / 2 - f
+        y = _OVERLAY_BOTTOM_MARGIN - f
+        win_w = _OVERLAY_WIDTH + 2 * f
+        win_h = _OVERLAY_HEIGHT + 2 * f
+        frame = NSMakeRect(x, y, win_w, win_h)
 
         self._window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, 0, NSBackingStoreBuffered, False
@@ -97,15 +107,20 @@ class TranscriptionOverlay(NSObject):
         self._window.setOpaque_(False)
         self._window.setBackgroundColor_(NSColor.clearColor())
         self._window.setIgnoresMouseEvents_(True)
-        self._window.setHasShadow_(True)
+        self._window.setHasShadow_(False)
         self._window.setCollectionBehavior_(
             NSWindowCollectionBehaviorCanJoinAllSpaces
             | NSWindowCollectionBehaviorStationary
             | NSWindowCollectionBehaviorFullScreenAuxiliary
         )
 
-        # Semi-transparent dark background with rounded corners
-        content_frame = NSMakeRect(0, 0, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
+        # Wrapper view — unclipped, holds both the dark box and the outer feather
+        wrapper_frame = NSMakeRect(0, 0, win_w, win_h)
+        wrapper = NSView.alloc().initWithFrame_(wrapper_frame)
+        wrapper.setWantsLayer_(True)
+
+        # Semi-transparent dark background with rounded corners (inset by feather)
+        content_frame = NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         content = NSView.alloc().initWithFrame_(content_frame)
         content.setWantsLayer_(True)
         content.layer().setCornerRadius_(_OVERLAY_CORNER_RADIUS)
@@ -113,6 +128,85 @@ class TranscriptionOverlay(NSObject):
         content.layer().setBackgroundColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, _BG_ALPHA_MIN).CGColor()
         )
+
+        # Glow color setup
+        glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 1.0
+        )
+        clear_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
+
+        # Inner glow — inward shadow via even-odd cutout on wrapper
+        # Paths are in the layer's local coordinate space (origin 0,0).
+        # The layer is sized to w+2*margin, h+2*margin and positioned so
+        # the "hole" aligns with the content view.
+        w, h = _OVERLAY_WIDTH, _OVERLAY_HEIGHT
+        margin = _INNER_GLOW_DEPTH + 50
+        from Quartz import CGPathCreateMutableCopy, CGPathAddPath, kCAFillRuleEvenOdd as kEO
+
+        lw, lh = w + 2 * margin, h + 2 * margin  # layer size
+
+        self._inner_shadow = CAShapeLayer.alloc().init()
+        self._inner_shadow.setFrame_(((f - margin, f - margin), (lw, lh)))
+
+        # All paths in layer-local coords: (0,0) is top-left of the layer
+        outer = CGPathCreateWithRoundedRect(
+            ((0, 0), (lw, lh)), 0, 0, None
+        )
+        inner = CGPathCreateWithRoundedRect(
+            ((margin, margin), (w, h)),
+            _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None
+        )
+        combined = CGPathCreateMutableCopy(outer)
+        CGPathAddPath(combined, None, inner)
+
+        self._inner_shadow.setPath_(combined)
+        self._inner_shadow.setFillRule_(kEO)
+        self._inner_shadow.setFillColor_(glow_nscolor.colorWithAlphaComponent_(0.15).CGColor())
+        self._inner_shadow.setShadowColor_(glow_nscolor.CGColor())
+        self._inner_shadow.setShadowOffset_((0, 0))
+        self._inner_shadow.setShadowRadius_(2.4)  # very tight — sharp exponential feel
+        self._inner_shadow.setShadowOpacity_(1.0)
+
+        # Mask: only show inside the overlay's rounded rect
+        inner_mask = CAShapeLayer.alloc().init()
+        inner_mask.setFrame_(((0, 0), (lw, lh)))
+        inner_mask.setPath_(CGPathCreateWithRoundedRect(
+            ((margin, margin), (w, h)),
+            _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None
+        ))
+        self._inner_shadow.setMask_(inner_mask)
+
+        wrapper.layer().addSublayer_(self._inner_shadow)
+
+        # Outer feather — two stacked shadows for a dramatic smeared glow
+        # Layer 1: tight, bright — defines the edge
+        self._outer_glow_tight = CALayer.alloc().init()
+        self._outer_glow_tight.setFrame_(((f, f), (w, h)))
+        self._outer_glow_tight.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
+        self._outer_glow_tight.setBackgroundColor_(
+            glow_nscolor.colorWithAlphaComponent_(0.01).CGColor()
+        )
+        self._outer_glow_tight.setShadowColor_(glow_nscolor.CGColor())
+        self._outer_glow_tight.setShadowOffset_((0, 0))
+        self._outer_glow_tight.setShadowRadius_(6.2)
+        self._outer_glow_tight.setShadowOpacity_(0.3)
+        wrapper.layer().insertSublayer_below_(self._outer_glow_tight, content.layer())
+
+        # Layer 2: wide, diffuse — the smear
+        self._outer_glow_wide = CALayer.alloc().init()
+        self._outer_glow_wide.setFrame_(((f, f), (w, h)))
+        self._outer_glow_wide.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
+        self._outer_glow_wide.setBackgroundColor_(
+            glow_nscolor.colorWithAlphaComponent_(0.01).CGColor()
+        )
+        self._outer_glow_wide.setShadowColor_(glow_nscolor.CGColor())
+        self._outer_glow_wide.setShadowOffset_((0, 0))
+        self._outer_glow_wide.setShadowRadius_(14.0)
+        self._outer_glow_wide.setShadowOpacity_(0.5)
+        wrapper.layer().insertSublayer_below_(self._outer_glow_wide, self._outer_glow_tight)
+
+        wrapper.addSubview_(content)
+        self._content_view = content
 
         # Scroll view with text view for scrollable transcription text
         scroll_frame = NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
@@ -139,7 +233,7 @@ class TranscriptionOverlay(NSObject):
 
         self._scroll_view.setDocumentView_(self._text_view)
         content.addSubview_(self._scroll_view)
-        self._window.setContentView_(content)
+        self._window.setContentView_(wrapper)
 
         self._window.setAlphaValue_(0.0)
 
@@ -158,13 +252,18 @@ class TranscriptionOverlay(NSObject):
         self._text_view.setString_("")
         self._window.setAlphaValue_(0.0)
 
-        # Reset to default size
+        # Reset to default size (window includes feather margin)
         screen_frame = self._screen.frame()
         sw = screen_frame.size.width
-        x = (sw - _OVERLAY_WIDTH) / 2
+        f = _OUTER_FEATHER
+        x = (sw - _OVERLAY_WIDTH) / 2 - f
         self._window.setFrame_display_animate_(
-            NSMakeRect(x, _OVERLAY_BOTTOM_MARGIN, _OVERLAY_WIDTH, _OVERLAY_HEIGHT),
+            NSMakeRect(x, _OVERLAY_BOTTOM_MARGIN - f,
+                       _OVERLAY_WIDTH + 2 * f, _OVERLAY_HEIGHT + 2 * f),
             True, False
+        )
+        self._content_view.setFrame_(
+            NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         )
         self._scroll_view.setFrame_(
             NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
@@ -313,11 +412,19 @@ class TranscriptionOverlay(NSObject):
             NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, text_alpha)
         )
 
-        bg_scaled = min(self._text_amplitude / _BG_AMP_SATURATION, 1.0)
-        bg_alpha = _BG_ALPHA_MIN + bg_scaled * (_BG_ALPHA_MAX - _BG_ALPHA_MIN)
-        self._window.contentView().layer().setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, bg_alpha).CGColor()
-        )
+    def update_glow_amplitude(self, opacity: float) -> None:
+        """Update inner and outer glow opacity to match the screen glow.
+
+        opacity should be the screen glow's current opacity (0.0–1.0).
+        """
+        if not self._visible:
+            return
+        if hasattr(self, '_inner_shadow'):
+            self._inner_shadow.setShadowOpacity_(opacity)
+        if hasattr(self, '_outer_glow_tight'):
+            self._outer_glow_tight.setShadowOpacity_(opacity * 0.3)
+        if hasattr(self, '_outer_glow_wide'):
+            self._outer_glow_wide.setShadowOpacity_(opacity * 0.5)
 
     # ── layout helpers ───────────────────────────────────────
 
@@ -335,13 +442,45 @@ class TranscriptionOverlay(NSObject):
 
             new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), _OVERLAY_MAX_HEIGHT)
 
-            frame = self._window.frame()
-            if abs(frame.size.height - new_height) > 4:
-                frame.size.height = new_height
-                self._window.setFrame_display_animate_(frame, True, False)
+            f = _OUTER_FEATHER
+            win_frame = self._window.frame()
+            new_win_h = new_height + 2 * f
+            if abs(win_frame.size.height - new_win_h) > 4:
+                win_frame.size.height = new_win_h
+                self._window.setFrame_display_animate_(win_frame, True, False)
+                self._content_view.setFrame_(
+                    NSMakeRect(f, f, _OVERLAY_WIDTH, new_height)
+                )
                 self._scroll_view.setFrame_(
                     NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16)
                 )
+                # Rebuild inner shadow for new height
+                if hasattr(self, '_inner_shadow'):
+                    w, h = _OVERLAY_WIDTH, new_height
+                    margin = _INNER_GLOW_DEPTH + 50
+                    lw, lh = w + 2 * margin, h + 2 * margin
+                    from Quartz import CGPathCreateMutableCopy, CGPathAddPath
+                    self._inner_shadow.setFrame_(((f - margin, f - margin), (lw, lh)))
+                    outer = CGPathCreateWithRoundedRect(
+                        ((0, 0), (lw, lh)), 0, 0, None)
+                    inner = CGPathCreateWithRoundedRect(
+                        ((margin, margin), (w, h)),
+                        _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None)
+                    combined = CGPathCreateMutableCopy(outer)
+                    CGPathAddPath(combined, None, inner)
+                    self._inner_shadow.setPath_(combined)
+                    # Update mask too
+                    mask = self._inner_shadow.mask()
+                    if mask:
+                        mask.setFrame_(((0, 0), (lw, lh)))
+                        mask.setPath_(CGPathCreateWithRoundedRect(
+                            ((margin, margin), (w, h)),
+                            _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None))
+                # Resize outer feather shadows
+                if hasattr(self, '_outer_glow_tight'):
+                    self._outer_glow_tight.setFrame_(((f, f), (w, new_height)))
+                if hasattr(self, '_outer_glow_wide'):
+                    self._outer_glow_wide.setFrame_(((f, f), (w, new_height)))
 
             end = self._text_view.string().length() if hasattr(self._text_view.string(), 'length') else len(self._typewriter_displayed)
             self._text_view.scrollRangeToVisible_((end, 0))
