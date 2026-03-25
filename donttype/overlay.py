@@ -154,6 +154,7 @@ class TranscriptionOverlay(NSObject):
         self._visible = True
         self._typewriter_target = ""
         self._typewriter_displayed = ""
+        self._typewriter_hwm = 0  # furthest position typewriter has reached
         self._text_view.setString_("")
         self._window.setAlphaValue_(0.0)
 
@@ -242,17 +243,29 @@ class TranscriptionOverlay(NSObject):
         self._typewriter_target = text
 
         # If the new text doesn't start with what we've displayed,
-        # the transcription revised earlier words — snap to common prefix
+        # the transcription revised earlier words.
         if not text.startswith(self._typewriter_displayed):
-            # Find common prefix
+            # Find divergence point
             common = 0
             for i, (a, b) in enumerate(zip(self._typewriter_displayed, text)):
                 if a == b:
                     common = i + 1
                 else:
                     break
-            self._typewriter_displayed = text[:common]
-            self._text_view.setString_(self._typewriter_displayed)
+
+            if common < self._typewriter_hwm:
+                # Divergence is behind the high-water mark — the user already
+                # saw those characters typewrite in.  Snap the full text
+                # instantly so we never re-animate already-seen content.
+                self._cancel_typewriter()
+                self._typewriter_displayed = text
+                self._typewriter_hwm = len(text)
+                self._text_view.setString_(text)
+                self._update_layout()
+                return
+            else:
+                self._typewriter_displayed = text[:common]
+                self._text_view.setString_(self._typewriter_displayed)
 
         # Start typing if not already
         if self._typewriter_timer is None and len(self._typewriter_displayed) < len(self._typewriter_target):
@@ -264,6 +277,7 @@ class TranscriptionOverlay(NSObject):
         """Append one character toward the target text."""
         if len(self._typewriter_displayed) < len(self._typewriter_target):
             self._typewriter_displayed = self._typewriter_target[:len(self._typewriter_displayed) + 1]
+            self._typewriter_hwm = max(self._typewriter_hwm, len(self._typewriter_displayed))
             self._text_view.setString_(self._typewriter_displayed)
             self._update_layout()
         else:
