@@ -86,7 +86,46 @@ On first run, macOS will prompt for Accessibility permission. Grant it to your t
 uv run pytest -v
 ```
 
-67 tests covering the state machine, WAV encoding, HTTP client, injection, and menubar — all run headless with mocked PyObjC.
+120 tests covering the state machine, WAV encoding, HTTP client, injection, menubar, glow normalization, dedup, local transcription, entry point guard, and delegate orchestration — all run headless with mocked PyObjC.
+
+## Building
+
+### App bundle (PyInstaller)
+
+```sh
+# Full clean build + ad-hoc sign
+./scripts/build.sh
+
+# Incremental build (faster, kills old instance and relaunches)
+./scripts/build.sh --fast
+```
+
+The built app lands at `dist/DontType.app` (~860MB). The build script copies `mlx.metallib` adjacent to every `libmlx.dylib` in the bundle so MLX can find its Metal shaders.
+
+### Install to Applications
+
+```sh
+rm -rf ~/Applications/DontType.app
+cp -r dist/DontType.app ~/Applications/
+open ~/Applications/DontType.app
+```
+
+### DMG
+
+```sh
+# Requires: brew install create-dmg
+./scripts/build-dmg.sh
+```
+
+Produces `dist/DontType-<version>-arm64.dmg` (~272MB compressed).
+
+### Code signing
+
+By default the build uses ad-hoc signing. To sign with a Developer ID:
+
+```sh
+CODESIGN_IDENTITY="Developer ID Application: Your Name" ./scripts/build.sh
+```
 
 ## Roadmap
 
