@@ -4,7 +4,7 @@ Global hold-to-dictate for macOS. Hold spacebar anywhere on the system — in yo
 
 Built with PyObjC. No Swift, no Xcode.
 
-<video src="https://github.com/user-attachments/assets/f05bafa9-f149-494b-b514-84070a6125e4" width="100%"></video>
+<video src="https://raw.githubusercontent.com/lyonsno/donttype/main/assets/demo.mp4" width="100%"></video>
 
 ## How it works
 
