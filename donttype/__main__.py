@@ -211,7 +211,7 @@ class DontTypeAppDelegate(NSObject):
             # (already noise-floor-normalized and smoothed)
             if self._glow is not None:
                 self._overlay.update_text_amplitude(
-                    min(self._glow._smoothed_amplitude * 25.0, 1.0)
+                    min(self._glow._smoothed_amplitude * 18.0, 1.0)
                 )
 
     def _preview_loop(self) -> None:
