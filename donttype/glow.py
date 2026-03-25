@@ -39,7 +39,7 @@ _GLOW_COLOR = (0.7, 0.92, 0.95)  # pale turquoise-white blue RGB
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 30.0  # tighter bloom — stays near the edge
 _GLOW_MAX_OPACITY = 1.0  # full brightness at peak to compensate for smaller size
-_GLOW_BASE_OPACITY = 0.03  # barely there in silence — just enough to notice
+_GLOW_BASE_OPACITY = 0.10  # clear presence in silence
 # MacBook Pro 14"/16" (2021+) has asymmetric display corners.
 # We use slightly tighter radii than the physical bezel so the glow
 # source stays close to the corners — the bezel hides the overshoot.
@@ -47,7 +47,7 @@ _CORNER_RADIUS_TOP = 10.0  # slightly tighter than physical ~18pt to fill corner
 _CORNER_RADIUS_BOTTOM = 6.0  # slightly tighter than physical ~10pt
 
 # Amplitude smoothing: rise fast, decay slow
-_RISE_FACTOR = 0.85  # very snappy response to voice
+_RISE_FACTOR = 0.90  # near-instant response to voice
 _DECAY_FACTOR = 0.50  # very quick falloff between words
 
 # Fade timing

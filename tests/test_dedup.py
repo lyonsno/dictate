@@ -49,6 +49,13 @@ class TestTruncateRepetition:
         result = truncate_repetition(text, min_repeats=3)
         assert len(result) < len(text)
 
+    def test_short_phrase_many_repeats(self):
+        """Short repeated phrases like 'on this' should be caught even with many reps."""
+        text = "Alright, " + "on this " * 38 + "on"
+        result = truncate_repetition(text)
+        assert result.count("on this") <= 2
+        assert len(result) < 50
+
 
 class TestIsHallucination:
     """Test Whisper silence hallucination detection."""

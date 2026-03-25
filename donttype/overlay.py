@@ -33,7 +33,7 @@ _OVERLAY_BOTTOM_MARGIN = 120.0  # distance from bottom of screen
 _OVERLAY_CORNER_RADIUS = 16.0
 _OVERLAY_MAX_HEIGHT = 300.0  # max before text scrolls
 _FONT_SIZE = 16.0
-_FADE_IN_S = 0.2  # match glow fade-in
+_FADE_IN_S = 0.75  # slow ease-in — overlay materializes gradually
 _FADE_OUT_S = 0.35
 _FADE_STEPS = 12  # number of steps for manual fade animation
 
@@ -87,7 +87,7 @@ class TranscriptionOverlay(NSObject):
         content.layer().setCornerRadius_(_OVERLAY_CORNER_RADIUS)
         content.layer().setMasksToBounds_(True)
         content.layer().setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, 0.75).CGColor()
+            NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, 0.55).CGColor()
         )
 
         # Scroll view with text view for scrollable transcription text
@@ -105,7 +105,7 @@ class TranscriptionOverlay(NSObject):
         self._text_view.setSelectable_(False)
         self._text_view.setDrawsBackground_(False)
         self._text_view.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.9)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.75)
         )
         self._text_view.setFont_(NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0))
         self._text_view.setString_("")
@@ -183,8 +183,8 @@ class TranscriptionOverlay(NSObject):
         progress = self._fade_step / _FADE_STEPS
 
         if self._fade_direction == 1:
-            # Fade in: ease-out (fast start, slow end)
-            eased = 1.0 - (1.0 - progress) * (1.0 - progress)
+            # Fade in: ease-in (slow start, confident finish)
+            eased = progress * progress
             alpha = eased
         else:
             # Fade out: ease-in (slow start, fast end)

@@ -39,32 +39,35 @@ def truncate_repetition(text: str, min_phrase_len: int = 3, min_repeats: int = 3
     if not text or len(text) < min_phrase_len * min_repeats:
         return text
 
-    # Try phrase lengths from long to short — catch longer repeated
-    # phrases first (e.g., "I think so. I think so. I think so.")
+    best_truncated = None
+    best_removed = 0
+
+    # Try phrase lengths from short to long — find the atomic repeated
+    # unit (e.g., "on this " rather than a large block of repeated text)
     max_phrase = len(text) // min_repeats
-    for phrase_len in range(max_phrase, min_phrase_len - 1, -1):
+    for phrase_len in range(min_phrase_len, max_phrase + 1):
         # Check if the text ends with the same phrase repeated
         tail = text[-phrase_len:]
         count = 0
         pos = len(text)
         while pos >= phrase_len:
             candidate = text[pos - phrase_len:pos]
-            # Allow minor whitespace variation
             if candidate.strip() == tail.strip():
                 count += 1
                 pos -= phrase_len
             else:
                 break
 
-        if count >= min_repeats:
-            # Truncate to just before the repetitions, keeping one instance
-            truncated = text[:pos + phrase_len].strip()
-            removed = count - 1
-            logger.warning(
-                "Truncated %d repetitions of %r (phrase_len=%d)",
-                removed, tail.strip()[:50], phrase_len,
-            )
-            return truncated
+        if count >= min_repeats and count - 1 > best_removed:
+            best_truncated = text[:pos + phrase_len].strip()
+            best_removed = count - 1
+
+    if best_truncated is not None:
+        logger.warning(
+            "Truncated %d repetitions (best match)",
+            best_removed,
+        )
+        return best_truncated
 
     return text
 
