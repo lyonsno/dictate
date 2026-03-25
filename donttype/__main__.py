@@ -35,6 +35,7 @@ from .menubar import MenuBarIcon
 from .overlay import TranscriptionOverlay
 from .transcribe import TranscriptionClient
 from .transcribe_local import LocalTranscriptionClient
+from .transcribe_qwen import LocalQwenClient
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +81,12 @@ class DontTypeAppDelegate(NSObject):
             self._preview_client = TranscriptionClient(base_url=whisper_url, model=model)
             self._local_mode = False
         else:
-            logger.info("Using local transcription: %s", model)
-            self._client = LocalTranscriptionClient(model=model)
+            if model.startswith("Qwen/"):
+                logger.info("Using local Qwen3 ASR: %s", model)
+                self._client = LocalQwenClient(model=model)
+            else:
+                logger.info("Using local transcription: %s", model)
+                self._client = LocalTranscriptionClient(model=model)
             self._preview_client = self._client  # share model instance
             self._local_mode = True
         self._detector = SpacebarHoldDetector.alloc().initWithHoldStart_holdEnd_holdMs_(
