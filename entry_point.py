@@ -2,6 +2,8 @@
 import sys
 import os
 import fcntl
+import signal
+import time
 
 # Log to file so we can debug the bundled app
 log_path = os.path.expanduser("~/Library/Logs/DontType.log")
@@ -23,15 +25,36 @@ if getattr(sys, '_MEIPASS', None):
     else:
         print(f"WARNING: mlx.metallib not found in {bundle_dir}", file=sys.stderr)
 
-# Single-instance guard — prevent multiple copies from running
+# Single-instance guard — prevent multiple copies from running.
+# If an old instance is stuck (e.g., mid-inference crash), kill it
+# and take the lock.
 _lock_path = os.path.expanduser("~/Library/Logs/.donttype.lock")
-_lock_file = open(_lock_path, "w")
+_lock_file = open(_lock_path, "w+")
 try:
     fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
 except OSError:
-    # Another instance is already running
-    print("DontType is already running. Exiting.", file=sys.stderr)
-    sys.exit(0)
+    # Lock held — try to read the old PID and kill it
+    try:
+        _lock_file.seek(0)
+        old_pid = int(_lock_file.read().strip())
+        print(f"Killing old instance (pid={old_pid})", file=sys.stderr)
+        os.kill(old_pid, signal.SIGKILL)
+        time.sleep(0.5)
+    except (ValueError, ProcessLookupError, PermissionError):
+        pass
+
+    # Retry the lock
+    try:
+        fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("DontType is already running. Exiting.", file=sys.stderr)
+        sys.exit(0)
+
+# Write our PID so the next instance can kill us if needed
+_lock_file.seek(0)
+_lock_file.truncate()
+_lock_file.write(str(os.getpid()))
+_lock_file.flush()
 
 from donttype.__main__ import main
 
