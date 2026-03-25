@@ -84,7 +84,7 @@ class LocalQwenClient:
         self._last_preview_text = ""
         self._stream_state = self._session.init_streaming(
             language="English",
-            chunk_size_sec=1.0,
+            chunk_size_sec=1.5,
         )
         logger.info("Qwen3 streaming session started")
 
