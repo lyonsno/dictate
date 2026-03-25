@@ -390,6 +390,50 @@ class DontTypeAppDelegate(NSObject):
         alert.runModal()
 
 
+def _acquire_instance_lock() -> None:
+    """Single-instance guard — kill any stuck old instance and take the lock."""
+    import fcntl
+    import signal as sig
+    import time
+
+    lock_path = os.path.expanduser("~/Library/Logs/.donttype.lock")
+    lock_file = open(lock_path, "a+")
+    lock_file.seek(0)
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            lock_file.seek(0)
+            old_pid = int(lock_file.read().strip())
+            logger.info("Killing old instance (pid=%d)", old_pid)
+            os.kill(old_pid, sig.SIGTERM)
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass
+        for _attempt in range(10):
+            time.sleep(0.2)
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if _attempt == 4:
+                    try:
+                        os.kill(old_pid, sig.SIGKILL)
+                        logger.info("Escalated to SIGKILL (pid=%d)", old_pid)
+                    except (ProcessLookupError, PermissionError, NameError):
+                        pass
+                continue
+        else:
+            logger.warning("Another instance is running — exiting")
+            sys.exit(0)
+
+    lock_file.seek(0)
+    lock_file.truncate()
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
+    # Keep lock_file alive for process lifetime
+    _acquire_instance_lock._lock_file = lock_file
+
+
 def main() -> None:
     import signal
 
@@ -398,6 +442,8 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+    _acquire_instance_lock()
 
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
