@@ -121,6 +121,10 @@ class DontTypeAppDelegate(NSObject):
     # ── hold callbacks (called on main thread) ──────────────
 
     def _on_hold_start(self) -> None:
+        if self._transcribing:
+            logger.warning("Hold started while transcription in flight — ignoring")
+            return
+
         logger.info("Hold started — recording")
         if self._menubar is not None:
             self._menubar.set_recording(True)
@@ -327,6 +331,8 @@ class DontTypeAppDelegate(NSObject):
 
 
 def main() -> None:
+    import signal
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -338,6 +344,15 @@ def main() -> None:
 
     delegate = DontTypeAppDelegate.alloc().init()
     app.setDelegate_(delegate)
+
+    # Clean shutdown on SIGTERM — uninstall event tap before dying
+    # so we don't leave a zombie tap that eats keyboard events
+    def _handle_sigterm(signum, frame):
+        logger.info("Received SIGTERM — cleaning up")
+        delegate._detector.uninstall()
+        NSApp.terminate_(None)
+
+    signal.signal(signal.SIGTERM, _handle_sigterm)
 
     from PyObjCTools import AppHelper
 

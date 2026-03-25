@@ -39,7 +39,7 @@ _GLOW_COLOR = (0.7, 0.92, 0.95)  # pale turquoise-white blue RGB
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 30.0  # tighter bloom — stays near the edge
 _GLOW_MAX_OPACITY = 1.0  # full brightness at peak to compensate for smaller size
-_GLOW_BASE_OPACITY = 0.15  # visible base in silence — clear signal that we're listening
+_GLOW_BASE_OPACITY = 0.06  # subtle base in silence — present but not distracting
 # MacBook Pro 14"/16" (2021+) has asymmetric display corners.
 # We use slightly tighter radii than the physical bezel so the glow
 # source stays close to the corners — the bezel hides the overshoot.
@@ -297,8 +297,8 @@ class GlowOverlay(NSObject):
             self._smoothed_amplitude *= _DECAY_FACTOR
 
         # Map smoothed amplitude to opacity range [base, max]
-        # Speech RMS is typically 0.01–0.10, so multiply up to fill the range
-        amplitude_opacity = self._smoothed_amplitude * 18.0
+        # Tuned to saturate at moderate speaking volume in quiet environments
+        amplitude_opacity = self._smoothed_amplitude * 50.0
         opacity = _GLOW_BASE_OPACITY + min(amplitude_opacity, 1.0) * (_GLOW_MAX_OPACITY - _GLOW_BASE_OPACITY)
 
         self._glow_layer.setOpacity_(opacity)

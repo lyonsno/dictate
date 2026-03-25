@@ -38,7 +38,7 @@ except OSError:
         _lock_file.seek(0)
         old_pid = int(_lock_file.read().strip())
         print(f"Killing old instance (pid={old_pid})", file=sys.stderr)
-        os.kill(old_pid, signal.SIGKILL)
+        os.kill(old_pid, signal.SIGTERM)
         time.sleep(0.5)
     except (ValueError, ProcessLookupError, PermissionError):
         pass
