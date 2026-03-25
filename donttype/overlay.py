@@ -44,10 +44,10 @@ def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
     return float(v) if v is not None else default
 
-_TEXT_ALPHA_MIN = _env("DT_TEXT_ALPHA_MIN", 0.18)
+_TEXT_ALPHA_MIN = _env("DT_TEXT_ALPHA_MIN", 0.066)
 _TEXT_ALPHA_MAX = _env("DT_TEXT_ALPHA_MAX", 1.00)
 _TEXT_AMP_SATURATION = _env("DT_TEXT_AMP_SATURATION", 0.10)
-_BG_ALPHA_MIN = _env("DT_BG_ALPHA_MIN", 0.30)
+_BG_ALPHA_MIN = _env("DT_BG_ALPHA_MIN", 0.105)
 _BG_ALPHA_MAX = _env("DT_BG_ALPHA_MAX", 0.6)
 _BG_AMP_SATURATION = _env("DT_BG_AMP_SATURATION", 0.17)
 _SMOOTH_RISE = _env("DT_SMOOTH_RISE", 0.115)
