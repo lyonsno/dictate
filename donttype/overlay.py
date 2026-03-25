@@ -2,7 +2,8 @@
 
 A semi-transparent, system-font overlay at the bottom of the screen that shows
 live transcription text during recording. Fades in when recording starts,
-updates as preview transcriptions arrive, and fades out after final injection.
+updates as preview transcriptions arrive (with typewriter effect), and fades
+out after final injection. Text opacity breathes with voice amplitude.
 """
 
 from __future__ import annotations
@@ -36,6 +37,9 @@ _FONT_SIZE = 16.0
 _FADE_IN_S = 0.75  # slow ease-in — overlay materializes gradually
 _FADE_OUT_S = 0.35
 _FADE_STEPS = 12  # number of steps for manual fade animation
+_TYPEWRITER_INTERVAL = 0.02  # seconds between characters (~50 chars/sec)
+_TEXT_ALPHA_MIN = 0.45  # text opacity floor (silence)
+_TEXT_ALPHA_MAX = 1.00  # text opacity ceiling (loud speech)
 
 
 class TranscriptionOverlay(NSObject):
@@ -54,6 +58,15 @@ class TranscriptionOverlay(NSObject):
         self._fade_timer: NSTimer | None = None
         self._fade_step = 0
         self._fade_from = 0.0
+        self._fade_direction = 0
+
+        # Typewriter state
+        self._typewriter_timer: NSTimer | None = None
+        self._typewriter_target = ""  # full text we're typing toward
+        self._typewriter_displayed = ""  # what's currently shown
+
+        # Text breathing — separate heavy smoothing so text doesn't flicker
+        self._text_amplitude = 0.0
         return self
 
     def setup(self) -> None:
@@ -93,11 +106,11 @@ class TranscriptionOverlay(NSObject):
         # Scroll view with text view for scrollable transcription text
         scroll_frame = NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
         self._scroll_view = NSScrollView.alloc().initWithFrame_(scroll_frame)
-        self._scroll_view.setHasVerticalScroller_(False)  # hidden but functional
+        self._scroll_view.setHasVerticalScroller_(False)
         self._scroll_view.setHasHorizontalScroller_(False)
         self._scroll_view.setDrawsBackground_(False)
-        self._scroll_view.setBorderType_(0)  # no border
-        self._scroll_view.setAutoresizingMask_(18)  # width + height
+        self._scroll_view.setBorderType_(0)
+        self._scroll_view.setAutoresizingMask_(18)
 
         text_frame = NSMakeRect(0, 0, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
         self._text_view = NSTextView.alloc().initWithFrame_(text_frame)
@@ -105,11 +118,10 @@ class TranscriptionOverlay(NSObject):
         self._text_view.setSelectable_(False)
         self._text_view.setDrawsBackground_(False)
         self._text_view.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.75)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, _TEXT_ALPHA_MIN)
         )
         self._text_view.setFont_(NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0))
         self._text_view.setString_("")
-        # Allow text to wrap at the scroll view width
         self._text_view.textContainer().setWidthTracksTextView_(True)
         self._text_view.setHorizontallyResizable_(False)
         self._text_view.setVerticallyResizable_(True)
@@ -118,7 +130,6 @@ class TranscriptionOverlay(NSObject):
         content.addSubview_(self._scroll_view)
         self._window.setContentView_(content)
 
-        # Start fully transparent
         self._window.setAlphaValue_(0.0)
 
         logger.info("Transcription overlay created")
@@ -128,7 +139,10 @@ class TranscriptionOverlay(NSObject):
         if self._window is None:
             return
         self._cancel_fade()
+        self._cancel_typewriter()
         self._visible = True
+        self._typewriter_target = ""
+        self._typewriter_displayed = ""
         self._text_view.setString_("")
         self._window.setAlphaValue_(0.0)
 
@@ -146,11 +160,11 @@ class TranscriptionOverlay(NSObject):
 
         self._window.orderFrontRegardless()
 
-        # Fade in using stepped timer (matches fade-out approach)
+        # Fade in using stepped timer
         self._fade_step = 0
         self._fade_from = 0.0
         self._fade_target = 1.0
-        self._fade_direction = 1  # 1 = fading in
+        self._fade_direction = 1  # fading in
         interval = _FADE_IN_S / _FADE_STEPS
         self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             interval, self, "fadeStep:", None, True
@@ -162,6 +176,7 @@ class TranscriptionOverlay(NSObject):
         if self._window is None:
             return
         self._visible = False
+        self._cancel_typewriter()
         self._start_fade_out()
         logger.info("Overlay hide")
 
@@ -171,7 +186,7 @@ class TranscriptionOverlay(NSObject):
         self._fade_step = 0
         self._fade_from = self._window.alphaValue()
         self._fade_target = 0.0
-        self._fade_direction = -1  # -1 = fading out
+        self._fade_direction = -1  # fading out
         interval = _FADE_OUT_S / _FADE_STEPS
         self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             interval, self, "fadeStep:", None, True
@@ -206,15 +221,76 @@ class TranscriptionOverlay(NSObject):
             self._fade_timer.invalidate()
             self._fade_timer = None
 
+    # ── typewriter effect ────────────────────────────────────
+
     def set_text(self, text: str) -> None:
-        """Update the displayed transcription text, grow window, and scroll."""
+        """Update the target text — typewriter effect types toward it."""
         if self._text_view is None or not self._visible:
             return
 
-        self._text_view.setString_(text)
+        self._typewriter_target = text
 
+        # If the new text doesn't start with what we've displayed,
+        # the transcription revised earlier words — snap to common prefix
+        if not text.startswith(self._typewriter_displayed):
+            # Find common prefix
+            common = 0
+            for i, (a, b) in enumerate(zip(self._typewriter_displayed, text)):
+                if a == b:
+                    common = i + 1
+                else:
+                    break
+            self._typewriter_displayed = text[:common]
+            self._text_view.setString_(self._typewriter_displayed)
+
+        # Start typing if not already
+        if self._typewriter_timer is None and len(self._typewriter_displayed) < len(self._typewriter_target):
+            self._typewriter_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                _TYPEWRITER_INTERVAL, self, "typewriterStep:", None, True
+            )
+
+    def typewriterStep_(self, timer) -> None:
+        """Append one character toward the target text."""
+        if len(self._typewriter_displayed) < len(self._typewriter_target):
+            self._typewriter_displayed = self._typewriter_target[:len(self._typewriter_displayed) + 1]
+            self._text_view.setString_(self._typewriter_displayed)
+            self._update_layout()
+        else:
+            self._cancel_typewriter()
+
+    def _cancel_typewriter(self) -> None:
+        if self._typewriter_timer is not None:
+            self._typewriter_timer.invalidate()
+            self._typewriter_timer = None
+
+    # ── amplitude-reactive text ──────────────────────────────
+
+    def update_text_amplitude(self, amplitude: float) -> None:
+        """Update text opacity based on voice amplitude (0.0–1.0).
+
+        Must be called on the main thread. Uses heavy smoothing so the
+        text breathes slowly rather than flickering at 62Hz.
+        """
+        if self._text_view is None or not self._visible:
+            return
+
+        # Heavy smoothing — rise slow, decay slow. Text should breathe,
+        # not flicker. Rise 0.15, decay 0.92 gives ~1s response time.
+        if amplitude > self._text_amplitude:
+            self._text_amplitude += (amplitude - self._text_amplitude) * 0.15
+        else:
+            self._text_amplitude *= 0.92
+
+        alpha = _TEXT_ALPHA_MIN + self._text_amplitude * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
+        self._text_view.setTextColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, alpha)
+        )
+
+    # ── layout helpers ───────────────────────────────────────
+
+    def _update_layout(self) -> None:
+        """Resize window and scroll to bottom after text change."""
         try:
-            # Measure text height
             layout = self._text_view.layoutManager()
             container = self._text_view.textContainer()
             if layout and container:
@@ -224,8 +300,6 @@ class TranscriptionOverlay(NSObject):
             else:
                 text_height = _OVERLAY_HEIGHT - 16
 
-            # Grow window upward to fit text, capped at max height.
-            # macOS origin is bottom-left, so increasing height grows upward.
             new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), _OVERLAY_MAX_HEIGHT)
 
             frame = self._window.frame()
@@ -236,8 +310,7 @@ class TranscriptionOverlay(NSObject):
                     NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16)
                 )
 
-            # Scroll to bottom so latest text is always visible
-            end = self._text_view.string().length() if hasattr(self._text_view.string(), 'length') else len(text)
+            end = self._text_view.string().length() if hasattr(self._text_view.string(), 'length') else len(self._typewriter_displayed)
             self._text_view.scrollRangeToVisible_((end, 0))
         except Exception:
-            pass  # layout/resize is best-effort
+            pass

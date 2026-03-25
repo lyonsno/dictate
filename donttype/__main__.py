@@ -195,21 +195,24 @@ class DontTypeAppDelegate(NSObject):
         self._preview_thread.start()
 
     def _on_amplitude(self, rms: float) -> None:
-        """Called from PortAudio thread — marshal to main thread.
-
-        Throttled to every 3rd callback (~5Hz instead of ~16Hz) to avoid
-        flooding the main run loop, which can cause macOS to disable the
-        event tap.
-        """
+        """Called from PortAudio thread — marshal to main thread."""
         from Foundation import NSNumber
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "amplitudeUpdate:", NSNumber.numberWithFloat_(rms), False
         )
 
     def amplitudeUpdate_(self, rms_number) -> None:
-        """Main thread: forward amplitude to glow overlay."""
+        """Main thread: forward amplitude to glow and overlay text."""
+        rms = float(rms_number)
         if self._glow is not None:
-            self._glow.update_amplitude(float(rms_number))
+            self._glow.update_amplitude(rms)
+        if self._overlay is not None:
+            # Use the glow's smoothed amplitude for text breathing
+            # (already noise-floor-normalized and smoothed)
+            if self._glow is not None:
+                self._overlay.update_text_amplitude(
+                    min(self._glow._smoothed_amplitude * 25.0, 1.0)
+                )
 
     def _preview_loop(self) -> None:
         """Background thread: adaptive-interval preview transcription.
