@@ -43,8 +43,6 @@ Always run `uv run pytest -q` after code changes and before committing. All test
 
 When reading epistaxis, if any recorded state doesn't match what you observe in the code or thread, flag it before proceeding — even if the mismatch might just be stale rather than wrong. Multiple sessions may write to the same epistaxis file concurrently; merge your changes without overwriting entries you didn't write.
 
-Epistaxis entries that describe durable discoveries (architecture insights, upstream bugs, performance characteristics) should be written without box/branch context — they're true regardless of where they were found. Entries that describe current branch state, in-progress work, or local decisions should include explicit box/branch context. Conflicting information about current branch state across entries is definitionally incoherent and must be reported to the user immediately. All epistaxis mutations (writes, updates, deletions) must be reported in the session's output — silent edits are indistinguishable from data loss to the next reader.
-
 ## Commits
 
 Use descriptive commit messages. Include `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>` in all commits.
