@@ -53,7 +53,7 @@ def _get_ram_gb() -> float:
 # Recording cap: 20s on machines with < 36GB RAM to avoid Metal GPU crashes
 # on long MLX inference buffers. No cap in sidecar mode (inference is remote).
 _RAM_GB = _get_ram_gb()
-_MAX_RECORD_SECS: float | None = 15.0 if _RAM_GB < 36 else None
+_MAX_RECORD_SECS: float | None = 20.0 if _RAM_GB < 36 else None
 
 
 class SpokeAppDelegate(NSObject):
@@ -242,14 +242,13 @@ class SpokeAppDelegate(NSObject):
         # Recording cap: check elapsed time on every amplitude tick
         if self._local_mode and _MAX_RECORD_SECS is not None and not self._cap_fired:
             elapsed = time.monotonic() - self._record_start_time
-            _CAP_WARN_SECS = 5.0
+            _CAP_WARN_SECS = 3.0
 
-            # Update countdown glow in the last 5 seconds
+            # Update countdown glow in the last 3 seconds
             warn_start = _MAX_RECORD_SECS - _CAP_WARN_SECS
             if elapsed >= warn_start and self._glow is not None:
                 progress = min((elapsed - warn_start) / _CAP_WARN_SECS, 1.0)
-                eased = progress * progress  # ease-in: slow start, accelerating
-                self._glow._cap_factor = 1.0 - eased
+                self._glow._cap_factor = 1.0 - progress  # linear
 
             # Fire the cap
             if elapsed >= _MAX_RECORD_SECS:

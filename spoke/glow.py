@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 # Glow appearance
 _GLOW_COLOR = (0.7, 0.92, 0.95)  # pale turquoise-white blue RGB
+_GLOW_CAP_COLOR = (1.0, 0.45, 0.15)  # angry sunset for cap countdown
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 30.0  # tighter bloom — stays near the edge
 _GLOW_MAX_OPACITY = 1.0  # full brightness at peak to compensate for smaller size
@@ -167,6 +168,7 @@ class GlowOverlay(NSObject):
         shadow_shape.setShadowOpacity_(1.0)
 
         self._glow_layer.addSublayer_(shadow_shape)
+        self._shadow_shape = shadow_shape
 
         # Shape fill nearly transparent — just enough for CA to cast shadow
         shadow_shape.setFillColor_(
@@ -222,6 +224,7 @@ class GlowOverlay(NSObject):
 
             self._glow_layer.addSublayer_(g)
 
+        self._gradient_layers = [self._glow_layer.sublayers()[i] for i in range(1, 5)]
         content.layer().addSublayer_(self._glow_layer)
         logger.info("Glow overlay created (%.0fx%.0f, border=%.0f, shadow=%.0f)",
                      w, h, _GLOW_WIDTH, _GLOW_SHADOW_RADIUS)
@@ -235,6 +238,23 @@ class GlowOverlay(NSObject):
         self._update_count = 0
         self._noise_floor = 0.0
         self._cap_factor = 1.0
+        # Reset color to default turquoise
+        glow_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 1.0
+        )
+        if hasattr(self, '_shadow_shape'):
+            self._shadow_shape.setShadowColor_(glow_color.CGColor())
+            self._shadow_shape.setFillColor_(
+                glow_color.colorWithAlphaComponent_(0.05).CGColor()
+            )
+        if hasattr(self, '_gradient_layers'):
+            edge = glow_color
+            mid = glow_color.colorWithAlphaComponent_(0.25)
+            faint = glow_color.colorWithAlphaComponent_(0.06)
+            clear = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
+            colors = [edge.CGColor(), mid.CGColor(), faint.CGColor(), clear.CGColor()]
+            for gl in self._gradient_layers:
+                gl.setColors_(colors)
         self._fade_in_until = time.monotonic() + 0.2  # let fade-in finish undisturbed
         self._window.orderFrontRegardless()
 
@@ -324,12 +344,26 @@ class GlowOverlay(NSObject):
         amplitude_opacity = math.log1p(amplitude_linear * 20.0) / math.log1p(20.0)
         opacity = _GLOW_BASE_OPACITY + amplitude_opacity * (_GLOW_MAX_OPACITY - _GLOW_BASE_OPACITY)
 
-        # Apply recording-cap countdown: eases glow toward 25% of max
-        # over the last 5 seconds as a passive visual warning.
+        # Apply recording-cap countdown: shift color from turquoise to amber
+        # as the cap approaches — passive visual warning visible at any opacity.
         if self._cap_factor < 1.0:
-            cap_floor = 0.25
-            scale = cap_floor + (1.0 - cap_floor) * self._cap_factor
-            opacity = _GLOW_BASE_OPACITY + (opacity - _GLOW_BASE_OPACITY) * scale
+            t = 1.0 - self._cap_factor  # 0→1 as cap approaches
+            r = _GLOW_COLOR[0] + t * (_GLOW_CAP_COLOR[0] - _GLOW_COLOR[0])
+            g = _GLOW_COLOR[1] + t * (_GLOW_CAP_COLOR[1] - _GLOW_COLOR[1])
+            b = _GLOW_COLOR[2] + t * (_GLOW_CAP_COLOR[2] - _GLOW_COLOR[2])
+            cap_color = NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
+            cap_cgcolor = cap_color.CGColor()
+            self._shadow_shape.setShadowColor_(cap_cgcolor)
+            self._shadow_shape.setFillColor_(
+                cap_color.colorWithAlphaComponent_(0.05).CGColor()
+            )
+            edge = cap_color
+            mid = cap_color.colorWithAlphaComponent_(0.25)
+            faint = cap_color.colorWithAlphaComponent_(0.06)
+            clear = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
+            colors = [edge.CGColor(), mid.CGColor(), faint.CGColor(), clear.CGColor()]
+            for gl in self._gradient_layers:
+                gl.setColors_(colors)
 
         self._glow_layer.setOpacity_(opacity)
 
