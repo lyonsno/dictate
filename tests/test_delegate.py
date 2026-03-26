@@ -221,6 +221,38 @@ class TestHoldMsBounds:
         assert exc_info.value.code == 1
 
 
+class TestModelPicker:
+    """Test model selection menu and RAM guard."""
+
+    def test_model_allowed_blocks_large_on_low_ram(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setattr(main_module, "_RAM_GB", 16.0)
+        assert d._model_allowed("mlx-community/whisper-medium.en-mlx-8bit") is True
+        assert d._model_allowed("Qwen/Qwen3-ASR-0.6B") is True
+        assert d._model_allowed("mlx-community/whisper-large-v3-turbo") is False
+
+    def test_model_allowed_permits_large_on_high_ram(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setattr(main_module, "_RAM_GB", 36.0)
+        assert d._model_allowed("mlx-community/whisper-large-v3-turbo") is True
+
+    def test_select_model_none_returns_list(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setattr(main_module, "_RAM_GB", 16.0)
+        models = d._select_model(None)
+        model_ids = [m[0] for m in models]
+        assert "mlx-community/whisper-medium.en-mlx-8bit" in model_ids
+        assert "Qwen/Qwen3-ASR-0.6B" in model_ids
+        assert "mlx-community/whisper-large-v3-turbo" not in model_ids
+
+    def test_select_model_none_includes_large_on_high_ram(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setattr(main_module, "_RAM_GB", 36.0)
+        models = d._select_model(None)
+        model_ids = [m[0] for m in models]
+        assert "mlx-community/whisper-large-v3-turbo" in model_ids
+
+
 class TestEnvValidation:
     """Test environment variable validation in SpokeAppDelegate.init."""
 

@@ -34,18 +34,26 @@ class MenuBarIcon(NSObject):
     """
 
     def initWithQuitCallback_(self, on_quit: Callable[[], None]):
-        return self.initWithQuitCallback_toggleModelCallback_(on_quit, None)
+        return self.initWithQuitCallback_selectModelCallback_(on_quit, None)
 
     def initWithQuitCallback_toggleModelCallback_(
         self,
         on_quit: Callable[[], None],
         on_toggle_model: Callable[[], None] | None = None,
     ):
+        """Backwards compat — wraps old toggle into new select."""
+        return self.initWithQuitCallback_selectModelCallback_(on_quit, on_toggle_model)
+
+    def initWithQuitCallback_selectModelCallback_(
+        self,
+        on_quit: Callable[[], None],
+        on_select_model: Callable | None = None,
+    ):
         self = objc.super(MenuBarIcon, self).init()
         if self is None:
             return None
         self._on_quit = on_quit
-        self._on_toggle_model = on_toggle_model
+        self._on_select_model = on_select_model
         self._status_item = None
         self._idle_image = None
         self._recording_image = None
@@ -97,17 +105,22 @@ class MenuBarIcon(NSObject):
 
         menu.addItem_(NSMenuItem.separatorItem())
 
-        # Model toggle
-        if getattr(self, '_on_toggle_model', None) is not None:
-            current_model = os.environ.get("SPOKE_WHISPER_MODEL", "")
-            is_qwen = current_model.startswith("Qwen/")
-            label = "Switch to Whisper" if is_qwen else "Switch to Qwen3 (streaming)"
-            model_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                label, "toggleModel:", ""
-            )
-            model_item.setTarget_(self)
-            menu.addItem_(model_item)
-            menu.addItem_(NSMenuItem.separatorItem())
+        # Model picker
+        if getattr(self, '_on_select_model', None) is not None:
+            current_model = os.environ.get("SPOKE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo")
+            models = self._on_select_model(None)  # pass None to get model list
+            if models:
+                for model_id, label, enabled in models:
+                    item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                        label, "selectModel:", ""
+                    )
+                    item.setTarget_(self)
+                    item.setRepresentedObject_(model_id)
+                    item.setEnabled_(enabled)
+                    if model_id == current_model:
+                        item.setState_(1)  # NSOnState — checkmark
+                    menu.addItem_(item)
+                menu.addItem_(NSMenuItem.separatorItem())
 
         quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Quit Spoke", "quitApp:", "q"
@@ -117,9 +130,10 @@ class MenuBarIcon(NSObject):
 
         self._status_item.setMenu_(menu)
 
-    def toggleModel_(self, sender) -> None:
-        if getattr(self, '_on_toggle_model', None) is not None:
-            self._on_toggle_model()
+    def selectModel_(self, sender) -> None:
+        model_id = sender.representedObject()
+        if model_id and getattr(self, '_on_select_model', None) is not None:
+            self._on_select_model(model_id)
 
     def quitApp_(self, sender) -> None:
         self._on_quit()

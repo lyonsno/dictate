@@ -131,8 +131,8 @@ class SpokeAppDelegate(NSObject):
     # ── NSApplication delegate ──────────────────────────────
 
     def applicationDidFinishLaunching_(self, notification) -> None:
-        self._menubar = MenuBarIcon.alloc().initWithQuitCallback_toggleModelCallback_(
-            self._quit, self._toggle_model
+        self._menubar = MenuBarIcon.alloc().initWithQuitCallback_selectModelCallback_(
+            self._quit, self._select_model
         )
         self._menubar.setup()
 
@@ -470,22 +470,42 @@ class SpokeAppDelegate(NSObject):
 
     # ── helpers ─────────────────────────────────────────────
 
-    def _toggle_model(self) -> None:
-        """Toggle between Whisper and Qwen3, then relaunch."""
-        current = os.environ.get("SPOKE_WHISPER_MODEL", "")
-        if current.startswith("Qwen/"):
-            new_model = "mlx-community/whisper-large-v3-turbo"
-        else:
-            new_model = "Qwen/Qwen3-ASR-0.6B"
-        logger.info("Toggling model: %s → %s (relaunching)", current or "(default whisper)", new_model)
-        os.environ["SPOKE_WHISPER_MODEL"] = new_model
-        # Relaunch: exec ourselves with the new env
+    _MODEL_OPTIONS = [
+        ("mlx-community/whisper-medium.en-mlx-8bit", "Whisper Medium.en (8bit)"),
+        ("mlx-community/whisper-large-v3-turbo", "Whisper v3 Large Turbo"),
+        ("Qwen/Qwen3-ASR-0.6B", "Qwen3 ASR 0.6B (streaming)"),
+    ]
+
+    def _select_model(self, model_id):
+        """Model picker. Pass None to get the menu list, or a model ID to switch."""
+        if model_id is None:
+            # Return (model_id, label, enabled) tuples — hide disallowed models
+            return [
+                (mid, label, True)
+                for mid, label in self._MODEL_OPTIONS
+                if self._model_allowed(mid)
+            ]
+        if not self._model_allowed(model_id):
+            logger.warning("Model %s not available on this machine (%.0fGB RAM)", model_id, _RAM_GB)
+            return
+        current = os.environ.get("SPOKE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo")
+        if model_id == current:
+            return  # already active
+        logger.info("Switching model: %s → %s (relaunching)", current, model_id)
+        os.environ["SPOKE_WHISPER_MODEL"] = model_id
         self._detector.uninstall()
         self._preview_active = False
         self._client.close()
         if self._preview_client is not None and self._preview_client is not self._client:
             self._preview_client.close()
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+        os.execv(sys.executable, [sys.executable, "-m", "spoke"])
+
+    @staticmethod
+    def _model_allowed(model_id: str) -> bool:
+        """Guard: whisper-large-v3-turbo requires >= 36GB RAM."""
+        if "large-v3-turbo" in model_id and _RAM_GB < 36:
+            return False
+        return True
 
     def _quit(self) -> None:
         self._detector.uninstall()
