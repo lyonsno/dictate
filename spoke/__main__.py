@@ -471,8 +471,12 @@ class SpokeAppDelegate(NSObject):
     # ── helpers ─────────────────────────────────────────────
 
     _MODEL_OPTIONS = [
-        ("mlx-community/whisper-medium.en-mlx-8bit", "Whisper Medium.en (8bit)"),
-        ("mlx-community/whisper-large-v3-turbo", "Whisper v3 Large Turbo"),
+        ("mlx-community/whisper-medium.en-mlx-4bit", "Medium.en (4bit)"),
+        ("mlx-community/whisper-medium.en-mlx-8bit", "Medium.en (8bit)"),
+        ("mlx-community/whisper-medium.en-mlx", "Medium.en (bf16)"),
+        ("mlx-community/whisper-large-v3-turbo-4bit", "v3 Large Turbo (4bit)"),
+        ("mlx-community/whisper-large-v3-turbo-8bit", "v3 Large Turbo (8bit)"),
+        ("mlx-community/whisper-large-v3-turbo", "v3 Large Turbo (bf16)"),
         ("Qwen/Qwen3-ASR-0.6B", "Qwen3 ASR 0.6B (streaming)"),
     ]
 
