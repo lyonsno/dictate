@@ -1,4 +1,4 @@
-"""PyInstaller entry point — runs donttype as a package."""
+"""PyInstaller entry point — runs spoke as a package."""
 import sys
 import os
 import fcntl
@@ -6,7 +6,7 @@ import signal
 import time
 
 # Log to file so we can debug the bundled app
-log_path = os.path.expanduser("~/Library/Logs/DontType.log")
+log_path = os.path.expanduser("~/Library/Logs/Spoke.log")
 os.makedirs(os.path.dirname(log_path), exist_ok=True)
 sys.stdout = sys.stderr = open(log_path, "a")
 
@@ -28,7 +28,7 @@ if getattr(sys, '_MEIPASS', None):
 # Single-instance guard — prevent multiple copies from running.
 # If an old instance is stuck (e.g., mid-inference crash), kill it
 # and take the lock.
-_lock_path = os.path.expanduser("~/Library/Logs/.donttype.lock")
+_lock_path = os.path.expanduser("~/Library/Logs/.spoke.lock")
 _lock_file = open(_lock_path, "a+")
 _lock_file.seek(0)
 try:
@@ -59,7 +59,7 @@ except OSError:
                     pass
             continue
     else:
-        print("DontType is already running. Exiting.", file=sys.stderr)
+        print("Spoke is already running. Exiting.", file=sys.stderr)
         sys.exit(0)
 
 # Write our PID so the next instance can kill us if needed
@@ -68,7 +68,7 @@ _lock_file.truncate()
 _lock_file.write(str(os.getpid()))
 _lock_file.flush()
 
-from donttype.__main__ import main
+from spoke.__main__ import main
 
 if __name__ == "__main__":
     main()

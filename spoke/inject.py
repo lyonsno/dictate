@@ -29,17 +29,17 @@ _DEFAULT_RESTORE_DELAY_S = 1.0
 
 
 def _get_restore_delay() -> float:
-    """Read restore delay from DICTATE_RESTORE_DELAY_MS, default 1000."""
-    raw = os.environ.get("DICTATE_RESTORE_DELAY_MS")
+    """Read restore delay from SPOKE_RESTORE_DELAY_MS, default 1000."""
+    raw = os.environ.get("SPOKE_RESTORE_DELAY_MS")
     if raw is None:
         return _DEFAULT_RESTORE_DELAY_S
     try:
         ms = int(raw)
     except ValueError:
-        logger.warning("DICTATE_RESTORE_DELAY_MS=%r is not an integer, using default", raw)
+        logger.warning("SPOKE_RESTORE_DELAY_MS=%r is not an integer, using default", raw)
         return _DEFAULT_RESTORE_DELAY_S
     if ms < 0:
-        logger.warning("DICTATE_RESTORE_DELAY_MS=%d is negative, using default", ms)
+        logger.warning("SPOKE_RESTORE_DELAY_MS=%d is negative, using default", ms)
         return _DEFAULT_RESTORE_DELAY_S
     return ms / 1000.0
 

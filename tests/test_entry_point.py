@@ -86,7 +86,7 @@ class TestSingleInstanceGuard:
 
     def test_first_instance_acquires_and_writes_pid(self, tmp_path):
         """First instance should acquire lock and write its PID."""
-        lock_path = str(tmp_path / ".donttype.lock")
+        lock_path = str(tmp_path / ".spoke.lock")
         result = subprocess.run(
             ["python3", "-c", _GUARD_SCRIPT, lock_path],
             capture_output=True, text=True, timeout=5,
@@ -101,7 +101,7 @@ class TestSingleInstanceGuard:
 
     def test_second_instance_kills_first_and_takes_lock(self, tmp_path):
         """Second instance should kill the first and acquire the lock."""
-        lock_path = str(tmp_path / ".donttype.lock")
+        lock_path = str(tmp_path / ".spoke.lock")
 
         # Start first instance holding the lock
         first = subprocess.Popen(
@@ -127,7 +127,7 @@ class TestSingleInstanceGuard:
 
     def test_corrupt_pid_in_lock_file(self, tmp_path):
         """Guard should handle corrupt PID gracefully and still acquire."""
-        lock_path = str(tmp_path / ".donttype.lock")
+        lock_path = str(tmp_path / ".spoke.lock")
 
         # Write garbage to the lock file (no process holding it)
         with open(lock_path, "w") as f:
@@ -142,7 +142,7 @@ class TestSingleInstanceGuard:
 
     def test_sigkill_escalation_for_stuck_process(self, tmp_path):
         """If the old process ignores SIGTERM, guard should escalate to SIGKILL."""
-        lock_path = str(tmp_path / ".donttype.lock")
+        lock_path = str(tmp_path / ".spoke.lock")
 
         # Start an unkillable instance (ignores SIGTERM)
         first = subprocess.Popen(
@@ -166,7 +166,7 @@ class TestSingleInstanceGuard:
 
     def test_stale_pid_no_process(self, tmp_path):
         """Guard should handle a PID for a process that no longer exists."""
-        lock_path = str(tmp_path / ".donttype.lock")
+        lock_path = str(tmp_path / ".spoke.lock")
 
         # Write a PID that doesn't exist (high number, unlikely to be real)
         with open(lock_path, "w") as f:

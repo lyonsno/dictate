@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Analyze a DontType demo recording for visual review.
+"""Analyze a Spoke demo recording for visual review.
 
 Extracts a brightness histogram over time, identifies attack/release
 transients, and samples frames densely around those moments. Outputs

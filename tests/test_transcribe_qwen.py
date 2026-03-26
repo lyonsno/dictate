@@ -30,26 +30,26 @@ class TestLocalQwenClient:
     """Test the in-process Qwen3 ASR client."""
 
     def test_empty_bytes_returns_empty_string(self):
-        from donttype.transcribe_qwen import LocalQwenClient
+        from spoke.transcribe_qwen import LocalQwenClient
 
         client = LocalQwenClient(model="test-model")
         assert client.transcribe(b"") == ""
 
     def test_default_model(self):
-        from donttype.transcribe_qwen import LocalQwenClient, _DEFAULT_MODEL
+        from spoke.transcribe_qwen import LocalQwenClient, _DEFAULT_MODEL
 
         client = LocalQwenClient()
         assert client._model == _DEFAULT_MODEL
 
     def test_custom_model(self):
-        from donttype.transcribe_qwen import LocalQwenClient
+        from spoke.transcribe_qwen import LocalQwenClient
 
         client = LocalQwenClient(model="Qwen/Qwen3-ASR-1.7B")
         assert client._model == "Qwen/Qwen3-ASR-1.7B"
 
-    @patch("donttype.transcribe_qwen.mlx_qwen3_asr")
+    @patch("spoke.transcribe_qwen.mlx_qwen3_asr")
     def test_transcribe_calls_session(self, mock_module):
-        from donttype.transcribe_qwen import LocalQwenClient
+        from spoke.transcribe_qwen import LocalQwenClient
 
         mock_session = MagicMock()
         mock_session.transcribe.return_value = _mock_result("hello world")
@@ -65,9 +65,9 @@ class TestLocalQwenClient:
         assert call_args[0][0].dtype == np.float32
         assert call_args[1]["language"] == "English"
 
-    @patch("donttype.transcribe_qwen.mlx_qwen3_asr")
+    @patch("spoke.transcribe_qwen.mlx_qwen3_asr")
     def test_transcribe_strips_whitespace(self, mock_module):
-        from donttype.transcribe_qwen import LocalQwenClient
+        from spoke.transcribe_qwen import LocalQwenClient
 
         mock_session = MagicMock()
         mock_session.transcribe.return_value = _mock_result("\n  hello  \n")
@@ -76,9 +76,9 @@ class TestLocalQwenClient:
         client = LocalQwenClient()
         assert client.transcribe(_make_wav_bytes()) == "hello"
 
-    @patch("donttype.transcribe_qwen.mlx_qwen3_asr")
+    @patch("spoke.transcribe_qwen.mlx_qwen3_asr")
     def test_inference_error_propagates(self, mock_module):
-        from donttype.transcribe_qwen import LocalQwenClient
+        from spoke.transcribe_qwen import LocalQwenClient
 
         mock_session = MagicMock()
         mock_session.transcribe.side_effect = RuntimeError("inference failed")
@@ -88,9 +88,9 @@ class TestLocalQwenClient:
         with pytest.raises(RuntimeError):
             client.transcribe(_make_wav_bytes())
 
-    @patch("donttype.transcribe_qwen.mlx_qwen3_asr")
+    @patch("spoke.transcribe_qwen.mlx_qwen3_asr")
     def test_session_created_lazily(self, mock_module):
-        from donttype.transcribe_qwen import LocalQwenClient
+        from spoke.transcribe_qwen import LocalQwenClient
 
         client = LocalQwenClient()
         mock_module.Session.assert_not_called()
@@ -103,7 +103,7 @@ class TestLocalQwenClient:
         mock_module.Session.assert_called_once_with(model="Qwen/Qwen3-ASR-0.6B")
 
     def test_close_clears_session(self):
-        from donttype.transcribe_qwen import LocalQwenClient
+        from spoke.transcribe_qwen import LocalQwenClient
 
         client = LocalQwenClient()
         client._session = MagicMock()
@@ -114,9 +114,9 @@ class TestLocalQwenClient:
 class TestLocalQwenFiltering:
     """Test that Qwen client applies dedup filtering."""
 
-    @patch("donttype.transcribe_qwen.mlx_qwen3_asr")
+    @patch("spoke.transcribe_qwen.mlx_qwen3_asr")
     def test_hallucination_returns_empty(self, mock_module):
-        from donttype.transcribe_qwen import LocalQwenClient
+        from spoke.transcribe_qwen import LocalQwenClient
 
         mock_session = MagicMock()
         mock_session.transcribe.return_value = _mock_result("Thank you.")
@@ -125,9 +125,9 @@ class TestLocalQwenFiltering:
         client = LocalQwenClient()
         assert client.transcribe(_make_wav_bytes()) == ""
 
-    @patch("donttype.transcribe_qwen.mlx_qwen3_asr")
+    @patch("spoke.transcribe_qwen.mlx_qwen3_asr")
     def test_repetition_is_truncated(self, mock_module):
-        from donttype.transcribe_qwen import LocalQwenClient
+        from spoke.transcribe_qwen import LocalQwenClient
 
         mock_session = MagicMock()
         mock_session.transcribe.return_value = _mock_result("okay. " * 5)
@@ -137,9 +137,9 @@ class TestLocalQwenFiltering:
         result = client.transcribe(_make_wav_bytes())
         assert result.count("okay.") < 5
 
-    @patch("donttype.transcribe_qwen.mlx_qwen3_asr")
+    @patch("spoke.transcribe_qwen.mlx_qwen3_asr")
     def test_real_text_passes_through(self, mock_module):
-        from donttype.transcribe_qwen import LocalQwenClient
+        from spoke.transcribe_qwen import LocalQwenClient
 
         mock_session = MagicMock()
         mock_session.transcribe.return_value = _mock_result("Hello, this is a test.")

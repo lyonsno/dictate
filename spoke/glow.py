@@ -48,7 +48,7 @@ _GLOW_BASE_OPACITY = 0.10  # clear presence in silence
 _CORNER_RADIUS_TOP = 10.0  # slightly tighter than physical ~18pt to fill corners
 _CORNER_RADIUS_BOTTOM = 6.0  # slightly tighter than physical ~10pt
 
-_GLOW_MULTIPLIER = float(os.environ.get("DT_GLOW_MULTIPLIER", "30.0"))
+_GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "30.0"))
 
 # Amplitude smoothing: rise fast, decay slow
 _RISE_FACTOR = 0.90  # near-instant response to voice

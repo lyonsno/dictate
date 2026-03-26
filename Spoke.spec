@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec for DontType.app — macOS global hold-to-dictate."""
+"""PyInstaller spec for Spoke.app — macOS global hold-to-dictate."""
 
 import os
 import sys
@@ -37,17 +37,17 @@ a = Analysis(
     binaries=mlx_binaries + mlx_whisper_binaries + certifi_binaries,
     datas=mlx_datas + mlx_whisper_datas + certifi_datas + _extra_datas,
     hiddenimports=mlx_hiddenimports + mlx_whisper_hiddenimports + certifi_hiddenimports + [
-        # donttype modules
-        'donttype',
-        'donttype.__main__',
-        'donttype.capture',
-        'donttype.glow',
-        'donttype.inject',
-        'donttype.input_tap',
-        'donttype.menubar',
-        'donttype.overlay',
-        'donttype.transcribe',
-        'donttype.transcribe_local',
+        # spoke modules
+        'spoke',
+        'spoke.__main__',
+        'spoke.capture',
+        'spoke.glow',
+        'spoke.inject',
+        'spoke.input_tap',
+        'spoke.menubar',
+        'spoke.overlay',
+        'spoke.transcribe',
+        'spoke.transcribe_local',
         # third-party
         'sounddevice',
         'numpy',
@@ -89,7 +89,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='DontType',
+    name='Spoke',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -107,22 +107,22 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name='DontType',
+    name='Spoke',
 )
 
 app = BUNDLE(
     coll,
-    name='DontType.app',
+    name='Spoke.app',
     icon=None,  # TODO: add icon.icns
-    bundle_identifier='com.noahlyons.donttype',
+    bundle_identifier='com.noahlyons.spoke',
     codesign_identity=os.environ.get('CODESIGN_IDENTITY', ''),
     info_plist={
-        'CFBundleName': 'DontType',
-        'CFBundleDisplayName': 'DontType',
+        'CFBundleName': 'Spoke',
+        'CFBundleDisplayName': 'Spoke',
         'CFBundleVersion': _version,
         'CFBundleShortVersionString': _version,
         'LSUIElement': True,
-        'NSMicrophoneUsageDescription': 'DontType needs microphone access to record speech for transcription.',
-        'NSAppleEventsUsageDescription': 'DontType needs accessibility access to type transcribed text.',
+        'NSMicrophoneUsageDescription': 'Spoke needs microphone access to record speech for transcription.',
+        'NSAppleEventsUsageDescription': 'Spoke needs accessibility access to type transcribed text.',
     },
 )

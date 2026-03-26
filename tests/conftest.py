@@ -1,4 +1,4 @@
-"""Shared fixtures for donttype tests.
+"""Shared fixtures for spoke tests.
 
 Stubs out PyObjC/Quartz/AppKit so tests run without macOS GUI runtime.
 """
@@ -155,41 +155,41 @@ def mock_pyobjc():
 
 @pytest.fixture
 def input_tap_module(mock_pyobjc):
-    """Import donttype.input_tap with mocked PyObjC."""
+    """Import spoke.input_tap with mocked PyObjC."""
     # Remove cached module if present
-    sys.modules.pop("donttype.input_tap", None)
-    mod = importlib.import_module("donttype.input_tap")
+    sys.modules.pop("spoke.input_tap", None)
+    mod = importlib.import_module("spoke.input_tap")
     yield mod
-    sys.modules.pop("donttype.input_tap", None)
+    sys.modules.pop("spoke.input_tap", None)
 
 
 @pytest.fixture
 def inject_module(mock_pyobjc):
-    """Import donttype.inject with mocked PyObjC."""
-    sys.modules.pop("donttype.inject", None)
-    mod = importlib.import_module("donttype.inject")
+    """Import spoke.inject with mocked PyObjC."""
+    sys.modules.pop("spoke.inject", None)
+    mod = importlib.import_module("spoke.inject")
     yield mod
-    sys.modules.pop("donttype.inject", None)
+    sys.modules.pop("spoke.inject", None)
 
 
 @pytest.fixture
 def menubar_module(mock_pyobjc):
-    """Import donttype.menubar with mocked PyObjC."""
-    sys.modules.pop("donttype.menubar", None)
-    mod = importlib.import_module("donttype.menubar")
+    """Import spoke.menubar with mocked PyObjC."""
+    sys.modules.pop("spoke.menubar", None)
+    mod = importlib.import_module("spoke.menubar")
     yield mod
-    sys.modules.pop("donttype.menubar", None)
+    sys.modules.pop("spoke.menubar", None)
 
 
 @pytest.fixture
 def main_module(mock_pyobjc):
-    """Import donttype.__main__ with mocked PyObjC and sub-modules."""
-    # Clear all cached donttype modules so they re-import against fakes
+    """Import spoke.__main__ with mocked PyObjC and sub-modules."""
+    # Clear all cached spoke modules so they re-import against fakes
     for name in list(sys.modules):
-        if name.startswith("donttype."):
+        if name.startswith("spoke."):
             sys.modules.pop(name, None)
-    mod = importlib.import_module("donttype.__main__")
+    mod = importlib.import_module("spoke.__main__")
     yield mod
     for name in list(sys.modules):
-        if name.startswith("donttype."):
+        if name.startswith("spoke."):
             sys.modules.pop(name, None)

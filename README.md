@@ -1,14 +1,14 @@
-# donttype
+# spoke
 
 Global hold-to-dictate for macOS.
 
-Hold the spacebar anywhere on the system, speak, release, and `donttype` pastes the transcription at the current cursor. It runs as a menubar app, uses PyObjC instead of Swift, and supports three transcription modes:
+Hold the spacebar anywhere on the system, speak, release, and `spoke` pastes the transcription at the current cursor. It runs as a menubar app, uses PyObjC instead of Swift, and supports three transcription modes:
 
 - Local MLX Whisper
 - Local Qwen3-ASR via MLX
 - Remote OpenAI-compatible `/v1/audio/transcriptions` sidecar
 
-<video src="https://github.com/lyonsno/donttype/releases/download/demo-v1/demo.mp4" width="100%"></video>
+<video src="https://github.com/user-attachments/assets/f05bafa9-f149-494b-b514-84070a6125e4" width="100%"></video>
 
 ## How It Works
 
@@ -23,7 +23,7 @@ Quick taps still produce a normal space. Longer holds trigger recording, show th
 - Global spacebar hold detection with normal tap passthrough
 - Live preview overlay during recording
 - Screen-edge glow driven by microphone amplitude
-- Local transcription by default (Whisper or Qwen3-ASR) when `DICTATE_WHISPER_URL` is unset
+- Local transcription by default (Whisper or Qwen3-ASR) when `SPOKE_WHISPER_URL` is unset
 - Optional remote sidecar mode for heavier models
 - Single-instance app behavior
 - Menubar-only UI with no Dock icon
@@ -44,8 +44,8 @@ brew install portaudio
 ## Install
 
 ```sh
-git clone https://github.com/lyonsno/donttype.git
-cd donttype
+git clone https://github.com/lyonsno/spoke.git
+cd spoke
 uv sync
 ```
 
@@ -53,10 +53,10 @@ uv sync
 
 ### Default: local MLX Whisper
 
-If you do not set `DICTATE_WHISPER_URL`, `donttype` runs transcription locally with `mlx-whisper`.
+If you do not set `SPOKE_WHISPER_URL`, `spoke` runs transcription locally with `mlx-whisper`.
 
 ```sh
-uv run donttype
+uv run spoke
 ```
 
 ### Local Qwen3-ASR
@@ -64,15 +64,15 @@ uv run donttype
 Use a Qwen model name to switch the local backend:
 
 ```sh
-DICTATE_WHISPER_MODEL=Qwen/Qwen3-ASR-0.6B uv run donttype
+SPOKE_WHISPER_MODEL=Qwen/Qwen3-ASR-0.6B uv run spoke
 ```
 
 ### Remote sidecar
 
-Point `donttype` at any OpenAI-compatible transcription server:
+Point `spoke` at any OpenAI-compatible transcription server:
 
 ```sh
-DICTATE_WHISPER_URL=http://<host>:8000 uv run donttype
+SPOKE_WHISPER_URL=http://<host>:8000 uv run spoke
 ```
 
 Example sidecar options on Apple Silicon:
@@ -89,7 +89,7 @@ On first run, macOS will ask for:
 - Microphone access
 - Accessibility access
 
-Accessibility must be granted to the app that launches `donttype` if you run it from a terminal, or to `DontType.app` if you run the bundled app.
+Accessibility must be granted to the app that launches `spoke` if you run it from a terminal, or to `Spoke.app` if you run the bundled app.
 
 ## Configuration
 
@@ -99,14 +99,14 @@ The env var names use `WHISPER` for historical reasons — they control all back
 
 | Variable | Default | Description |
 |---|---|---|
-| `DICTATE_WHISPER_URL` | unset | Remote transcription server. When unset, transcription runs locally. |
-| `DICTATE_WHISPER_MODEL` | `mlx-community/whisper-large-v3-turbo` | Model identifier. Use `Qwen/Qwen3-ASR-0.6B` or `Qwen/Qwen3-ASR-1.7B` for local Qwen3-ASR. |
-| `DICTATE_HOLD_MS` | `250` | Spacebar hold threshold in milliseconds. Must be greater than `0`. |
-| `DICTATE_RESTORE_DELAY_MS` | `1000` | Delay before the original pasteboard contents are restored. |
+| `SPOKE_WHISPER_URL` | unset | Remote transcription server. When unset, transcription runs locally. |
+| `SPOKE_WHISPER_MODEL` | `mlx-community/whisper-large-v3-turbo` | Model identifier. Use `Qwen/Qwen3-ASR-0.6B` or `Qwen/Qwen3-ASR-1.7B` for local Qwen3-ASR. |
+| `SPOKE_HOLD_MS` | `250` | Spacebar hold threshold in milliseconds. Must be greater than `0`. |
+| `SPOKE_RESTORE_DELAY_MS` | `1000` | Delay before the original pasteboard contents are restored. |
 
 ### UI tuning
 
-The overlay and glow also expose advanced tuning env vars such as `DT_GLOW_MULTIPLIER`, `DT_TEXT_ALPHA_MIN`, and related `DT_*` values in the overlay/glow modules.
+The overlay and glow also expose advanced tuning env vars such as `SPOKE_GLOW_MULTIPLIER`, `SPOKE_TEXT_ALPHA_MIN`, and related `SPOKE_*` values in the overlay/glow modules.
 
 ## Development
 
@@ -119,7 +119,7 @@ uv run pytest -v
 Each layer is independent and testable in isolation.
 
 ```text
-donttype/
+spoke/
 ├── __main__.py          # app delegate and runtime wiring
 ├── input_tap.py         # global spacebar hold detection
 ├── capture.py           # sounddevice recording and WAV encoding
@@ -153,11 +153,11 @@ brew install create-dmg
 ./scripts/build-dmg.sh
 ```
 
-The app bundle is written to `dist/DontType.app`.
+The app bundle is written to `dist/Spoke.app`.
 
 ## Notes
 
-- The bundled app logs to `~/Library/Logs/DontType.log`.
+- The bundled app logs to `~/Library/Logs/Spoke.log`.
 - The local MLX backends may download model weights on first use.
 - The app is designed for Apple Silicon-oriented local inference workflows, but remote sidecar mode works independently of local model availability.
 

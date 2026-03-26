@@ -70,11 +70,11 @@ class TestPasteboardRestore:
         assert delay == 1.0
 
     def test_configurable_restore_delay(self, inject_module, monkeypatch):
-        """DICTATE_RESTORE_DELAY_MS should override the default."""
+        """SPOKE_RESTORE_DELAY_MS should override the default."""
         AppKit = __import__("AppKit")
         Foundation = __import__("Foundation")
 
-        monkeypatch.setenv("DICTATE_RESTORE_DELAY_MS", "2000")
+        monkeypatch.setenv("SPOKE_RESTORE_DELAY_MS", "2000")
 
         mock_pb = MagicMock()
         mock_pb.stringForType_.return_value = "original"

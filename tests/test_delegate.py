@@ -1,4 +1,4 @@
-"""Tests for DontTypeAppDelegate orchestration and error paths.
+"""Tests for SpokeAppDelegate orchestration and error paths.
 
 Tests the wiring between layers: hold callbacks, transcription lifecycle,
 generation-based stale result rejection, and env var validation.
@@ -9,10 +9,10 @@ from unittest.mock import MagicMock, patch
 
 
 def _make_delegate(main_module, monkeypatch):
-    """Create a DictateAppDelegate with mocked sub-components."""
-    monkeypatch.setenv("DICTATE_WHISPER_URL", "http://test:8000")
+    """Create a SpokeAppDelegate with mocked sub-components."""
+    monkeypatch.setenv("SPOKE_WHISPER_URL", "http://test:8000")
 
-    delegate = main_module.DontTypeAppDelegate.__new__(main_module.DontTypeAppDelegate)
+    delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
     delegate._capture = MagicMock()
     delegate._client = MagicMock()
     delegate._detector = MagicMock()
@@ -197,53 +197,53 @@ class TestHoldMsBounds:
     """Test that hold_ms rejects zero and negative values."""
 
     def test_zero_hold_ms_exits(self, main_module, monkeypatch):
-        """DICTATE_HOLD_MS=0 should be rejected."""
-        monkeypatch.setenv("DICTATE_WHISPER_URL", "http://test:8000")
-        monkeypatch.setenv("DICTATE_HOLD_MS", "0")
+        """SPOKE_HOLD_MS=0 should be rejected."""
+        monkeypatch.setenv("SPOKE_WHISPER_URL", "http://test:8000")
+        monkeypatch.setenv("SPOKE_HOLD_MS", "0")
         import pytest
 
         with pytest.raises(SystemExit) as exc_info:
-            d = main_module.DontTypeAppDelegate.__new__(main_module.DontTypeAppDelegate)
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
             d.init()
         assert exc_info.value.code == 1
 
     def test_negative_hold_ms_exits(self, main_module, monkeypatch):
-        """DICTATE_HOLD_MS=-500 should be rejected."""
-        monkeypatch.setenv("DICTATE_WHISPER_URL", "http://test:8000")
-        monkeypatch.setenv("DICTATE_HOLD_MS", "-500")
+        """SPOKE_HOLD_MS=-500 should be rejected."""
+        monkeypatch.setenv("SPOKE_WHISPER_URL", "http://test:8000")
+        monkeypatch.setenv("SPOKE_HOLD_MS", "-500")
         import pytest
 
         with pytest.raises(SystemExit) as exc_info:
-            d = main_module.DontTypeAppDelegate.__new__(main_module.DontTypeAppDelegate)
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
             d.init()
         assert exc_info.value.code == 1
 
 
 class TestEnvValidation:
-    """Test environment variable validation in DictateAppDelegate.init."""
+    """Test environment variable validation in SpokeAppDelegate.init."""
 
     def test_missing_whisper_url_uses_local(self, main_module, monkeypatch):
-        """Missing DICTATE_WHISPER_URL should fall back to local transcription."""
-        monkeypatch.delenv("DICTATE_WHISPER_URL", raising=False)
-        d = main_module.DontTypeAppDelegate.__new__(main_module.DontTypeAppDelegate)
+        """Missing SPOKE_WHISPER_URL should fall back to local transcription."""
+        monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         result = d.init()
         assert result is not None
         assert isinstance(d._client, main_module.LocalTranscriptionClient)
 
     def test_invalid_hold_ms_exits(self, main_module, monkeypatch):
-        """Non-integer DICTATE_HOLD_MS should sys.exit(1)."""
-        monkeypatch.setenv("DICTATE_WHISPER_URL", "http://test:8000")
-        monkeypatch.setenv("DICTATE_HOLD_MS", "not-a-number")
+        """Non-integer SPOKE_HOLD_MS should sys.exit(1)."""
+        monkeypatch.setenv("SPOKE_WHISPER_URL", "http://test:8000")
+        monkeypatch.setenv("SPOKE_HOLD_MS", "not-a-number")
         import pytest
         with pytest.raises(SystemExit) as exc_info:
-            d = main_module.DontTypeAppDelegate.__new__(main_module.DontTypeAppDelegate)
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
             d.init()
         assert exc_info.value.code == 1
 
     def test_valid_config_succeeds(self, main_module, monkeypatch):
         """Valid env vars should create a delegate without error."""
-        monkeypatch.setenv("DICTATE_WHISPER_URL", "http://test:8000")
-        monkeypatch.setenv("DICTATE_HOLD_MS", "300")
-        d = main_module.DontTypeAppDelegate.__new__(main_module.DontTypeAppDelegate)
+        monkeypatch.setenv("SPOKE_WHISPER_URL", "http://test:8000")
+        monkeypatch.setenv("SPOKE_HOLD_MS", "300")
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         result = d.init()
         assert result is not None

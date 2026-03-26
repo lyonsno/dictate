@@ -1,13 +1,13 @@
-"""Entry point for donttype — macOS global hold-to-dictate.
+"""Entry point for spoke — macOS global hold-to-dictate.
 
-Run with:  uv run donttype
-    or:    uv run python -m donttype
+Run with:  uv run spoke
+    or:    uv run python -m spoke
 
 Configure via environment variables:
-    DICTATE_WHISPER_URL    Sidecar server URL (optional — if unset, uses local MLX Whisper)
-    DICTATE_WHISPER_MODEL  Model name (default: mlx-community/whisper-large-v3-turbo)
-    DICTATE_HOLD_MS        Hold threshold in ms (default: 250, must be > 0)
-    DICTATE_RESTORE_DELAY_MS  Pasteboard restore delay in ms (default: 1000)
+    SPOKE_WHISPER_URL    Sidecar server URL (optional — if unset, uses local MLX Whisper)
+    SPOKE_WHISPER_MODEL  Model name (default: mlx-community/whisper-large-v3-turbo)
+    SPOKE_HOLD_MS        Hold threshold in ms (default: 250, must be > 0)
+    SPOKE_RESTORE_DELAY_MS  Pasteboard restore delay in ms (default: 1000)
 """
 
 from __future__ import annotations
@@ -56,35 +56,35 @@ _RAM_GB = _get_ram_gb()
 _MAX_RECORD_SECS: float | None = 15.0 if _RAM_GB < 36 else None
 
 
-class DontTypeAppDelegate(NSObject):
+class SpokeAppDelegate(NSObject):
     """Main application delegate — wires input → capture → transcribe → inject."""
 
     def init(self):
-        self = objc.super(DontTypeAppDelegate, self).init()
+        self = objc.super(SpokeAppDelegate, self).init()
         if self is None:
             return None
 
-        whisper_url = os.environ.get("DICTATE_WHISPER_URL", "")
+        whisper_url = os.environ.get("SPOKE_WHISPER_URL", "")
         model = os.environ.get(
-            "DICTATE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
+            "SPOKE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
         )
-        hold_ms_raw = os.environ.get("DICTATE_HOLD_MS", "250")
+        hold_ms_raw = os.environ.get("SPOKE_HOLD_MS", "250")
         try:
             hold_ms = int(hold_ms_raw)
         except ValueError:
-            logger.error("DICTATE_HOLD_MS must be an integer, got %r", hold_ms_raw)
+            logger.error("SPOKE_HOLD_MS must be an integer, got %r", hold_ms_raw)
             print(
-                f"ERROR: DICTATE_HOLD_MS must be an integer, got {hold_ms_raw!r}.\n"
-                "  Example: DICTATE_HOLD_MS=400 uv run donttype",
+                f"ERROR: SPOKE_HOLD_MS must be an integer, got {hold_ms_raw!r}.\n"
+                "  Example: SPOKE_HOLD_MS=400 uv run spoke",
                 file=sys.stderr,
             )
             sys.exit(1)
 
         if hold_ms <= 0:
-            logger.error("DICTATE_HOLD_MS must be > 0, got %d", hold_ms)
+            logger.error("SPOKE_HOLD_MS must be > 0, got %d", hold_ms)
             print(
-                f"ERROR: DICTATE_HOLD_MS must be > 0, got {hold_ms}.\n"
-                "  Example: DICTATE_HOLD_MS=400 uv run donttype",
+                f"ERROR: SPOKE_HOLD_MS must be > 0, got {hold_ms}.\n"
+                "  Example: SPOKE_HOLD_MS=400 uv run spoke",
                 file=sys.stderr,
             )
             sys.exit(1)
@@ -188,13 +188,13 @@ class DontTypeAppDelegate(NSObject):
             )
             return
 
-        logger.info("donttype ready — hold spacebar to record")
+        logger.info("spoke ready — hold spacebar to record")
         self._menubar.set_status_text("Ready — hold spacebar")
 
     def retryEventTap_(self, timer) -> None:
         """Retry event tap installation."""
         if self._detector.install():
-            logger.info("donttype ready — hold spacebar to record")
+            logger.info("spoke ready — hold spacebar to record")
             self._menubar.set_status_text("Ready — hold spacebar")
         else:
             from Foundation import NSTimer
@@ -435,10 +435,10 @@ class DontTypeAppDelegate(NSObject):
         alert = NSAlert.new()
         alert.setMessageText_("Accessibility Permission Required")
         alert.setInformativeText_(
-            "DontType needs Accessibility access to detect spacebar holds.\n\n"
+            "Spoke needs Accessibility access to detect spacebar holds.\n\n"
             "Go to System Settings → Privacy & Security → Accessibility "
             "and enable access for your terminal app (Terminal, iTerm2, etc.).\n\n"
-            "Then relaunch DontType."
+            "Then relaunch Spoke."
         )
         alert.addButtonWithTitle_("OK")
         # Temporarily become a regular app so the alert is visible
@@ -452,7 +452,7 @@ def _acquire_instance_lock() -> None:
     import signal as sig
     import time
 
-    lock_path = os.path.expanduser("~/Library/Logs/.donttype.lock")
+    lock_path = os.path.expanduser("~/Library/Logs/.spoke.lock")
     lock_file = open(lock_path, "a+")
     lock_file.seek(0)
     try:
@@ -504,7 +504,7 @@ def main() -> None:
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
-    delegate = DontTypeAppDelegate.alloc().init()
+    delegate = SpokeAppDelegate.alloc().init()
     app.setDelegate_(delegate)
 
     # Clean shutdown on SIGTERM — uninstall event tap before dying

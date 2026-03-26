@@ -1,6 +1,6 @@
 """Tests for repetition loop detection and truncation."""
 
-from donttype.dedup import truncate_repetition, is_hallucination
+from spoke.dedup import truncate_repetition, is_hallucination
 
 
 class TestTruncateRepetition:

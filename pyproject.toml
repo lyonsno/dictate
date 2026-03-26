@@ -1,5 +1,5 @@
 [project]
-name = "donttype"
+name = "spoke"
 version = "0.1.0"
 description = "Global hold-to-dictate for macOS — spacebar → record → transcribe → paste"
 requires-python = ">=3.13"
@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.scripts]
-donttype = "donttype.__main__:main"
+spoke = "spoke.__main__:main"
 
 [dependency-groups]
 dev = [

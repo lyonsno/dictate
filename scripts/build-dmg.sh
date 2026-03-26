@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Package DontType.app into a DMG installer.
+# Package Spoke.app into a DMG installer.
 # Usage: ./scripts/build-dmg.sh [version]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 DIST_DIR="$PROJECT_DIR/dist"
-APP_PATH="$DIST_DIR/DontType.app"
+APP_PATH="$DIST_DIR/Spoke.app"
 
 if [ ! -d "$APP_PATH" ]; then
     echo "ERROR: $APP_PATH not found. Run './scripts/build.sh' first."
@@ -27,21 +27,21 @@ if [ "$VERSION" != "$PYPROJECT_VERSION" ]; then
     exit 1
 fi
 
-DMG_PATH="$DIST_DIR/DontType-${VERSION}-arm64.dmg"
+DMG_PATH="$DIST_DIR/Spoke-${VERSION}-arm64.dmg"
 
 cd "$PROJECT_DIR"
 
-echo "==> Creating DMG for DontType v${VERSION}..."
+echo "==> Creating DMG for Spoke v${VERSION}..."
 
 rm -f "$DMG_PATH"
 create-dmg \
-    --volname "DontType" \
+    --volname "Spoke" \
     --window-pos 200 120 \
     --window-size 600 400 \
     --icon-size 128 \
-    --icon "DontType.app" 175 190 \
+    --icon "Spoke.app" 175 190 \
     --app-drop-link 425 190 \
-    --hide-extension "DontType.app" \
+    --hide-extension "Spoke.app" \
     --no-internet-enable \
     "$DMG_PATH" \
     "$APP_PATH"

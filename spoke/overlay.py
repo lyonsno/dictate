@@ -44,14 +44,14 @@ def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
     return float(v) if v is not None else default
 
-_TEXT_ALPHA_MIN = _env("DT_TEXT_ALPHA_MIN", 0.066)
-_TEXT_ALPHA_MAX = _env("DT_TEXT_ALPHA_MAX", 1.00)
-_TEXT_AMP_SATURATION = _env("DT_TEXT_AMP_SATURATION", 0.10)
-_BG_ALPHA_MIN = _env("DT_BG_ALPHA_MIN", 0.105)
-_BG_ALPHA_MAX = _env("DT_BG_ALPHA_MAX", 0.6)
-_BG_AMP_SATURATION = _env("DT_BG_AMP_SATURATION", 0.17)
-_SMOOTH_RISE = _env("DT_SMOOTH_RISE", 0.115)
-_SMOOTH_DECAY = _env("DT_SMOOTH_DECAY", 0.94)
+_TEXT_ALPHA_MIN = _env("SPOKE_TEXT_ALPHA_MIN", 0.066)
+_TEXT_ALPHA_MAX = _env("SPOKE_TEXT_ALPHA_MAX", 1.00)
+_TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.10)
+_BG_ALPHA_MIN = _env("SPOKE_BG_ALPHA_MIN", 0.105)
+_BG_ALPHA_MAX = _env("SPOKE_BG_ALPHA_MAX", 0.6)
+_BG_AMP_SATURATION = _env("SPOKE_BG_AMP_SATURATION", 0.17)
+_SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.115)
+_SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.94)
 
 # Inner glow — matches screen border glow, scaled to overlay size
 _GLOW_COLOR = (0.7, 0.92, 0.95)  # same as screen glow
