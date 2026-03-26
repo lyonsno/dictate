@@ -46,3 +46,4 @@ When reading epistaxis, if any recorded state doesn't match what you observe in 
 ## Commits
 
 Use descriptive commit messages. Include `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>` in all commits.
+Unless the user explicitly says otherwise, push commits after creating them.
