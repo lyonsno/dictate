@@ -352,10 +352,13 @@ class TranscriptionOverlay(NSObject):
                 else:
                     break
 
-            if common < self._typewriter_hwm:
-                # Divergence is behind the high-water mark — the user already
-                # saw those characters typewrite in.  Snap the full text
-                # instantly so we never re-animate already-seen content.
+            # Allow small jitter (punctuation, capitalization) near the
+            # typing frontier without triggering a full snap.
+            _FUZZ = 3  # chars of slack behind the high-water mark
+            if common < self._typewriter_hwm - _FUZZ:
+                # Divergence is well behind the high-water mark — the user
+                # already saw those characters typewrite in.  Snap the full
+                # text instantly so we never re-animate already-seen content.
                 self._cancel_typewriter()
                 self._typewriter_displayed = text
                 self._typewriter_hwm = len(text)

@@ -14,6 +14,8 @@ import wave
 import numpy as np
 import mlx_qwen3_asr
 
+import spoke.patch_qwen3_streaming  # noqa: F401 — fix upstream merge bug
+
 from .dedup import truncate_repetition, is_hallucination
 
 logger = logging.getLogger(__name__)
