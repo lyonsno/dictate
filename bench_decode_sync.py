@@ -4,13 +4,14 @@ Compares the patched _main_loop (mx.eval on completed flag per iteration)
 against the original (mx.async_eval for everything) on real audio.
 
 Usage:
-    uv run python bench_decode_sync.py [--runs N] [--duration SEC] [--model REPO]
     uv run python bench_decode_sync.py --sweep          # all models × durations
+    uv run python bench_decode_sync.py --model REPO --duration SEC
 
 Outputs per-segment decode times for both variants, plus summary stats.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import platform
@@ -129,9 +130,17 @@ def get_machine_info():
     }
 
 
-def generate_test_audio(duration_sec=10.0, sr=16000):
-    n_samples = int(duration_sec * sr)
-    return np.random.randn(n_samples).astype(np.float32) * 0.1
+_DEFAULT_AUDIO = os.path.join(os.path.dirname(__file__), "bench", "speech_3min.m4a")
+
+
+def get_audio_info(path):
+    """Return duration and sha256 of the audio file."""
+    dur = float(subprocess.check_output(
+        ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+         "-of", "csv=p=0", path], text=True,
+    ).strip())
+    sha = hashlib.sha256(open(path, "rb").read()).hexdigest()
+    return {"path": os.path.basename(path), "duration_sec": round(dur, 1), "sha256": sha}
 
 
 def load_and_trim_audio(path, duration_sec, sr=16000):
@@ -185,10 +194,7 @@ def run_single(model_repo, duration, n_runs, audio_path=None):
     dummy = np.zeros(16000, dtype=np.float32)
     mlx_whisper.transcribe(dummy, path_or_hf_repo=model_repo, language="en")
 
-    if audio_path:
-        audio = load_and_trim_audio(audio_path, duration)
-    else:
-        audio = generate_test_audio(duration)
+    audio = load_and_trim_audio(audio_path, duration)
 
     print("\nSYNC (patched):")
     sync_times = benchmark_variant("sync", _main_loop_sync, model_repo, audio, n_runs)
@@ -246,17 +252,21 @@ def main():
     parser.add_argument("--model", type=str, default=None, help="HF model repo")
     parser.add_argument("--duration", type=float, default=15.0, help="Audio duration (seconds)")
     parser.add_argument("--sweep", action="store_true", help="Run all models × durations")
-    parser.add_argument("--audio", type=str, default=None, help="Audio file for realistic input")
+    parser.add_argument("--audio", type=str, default=_DEFAULT_AUDIO,
+                        help="Audio file (default: bench/speech_3min.m4a)")
     parser.add_argument("--output", type=str, default=None, help="Save JSON results to file")
     args = parser.parse_args()
 
+    if not os.path.exists(args.audio):
+        parser.error(f"Audio file not found: {args.audio}\n"
+                     f"The benchmark requires a real speech audio file.")
+
     machine = get_machine_info()
+    audio_info = get_audio_info(args.audio)
     print(f"Machine: {machine['hostname']} — {machine['chip']} — {machine['ram_gb']}GB")
+    print(f"Audio: {audio_info['path']} ({audio_info['duration_sec']}s, sha256:{audio_info['sha256'][:12]}...)")
 
     results = []
-
-    if args.audio:
-        print(f"Audio source: {args.audio}")
 
     if args.sweep:
         for model in SWEEP_MODELS:
@@ -294,7 +304,7 @@ def main():
 
     # Save JSON
     output_path = args.output or f"bench_results_{machine['hostname']}.json"
-    report = {"machine": machine, "results": results}
+    report = {"machine": machine, "audio": audio_info, "results": results}
     with open(output_path, "w") as f:
         json.dump(report, f, indent=2)
     print(f"\nResults saved to {output_path}")
