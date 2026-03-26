@@ -131,7 +131,9 @@ class SpokeAppDelegate(NSObject):
     # ── NSApplication delegate ──────────────────────────────
 
     def applicationDidFinishLaunching_(self, notification) -> None:
-        self._menubar = MenuBarIcon.alloc().initWithQuitCallback_(self._quit)
+        self._menubar = MenuBarIcon.alloc().initWithQuitCallback_toggleModelCallback_(
+            self._quit, self._toggle_model
+        )
         self._menubar.setup()
 
         self._glow = GlowOverlay.alloc().initWithScreen_(None)
@@ -468,6 +470,23 @@ class SpokeAppDelegate(NSObject):
             self._overlay.hide()
 
     # ── helpers ─────────────────────────────────────────────
+
+    def _toggle_model(self) -> None:
+        """Toggle between Whisper and Qwen3, then relaunch."""
+        current = os.environ.get("SPOKE_WHISPER_MODEL", "")
+        if current.startswith("Qwen/"):
+            new_model = "mlx-community/whisper-large-v3-turbo"
+        else:
+            new_model = "Qwen/Qwen3-ASR-0.6B"
+        logger.info("Toggling model: %s → %s (relaunching)", current or "(default whisper)", new_model)
+        os.environ["SPOKE_WHISPER_MODEL"] = new_model
+        # Relaunch: exec ourselves with the new env
+        self._detector.uninstall()
+        self._preview_active = False
+        self._client.close()
+        if self._preview_client is not None and self._preview_client is not self._client:
+            self._preview_client.close()
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
     def _quit(self) -> None:
         self._detector.uninstall()

@@ -29,13 +29,23 @@ class MenuBarIcon(NSObject):
     ----------
     on_quit : callable
         Called when the user selects Quit from the menu.
+    on_toggle_model : callable, optional
+        Called when the user toggles the ASR model.
     """
 
     def initWithQuitCallback_(self, on_quit: Callable[[], None]):
+        return self.initWithQuitCallback_toggleModelCallback_(on_quit, None)
+
+    def initWithQuitCallback_toggleModelCallback_(
+        self,
+        on_quit: Callable[[], None],
+        on_toggle_model: Callable[[], None] | None = None,
+    ):
         self = objc.super(MenuBarIcon, self).init()
         if self is None:
             return None
         self._on_quit = on_quit
+        self._on_toggle_model = on_toggle_model
         self._status_item = None
         self._idle_image = None
         self._recording_image = None
@@ -76,6 +86,7 @@ class MenuBarIcon(NSObject):
     # ── private ─────────────────────────────────────────────
 
     def _build_menu(self) -> None:
+        import os
         menu = NSMenu.new()
 
         self._status_item_label = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
@@ -86,6 +97,18 @@ class MenuBarIcon(NSObject):
 
         menu.addItem_(NSMenuItem.separatorItem())
 
+        # Model toggle
+        if getattr(self, '_on_toggle_model', None) is not None:
+            current_model = os.environ.get("SPOKE_WHISPER_MODEL", "")
+            is_qwen = current_model.startswith("Qwen/")
+            label = "Switch to Whisper" if is_qwen else "Switch to Qwen3 (streaming)"
+            model_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                label, "toggleModel:", ""
+            )
+            model_item.setTarget_(self)
+            menu.addItem_(model_item)
+            menu.addItem_(NSMenuItem.separatorItem())
+
         quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Quit Spoke", "quitApp:", "q"
         )
@@ -93,6 +116,10 @@ class MenuBarIcon(NSObject):
         menu.addItem_(quit_item)
 
         self._status_item.setMenu_(menu)
+
+    def toggleModel_(self, sender) -> None:
+        if getattr(self, '_on_toggle_model', None) is not None:
+            self._on_toggle_model()
 
     def quitApp_(self, sender) -> None:
         self._on_quit()
