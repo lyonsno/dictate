@@ -10,7 +10,9 @@ def test_launch_script_preserves_startup_logs():
 
     assert "spoke-dev-launch.log" in text
     assert ">/dev/null 2>&1" not in text
-    assert '</dev/null >>"$LOG_FILE" 2>&1 &' in text
+    assert 'with log_file.open("ab", buffering=0) as log:' in text
+    assert "stdout=log" in text
+    assert "stderr=subprocess.STDOUT" in text
 
 
 def test_launch_script_preserves_dual_model_defaults():
@@ -29,5 +31,6 @@ def test_launch_script_avoids_nohup_detach():
     text = script.read_text()
 
     assert "nohup " not in text
-    assert 'env -C "$REPO_ROOT"' in text
-    assert text.rstrip().endswith("&")
+    assert "start_new_session=True" in text
+    assert "subprocess.Popen(" in text
+    assert text.rstrip().endswith("PY")
