@@ -39,8 +39,8 @@ _OVERLAY_CORNER_RADIUS = 16.0
 _OVERLAY_MAX_HEIGHT = 400.0
 _FONT_SIZE = 16.0
 _FADE_IN_S = 0.5
-_FADE_OUT_S = 1.8  # slow fade for readability
-_FADE_STEPS = 20  # more steps for the slower fade
+_FADE_OUT_S = 0.9  # 50% faster fade
+_FADE_STEPS = 15
 _LINGER_S = 10.0  # seconds to linger after response completes
 
 def _env(name: str, default: float) -> float:
@@ -485,7 +485,11 @@ class CommandOverlay(NSObject):
     # ── animation ───────────────────────────────────────────
 
     def fadeStep_(self, timer) -> None:
-        """One step of the fade animation."""
+        """One step of the fade animation.
+
+        During fade-out, the utterance text fades at double rate so it
+        disappears before the assistant response.
+        """
         self._fade_step += 1
         progress = self._fade_step / _FADE_STEPS
 
@@ -495,6 +499,23 @@ class CommandOverlay(NSObject):
         else:
             eased = progress * progress
             alpha = self._fade_from * (1.0 - eased)
+
+            # Fade utterance at double rate
+            if self._text_view is not None and self._utterance_text:
+                from AppKit import NSForegroundColorAttributeName
+                utt_progress = min(progress * 2.0, 1.0)  # twice as fast
+                utt_alpha = 0.35 * (1.0 - utt_progress * utt_progress)
+                utt_len = len(self._utterance_text)
+                try:
+                    self._text_view.textStorage().addAttribute_value_range_(
+                        NSForegroundColorAttributeName,
+                        NSColor.colorWithSRGBRed_green_blue_alpha_(
+                            1.0, 1.0, 1.0, utt_alpha
+                        ),
+                        (0, utt_len),
+                    )
+                except Exception:
+                    pass
 
         self._window.setAlphaValue_(alpha)
 
