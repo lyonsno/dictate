@@ -33,10 +33,14 @@ _TEXT_INPUT_ROLES = frozenset({
 # ── ctypes setup (loaded once at module level) ──────────────────
 
 _cf_path = ctypes.util.find_library("CoreFoundation")
-_ax_path = ctypes.util.find_library("ApplicationServices")
+_hi_path = "/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/HIServices.framework/Versions/A/HIServices"
 
 _cf = ctypes.cdll.LoadLibrary(_cf_path) if _cf_path else None
-_ax = ctypes.cdll.LoadLibrary(_ax_path) if _ax_path else None
+
+try:
+    _hi = ctypes.cdll.LoadLibrary(_hi_path)
+except OSError:
+    _hi = None
 
 # AX error codes
 _kAXErrorSuccess = 0
@@ -44,15 +48,36 @@ _kAXErrorSuccess = 0
 # CFString encoding
 _kCFStringEncodingUTF8 = 0x08000100
 
-# Configure restype once at module level (not on every call)
-if _ax is not None:
-    _ax.AXUIElementCreateSystemWide.restype = ctypes.c_void_p
-    _ax.AXUIElementCopyAttributeValue.restype = ctypes.c_int32
+# Configure signatures once at module level — argtypes are critical
+# to avoid segfaults from incorrect argument marshalling.
+if _hi is not None:
+    _hi.AXUIElementCreateSystemWide.restype = ctypes.c_void_p
+    _hi.AXUIElementCreateSystemWide.argtypes = []
+
+    _hi.AXUIElementCopyAttributeValue.restype = ctypes.c_int32
+    _hi.AXUIElementCopyAttributeValue.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)
+    ]
 
 if _cf is not None:
     _cf.CFStringCreateWithCString.restype = ctypes.c_void_p
+    _cf.CFStringCreateWithCString.argtypes = [
+        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32
+    ]
+
     _cf.CFStringGetCStringPtr.restype = ctypes.c_char_p
+    _cf.CFStringGetCStringPtr.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+
+    _cf.CFStringGetLength.restype = ctypes.c_long
+    _cf.CFStringGetLength.argtypes = [ctypes.c_void_p]
+
     _cf.CFStringGetCString.restype = ctypes.c_bool
+    _cf.CFStringGetCString.argtypes = [
+        ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32
+    ]
+
+    _cf.CFRelease.restype = None
+    _cf.CFRelease.argtypes = [ctypes.c_void_p]
 
 
 def _get_focused_role() -> str | None:
@@ -61,33 +86,33 @@ def _get_focused_role() -> str | None:
     Returns None if no element is focused or the role cannot be determined.
     Raises on ctypes/API failures (caller catches).
     """
-    if _cf is None or _ax is None:
+    if _cf is None or _hi is None:
         return None
 
-    system_wide = _ax.AXUIElementCreateSystemWide()
+    system_wide = _hi.AXUIElementCreateSystemWide()
     if not system_wide:
         return None
 
     try:
-        attr_name = _cfstr("AXFocusedUIElement")
+        attr_name = _cfstr(b"AXFocusedUIElement")
         if not attr_name:
             return None
 
         try:
             value = ctypes.c_void_p()
-            err = _ax.AXUIElementCopyAttributeValue(
+            err = _hi.AXUIElementCopyAttributeValue(
                 system_wide, attr_name, ctypes.byref(value)
             )
             if err != _kAXErrorSuccess or not value.value:
                 return None
 
             try:
-                role_attr = _cfstr("AXRole")
+                role_attr = _cfstr(b"AXRole")
                 if not role_attr:
                     return None
                 try:
                     role_value = ctypes.c_void_p()
-                    err2 = _ax.AXUIElementCopyAttributeValue(
+                    err2 = _hi.AXUIElementCopyAttributeValue(
                         value, role_attr, ctypes.byref(role_value)
                     )
                     if err2 != _kAXErrorSuccess or not role_value.value:
@@ -119,26 +144,27 @@ def has_focused_text_input() -> bool:
         return True
 
     if role is None:
+        logger.info("Focus check: no focused element — recovery mode")
         return False
 
-    return role in _TEXT_INPUT_ROLES
+    is_text = role in _TEXT_INPUT_ROLES
+    logger.info("Focus check: role=%s, is_text_input=%s", role, is_text)
+    return is_text
 
 
 # ── CFString helpers ────────────────────────────────────────────
 
-def _cfstr(s: str) -> ctypes.c_void_p | None:
-    """Create a CFStringRef from a Python string. Caller must CFRelease."""
+def _cfstr(s: bytes) -> ctypes.c_void_p | None:
+    """Create a CFStringRef from bytes. Caller must CFRelease."""
     if _cf is None:
         return None
-    ref = _cf.CFStringCreateWithCString(
-        None, s.encode("utf-8"), _kCFStringEncodingUTF8
-    )
+    ref = _cf.CFStringCreateWithCString(None, s, _kCFStringEncodingUTF8)
     return ref if ref else None
 
 
 def _cfstr_to_python(cf_string: ctypes.c_void_p) -> str | None:
     """Convert a CFStringRef to a Python string."""
-    if _cf is None or not cf_string.value:
+    if _cf is None or not cf_string:
         return None
     ptr = _cf.CFStringGetCStringPtr(cf_string, _kCFStringEncodingUTF8)
     if ptr:
