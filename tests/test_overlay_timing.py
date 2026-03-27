@@ -10,6 +10,28 @@ import pytest
 class TestOverlayTiming:
     """Keep the overlay tuned to the current fast-handoff UX."""
 
+    def test_text_alpha_ceiling_stays_below_full_white(self, mock_pyobjc):
+        """Text should stay legible without ever reaching fully opaque white."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            assert mod._TEXT_ALPHA_MAX == pytest.approx(0.75)
+
+            overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
+            overlay._visible = True
+            overlay._text_view = MagicMock()
+            overlay._text_amplitude = 0.0
+
+            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+
+            overlay.update_text_amplitude(10.0)
+
+            _, _, _, applied_alpha = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args[0]
+            assert applied_alpha <= mod._TEXT_ALPHA_MAX
+            assert applied_alpha == pytest.approx(mod._TEXT_ALPHA_MAX)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_fade_out_is_shortened_for_fast_finalization(self, mock_pyobjc):
         """Fade-out should get out of the way now that final injection lands quickly."""
         sys.modules.pop("spoke.overlay", None)
