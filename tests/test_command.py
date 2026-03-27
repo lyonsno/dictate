@@ -402,13 +402,13 @@ class TestShiftReleaseRouting:
         assert det._state == mod._State.IDLE
         on_end.assert_called_once_with(shift_held=False)
 
-    def test_shift_during_keydown_still_passes_through(self, input_tap_module):
-        """Shift+Space on keyDown should still pass through (not start recording).
-        The shift detection only matters at release."""
+    def test_shift_during_keydown_starts_recording(self, input_tap_module):
+        """Shift+Space on keyDown should start recording normally.
+        Shift is only detected at release for command routing."""
         mod = input_tap_module
         det, _, _ = self._make_detector(input_tap_module)
 
         shift_flag = mod.kCGEventFlagMaskShift
         result = det.handle_key_down(mod.SPACEBAR_KEYCODE, shift_flag)
-        assert result is False
-        assert det._state == mod._State.IDLE
+        assert result is True  # suppressed — recording starts
+        assert det._state == mod._State.WAITING

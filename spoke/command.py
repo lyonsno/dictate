@@ -54,6 +54,8 @@ class CommandClient:
             if max_history is not None
             else int(os.environ.get("SPOKE_COMMAND_HISTORY", str(_DEFAULT_RING_BUFFER_SIZE)))
         )
+        # Thinking: enabled by default, disable with SPOKE_COMMAND_THINKING=0
+        self._enable_thinking = os.environ.get("SPOKE_COMMAND_THINKING", "1") != "0"
         # Ring buffer: list of (user_utterance, assistant_response) pairs
         self._history: list[tuple[str, str]] = []
 
@@ -91,11 +93,14 @@ class CommandClient:
             The complete response text (via generator return value).
         """
         messages = self._build_messages(utterance)
-        payload = json.dumps({
+        body: dict = {
             "model": self._model,
             "messages": messages,
             "stream": True,
-        }).encode()
+        }
+        if not self._enable_thinking:
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+        payload = json.dumps(body).encode()
 
         headers = {"Content-Type": "application/json"}
         if self._api_key:
