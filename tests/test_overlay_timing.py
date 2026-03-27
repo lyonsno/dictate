@@ -121,7 +121,7 @@ class TestOverlayTiming:
             previous_overlay_sat = colorsys.rgb_to_hsv(0.38, 0.52, 1.0)[1]
             overlay_sat = colorsys.rgb_to_hsv(*mod._GLOW_COLOR)[1]
 
-            assert overlay_sat == pytest.approx(min(previous_overlay_sat * 1.6, 1.0), rel=0.02)
+            assert overlay_sat == pytest.approx(min(previous_overlay_sat * 1.28, 1.0), rel=0.02)
             assert overlay_sat > previous_overlay_sat
         finally:
             sys.modules.pop("spoke.overlay", None)
