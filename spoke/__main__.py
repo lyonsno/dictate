@@ -645,6 +645,7 @@ class SpokeAppDelegate(NSObject):
         if self._command_overlay is not None:
             self._command_overlay.show()
             self._command_overlay.set_utterance(utterance)
+        self._command_first_token = True
         if self._menubar is not None:
             self._menubar.set_status_text("Thinking…")
 
@@ -652,6 +653,13 @@ class SpokeAppDelegate(NSObject):
         """Main thread: append a streamed token to the command overlay."""
         if payload["token"] != self._transcription_token:
             return
+        # First content token: invert the thinking timer and update status
+        if getattr(self, "_command_first_token", False):
+            self._command_first_token = False
+            if self._command_overlay is not None:
+                self._command_overlay.invert_thinking_timer()
+            if self._menubar is not None:
+                self._menubar.set_status_text("Responding…")
         if self._command_overlay is not None:
             self._command_overlay.append_token(payload["text"])
 
