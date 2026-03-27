@@ -45,7 +45,7 @@ def _env(name: str, default: float) -> float:
     return float(v) if v is not None else default
 
 _TEXT_ALPHA_MIN = _env("SPOKE_TEXT_ALPHA_MIN", 0.066)
-_TEXT_ALPHA_MAX = _env("SPOKE_TEXT_ALPHA_MAX", 1.00)
+_TEXT_ALPHA_MAX = _env("SPOKE_TEXT_ALPHA_MAX", 0.75)
 _TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.10)
 _BG_ALPHA_MIN = _env("SPOKE_BG_ALPHA_MIN", 0.105)
 _BG_ALPHA_MAX = _env("SPOKE_BG_ALPHA_MAX", 0.6)
