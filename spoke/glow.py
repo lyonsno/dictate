@@ -362,7 +362,7 @@ class GlowOverlay(NSObject):
             dim_anim = CABasicAnimation.animationWithKeyPath_("opacity")
             dim_anim.setFromValue_(current_opacity)
             dim_anim.setToValue_(dim_target)
-            dim_anim.setDuration_(3.6)
+            dim_anim.setDuration_(1.08)
             dim_anim.setTimingFunction_(
                 CAMediaTimingFunction.functionWithName_("easeIn")
             )
@@ -399,7 +399,7 @@ class GlowOverlay(NSObject):
                 dim_anim = CABasicAnimation.animationWithKeyPath_("opacity")
                 dim_anim.setFromValue_(current_opacity)
                 dim_anim.setToValue_(0.0)
-                dim_anim.setDuration_(8.0)
+                dim_anim.setDuration_(2.4)
                 dim_anim.setTimingFunction_(
                     CAMediaTimingFunction.functionWithName_("easeIn")
                 )

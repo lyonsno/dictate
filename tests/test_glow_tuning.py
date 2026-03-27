@@ -3,12 +3,20 @@
 import importlib
 import sys
 from unittest.mock import MagicMock
+from pathlib import Path
 
 import pytest
 
 
 class TestGlowTuning:
     """Keep the screen-edge glow restrained at peaks without flattening quiet response."""
+
+    def test_screen_dim_fade_durations_are_shortened_for_dev_patch(self):
+        """The temporary dimmer patch should keep fade timings short enough to avoid overlap."""
+        text = (Path(__file__).resolve().parent.parent / "spoke" / "glow.py").read_text()
+
+        assert "dim_anim.setDuration_(1.08)" in text
+        assert "dim_anim.setDuration_(2.4)" in text
 
     def test_screen_glow_shadow_radius_is_doubled_for_softer_bloom(self, mock_pyobjc):
         """The edge glow should spread farther so lower peak opacity still reads as glow."""
