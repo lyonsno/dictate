@@ -59,7 +59,7 @@ _COLOR_B = (
     _env("SPOKE_COMMAND_COLOR_B_B", 0.3),
 )  # warm amber
 _GLOW_COLOR = _COLOR_A  # initial color for setup
-_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.75)  # higher floor — always readable
+_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.55)  # visible pulse dip while staying readable
 _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
 _BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.35)
 _PULSE_PERIOD = _env("SPOKE_COMMAND_PULSE_PERIOD", 2.0)  # seconds per cycle
@@ -499,9 +499,9 @@ class CommandOverlay(NSObject):
         raw = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase))
 
         # Asymmetric ease: power curve makes the dip narrow and the
-        # plateau wide.  raw^0.3 spends most of its range near 1.0 and
-        # only briefly dips toward 0.0.
-        pulse = raw ** 0.3
+        # plateau wide.  raw^0.5 (sqrt) gives a visible dip while still
+        # spending more time near opaque than transparent.
+        pulse = raw ** 0.5
 
         alpha = _TEXT_ALPHA_MIN + pulse * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
 
