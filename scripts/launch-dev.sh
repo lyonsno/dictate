@@ -17,8 +17,28 @@ mkdir -p "$LOG_DIR"
   printf 'Launching Spoke from %s\n' "$REPO_ROOT"
 } >>"$LOG_FILE"
 
-env -C "$REPO_ROOT" \
-  SPOKE_PREVIEW_MODEL="${SPOKE_PREVIEW_MODEL:-mlx-community/whisper-medium.en-mlx-8bit}" \
-  SPOKE_TRANSCRIPTION_MODEL="${SPOKE_TRANSCRIPTION_MODEL:-mlx-community/whisper-large-v3-turbo}" \
-  "$REPO_ROOT/.venv/bin/python" -m spoke \
-  </dev/null >>"$LOG_FILE" 2>&1 &
+export REPO_ROOT LOG_FILE
+export SPOKE_PREVIEW_MODEL="${SPOKE_PREVIEW_MODEL:-mlx-community/whisper-medium.en-mlx-8bit}"
+export SPOKE_TRANSCRIPTION_MODEL="${SPOKE_TRANSCRIPTION_MODEL:-mlx-community/whisper-large-v3-turbo}"
+
+"$REPO_ROOT/.venv/bin/python" - <<'PY'
+import os
+import subprocess
+from pathlib import Path
+
+repo_root = Path(os.environ["REPO_ROOT"])
+log_file = Path(os.environ["LOG_FILE"])
+python_exe = repo_root / ".venv" / "bin" / "python"
+
+with log_file.open("ab", buffering=0) as log:
+    subprocess.Popen(
+        [str(python_exe), "-m", "spoke"],
+        cwd=repo_root,
+        env=os.environ.copy(),
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        close_fds=True,
+    )
+PY
