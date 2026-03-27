@@ -131,7 +131,7 @@ class CommandClient:
                     delta = choices[0].get("delta", {})
                     # Only surface content tokens — skip reasoning_content
                     token = delta.get("content")
-                    if token:
+                    if token is not None:
                         full_response += token
                         yield token
         except urllib.error.URLError as exc:

@@ -439,4 +439,4 @@ class CommandOverlay(NSObject):
                    else len(self._response_text))
             self._text_view.scrollRangeToVisible_((end, 0))
         except Exception:
-            pass
+            logger.debug("Command overlay layout update failed", exc_info=True)
