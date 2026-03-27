@@ -18,8 +18,9 @@ mkdir -p "$LOG_DIR"
 } >>"$LOG_FILE"
 
 export REPO_ROOT LOG_FILE
-export SPOKE_PREVIEW_MODEL="${SPOKE_PREVIEW_MODEL:-mlx-community/whisper-medium.en-mlx-8bit}"
-export SPOKE_TRANSCRIPTION_MODEL="${SPOKE_TRANSCRIPTION_MODEL:-mlx-community/whisper-large-v3-turbo}"
+unset SPOKE_PREVIEW_MODEL
+unset SPOKE_TRANSCRIPTION_MODEL
+unset SPOKE_WHISPER_MODEL
 
 "$REPO_ROOT/.venv/bin/python" - <<'PY'
 import os
@@ -30,13 +31,17 @@ from pathlib import Path
 repo_root = Path(os.environ["REPO_ROOT"])
 log_file = Path(os.environ["LOG_FILE"])
 python_exe = repo_root / ".venv" / "bin" / "python"
+child_env = os.environ.copy()
+child_env.pop("SPOKE_PREVIEW_MODEL", None)
+child_env.pop("SPOKE_TRANSCRIPTION_MODEL", None)
+child_env.pop("SPOKE_WHISPER_MODEL", None)
 
 with log_file.open("a", encoding="utf-8") as log:
     try:
         subprocess.Popen(
             [str(python_exe), "-m", "spoke"],
             cwd=repo_root,
-            env=os.environ.copy(),
+            env=child_env,
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,
