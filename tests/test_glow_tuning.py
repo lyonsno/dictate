@@ -67,6 +67,24 @@ class TestGlowTuning:
         finally:
             sys.modules.pop("spoke.glow", None)
 
+    def test_edge_glow_bands_shift_saturation_from_inner_to_outer(self, mock_pyobjc):
+        """The tight edge band should calm down while the outer tail gets more chromatic."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            light_color, _, _ = mod._glow_style_for_brightness(1.0)
+            inner_color, middle_color, outer_color = mod._edge_band_colors(light_color)
+            light_sat = colorsys.rgb_to_hsv(*light_color)[1]
+            inner_sat = colorsys.rgb_to_hsv(*inner_color)[1]
+            middle_sat = colorsys.rgb_to_hsv(*middle_color)[1]
+            outer_sat = colorsys.rgb_to_hsv(*outer_color)[1]
+
+            assert inner_sat == pytest.approx(light_sat * 0.7, rel=0.02)
+            assert middle_sat == pytest.approx(light_sat, rel=0.02)
+            assert outer_sat == pytest.approx(min(light_sat * 1.8, 1.0), rel=0.02)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
     def test_show_applies_brightness_adaptive_glow_style(self, mock_pyobjc, monkeypatch):
         """Show should snapshot brightness and cache the active glow style for the session."""
         sys.modules.pop("spoke.glow", None)
