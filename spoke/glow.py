@@ -6,6 +6,7 @@ microphone input, with fast rise and slow decay for a breathing effect.
 """
 
 from __future__ import annotations
+import colorsys
 import logging
 import math
 import os
@@ -35,9 +36,19 @@ from Quartz import (
 
 logger = logging.getLogger(__name__)
 
+
+def _scale_color_saturation(
+    color: tuple[float, float, float], factor: float
+) -> tuple[float, float, float]:
+    """Scale an RGB color's saturation while keeping its hue and value stable."""
+    hue, saturation, value = colorsys.rgb_to_hsv(*color)
+    return colorsys.hsv_to_rgb(hue, min(max(saturation * factor, 0.0), 1.0), value)
+
 # Glow appearance
 _GLOW_COLOR = (0.38, 0.52, 1.0)  # saturated cornflower — SC2 Protoss energy field
-_GLOW_COLOR_DARK = (0.50, 0.59, 0.84)  # calmer steel-blue on darker backgrounds
+_GLOW_COLOR_DARK = _scale_color_saturation(
+    (0.50, 0.59, 0.84), 0.40
+)  # much closer to keyboard white on darker backgrounds
 _GLOW_COLOR_LIGHT = (0.34, 0.50, 1.0)  # more electric cornflower on lighter backgrounds
 _GLOW_CAP_COLOR = (1.0, 0.45, 0.15)  # angry sunset for cap countdown
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
@@ -46,7 +57,7 @@ _GLOW_MAX_OPACITY = 1.0  # bright scenes can drive the glow all the way to full 
 _GLOW_BASE_OPACITY = 0.07  # clear presence in silence
 _GLOW_PEAK_TARGET = 0.17
 _GLOW_BASE_OPACITY_DARK = 0.06
-_GLOW_BASE_OPACITY_LIGHT = 0.09
+_GLOW_BASE_OPACITY_LIGHT = 0.14
 _GLOW_PEAK_TARGET_DARK = 0.15
 _GLOW_PEAK_TARGET_LIGHT = _GLOW_MAX_OPACITY
 # MacBook Pro 14"/16" (2021+) has asymmetric display corners.

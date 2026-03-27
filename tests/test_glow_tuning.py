@@ -1,4 +1,5 @@
 """Contract tests for screen-edge glow tuning."""
+import colorsys
 import importlib
 import sys
 from unittest.mock import MagicMock
@@ -50,11 +51,18 @@ class TestGlowTuning:
         try:
             dark_color, dark_base, dark_peak = mod._glow_style_for_brightness(0.0)
             light_color, light_base, light_peak = mod._glow_style_for_brightness(1.0)
+            previous_dark_sat = colorsys.rgb_to_hsv(0.50, 0.59, 0.84)[1]
+            previous_light_sat = colorsys.rgb_to_hsv(0.34, 0.50, 1.0)[1]
+            dark_sat = colorsys.rgb_to_hsv(*dark_color)[1]
+            light_sat = colorsys.rgb_to_hsv(*light_color)[1]
 
             assert light_base > dark_base
             assert light_peak > dark_peak
             assert dark_peak == pytest.approx(mod._GLOW_PEAK_TARGET_DARK)
             assert light_peak == pytest.approx(mod._GLOW_MAX_OPACITY)
+            assert dark_sat == pytest.approx(previous_dark_sat * 0.4, rel=0.08)
+            assert light_sat == pytest.approx(previous_light_sat, rel=0.02)
+            assert light_base == pytest.approx(0.14)
             assert (light_color[2] - light_color[0]) > (dark_color[2] - dark_color[0])
         finally:
             sys.modules.pop("spoke.glow", None)
