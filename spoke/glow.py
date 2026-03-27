@@ -38,12 +38,18 @@ logger = logging.getLogger(__name__)
 
 # Glow appearance
 _GLOW_COLOR = (0.38, 0.52, 1.0)  # saturated cornflower — SC2 Protoss energy field
+_GLOW_COLOR_DARK = (0.50, 0.59, 0.84)  # calmer steel-blue on darker backgrounds
+_GLOW_COLOR_LIGHT = (0.34, 0.50, 1.0)  # more electric cornflower on lighter backgrounds
 _GLOW_CAP_COLOR = (1.0, 0.45, 0.15)  # angry sunset for cap countdown
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 60.0  # broader bloom so a dimmer peak still reads as glow
 _GLOW_MAX_OPACITY = 0.70  # 30% reduction — dim layer provides the contrast now
 _GLOW_BASE_OPACITY = 0.07  # clear presence in silence
 _GLOW_PEAK_TARGET = 0.17
+_GLOW_BASE_OPACITY_DARK = 0.06
+_GLOW_BASE_OPACITY_LIGHT = 0.09
+_GLOW_PEAK_TARGET_DARK = 0.15
+_GLOW_PEAK_TARGET_LIGHT = 0.22
 # MacBook Pro 14"/16" (2021+) has asymmetric display corners.
 # We use slightly tighter radii than the physical bezel so the glow
 # source stays close to the corners — the bezel hides the overshoot.
@@ -134,6 +140,23 @@ def _compress_screen_glow_peak(opacity: float) -> float:
     return min(opacity, _GLOW_PEAK_TARGET)
 
 
+def _lerp(start: float, end: float, t: float) -> float:
+    return start + (end - start) * t
+
+
+def _lerp_color(start: tuple[float, float, float], end: tuple[float, float, float], t: float) -> tuple[float, float, float]:
+    return tuple(_lerp(s, e, t) for s, e in zip(start, end))
+
+
+def _glow_style_for_brightness(brightness: float) -> tuple[tuple[float, float, float], float, float]:
+    """Derive glow color and intensity from sampled background brightness."""
+    t = min(max(brightness, 0.0), 1.0)
+    color = _lerp_color(_GLOW_COLOR_DARK, _GLOW_COLOR_LIGHT, t)
+    base_opacity = _lerp(_GLOW_BASE_OPACITY_DARK, _GLOW_BASE_OPACITY_LIGHT, t)
+    peak_target = _lerp(_GLOW_PEAK_TARGET_DARK, _GLOW_PEAK_TARGET_LIGHT, t)
+    return color, base_opacity, peak_target
+
+
 def _rounded_rect_path(x, y, w, h, top_radius, bottom_radius):
     """Create a CGPath rounded rect with different top and bottom corner radii."""
     from Quartz import (
@@ -180,6 +203,9 @@ class GlowOverlay(NSObject):
         self._cap_factor = 1.0  # 1.0 = no cap, ramps down toward 0.25 near recording limit
         self._hide_timer = None
         self._hide_generation = 0
+        self._glow_color = _GLOW_COLOR
+        self._glow_base_opacity = _GLOW_BASE_OPACITY
+        self._glow_peak_target = _GLOW_PEAK_TARGET
         return self
 
     def _cancel_pending_hide(self) -> None:
@@ -332,9 +358,11 @@ class GlowOverlay(NSObject):
         self._update_count = 0
         self._noise_floor = 0.0
         self._cap_factor = 1.0
+        brightness = _sample_screen_brightness(self._screen)
+        self._glow_color, self._glow_base_opacity, self._glow_peak_target = _glow_style_for_brightness(brightness)
         # Reset color to default cornflower
         glow_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 1.0
+            self._glow_color[0], self._glow_color[1], self._glow_color[2], 1.0
         )
         if hasattr(self, '_shadow_shape'):
             self._shadow_shape.setShadowColor_(glow_color.CGColor())
@@ -357,18 +385,17 @@ class GlowOverlay(NSObject):
         self._glow_layer.removeAllAnimations()
         anim = CABasicAnimation.animationWithKeyPath_("opacity")
         anim.setFromValue_(current_opacity)
-        anim.setToValue_(_GLOW_BASE_OPACITY)
+        anim.setToValue_(self._glow_base_opacity)
         anim.setDuration_(_GLOW_SHOW_FADE_S)
         anim.setTimingFunction_(
             CAMediaTimingFunction.functionWithName_("easeOut")
         )
-        self._glow_layer.setOpacity_(_GLOW_BASE_OPACITY)
+        self._glow_layer.setOpacity_(self._glow_base_opacity)
         self._glow_layer.addAnimation_forKey_(anim, "fadeIn")
 
         # Fade in screen dim — adaptive opacity based on screen brightness.
         # Sample once per recording, not per-frame.
         if self._dim_layer is not None:
-            brightness = _sample_screen_brightness(self._screen)
             dim_target = _DIM_OPACITY_DARK + brightness * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
             logger.info("Screen brightness=%.2f → dim opacity=%.2f", brightness, dim_target)
 
@@ -486,8 +513,8 @@ class GlowOverlay(NSObject):
         # All smoothing math above stays linear; this is the last step
         # before "rendering" — the display gamma, essentially.
         amplitude_opacity = math.log1p(amplitude_linear * 20.0) / math.log1p(20.0)
-        opacity = _GLOW_BASE_OPACITY + amplitude_opacity * (_GLOW_MAX_OPACITY - _GLOW_BASE_OPACITY)
-        opacity = _compress_screen_glow_peak(opacity)
+        opacity = self._glow_base_opacity + amplitude_opacity * (_GLOW_MAX_OPACITY - self._glow_base_opacity)
+        opacity = min(opacity, self._glow_peak_target)
 
         # Apply recording-cap countdown: shift color from turquoise to amber
         # as the cap approaches — passive visual warning visible at any opacity.
@@ -496,9 +523,9 @@ class GlowOverlay(NSObject):
             scale = cap_floor + (1.0 - cap_floor) * self._cap_factor
             opacity *= scale
             t = 1.0 - self._cap_factor  # 0→1 as cap approaches
-            r = _GLOW_COLOR[0] + t * (_GLOW_CAP_COLOR[0] - _GLOW_COLOR[0])
-            g = _GLOW_COLOR[1] + t * (_GLOW_CAP_COLOR[1] - _GLOW_COLOR[1])
-            b = _GLOW_COLOR[2] + t * (_GLOW_CAP_COLOR[2] - _GLOW_COLOR[2])
+            r = self._glow_color[0] + t * (_GLOW_CAP_COLOR[0] - self._glow_color[0])
+            g = self._glow_color[1] + t * (_GLOW_CAP_COLOR[1] - self._glow_color[1])
+            b = self._glow_color[2] + t * (_GLOW_CAP_COLOR[2] - self._glow_color[2])
             cap_color = NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
             cap_cgcolor = cap_color.CGColor()
             self._shadow_shape.setShadowColor_(cap_cgcolor)

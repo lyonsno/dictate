@@ -26,6 +26,9 @@ class TestGlowTuning:
         glow._screen = object()
         glow._hide_timer = None
         glow._hide_generation = 0
+        glow._glow_color = mod._GLOW_COLOR
+        glow._glow_base_opacity = mod._GLOW_BASE_OPACITY
+        glow._glow_peak_target = mod._GLOW_PEAK_TARGET
         glow._dim_layer = MagicMock()
         glow._dim_layer.opacity.return_value = 0.0
         return glow
@@ -37,6 +40,56 @@ class TestGlowTuning:
         try:
             assert mod._DIM_SHOW_FADE_S == pytest.approx(1.08)
             assert mod._DIM_HIDE_FADE_S == pytest.approx(2.4)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_glow_style_gets_brighter_and_more_saturated_on_light_backgrounds(self, mock_pyobjc):
+        """Bright backgrounds should push the glow toward a stronger, more electric style."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            dark_color, dark_base, dark_peak = mod._glow_style_for_brightness(0.0)
+            light_color, light_base, light_peak = mod._glow_style_for_brightness(1.0)
+
+            assert light_base > dark_base
+            assert light_peak > dark_peak
+            assert (light_color[2] - light_color[0]) > (dark_color[2] - dark_color[0])
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_show_applies_brightness_adaptive_glow_style(self, mock_pyobjc, monkeypatch):
+        """Show should snapshot brightness and cache the active glow style for the session."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            glow = self._make_glow(mod)
+            monkeypatch.setattr(mod, "_sample_screen_brightness", lambda screen: 1.0)
+
+            expected_color, expected_base, expected_peak = mod._glow_style_for_brightness(1.0)
+
+            glow.show()
+
+            assert glow._glow_color == pytest.approx(expected_color)
+            assert glow._glow_base_opacity == pytest.approx(expected_base)
+            assert glow._glow_peak_target == pytest.approx(expected_peak)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_show_applies_dark_background_glow_style(self, mock_pyobjc, monkeypatch):
+        """Dark backgrounds should cache the calmer, less saturated glow style."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            glow = self._make_glow(mod)
+            monkeypatch.setattr(mod, "_sample_screen_brightness", lambda screen: 0.0)
+
+            expected_color, expected_base, expected_peak = mod._glow_style_for_brightness(0.0)
+
+            glow.show()
+
+            assert glow._glow_color == pytest.approx(expected_color)
+            assert glow._glow_base_opacity == pytest.approx(expected_base)
+            assert glow._glow_peak_target == pytest.approx(expected_peak)
         finally:
             sys.modules.pop("spoke.glow", None)
 
