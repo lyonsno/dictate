@@ -19,10 +19,16 @@ def _inline_launcher_source() -> str:
     return text[start:end]
 
 
-def _run_inline_launcher(repo_root: Path, log_file: Path) -> subprocess.CompletedProcess[str]:
+def _run_inline_launcher(
+    repo_root: Path,
+    log_file: Path,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["REPO_ROOT"] = str(repo_root)
     env["LOG_FILE"] = str(log_file)
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [sys.executable, "-c", _inline_launcher_source()],
         env=env,
@@ -91,9 +97,13 @@ def test_inline_launcher_logs_spawn_failure_to_log(tmp_path):
     repo_root.mkdir()
     log_file = tmp_path / "launch.log"
 
-    result = _run_inline_launcher(repo_root, log_file)
+    result = _run_inline_launcher(
+        repo_root,
+        log_file,
+        extra_env={"UV_BIN": str(repo_root / "missing-uv")},
+    )
 
     assert result.stderr == ""
     assert log_file.exists()
     log_text = log_file.read_text()
-    assert "FileNotFoundError" in log_text
+    assert "No repo .venv Python found and UV launcher is unavailable." in log_text
