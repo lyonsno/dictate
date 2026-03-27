@@ -31,6 +31,7 @@ from AppKit import (
 from Foundation import NSObject
 
 from .capture import AudioCapture
+from .command import CommandClient
 from .glow import GlowOverlay
 from .inject import inject_text
 from .input_tap import SpacebarHoldDetector
@@ -122,6 +123,16 @@ class SpokeAppDelegate(NSObject):
         self._models_ready = False
         self._warm_error: Exception | None = None
 
+        # Command pathway — initialized if SPOKE_COMMAND_URL is configured
+        command_url = os.environ.get("SPOKE_COMMAND_URL", "")
+        if command_url:
+            self._command_client = CommandClient()
+            self._command_overlay: TranscriptionOverlay | None = None
+            logger.info("Command pathway enabled: %s", command_url)
+        else:
+            self._command_client = None
+            self._command_overlay = None
+
         if self._local_mode and _MAX_RECORD_SECS is not None:
             logger.info(
                 "RAM %.0fGB < 36GB — recording capped at %.0fs to avoid Metal crashes",
@@ -143,6 +154,12 @@ class SpokeAppDelegate(NSObject):
 
         self._overlay = TranscriptionOverlay.alloc().initWithScreen_(None)
         self._overlay.setup()
+
+        # Command output overlay — separate surface for command responses
+        if self._command_client is not None:
+            from .command_overlay import CommandOverlay
+            self._command_overlay = CommandOverlay.alloc().initWithScreen_(None)
+            self._command_overlay.setup()
 
         # Step 1: Request mic permission with a test recording.
         # This triggers the system prompt before we start listening for spacebar.
@@ -433,8 +450,8 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             self._overlay.set_text(text)
 
-    def _on_hold_end(self) -> None:
-        logger.info("Hold ended — transcribing")
+    def _on_hold_end(self, shift_held: bool = False) -> None:
+        logger.info("Hold ended — %s", "command" if shift_held else "transcribing")
         self._preview_active = False
         wav_bytes = self._capture.stop()
 
@@ -442,7 +459,6 @@ class SpokeAppDelegate(NSObject):
             self._glow.hide()
         if self._menubar is not None:
             self._menubar.set_recording(False)
-            self._menubar.set_status_text("Transcribing…")
 
         if not wav_bytes:
             logger.warning("No audio captured")
@@ -458,9 +474,23 @@ class SpokeAppDelegate(NSObject):
 
         self._transcribing = True
         self._transcribe_start = time.monotonic()
-        thread = threading.Thread(
-            target=self._transcribe_worker, args=(wav_bytes, token), daemon=True
-        )
+
+        if shift_held and self._command_client is not None:
+            # Command pathway: transcribe then send to OMLX
+            if self._menubar is not None:
+                self._menubar.set_status_text("Transcribing command…")
+            thread = threading.Thread(
+                target=self._command_transcribe_worker,
+                args=(wav_bytes, token),
+                daemon=True,
+            )
+        else:
+            # Text pathway: transcribe and paste
+            if self._menubar is not None:
+                self._menubar.set_status_text("Transcribing…")
+            thread = threading.Thread(
+                target=self._transcribe_worker, args=(wav_bytes, token), daemon=True
+            )
         thread.start()
 
     def _transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
@@ -536,6 +566,118 @@ class SpokeAppDelegate(NSObject):
         """Hide the overlay after briefly showing the final transcription."""
         if self._overlay is not None:
             self._overlay.hide()
+
+    # ── command pathway ────────────────────────────────────
+
+    def _command_transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
+        """Background thread: transcribe then send command to OMLX."""
+        # Wait for preview loop to finish
+        if self._preview_thread is not None:
+            if getattr(self, "_preview_done", None) is not None:
+                self._preview_done.wait(timeout=2.0)
+            self._preview_thread.join(timeout=2.0)
+            self._preview_thread = None
+
+        # Step 1: Transcribe the audio
+        try:
+            with self._local_inference_context(self._client):
+                if (
+                    getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    utterance = self._client.finish_stream()
+                else:
+                    utterance = self._client.transcribe(wav_bytes)
+        except Exception:
+            logger.exception("Command transcription failed")
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandFailed:", {"token": token, "error": "Transcription failed"}, False
+            )
+            return
+
+        if not utterance:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandFailed:", {"token": token, "error": "No speech detected"}, False
+            )
+            return
+
+        transcribe_ms = (time.monotonic() - self._transcribe_start) * 1000
+        logger.info("Command utterance: %r (%.0fms)", utterance, transcribe_ms)
+
+        # Show the utterance in the input overlay before hiding it
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "commandUtteranceReady:",
+            {"token": token, "utterance": utterance},
+            False,
+        )
+
+        # Step 2: Stream the command response
+        try:
+            for content_token in self._command_client.stream_command(utterance):
+                if token != self._transcription_token:
+                    break  # stale
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "commandToken:",
+                    {"token": token, "text": content_token},
+                    False,
+                )
+        except Exception:
+            logger.exception("Command stream failed")
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandFailed:", {"token": token, "error": "Command failed"}, False
+            )
+            return
+
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "commandComplete:", {"token": token}, False
+        )
+
+    def commandUtteranceReady_(self, payload: dict) -> None:
+        """Main thread: show transcribed command, prepare output overlay."""
+        if payload["token"] != self._transcription_token:
+            return
+        utterance = payload["utterance"]
+        # Hide the input overlay
+        if self._overlay is not None:
+            self._overlay.hide()
+        # Show the command overlay with the utterance as context
+        if self._command_overlay is not None:
+            self._command_overlay.show()
+            self._command_overlay.set_utterance(utterance)
+        if self._menubar is not None:
+            self._menubar.set_status_text("Thinking…")
+
+    def commandToken_(self, payload: dict) -> None:
+        """Main thread: append a streamed token to the command overlay."""
+        if payload["token"] != self._transcription_token:
+            return
+        if self._command_overlay is not None:
+            self._command_overlay.append_token(payload["text"])
+
+    def commandComplete_(self, payload: dict) -> None:
+        """Main thread: command response finished streaming."""
+        if payload["token"] != self._transcription_token:
+            return
+        self._transcribing = False
+        if self._command_overlay is not None:
+            self._command_overlay.finish()
+        if self._menubar is not None:
+            self._menubar.set_status_text("Ready — hold spacebar")
+
+    def commandFailed_(self, payload: dict) -> None:
+        """Main thread: handle command pathway error."""
+        if payload["token"] != self._transcription_token:
+            return
+        self._transcribing = False
+        error = payload.get("error", "Unknown error")
+        logger.error("Command pathway error: %s", error)
+        if self._overlay is not None:
+            self._overlay.hide()
+        if self._command_overlay is not None:
+            self._command_overlay.hide()
+        if self._menubar is not None:
+            self._menubar.set_status_text("Error — try again")
 
     # ── helpers ─────────────────────────────────────────────
 
