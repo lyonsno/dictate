@@ -164,7 +164,7 @@ class TranscriptionOverlay(NSObject):
         win_h = _OVERLAY_HEIGHT + 2 * f
         frame = NSMakeRect(x, y, win_w, win_h)
 
-        self._window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        self._window = _ClickableWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, 0, NSBackingStoreBuffered, False
         )
         self._window.setLevel_(25)  # above other windows
@@ -690,9 +690,9 @@ class TranscriptionOverlay(NSObject):
                 NSColor.clearColor().CGColor()
             )
 
-            # Label text view (centered in column)
+            # Label text view (centered in column, click-through)
             label_frame = NSMakeRect(4, (_OVERLAY_HEIGHT - 24) / 2, col_w - 8, 24)
-            label_view = NSTextView.alloc().initWithFrame_(label_frame)
+            label_view = _ClickThroughTextView.alloc().initWithFrame_(label_frame)
             label_view.setEditable_(False)
             label_view.setSelectable_(False)
             label_view.setDrawsBackground_(False)
@@ -733,6 +733,7 @@ class TranscriptionOverlay(NSObject):
         self._visible = True
         self._window.setAlphaValue_(1.0)
         self._window.orderFrontRegardless()
+        self._window.makeKeyWindow()
 
         logger.info("Recovery overlay shown")
 
@@ -894,6 +895,13 @@ class TranscriptionOverlay(NSObject):
 # ── helper NSView subclass for clickable recovery columns ────
 
 
+class _ClickableWindow(NSWindow):
+    """Borderless window that accepts key status for mouse event delivery."""
+
+    def canBecomeKeyWindow(self):
+        return True
+
+
 class _RecoveryButton(NSView):
     """A transparent NSView that intercepts mouse clicks for recovery buttons."""
 
@@ -904,9 +912,19 @@ class _RecoveryButton(NSView):
         self._callback = callback
         return self
 
+    def acceptsFirstMouse_(self, event):
+        return True
+
     def mouseDown_(self, event):
         if self._callback is not None:
             self._callback()
+
+
+class _ClickThroughTextView(NSTextView):
+    """NSTextView that passes mouse events through to its superview."""
+
+    def hitTest_(self, point):
+        return None
 
 
 class _TimerCallback(NSObject):
