@@ -6,7 +6,7 @@ Run with:  uv run spoke
 Configure via environment variables:
     SPOKE_WHISPER_URL    Sidecar server URL (optional — if unset, uses local MLX Whisper)
     SPOKE_WHISPER_MODEL  Model name (default: mlx-community/whisper-large-v3-turbo)
-    SPOKE_HOLD_MS        Hold threshold in ms (default: 250, must be > 0)
+    SPOKE_HOLD_MS        Hold threshold in ms (default: 200, must be > 0)
     SPOKE_RESTORE_DELAY_MS  Pasteboard restore delay in ms (default: 1000)
 """
 
@@ -71,7 +71,7 @@ class SpokeAppDelegate(NSObject):
             return None
 
         whisper_url = os.environ.get("SPOKE_WHISPER_URL", "")
-        hold_ms_raw = os.environ.get("SPOKE_HOLD_MS", "250")
+        hold_ms_raw = os.environ.get("SPOKE_HOLD_MS", "200")
         try:
             hold_ms = int(hold_ms_raw)
         except ValueError:
@@ -368,8 +368,8 @@ class SpokeAppDelegate(NSObject):
 
     def _preview_loop_batch(self, token: int | None = None) -> None:
         """Batch preview: re-transcribe the full buffer each tick."""
-        _MIN_INTERVAL = 0.5 if self._local_mode else 0.75
-        _INITIAL_DELAY = 0.4 if self._local_mode else 0.3
+        _MIN_INTERVAL = 0.3 if self._local_mode else 0.75
+        _INITIAL_DELAY = 0.2 if self._local_mode else 0.3
         token = getattr(self, "_preview_session_token", 0) if token is None else token
 
         try:
@@ -380,7 +380,7 @@ class SpokeAppDelegate(NSObject):
 
                 wav_bytes = self._capture.get_buffer()
                 if not wav_bytes:
-                    time.sleep(0.2)
+                    time.sleep(0.1 if self._local_mode else 0.2)
                     continue
 
                 try:
@@ -529,6 +529,8 @@ class SpokeAppDelegate(NSObject):
     # ── helpers ─────────────────────────────────────────────
 
     _MODEL_OPTIONS = [
+        ("mlx-community/whisper-base.en-mlx-8bit", "Base.en (8bit)"),
+        ("mlx-community/whisper-small.en-mlx-8bit", "Small.en (8bit)"),
         ("mlx-community/whisper-medium.en-mlx-4bit", "Medium.en (4bit)"),
         ("mlx-community/whisper-medium.en-mlx-8bit", "Medium.en (8bit)"),
         ("mlx-community/whisper-medium.en-mlx", "Medium.en (bf16)"),
@@ -788,7 +790,7 @@ class SpokeAppDelegate(NSObject):
             from Foundation import NSTimer
 
             NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                0.5, self, "hideOverlayAfterInject:", None, False
+                0.12, self, "hideOverlayAfterInject:", None, False
             )
 
     @staticmethod

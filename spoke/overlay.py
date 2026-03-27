@@ -37,7 +37,7 @@ _OVERLAY_CORNER_RADIUS = 16.0
 _OVERLAY_MAX_HEIGHT = 300.0  # max before text scrolls
 _FONT_SIZE = 16.0
 _FADE_IN_S = 0.75  # slow ease-in — overlay materializes gradually
-_FADE_OUT_S = 0.35
+_FADE_OUT_S = 0.18
 _FADE_STEPS = 12  # number of steps for manual fade animation
 _TYPEWRITER_INTERVAL = 0.03  # seconds between characters (~33 chars/sec)
 def _env(name: str, default: float) -> float:

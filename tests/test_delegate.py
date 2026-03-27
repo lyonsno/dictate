@@ -283,6 +283,38 @@ class TestPreviewFinalizationContract:
 class TestConcurrencyContract:
     """Test thread handoff and local-inference serialization."""
 
+    def test_preview_loop_batch_uses_faster_local_preview_cadence(
+        self, main_module, monkeypatch
+    ):
+        """Local batch preview should use the tighter startup and steady-state cadence."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._preview_active = True
+        d._capture.get_buffer.return_value = b"wav"
+        call_count = 0
+
+        def _transcribe(_wav_bytes):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                d._preview_active = False
+            return "preview"
+
+        d._preview_client.transcribe.side_effect = _transcribe
+
+        sleeps = []
+
+        def _sleep(seconds):
+            sleeps.append(seconds)
+
+        with patch.object(main_module.time, "sleep", side_effect=_sleep):
+            with patch.object(
+                main_module.time, "monotonic", side_effect=[0.0, 0.0, 0.0, 0.0]
+            ):
+                d._preview_loop_batch()
+
+        assert sleeps[:2] == [0.2, 0.3]
+
     def test_preview_loop_batch_uses_local_inference_lock_and_signals_done(
         self, main_module, monkeypatch
     ):
@@ -394,6 +426,8 @@ class TestModelPicker:
         monkeypatch.setattr(main_module, "_RAM_GB", 16.0)
         models = d._select_model(None)
         model_ids = [m[0] for m in models]
+        assert "mlx-community/whisper-base.en-mlx-8bit" in model_ids
+        assert "mlx-community/whisper-small.en-mlx-8bit" in model_ids
         assert "mlx-community/whisper-medium.en-mlx-8bit" in model_ids
         assert "Qwen/Qwen3-ASR-0.6B" in model_ids
         assert "mlx-community/whisper-large-v3-turbo" not in model_ids
@@ -593,3 +627,43 @@ class TestEnvValidation:
         d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         result = d.init()
         assert result is not None
+
+    def test_default_hold_ms_is_200(self, main_module, monkeypatch):
+        """Default hold timing should match the faster interaction cadence."""
+        monkeypatch.setenv("SPOKE_WHISPER_URL", "http://test:8000")
+        monkeypatch.delenv("SPOKE_HOLD_MS", raising=False)
+        detector_instance = MagicMock(name="detector_instance")
+
+        with patch.object(main_module.SpacebarHoldDetector, "alloc") as mock_alloc:
+            mock_alloc.return_value.initWithHoldStart_holdEnd_holdMs_.return_value = (
+                detector_instance
+            )
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = d.init()
+
+        assert result is not None
+        assert d._detector is detector_instance
+        assert (
+            mock_alloc.return_value.initWithHoldStart_holdEnd_holdMs_.call_args.args[2]
+            == 200
+        )
+
+
+class TestResultInjection:
+    """Test timing of the post-injection overlay cleanup."""
+
+    def test_inject_result_text_hides_overlay_soon_after_injection(
+        self, main_module, monkeypatch
+    ):
+        """Final text should not leave the overlay hanging around after injection."""
+        d = _make_delegate(main_module, monkeypatch)
+
+        with patch.object(main_module, "inject_text"):
+            with patch("Foundation.NSTimer") as MockTimer:
+                d._inject_result_text("hello", "Ready")
+
+        MockTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called_once()
+        assert (
+            MockTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args.args[0]
+            == 0.12
+        )
