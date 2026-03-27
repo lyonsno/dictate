@@ -1,0 +1,442 @@
+"""Command response overlay.
+
+A semi-transparent overlay for displaying streamed command responses. Visually
+kin to the transcription overlay (same ethereal transparency, same floating
+treatment) but differentiated by color and rhythm. The input overlay breathes
+with voice amplitude. The output overlay pulses with a steady ease-in/ease-out
+rhythm — mechanical but gentle, distinct from the organic input.
+"""
+
+from __future__ import annotations
+
+import logging
+import math
+import os
+
+import objc
+from AppKit import (
+    NSBackingStoreBuffered,
+    NSColor,
+    NSFont,
+    NSScreen,
+    NSScrollView,
+    NSTextView,
+    NSView,
+    NSWindow,
+    NSWindowCollectionBehaviorCanJoinAllSpaces,
+    NSWindowCollectionBehaviorFullScreenAuxiliary,
+    NSWindowCollectionBehaviorStationary,
+)
+from Foundation import NSMakeRect, NSObject, NSTimer
+from Quartz import CALayer, CAShapeLayer, CGPathCreateWithRoundedRect
+
+logger = logging.getLogger(__name__)
+
+_OVERLAY_WIDTH = 600.0
+_OVERLAY_HEIGHT = 80.0
+_OVERLAY_BOTTOM_MARGIN = 300.0  # above the input overlay
+_OVERLAY_CORNER_RADIUS = 16.0
+_OVERLAY_MAX_HEIGHT = 400.0
+_FONT_SIZE = 16.0
+_FADE_IN_S = 0.5
+_FADE_OUT_S = 0.3
+_FADE_STEPS = 12
+_LINGER_S = 4.0  # seconds to linger after response completes
+
+def _env(name: str, default: float) -> float:
+    v = os.environ.get(name)
+    return float(v) if v is not None else default
+
+# Soft violet — distinct from input cornflower, same organism
+_GLOW_COLOR = (
+    _env("SPOKE_COMMAND_GLOW_R", 0.6),
+    _env("SPOKE_COMMAND_GLOW_G", 0.4),
+    _env("SPOKE_COMMAND_GLOW_B", 0.9),
+)
+_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.5)
+_TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
+_BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.35)
+_PULSE_PERIOD = _env("SPOKE_COMMAND_PULSE_PERIOD", 2.0)  # seconds per cycle
+_PULSE_HZ = 30.0  # timer frequency for pulse animation
+
+_OUTER_FEATHER = 40.0
+_INNER_GLOW_DEPTH = 30.0
+_OUTER_GLOW_PEAK_TARGET = 0.35
+
+
+class CommandOverlay(NSObject):
+    """Overlay for displaying streamed command responses."""
+
+    def initWithScreen_(self, screen: NSScreen | None = None):
+        self = objc.super(CommandOverlay, self).init()
+        if self is None:
+            return None
+
+        self._screen = screen or NSScreen.mainScreen()
+        self._window: NSWindow | None = None
+        self._text_view: NSTextView | None = None
+        self._scroll_view: NSScrollView | None = None
+        self._content_view: NSView | None = None
+        self._visible = False
+        self._streaming = False
+        self._response_text = ""
+        self._utterance_text = ""
+
+        # Fade state
+        self._fade_timer: NSTimer | None = None
+        self._fade_step = 0
+        self._fade_from = 0.0
+        self._fade_direction = 0
+
+        # Pulse state
+        self._pulse_timer: NSTimer | None = None
+        self._pulse_phase = 0.0
+
+        # Linger timer
+        self._linger_timer: NSTimer | None = None
+
+        return self
+
+    def setup(self) -> None:
+        """Create the command overlay window."""
+        screen_frame = self._screen.frame()
+        sw = screen_frame.size.width
+
+        f = _OUTER_FEATHER
+        x = (sw - _OVERLAY_WIDTH) / 2 - f
+        y = _OVERLAY_BOTTOM_MARGIN - f
+        win_w = _OVERLAY_WIDTH + 2 * f
+        win_h = _OVERLAY_HEIGHT + 2 * f
+        frame = NSMakeRect(x, y, win_w, win_h)
+
+        self._window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            frame, 0, NSBackingStoreBuffered, False
+        )
+        self._window.setLevel_(25)
+        self._window.setOpaque_(False)
+        self._window.setBackgroundColor_(NSColor.clearColor())
+        self._window.setIgnoresMouseEvents_(True)
+        self._window.setHasShadow_(False)
+        self._window.setCollectionBehavior_(
+            NSWindowCollectionBehaviorCanJoinAllSpaces
+            | NSWindowCollectionBehaviorStationary
+            | NSWindowCollectionBehaviorFullScreenAuxiliary
+        )
+
+        wrapper_frame = NSMakeRect(0, 0, win_w, win_h)
+        wrapper = NSView.alloc().initWithFrame_(wrapper_frame)
+        wrapper.setWantsLayer_(True)
+
+        content_frame = NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
+        content = NSView.alloc().initWithFrame_(content_frame)
+        content.setWantsLayer_(True)
+        content.layer().setCornerRadius_(_OVERLAY_CORNER_RADIUS)
+        content.layer().setMasksToBounds_(True)
+        content.layer().setBackgroundColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, _BG_ALPHA).CGColor()
+        )
+
+        glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 1.0
+        )
+
+        # Inner glow
+        w, h = _OVERLAY_WIDTH, _OVERLAY_HEIGHT
+        margin = _INNER_GLOW_DEPTH + 50
+        from Quartz import CGPathCreateMutableCopy, CGPathAddPath, kCAFillRuleEvenOdd as kEO
+
+        lw, lh = w + 2 * margin, h + 2 * margin
+
+        self._inner_shadow = CAShapeLayer.alloc().init()
+        self._inner_shadow.setFrame_(((f - margin, f - margin), (lw, lh)))
+
+        outer = CGPathCreateWithRoundedRect(((0, 0), (lw, lh)), 0, 0, None)
+        inner = CGPathCreateWithRoundedRect(
+            ((margin, margin), (w, h)),
+            _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None
+        )
+        combined = CGPathCreateMutableCopy(outer)
+        CGPathAddPath(combined, None, inner)
+
+        self._inner_shadow.setPath_(combined)
+        self._inner_shadow.setFillRule_(kEO)
+        self._inner_shadow.setFillColor_(glow_nscolor.colorWithAlphaComponent_(0.12).CGColor())
+        self._inner_shadow.setShadowColor_(glow_nscolor.CGColor())
+        self._inner_shadow.setShadowOffset_((0, 0))
+        self._inner_shadow.setShadowRadius_(2.4)
+        self._inner_shadow.setShadowOpacity_(0.8)
+
+        inner_mask = CAShapeLayer.alloc().init()
+        inner_mask.setFrame_(((0, 0), (lw, lh)))
+        inner_mask.setPath_(CGPathCreateWithRoundedRect(
+            ((margin, margin), (w, h)),
+            _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None
+        ))
+        self._inner_shadow.setMask_(inner_mask)
+        wrapper.layer().addSublayer_(self._inner_shadow)
+
+        # Outer glow layers
+        self._outer_glow_tight = CALayer.alloc().init()
+        self._outer_glow_tight.setFrame_(((f, f), (w, h)))
+        self._outer_glow_tight.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
+        self._outer_glow_tight.setBackgroundColor_(
+            glow_nscolor.colorWithAlphaComponent_(0.01).CGColor()
+        )
+        self._outer_glow_tight.setShadowColor_(glow_nscolor.CGColor())
+        self._outer_glow_tight.setShadowOffset_((0, 0))
+        self._outer_glow_tight.setShadowRadius_(6.2)
+        self._outer_glow_tight.setShadowOpacity_(0.2)
+        wrapper.layer().insertSublayer_below_(self._outer_glow_tight, content.layer())
+
+        self._outer_glow_wide = CALayer.alloc().init()
+        self._outer_glow_wide.setFrame_(((f, f), (w, h)))
+        self._outer_glow_wide.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
+        self._outer_glow_wide.setBackgroundColor_(
+            glow_nscolor.colorWithAlphaComponent_(0.01).CGColor()
+        )
+        self._outer_glow_wide.setShadowColor_(glow_nscolor.CGColor())
+        self._outer_glow_wide.setShadowOffset_((0, 0))
+        self._outer_glow_wide.setShadowRadius_(14.0)
+        self._outer_glow_wide.setShadowOpacity_(0.4)
+        wrapper.layer().insertSublayer_below_(self._outer_glow_wide, self._outer_glow_tight)
+
+        wrapper.addSubview_(content)
+        self._content_view = content
+
+        # Scroll view with text view
+        scroll_frame = NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
+        self._scroll_view = NSScrollView.alloc().initWithFrame_(scroll_frame)
+        self._scroll_view.setHasVerticalScroller_(False)
+        self._scroll_view.setHasHorizontalScroller_(False)
+        self._scroll_view.setDrawsBackground_(False)
+        self._scroll_view.setBorderType_(0)
+        self._scroll_view.setAutoresizingMask_(18)
+
+        text_frame = NSMakeRect(0, 0, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
+        self._text_view = NSTextView.alloc().initWithFrame_(text_frame)
+        self._text_view.setEditable_(False)
+        self._text_view.setSelectable_(False)
+        self._text_view.setDrawsBackground_(False)
+        self._text_view.setTextColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, _TEXT_ALPHA_MIN)
+        )
+        self._text_view.setFont_(NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0))
+        self._text_view.setString_("")
+        self._text_view.textContainer().setWidthTracksTextView_(True)
+        self._text_view.setHorizontallyResizable_(False)
+        self._text_view.setVerticallyResizable_(True)
+
+        self._scroll_view.setDocumentView_(self._text_view)
+        content.addSubview_(self._scroll_view)
+        self._window.setContentView_(wrapper)
+        self._window.setAlphaValue_(0.0)
+
+        logger.info("Command overlay created")
+
+    # ── public interface ────────────────────────────────────
+
+    def show(self) -> None:
+        """Fade the overlay in and start the pulse."""
+        if self._window is None:
+            return
+        self._cancel_all_timers()
+        self._visible = True
+        self._streaming = True
+        self._response_text = ""
+        self._utterance_text = ""
+        self._text_view.setString_("")
+        self._window.setAlphaValue_(0.0)
+
+        # Reset geometry
+        screen_frame = self._screen.frame()
+        sw = screen_frame.size.width
+        f = _OUTER_FEATHER
+        x = (sw - _OVERLAY_WIDTH) / 2 - f
+        self._window.setFrame_display_animate_(
+            NSMakeRect(x, _OVERLAY_BOTTOM_MARGIN - f,
+                       _OVERLAY_WIDTH + 2 * f, _OVERLAY_HEIGHT + 2 * f),
+            True, False
+        )
+        self._content_view.setFrame_(
+            NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
+        )
+        self._scroll_view.setFrame_(
+            NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
+        )
+
+        self._window.orderFrontRegardless()
+
+        # Fade in
+        self._fade_step = 0
+        self._fade_from = 0.0
+        self._fade_direction = 1
+        interval = _FADE_IN_S / _FADE_STEPS
+        self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            interval, self, "fadeStep:", None, True
+        )
+
+        # Start pulse animation
+        self._pulse_phase = 0.0
+        self._pulse_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0 / _PULSE_HZ, self, "pulseStep:", None, True
+        )
+
+    def hide(self) -> None:
+        """Fade out and stop all animation."""
+        if self._window is None:
+            return
+        self._visible = False
+        self._streaming = False
+        self._cancel_pulse()
+        self._cancel_linger()
+        self._start_fade_out()
+
+    def set_utterance(self, text: str) -> None:
+        """Show what the user said before the response streams in."""
+        self._utterance_text = text
+
+    def append_token(self, token: str) -> None:
+        """Append a streamed response token."""
+        if self._text_view is None or not self._visible:
+            return
+        self._response_text += token
+        self._text_view.setString_(self._response_text)
+        self._update_layout()
+
+    def finish(self) -> None:
+        """Called when the response stream is complete. Start the linger timer."""
+        self._streaming = False
+        # Stop pulse, leave text visible
+        self._cancel_pulse()
+        # Set text to full brightness
+        if self._text_view is not None:
+            self._text_view.setTextColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, _TEXT_ALPHA_MAX)
+            )
+        # Linger then fade
+        self._linger_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _LINGER_S, self, "lingerDone:", None, False
+        )
+
+    # ── animation ───────────────────────────────────────────
+
+    def fadeStep_(self, timer) -> None:
+        """One step of the fade animation."""
+        self._fade_step += 1
+        progress = self._fade_step / _FADE_STEPS
+
+        if self._fade_direction == 1:
+            eased = progress * progress
+            alpha = eased
+        else:
+            eased = progress * progress
+            alpha = self._fade_from * (1.0 - eased)
+
+        self._window.setAlphaValue_(alpha)
+
+        if self._fade_step >= _FADE_STEPS:
+            self._cancel_fade()
+            if self._fade_direction == -1:
+                self._window.setAlphaValue_(0.0)
+                self._window.orderOut_(None)
+            else:
+                self._window.setAlphaValue_(1.0)
+
+    def pulseStep_(self, timer) -> None:
+        """Animate the text opacity with a smooth ease-in/ease-out pulse."""
+        if not self._streaming or self._text_view is None:
+            return
+        self._pulse_phase += (1.0 / _PULSE_HZ) / _PULSE_PERIOD
+        if self._pulse_phase > 1.0:
+            self._pulse_phase -= 1.0
+
+        # Smooth sine pulse: 0→1→0 over one period
+        pulse = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase))
+        alpha = _TEXT_ALPHA_MIN + pulse * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
+
+        self._text_view.setTextColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, alpha)
+        )
+
+        # Pulse the glow too
+        glow_opacity = 0.5 + 0.3 * pulse
+        if hasattr(self, '_inner_shadow'):
+            self._inner_shadow.setShadowOpacity_(glow_opacity)
+        if hasattr(self, '_outer_glow_tight'):
+            self._outer_glow_tight.setShadowOpacity_(min(glow_opacity * 0.4, _OUTER_GLOW_PEAK_TARGET))
+        if hasattr(self, '_outer_glow_wide'):
+            self._outer_glow_wide.setShadowOpacity_(min(glow_opacity * 0.6, _OUTER_GLOW_PEAK_TARGET))
+
+    def lingerDone_(self, timer) -> None:
+        """Linger period over — fade out."""
+        self._linger_timer = None
+        if self._visible and not self._streaming:
+            self.hide()
+
+    # ── fade helpers ────────────────────────────────────────
+
+    def _start_fade_out(self) -> None:
+        self._cancel_fade()
+        self._fade_step = 0
+        self._fade_from = self._window.alphaValue() if self._window else 1.0
+        self._fade_direction = -1
+        interval = _FADE_OUT_S / _FADE_STEPS
+        self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            interval, self, "fadeStep:", None, True
+        )
+
+    def _cancel_fade(self) -> None:
+        if self._fade_timer is not None:
+            self._fade_timer.invalidate()
+            self._fade_timer = None
+
+    def _cancel_pulse(self) -> None:
+        if self._pulse_timer is not None:
+            self._pulse_timer.invalidate()
+            self._pulse_timer = None
+
+    def _cancel_linger(self) -> None:
+        if self._linger_timer is not None:
+            self._linger_timer.invalidate()
+            self._linger_timer = None
+
+    def _cancel_all_timers(self) -> None:
+        self._cancel_fade()
+        self._cancel_pulse()
+        self._cancel_linger()
+
+    # ── layout ──────────────────────────────────────────────
+
+    def _update_layout(self) -> None:
+        """Resize window and scroll to bottom after text change."""
+        try:
+            layout = self._text_view.layoutManager()
+            container = self._text_view.textContainer()
+            if layout and container:
+                layout.ensureLayoutForTextContainer_(container)
+                text_rect = layout.usedRectForTextContainer_(container)
+                text_height = text_rect.size.height
+            else:
+                text_height = _OVERLAY_HEIGHT - 16
+
+            new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), _OVERLAY_MAX_HEIGHT)
+
+            f = _OUTER_FEATHER
+            win_frame = self._window.frame()
+            new_win_h = new_height + 2 * f
+            if abs(win_frame.size.height - new_win_h) > 4:
+                win_frame.size.height = new_win_h
+                self._window.setFrame_display_animate_(win_frame, True, False)
+                self._content_view.setFrame_(
+                    NSMakeRect(f, f, _OVERLAY_WIDTH, new_height)
+                )
+                self._scroll_view.setFrame_(
+                    NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16)
+                )
+
+            end = (self._text_view.string().length()
+                   if hasattr(self._text_view.string(), 'length')
+                   else len(self._response_text))
+            self._text_view.scrollRangeToVisible_((end, 0))
+        except Exception:
+            logger.debug("Command overlay layout update failed", exc_info=True)

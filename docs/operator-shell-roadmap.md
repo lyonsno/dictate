@@ -219,6 +219,29 @@ transposed into a runtime state substrate.
   inference runs on local hardware. The state lives in local files. Cloud
   services are optional, not load-bearing.
 
+## Design Constraints (empirical)
+
+Extracted from live testing the 35B-A3B against ambiguous voice-style inputs
+with imagined tool schemas and full-resolution screenshots.
+
+- **The system prompt must explicitly bound the tool domain.** The model will
+  confidently hallucinate plausible tool calls in adjacent domains when voice
+  input is ambiguous. If the user says "take the saturation down" while
+  working on a glow overlay, the model will generate video-editing tool calls
+  unless the schema constrains it. The tool schema is the guardrail, not the
+  model's judgment about what domain it's in.
+- **Ambiguous identifiers need positional disambiguation from the perception
+  layer.** When multiple screen elements share the same visible text (e.g.
+  two browser tabs both titled "Pull request"), the model naturally reaches
+  for positional context to resolve the ambiguity. The perception router must
+  provide structured scene state with positions, not just text labels.
+- **The model adapts output mode to conversational context without explicit
+  routing.** When the user shifts from action requests to discussion, the 35B
+  notices and changes its response format. This supports the V0.1 approach of
+  keeping mode detection in-context (ring buffer + system prompt) rather than
+  building a separate small-model router. A dedicated router becomes necessary
+  only when context length or latency forces it.
+
 ## Machine Context
 
 Primary development and daily-driver machine: Mac Studio M4 Max, 128GB

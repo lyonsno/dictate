@@ -135,7 +135,7 @@ class SpacebarHoldDetector(NSObject):
         if self._state == _State.RECORDING:
             self._cancel_safety_timer()
             self._state = _State.IDLE
-            self._on_hold_end()
+            self._on_hold_end(shift_held=False)
 
     def uninstall(self) -> None:
         """Disable and remove the event tap."""
@@ -172,8 +172,17 @@ class SpacebarHoldDetector(NSObject):
         # Already WAITING or RECORDING — suppress key repeats
         return True
 
-    def handle_key_up(self, keycode: int) -> bool:
-        """Handle a keyUp event. Returns True to suppress, False to pass through."""
+    def handle_key_up(self, keycode: int, flags: int = 0) -> bool:
+        """Handle a keyUp event. Returns True to suppress, False to pass through.
+
+        Parameters
+        ----------
+        keycode : int
+            The key that was released.
+        flags : int
+            Modifier flags at the moment of release. Used to detect
+            shift-release for command routing.
+        """
         if keycode != SPACEBAR_KEYCODE:
             return False
 
@@ -187,7 +196,8 @@ class SpacebarHoldDetector(NSObject):
         if self._state == _State.RECORDING:
             self._cancel_safety_timer()
             self._state = _State.IDLE
-            self._on_hold_end()
+            shift_held = bool(flags & kCGEventFlagMaskShift)
+            self._on_hold_end(shift_held=shift_held)
             return True
 
         return False
@@ -225,7 +235,7 @@ class SpacebarHoldDetector(NSObject):
         if self._state == _State.RECORDING:
             logger.warning("Safety timeout — auto-stopping recording")
             self._state = _State.IDLE
-            self._on_hold_end()
+            self._on_hold_end(shift_held=False)
 
     def _cancel_safety_timer(self) -> None:
         if self._safety_timer is not None:
@@ -294,7 +304,8 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         if det.handle_key_down(keycode, flags):
             return None  # suppress
     elif event_type == kCGEventKeyUp:
-        if det.handle_key_up(keycode):
+        flags = CGEventGetFlags(event)
+        if det.handle_key_up(keycode, flags=flags):
             return None  # suppress
 
     return event
