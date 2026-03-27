@@ -1,5 +1,6 @@
 """Contract tests for overlay timing constants."""
 
+import colorsys
 import importlib
 import sys
 from unittest.mock import MagicMock
@@ -109,5 +110,18 @@ class TestOverlayTiming:
             capped_wide_opacity = overlay._outer_glow_wide.setShadowOpacity_.call_args[0][0]
             assert capped_tight_opacity == pytest.approx(mod._OUTER_GLOW_PEAK_TARGET * 0.5)
             assert capped_wide_opacity == pytest.approx(mod._OUTER_GLOW_PEAK_TARGET * 0.8)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_overlay_glow_color_gets_much_bluer_than_the_edge_glow_base(self, mock_pyobjc):
+        """The overlay can run bluer than the bezel glow so it still reads against the keyboard."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            previous_overlay_sat = colorsys.rgb_to_hsv(0.38, 0.52, 1.0)[1]
+            overlay_sat = colorsys.rgb_to_hsv(*mod._GLOW_COLOR)[1]
+
+            assert overlay_sat == pytest.approx(min(previous_overlay_sat * 1.6, 1.0), rel=0.02)
+            assert overlay_sat > previous_overlay_sat
         finally:
             sys.modules.pop("spoke.overlay", None)

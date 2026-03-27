@@ -8,6 +8,7 @@ out after final injection. Text opacity breathes with voice amplitude.
 
 from __future__ import annotations
 
+import colorsys
 import logging
 import os
 
@@ -44,6 +45,14 @@ def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
     return float(v) if v is not None else default
 
+
+def _scale_color_saturation(
+    color: tuple[float, float, float], factor: float
+) -> tuple[float, float, float]:
+    """Scale an RGB color's saturation while keeping its hue and value stable."""
+    hue, saturation, value = colorsys.rgb_to_hsv(*color)
+    return colorsys.hsv_to_rgb(hue, min(max(saturation * factor, 0.0), 1.0), value)
+
 _TEXT_ALPHA_MIN = _env("SPOKE_TEXT_ALPHA_MIN", 0.066)
 _TEXT_ALPHA_MAX = _env("SPOKE_TEXT_ALPHA_MAX", 0.75)
 _TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.10)
@@ -54,7 +63,9 @@ _SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.115)
 _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.94)
 
 # Inner glow — matches screen border glow, scaled to overlay size
-_GLOW_COLOR = (0.38, 0.52, 1.0)  # saturated cornflower — matches screen glow
+_GLOW_COLOR = _scale_color_saturation(
+    (0.38, 0.52, 1.0), 1.6
+)  # intentionally bluer than the bezel glow so it still reads against the keyboard
 _INNER_GLOW_WIDTH = 3.0  # proportional to overlay vs screen size
 _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
 _OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
