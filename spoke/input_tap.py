@@ -47,11 +47,13 @@ from Quartz import (
 logger = logging.getLogger(__name__)
 
 SPACEBAR_KEYCODE = 49
+# Modifiers that prevent recording when held during spacebar press.
+# Shift is intentionally excluded — shift+space starts recording normally,
+# and shift is detected at release to route the utterance as a command.
 _MODIFIER_MASK = (
     kCGEventFlagMaskCommand
     | kCGEventFlagMaskControl
     | kCGEventFlagMaskAlternate
-    | kCGEventFlagMaskShift
 )
 _DEFAULT_HOLD_MS = 400
 _SAFETY_TIMEOUT_S = 300.0  # 5 minutes — covers long dictations, only for truly stuck keyUp

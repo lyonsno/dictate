@@ -252,13 +252,13 @@ class TestForwardingRecovery:
         det.forwardingTimerFired_(None)
         assert det._forwarding is False
 
-    def test_shift_space_passes_through(self, input_tap_module):
-        """Shift+Space should pass through, not trigger hold detection."""
+    def test_shift_space_starts_recording(self, input_tap_module):
+        """Shift+Space should start recording (shift is only detected at release)."""
         mod = input_tap_module
 
         det, _, _ = self._make_detector(input_tap_module)
         shift_flag = 0x00020000  # kCGEventFlagMaskShift
 
         result = det.handle_key_down(mod.SPACEBAR_KEYCODE, shift_flag)
-        assert result is False
-        assert det._state == mod._State.IDLE
+        assert result is True  # suppressed — recording starts
+        assert det._state == mod._State.WAITING
