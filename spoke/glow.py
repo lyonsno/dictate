@@ -23,7 +23,7 @@ from AppKit import (
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowCollectionBehaviorStationary,
 )
-from Foundation import NSObject
+from Foundation import NSObject, NSTimer
 from Quartz import (
     CABasicAnimation,
     CAGradientLayer,
@@ -62,6 +62,11 @@ _DECAY_FACTOR = 0.50  # very quick falloff between words
 # Fade timing
 _FADE_IN_S = 0.08
 _FADE_OUT_S = 0.2
+_GLOW_SHOW_FADE_S = 0.2
+_GLOW_HIDE_FADE_S = 0.6
+_DIM_SHOW_FADE_S = 1.08
+_DIM_HIDE_FADE_S = 2.4
+_WINDOW_TEARDOWN_CUSHION_S = 0.05
 
 
 def _sample_screen_brightness(screen) -> float:
@@ -173,7 +178,14 @@ class GlowOverlay(NSObject):
         self._update_count = 0
         self._noise_floor = 0.0  # adaptive ambient noise level
         self._cap_factor = 1.0  # 1.0 = no cap, ramps down toward 0.25 near recording limit
+        self._hide_timer = None
+        self._hide_generation = 0
         return self
+
+    def _cancel_pending_hide(self) -> None:
+        if self._hide_timer is not None:
+            self._hide_timer.invalidate()
+            self._hide_timer = None
 
     def setup(self) -> None:
         """Create the overlay window and glow layer."""
@@ -313,6 +325,8 @@ class GlowOverlay(NSObject):
         """Fade the glow window in to base opacity."""
         if self._window is None:
             return
+        self._cancel_pending_hide()
+        self._hide_generation += 1
         self._visible = True
         self._smoothed_amplitude = 0.0
         self._update_count = 0
@@ -338,10 +352,13 @@ class GlowOverlay(NSObject):
         self._fade_in_until = time.monotonic() + 0.2  # let fade-in finish undisturbed
         self._window.orderFrontRegardless()
 
+        pres = self._glow_layer.presentationLayer()
+        current_opacity = pres.opacity() if pres is not None else self._glow_layer.opacity()
+        self._glow_layer.removeAllAnimations()
         anim = CABasicAnimation.animationWithKeyPath_("opacity")
-        anim.setFromValue_(0.0)
+        anim.setFromValue_(current_opacity)
         anim.setToValue_(_GLOW_BASE_OPACITY)
-        anim.setDuration_(0.2)
+        anim.setDuration_(_GLOW_SHOW_FADE_S)
         anim.setTimingFunction_(
             CAMediaTimingFunction.functionWithName_("easeOut")
         )
@@ -362,7 +379,7 @@ class GlowOverlay(NSObject):
             dim_anim = CABasicAnimation.animationWithKeyPath_("opacity")
             dim_anim.setFromValue_(current_opacity)
             dim_anim.setToValue_(dim_target)
-            dim_anim.setDuration_(1.08)
+            dim_anim.setDuration_(_DIM_SHOW_FADE_S)
             dim_anim.setTimingFunction_(
                 CAMediaTimingFunction.functionWithName_("easeIn")
             )
@@ -374,15 +391,19 @@ class GlowOverlay(NSObject):
         """Fade the glow window out smoothly."""
         if self._window is None:
             return
+        self._cancel_pending_hide()
         self._visible = False
+        self._hide_generation += 1
+        hide_generation = self._hide_generation
         logger.info("Glow hide (received %d amplitude updates)", self._update_count)
 
         try:
-            current = self._glow_layer.opacity()
+            pres = self._glow_layer.presentationLayer()
+            current = pres.opacity() if pres is not None else self._glow_layer.opacity()
             anim = CABasicAnimation.animationWithKeyPath_("opacity")
             anim.setFromValue_(current)
             anim.setToValue_(0.0)
-            anim.setDuration_(0.6)
+            anim.setDuration_(_GLOW_HIDE_FADE_S)
             anim.setTimingFunction_(
                 CAMediaTimingFunction.functionWithName_("easeIn")
             )
@@ -399,16 +420,18 @@ class GlowOverlay(NSObject):
                 dim_anim = CABasicAnimation.animationWithKeyPath_("opacity")
                 dim_anim.setFromValue_(current_opacity)
                 dim_anim.setToValue_(0.0)
-                dim_anim.setDuration_(2.4)
+                dim_anim.setDuration_(_DIM_HIDE_FADE_S)
                 dim_anim.setTimingFunction_(
                     CAMediaTimingFunction.functionWithName_("easeIn")
                 )
                 self._dim_layer.addAnimation_forKey_(dim_anim, "dimOut")
 
             # Order out after animation completes
-            from Foundation import NSTimer
-            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                0.65, self, "hideWindowAfterFade:", None, False
+            hide_delay = _GLOW_HIDE_FADE_S + _WINDOW_TEARDOWN_CUSHION_S
+            if self._dim_layer is not None:
+                hide_delay = max(hide_delay, _DIM_HIDE_FADE_S + _WINDOW_TEARDOWN_CUSHION_S)
+            self._hide_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                hide_delay, self, "hideWindowAfterFade:", hide_generation, False
             )
         except Exception:
             # If animation fails, just snap off
@@ -418,6 +441,10 @@ class GlowOverlay(NSObject):
 
     def hideWindowAfterFade_(self, timer) -> None:
         """Remove window after fade-out animation completes."""
+        timer_generation = timer.userInfo() if timer is not None else None
+        if timer_generation != self._hide_generation:
+            return
+        self._hide_timer = None
         if not self._visible and self._window is not None:
             self._window.orderOut_(None)
 
