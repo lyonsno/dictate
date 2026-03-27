@@ -70,11 +70,23 @@ _INNER_GLOW_WIDTH = 3.0  # proportional to overlay vs screen size
 _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
 _OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
 _OUTER_GLOW_PEAK_TARGET = 0.35
+_OVERLAY_INNER_SATURATION_SCALE = 0.70
+_OVERLAY_OUTER_SATURATION_SCALE = 1.80
 
 
 def _compress_outer_glow_peak(opacity: float) -> float:
     """Keep low-level glow response intact while capping the outer bloom."""
     return min(opacity, _OUTER_GLOW_PEAK_TARGET)
+
+
+def _overlay_layer_colors(
+    base_color: tuple[float, float, float]
+) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    """Derive tighter and wider overlay glow layers from the base overlay color."""
+    inner = _scale_color_saturation(base_color, _OVERLAY_INNER_SATURATION_SCALE)
+    middle = base_color
+    outer = _scale_color_saturation(base_color, _OVERLAY_OUTER_SATURATION_SCALE)
+    return inner, middle, outer
 
 
 class TranscriptionOverlay(NSObject):
@@ -147,8 +159,15 @@ class TranscriptionOverlay(NSObject):
         )
 
         # Glow color setup
-        glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 1.0
+        inner_rgb, middle_rgb, outer_rgb = _overlay_layer_colors(_GLOW_COLOR)
+        inner_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            inner_rgb[0], inner_rgb[1], inner_rgb[2], 1.0
+        )
+        middle_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            middle_rgb[0], middle_rgb[1], middle_rgb[2], 1.0
+        )
+        outer_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            outer_rgb[0], outer_rgb[1], outer_rgb[2], 1.0
         )
         clear_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
 
@@ -178,8 +197,8 @@ class TranscriptionOverlay(NSObject):
 
         self._inner_shadow.setPath_(combined)
         self._inner_shadow.setFillRule_(kEO)
-        self._inner_shadow.setFillColor_(glow_nscolor.colorWithAlphaComponent_(0.15).CGColor())
-        self._inner_shadow.setShadowColor_(glow_nscolor.CGColor())
+        self._inner_shadow.setFillColor_(inner_glow.colorWithAlphaComponent_(0.15).CGColor())
+        self._inner_shadow.setShadowColor_(inner_glow.CGColor())
         self._inner_shadow.setShadowOffset_((0, 0))
         self._inner_shadow.setShadowRadius_(2.4)  # very tight — sharp exponential feel
         self._inner_shadow.setShadowOpacity_(1.0)
@@ -201,9 +220,9 @@ class TranscriptionOverlay(NSObject):
         self._outer_glow_tight.setFrame_(((f, f), (w, h)))
         self._outer_glow_tight.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
         self._outer_glow_tight.setBackgroundColor_(
-            glow_nscolor.colorWithAlphaComponent_(0.01).CGColor()
+            middle_glow.colorWithAlphaComponent_(0.01).CGColor()
         )
-        self._outer_glow_tight.setShadowColor_(glow_nscolor.CGColor())
+        self._outer_glow_tight.setShadowColor_(middle_glow.CGColor())
         self._outer_glow_tight.setShadowOffset_((0, 0))
         self._outer_glow_tight.setShadowRadius_(6.2)
         self._outer_glow_tight.setShadowOpacity_(0.3)
@@ -214,9 +233,9 @@ class TranscriptionOverlay(NSObject):
         self._outer_glow_wide.setFrame_(((f, f), (w, h)))
         self._outer_glow_wide.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
         self._outer_glow_wide.setBackgroundColor_(
-            glow_nscolor.colorWithAlphaComponent_(0.01).CGColor()
+            outer_glow.colorWithAlphaComponent_(0.01).CGColor()
         )
-        self._outer_glow_wide.setShadowColor_(glow_nscolor.CGColor())
+        self._outer_glow_wide.setShadowColor_(outer_glow.CGColor())
         self._outer_glow_wide.setShadowOffset_((0, 0))
         self._outer_glow_wide.setShadowRadius_(14.0)
         self._outer_glow_wide.setShadowOpacity_(0.5)

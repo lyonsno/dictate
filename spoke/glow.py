@@ -62,6 +62,8 @@ _GLOW_BASE_OPACITY_DARK = 0.06
 _GLOW_BASE_OPACITY_LIGHT = 0.14
 _GLOW_PEAK_TARGET_DARK = 0.15
 _GLOW_PEAK_TARGET_LIGHT = _GLOW_MAX_OPACITY
+_EDGE_INNER_SATURATION_SCALE = 0.70
+_EDGE_OUTER_SATURATION_SCALE = 1.80
 # MacBook Pro 14"/16" (2021+) has asymmetric display corners.
 # We use slightly tighter radii than the physical bezel so the glow
 # source stays close to the corners — the bezel hides the overshoot.
@@ -169,6 +171,16 @@ def _glow_style_for_brightness(brightness: float) -> tuple[tuple[float, float, f
     return color, base_opacity, peak_target
 
 
+def _edge_band_colors(
+    base_color: tuple[float, float, float]
+) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    """Derive tighter and wider edge bands from the current base glow color."""
+    inner = _scale_color_saturation(base_color, _EDGE_INNER_SATURATION_SCALE)
+    middle = base_color
+    outer = _scale_color_saturation(base_color, _EDGE_OUTER_SATURATION_SCALE)
+    return inner, middle, outer
+
+
 def _rounded_rect_path(x, y, w, h, top_radius, bottom_radius):
     """Create a CGPath rounded rect with different top and bottom corner radii."""
     from Quartz import (
@@ -250,8 +262,15 @@ class GlowOverlay(NSObject):
 
         w, h = frame.size.width, frame.size.height
 
-        glow_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 1.0
+        inner_rgb, middle_rgb, outer_rgb = _edge_band_colors(_GLOW_COLOR)
+        inner_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            inner_rgb[0], inner_rgb[1], inner_rgb[2], 1.0
+        )
+        middle_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            middle_rgb[0], middle_rgb[1], middle_rgb[2], 1.0
+        )
+        outer_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            outer_rgb[0], outer_rgb[1], outer_rgb[2], 1.0
         )
 
         # ── Optional screen dim: subtle dark backdrop for glow contrast ──
@@ -289,10 +308,10 @@ class GlowOverlay(NSObject):
 
         shadow_shape.setPath_(combined)
         shadow_shape.setFillRule_(kCAFillRuleEvenOdd)
-        shadow_shape.setFillColor_(glow_color.CGColor())
+        shadow_shape.setFillColor_(inner_glow.CGColor())
 
         # Shadow bloom — the main visual
-        shadow_shape.setShadowColor_(glow_color.CGColor())
+        shadow_shape.setShadowColor_(outer_glow.CGColor())
         shadow_shape.setShadowOffset_((0, 0))
         shadow_shape.setShadowRadius_(_GLOW_SHADOW_RADIUS)
         shadow_shape.setShadowOpacity_(1.0)
@@ -302,16 +321,16 @@ class GlowOverlay(NSObject):
 
         # Shape fill nearly transparent — just enough for CA to cast shadow
         shadow_shape.setFillColor_(
-            glow_color.colorWithAlphaComponent_(0.05).CGColor()
+            inner_glow.colorWithAlphaComponent_(0.05).CGColor()
         )
 
         # Add 4 gradient layers for the visible feathered edge glow.
         # Exponential-style falloff: bright at edge, drops fast, long subtle tail.
         # Use NSColor objects (not CGColor) — PyObjC bridges these correctly
         # for CAGradientLayer, unlike raw CGColorRef pointers.
-        edge_nscolor = glow_color
-        mid_nscolor = glow_color.colorWithAlphaComponent_(0.25)
-        faint_nscolor = glow_color.colorWithAlphaComponent_(0.06)
+        edge_nscolor = inner_glow
+        mid_nscolor = middle_glow.colorWithAlphaComponent_(0.25)
+        faint_nscolor = outer_glow.colorWithAlphaComponent_(0.06)
         clear_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
 
         # CAGradientLayer wants CGColorRef — extract via id bridge
@@ -359,17 +378,27 @@ class GlowOverlay(NSObject):
         logger.info("Glow overlay created (%.0fx%.0f, border=%.0f, shadow=%.0f)",
                      w, h, _GLOW_WIDTH, _GLOW_SHADOW_RADIUS)
 
-    def _apply_glow_color(self, glow_color) -> None:
+    def _apply_glow_color(self, base_color: tuple[float, float, float]) -> None:
         """Push the current glow color through the bloom and gradient layers."""
+        inner_rgb, middle_rgb, outer_rgb = _edge_band_colors(base_color)
+        inner_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            inner_rgb[0], inner_rgb[1], inner_rgb[2], 1.0
+        )
+        middle_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            middle_rgb[0], middle_rgb[1], middle_rgb[2], 1.0
+        )
+        outer_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            outer_rgb[0], outer_rgb[1], outer_rgb[2], 1.0
+        )
         if hasattr(self, '_shadow_shape'):
-            self._shadow_shape.setShadowColor_(glow_color.CGColor())
+            self._shadow_shape.setShadowColor_(outer_glow.CGColor())
             self._shadow_shape.setFillColor_(
-                glow_color.colorWithAlphaComponent_(0.05).CGColor()
+                inner_glow.colorWithAlphaComponent_(0.05).CGColor()
             )
         if hasattr(self, '_gradient_layers'):
-            edge = glow_color
-            mid = glow_color.colorWithAlphaComponent_(0.25)
-            faint = glow_color.colorWithAlphaComponent_(0.06)
+            edge = inner_glow
+            mid = middle_glow.colorWithAlphaComponent_(0.25)
+            faint = outer_glow.colorWithAlphaComponent_(0.06)
             clear = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
             colors = [edge.CGColor(), mid.CGColor(), faint.CGColor(), clear.CGColor()]
             for gl in self._gradient_layers:
@@ -388,10 +417,7 @@ class GlowOverlay(NSObject):
         self._cap_factor = 1.0
         brightness = _sample_screen_brightness(self._screen)
         self._glow_color, self._glow_base_opacity, self._glow_peak_target = _glow_style_for_brightness(brightness)
-        glow_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            self._glow_color[0], self._glow_color[1], self._glow_color[2], 1.0
-        )
-        self._apply_glow_color(glow_color)
+        self._apply_glow_color(self._glow_color)
         self._fade_in_until = time.monotonic() + 0.2  # let fade-in finish undisturbed
         self._window.orderFrontRegardless()
 
@@ -541,8 +567,7 @@ class GlowOverlay(NSObject):
             r = self._glow_color[0] + t * (_GLOW_CAP_COLOR[0] - self._glow_color[0])
             g = self._glow_color[1] + t * (_GLOW_CAP_COLOR[1] - self._glow_color[1])
             b = self._glow_color[2] + t * (_GLOW_CAP_COLOR[2] - self._glow_color[2])
-            cap_color = NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
-            self._apply_glow_color(cap_color)
+            self._apply_glow_color((r, g, b))
 
         self._glow_layer.setOpacity_(opacity)
 

@@ -125,3 +125,20 @@ class TestOverlayTiming:
             assert overlay_sat > previous_overlay_sat
         finally:
             sys.modules.pop("spoke.overlay", None)
+
+    def test_overlay_glow_layers_shift_saturation_from_inner_to_outer(self, mock_pyobjc):
+        """The inner overlay glow should calm down while the wide outer glow gets more saturated."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            inner_color, middle_color, outer_color = mod._overlay_layer_colors(mod._GLOW_COLOR)
+            base_sat = colorsys.rgb_to_hsv(*mod._GLOW_COLOR)[1]
+            inner_sat = colorsys.rgb_to_hsv(*inner_color)[1]
+            middle_sat = colorsys.rgb_to_hsv(*middle_color)[1]
+            outer_sat = colorsys.rgb_to_hsv(*outer_color)[1]
+
+            assert inner_sat == pytest.approx(base_sat * 0.7, rel=0.02)
+            assert middle_sat == pytest.approx(base_sat, rel=0.02)
+            assert outer_sat == pytest.approx(min(base_sat * 1.8, 1.0), rel=0.02)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
