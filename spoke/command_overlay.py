@@ -39,9 +39,9 @@ _OVERLAY_CORNER_RADIUS = 16.0
 _OVERLAY_MAX_HEIGHT = 400.0
 _FONT_SIZE = 16.0
 _FADE_IN_S = 0.5
-_FADE_OUT_S = 0.3
-_FADE_STEPS = 12
-_LINGER_S = 4.0  # seconds to linger after response completes
+_FADE_OUT_S = 1.8  # slow fade for readability
+_FADE_STEPS = 20  # more steps for the slower fade
+_LINGER_S = 10.0  # seconds to linger after response completes
 
 def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
@@ -94,6 +94,13 @@ class CommandOverlay(NSObject):
 
         # Linger timer
         self._linger_timer: NSTimer | None = None
+
+        # Thinking timer state
+        self._thinking_timer: NSTimer | None = None
+        self._thinking_seconds = 0.0
+        self._thinking_label = None  # NSTextField for the counter
+        self._thinking_glow_layer = None  # CALayer for the glow behind the number
+        self._thinking_inverted = False  # False = glowing number, True = cutout
 
         return self
 
@@ -228,6 +235,32 @@ class CommandOverlay(NSObject):
 
         self._scroll_view.setDocumentView_(self._text_view)
         content.addSubview_(self._scroll_view)
+
+        # Thinking timer label — top-right corner of the content area
+        from AppKit import NSTextField, NSTextAlignmentRight
+        timer_w, timer_h = 60.0, 24.0
+        timer_x = _OVERLAY_WIDTH - timer_w - 12
+        timer_y = _OVERLAY_HEIGHT - timer_h - 6
+        self._thinking_label = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(timer_x, timer_y, timer_w, timer_h)
+        )
+        self._thinking_label.setEditable_(False)
+        self._thinking_label.setSelectable_(False)
+        self._thinking_label.setBezeled_(False)
+        self._thinking_label.setDrawsBackground_(False)
+        self._thinking_label.setAlignment_(NSTextAlignmentRight)
+        self._thinking_label.setFont_(
+            NSFont.monospacedDigitSystemFontOfSize_weight_(13.0, 0.2)
+        )
+        self._thinking_label.setTextColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 0.0
+            )
+        )
+        self._thinking_label.setStringValue_("")
+        self._thinking_label.setHidden_(True)
+        content.addSubview_(self._thinking_label)
+
         self._window.setContentView_(wrapper)
         self._window.setAlphaValue_(0.0)
 
@@ -281,6 +314,9 @@ class CommandOverlay(NSObject):
             1.0 / _PULSE_HZ, self, "pulseStep:", None, True
         )
 
+        # Start thinking timer (glowing number mode)
+        self._start_thinking_timer()
+
     def hide(self) -> None:
         """Fade out and stop all animation."""
         if self._window is None:
@@ -306,8 +342,9 @@ class CommandOverlay(NSObject):
     def finish(self) -> None:
         """Called when the response stream is complete. Start the linger timer."""
         self._streaming = False
-        # Stop pulse, leave text visible
+        # Stop pulse and thinking timer, leave text visible
         self._cancel_pulse()
+        self._stop_thinking_timer()
         # Set text to full brightness
         if self._text_view is not None:
             self._text_view.setTextColor_(
@@ -404,6 +441,54 @@ class CommandOverlay(NSObject):
         self._cancel_fade()
         self._cancel_pulse()
         self._cancel_linger()
+        self._stop_thinking_timer()
+
+    # ── thinking timer ──────────────────────────────────────
+
+    def _start_thinking_timer(self) -> None:
+        """Start the thinking counter in glowing-number mode."""
+        self._thinking_seconds = 0.0
+        self._thinking_inverted = False
+        if self._thinking_label is not None:
+            self._thinking_label.setHidden_(False)
+            self._thinking_label.setStringValue_("0.0s")
+            # Glowing number: violet text on transparent background
+            self._thinking_label.setTextColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(
+                    _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 0.4
+                )
+            )
+        self._thinking_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.1, self, "thinkingTick:", None, True
+        )
+
+    def invert_thinking_timer(self) -> None:
+        """Switch from glowing number to negative-space cutout mode.
+
+        Called when the first content token arrives — the visual flip
+        signals that the model has transitioned from thinking to speaking.
+        """
+        self._thinking_inverted = True
+        if self._thinking_label is not None:
+            # Cutout mode: dark text that punches through the glow
+            # Using very low alpha dark color to create the negative-space effect
+            self._thinking_label.setTextColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(0.05, 0.05, 0.06, 0.7)
+            )
+
+    def _stop_thinking_timer(self) -> None:
+        """Stop and fade the thinking counter."""
+        if self._thinking_timer is not None:
+            self._thinking_timer.invalidate()
+            self._thinking_timer = None
+        if self._thinking_label is not None:
+            self._thinking_label.setHidden_(True)
+
+    def thinkingTick_(self, timer) -> None:
+        """Update the thinking counter every 100ms."""
+        self._thinking_seconds += 0.1
+        if self._thinking_label is not None and not self._thinking_label.isHidden():
+            self._thinking_label.setStringValue_(f"{self._thinking_seconds:.1f}s")
 
     # ── layout ──────────────────────────────────────────────
 
