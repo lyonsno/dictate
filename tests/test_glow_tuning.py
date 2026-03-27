@@ -34,13 +34,15 @@ class TestGlowTuning:
         sys.modules.pop("spoke.glow", None)
         mod = importlib.import_module("spoke.glow")
         try:
-            assert mod._compress_screen_glow_peak(0.2) == pytest.approx(0.2)
-            assert mod._compress_screen_glow_peak(0.245) == pytest.approx(0.245)
-            assert mod._compress_screen_glow_peak(0.6) == pytest.approx(0.245)
-            assert mod._compress_screen_glow_peak(0.81) == pytest.approx(0.245)
+            assert mod._compress_screen_glow_peak(0.1) == pytest.approx(0.1)
+            assert mod._compress_screen_glow_peak(mod._GLOW_PEAK_TARGET) == pytest.approx(
+                mod._GLOW_PEAK_TARGET
+            )
+            assert mod._compress_screen_glow_peak(0.6) == pytest.approx(mod._GLOW_PEAK_TARGET)
+            assert mod._compress_screen_glow_peak(0.81) == pytest.approx(mod._GLOW_PEAK_TARGET)
 
             peak_opacity = mod._compress_screen_glow_peak(1.0)
-            assert 0.23 <= peak_opacity <= 0.26
+            assert peak_opacity == pytest.approx(mod._GLOW_PEAK_TARGET)
         finally:
             sys.modules.pop("spoke.glow", None)
 

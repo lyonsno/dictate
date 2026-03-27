@@ -75,8 +75,8 @@ class TestOverlayTiming:
             overlay._inner_shadow.setShadowOpacity_.assert_called_with(1.0)
             peak_tight_opacity = overlay._outer_glow_tight.setShadowOpacity_.call_args[0][0]
             peak_wide_opacity = overlay._outer_glow_wide.setShadowOpacity_.call_args[0][0]
-            assert 0.22 <= peak_tight_opacity <= 0.28
-            assert 0.36 <= peak_wide_opacity <= 0.44
+            assert peak_tight_opacity == pytest.approx(mod._OUTER_GLOW_PEAK_TARGET * 0.5)
+            assert peak_wide_opacity == pytest.approx(mod._OUTER_GLOW_PEAK_TARGET * 0.8)
 
             overlay._inner_shadow.reset_mock()
             overlay._outer_glow_tight.reset_mock()
@@ -85,7 +85,7 @@ class TestOverlayTiming:
             overlay.update_glow_amplitude(0.81)
             capped_tight_opacity = overlay._outer_glow_tight.setShadowOpacity_.call_args[0][0]
             capped_wide_opacity = overlay._outer_glow_wide.setShadowOpacity_.call_args[0][0]
-            assert 0.22 <= capped_tight_opacity <= 0.28
-            assert 0.36 <= capped_wide_opacity <= 0.44
+            assert capped_tight_opacity == pytest.approx(mod._OUTER_GLOW_PEAK_TARGET * 0.5)
+            assert capped_wide_opacity == pytest.approx(mod._OUTER_GLOW_PEAK_TARGET * 0.8)
         finally:
             sys.modules.pop("spoke.overlay", None)
