@@ -44,8 +44,8 @@ class TestGlowTuning:
         finally:
             sys.modules.pop("spoke.glow", None)
 
-    def test_glow_style_gets_brighter_and_more_saturated_on_light_backgrounds(self, mock_pyobjc):
-        """Bright backgrounds should push the glow toward a stronger, more electric style."""
+    def test_glow_style_keeps_dark_backgrounds_muted_and_softens_light_backgrounds(self, mock_pyobjc):
+        """Dark backgrounds should stay muted while bright scenes ease back the rim saturation."""
         sys.modules.pop("spoke.glow", None)
         mod = importlib.import_module("spoke.glow")
         try:
@@ -61,9 +61,9 @@ class TestGlowTuning:
             assert dark_peak == pytest.approx(mod._GLOW_PEAK_TARGET_DARK)
             assert light_peak == pytest.approx(mod._GLOW_MAX_OPACITY)
             assert dark_sat == pytest.approx(previous_dark_sat * 0.4, rel=0.08)
-            assert light_sat == pytest.approx(previous_light_sat, rel=0.02)
+            assert light_sat == pytest.approx(previous_light_sat * 0.5, rel=0.02)
             assert light_base == pytest.approx(0.14)
-            assert (light_color[2] - light_color[0]) > (dark_color[2] - dark_color[0])
+            assert light_sat > dark_sat
         finally:
             sys.modules.pop("spoke.glow", None)
 

@@ -49,7 +49,9 @@ _GLOW_COLOR = (0.38, 0.52, 1.0)  # saturated cornflower — SC2 Protoss energy f
 _GLOW_COLOR_DARK = _scale_color_saturation(
     (0.50, 0.59, 0.84), 0.40
 )  # much closer to keyboard white on darker backgrounds
-_GLOW_COLOR_LIGHT = (0.34, 0.50, 1.0)  # more electric cornflower on lighter backgrounds
+_GLOW_COLOR_LIGHT = _scale_color_saturation(
+    (0.34, 0.50, 1.0), 0.50
+)  # lighter backgrounds still read blue, but with half the prior saturation
 _GLOW_CAP_COLOR = (1.0, 0.45, 0.15)  # angry sunset for cap countdown
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 60.0  # broader bloom so a dimmer peak still reads as glow

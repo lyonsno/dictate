@@ -64,8 +64,8 @@ _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.94)
 
 # Inner glow — matches screen border glow, scaled to overlay size
 _GLOW_COLOR = _scale_color_saturation(
-    (0.38, 0.52, 1.0), 1.6
-)  # intentionally bluer than the bezel glow so it still reads against the keyboard
+    (0.38, 0.52, 1.0), 1.28
+)  # still bluer than the bezel glow, but 20% calmer than the last pass
 _INNER_GLOW_WIDTH = 3.0  # proportional to overlay vs screen size
 _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
 _OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
