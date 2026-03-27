@@ -360,12 +360,38 @@ class CommandOverlay(NSObject):
 
         On the first token, rebuilds the text view with the utterance
         (dimmed) above a separator and the response (bright) below.
-        Subsequent tokens append to the response portion.
+        Subsequent tokens append an attributed fragment in-place to
+        avoid full-redraw flicker.
         """
         if self._text_view is None or not self._visible:
             return
+        first_token = len(self._response_text) == 0
         self._response_text += token
-        self._rebuild_attributed_text()
+
+        if first_token:
+            # First token: full rebuild to lay out utterance + response
+            self._rebuild_attributed_text()
+        else:
+            # Subsequent tokens: append in-place (no flicker)
+            from AppKit import (
+                NSMutableAttributedString,
+                NSForegroundColorAttributeName,
+                NSFontAttributeName,
+            )
+            frag = NSMutableAttributedString.alloc().initWithString_(token)
+            response_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+                1.0, 1.0, 1.0, _TEXT_ALPHA_MAX
+            )
+            frag.addAttribute_value_range_(
+                NSForegroundColorAttributeName, response_color, (0, len(token))
+            )
+            frag.addAttribute_value_range_(
+                NSFontAttributeName,
+                NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
+                (0, len(token)),
+            )
+            self._text_view.textStorage().appendAttributedString_(frag)
+
         self._update_layout()
 
     def _rebuild_attributed_text(self) -> None:
