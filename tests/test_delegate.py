@@ -975,6 +975,245 @@ class TestRecordingCap:
         assert d._cap_fired is False
 
 
+class TestCommandTranscribeWorker:
+    """Test _command_transcribe_worker branching and dispatch."""
+
+    def _make_command_delegate(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_overlay = MagicMock()
+        d._preview_thread = None
+        d._preview_done = MagicMock()
+        d._preview_done.wait = MagicMock()
+        d._preview_done.set = MagicMock()
+        d._local_inference_lock = MagicMock()
+        d._local_inference_lock.__enter__ = MagicMock(return_value=None)
+        d._local_inference_lock.__exit__ = MagicMock(return_value=False)
+        d._transcribe_start = time.monotonic()
+        d._transcription_token = 1
+        d._command_first_token = False
+        return d
+
+    def test_successful_transcribe_and_stream(self, main_module, monkeypatch):
+        """Happy path: transcribe → stream tokens → complete."""
+        d = self._make_command_delegate(main_module, monkeypatch)
+        d._client.transcribe.return_value = "open the file"
+        d._client.supports_streaming = False
+        d._command_client.stream_command.return_value = iter(["Hello", " world"])
+
+        d._command_transcribe_worker(b"wav-data", 1)
+
+        # Should have dispatched: utteranceReady, 2 tokens, complete
+        calls = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+        selectors = [c[0][0] for c in calls]
+        assert "commandUtteranceReady:" in selectors
+        assert selectors.count("commandToken:") == 2
+        assert "commandComplete:" in selectors
+
+    def test_empty_utterance_recalls_last_response(self, main_module, monkeypatch):
+        """Empty transcription with shift = recall last response."""
+        d = self._make_command_delegate(main_module, monkeypatch)
+        d._client.transcribe.return_value = ""
+        d._client.supports_streaming = False
+
+        d._command_transcribe_worker(b"wav-data", 1)
+
+        calls = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+        selectors = [c[0][0] for c in calls]
+        assert "_recallLastResponse:" in selectors
+        # Should NOT have tried to stream
+        d._command_client.stream_command.assert_not_called()
+
+    def test_transcription_failure_dispatches_error(self, main_module, monkeypatch):
+        """Transcription exception → commandFailed."""
+        d = self._make_command_delegate(main_module, monkeypatch)
+        d._client.transcribe.side_effect = RuntimeError("model crashed")
+        d._client.supports_streaming = False
+
+        d._command_transcribe_worker(b"wav-data", 1)
+
+        calls = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+        selectors = [c[0][0] for c in calls]
+        assert "commandFailed:" in selectors
+        # Should NOT have tried to stream
+        d._command_client.stream_command.assert_not_called()
+
+    def test_stream_failure_dispatches_error(self, main_module, monkeypatch):
+        """Streaming exception → commandFailed after utterance dispatched."""
+        d = self._make_command_delegate(main_module, monkeypatch)
+        d._client.transcribe.return_value = "do something"
+        d._client.supports_streaming = False
+        d._command_client.stream_command.side_effect = ConnectionError("OMLX down")
+
+        d._command_transcribe_worker(b"wav-data", 1)
+
+        calls = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+        selectors = [c[0][0] for c in calls]
+        assert "commandUtteranceReady:" in selectors
+        assert "commandFailed:" in selectors
+        assert "commandComplete:" not in selectors
+
+    def test_stale_token_breaks_stream(self, main_module, monkeypatch):
+        """If transcription_token changes mid-stream, stop dispatching tokens."""
+        d = self._make_command_delegate(main_module, monkeypatch)
+        d._client.transcribe.return_value = "do something"
+        d._client.supports_streaming = False
+
+        def token_gen(utterance):
+            yield "first"
+            d._transcription_token = 99  # simulate new recording invalidating
+            yield "should not appear"
+            yield "also should not appear"
+
+        d._command_client.stream_command.side_effect = token_gen
+
+        d._command_transcribe_worker(b"wav-data", 1)
+
+        calls = d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+        token_calls = [c for c in calls if c[0][0] == "commandToken:"]
+        # Only the first token should have been dispatched
+        assert len(token_calls) == 1
+        assert token_calls[0][0][1]["text"] == "first"
+
+    def test_streaming_preview_finalize_path(self, main_module, monkeypatch):
+        """When client is preview client with active stream, use finish_stream."""
+        d = self._make_command_delegate(main_module, monkeypatch)
+        d._client.supports_streaming = True
+        d._client.has_active_stream = True
+        d._preview_client = d._client  # same object
+        d._client.finish_stream.return_value = "streamed utterance"
+        d._command_client.stream_command.return_value = iter(["ok"])
+
+        d._command_transcribe_worker(b"wav-data", 1)
+
+        d._client.finish_stream.assert_called_once()
+        d._client.transcribe.assert_not_called()
+
+    def test_non_streaming_uses_transcribe(self, main_module, monkeypatch):
+        """When client doesn't support streaming, use transcribe."""
+        d = self._make_command_delegate(main_module, monkeypatch)
+        d._client.supports_streaming = False
+        d._client.transcribe.return_value = "hello"
+        d._command_client.stream_command.return_value = iter([])
+
+        d._command_transcribe_worker(b"wav-data", 1)
+
+        d._client.transcribe.assert_called_once_with(b"wav-data")
+
+    def test_waits_for_preview_thread(self, main_module, monkeypatch):
+        """Should wait for preview thread to finish before transcribing."""
+        d = self._make_command_delegate(main_module, monkeypatch)
+        mock_thread = MagicMock()
+        d._preview_thread = mock_thread
+        d._client.transcribe.return_value = ""
+        d._client.supports_streaming = False
+
+        d._command_transcribe_worker(b"wav-data", 1)
+
+        d._preview_done.wait.assert_called_once_with(timeout=2.0)
+        mock_thread.join.assert_called_once_with(timeout=2.0)
+
+
+class TestCommandCallbacks:
+    """Test main-thread command pathway callbacks."""
+
+    def test_command_utterance_ready_hides_input_shows_command(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+
+        d.commandUtteranceReady_({"token": 1, "utterance": "open file"})
+
+        d._overlay.hide.assert_called()
+        d._command_overlay.show.assert_called()
+        d._command_overlay.set_utterance.assert_called_with("open file")
+
+    def test_command_utterance_ready_stale_token_ignored(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._transcription_token = 2
+
+        d.commandUtteranceReady_({"token": 1, "utterance": "stale"})
+
+        d._command_overlay.show.assert_not_called()
+
+    def test_command_token_first_inverts_thinking(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+        d._command_first_token = True
+
+        d.commandToken_({"token": 1, "text": "first"})
+
+        d._command_overlay.invert_thinking_timer.assert_called_once()
+        d._command_overlay.append_token.assert_called_with("first")
+        assert d._command_first_token is False
+
+    def test_command_token_subsequent_no_invert(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+        d._command_first_token = False
+
+        d.commandToken_({"token": 1, "text": "more"})
+
+        d._command_overlay.invert_thinking_timer.assert_not_called()
+        d._command_overlay.append_token.assert_called_with("more")
+
+    def test_command_complete_finishes_overlay(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+        d._transcribing = True
+
+        d.commandComplete_({"token": 1})
+
+        assert d._transcribing is False
+        d._command_overlay.finish.assert_called_once()
+        d._glow.hide.assert_called()
+
+    def test_command_failed_shows_error_in_overlay(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay._visible = False
+        d._transcription_token = 1
+        d._transcribing = True
+
+        d.commandFailed_({"token": 1, "error": "OMLX down"})
+
+        assert d._transcribing is False
+        d._command_overlay.show.assert_called()
+        d._command_overlay.append_token.assert_called()
+        d._command_overlay.finish.assert_called()
+
+    def test_recall_last_response_shows_history(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = [("what time is it", "It's 3pm")]
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+        d._transcribing = True
+
+        d._recallLastResponse_({"token": 1})
+
+        assert d._transcribing is False
+        d._command_overlay.show.assert_called()
+        d._command_overlay.set_utterance.assert_called_with("what time is it")
+        d._command_overlay.finish.assert_called()
+
+    def test_recall_no_history(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+        d._transcribing = True
+
+        d._recallLastResponse_({"token": 1})
+
+        d._command_overlay.show.assert_not_called()
+
+
 class TestResultInjection:
     """Test timing of the post-injection overlay cleanup."""
 
