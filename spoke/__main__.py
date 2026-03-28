@@ -514,14 +514,18 @@ class SpokeAppDelegate(NSObject):
                         break
                 if last_with_content:
                     last_utterance, last_response = last_with_content
-                    logger.info("Shift+empty — recalling: %r", last_utterance[:50])
+                    logger.info("Shift+empty — recalling: %r (response: %d chars)", last_utterance[:50], len(last_response))
                     if self._command_overlay is not None:
-                        self._command_overlay.show()
-                        self._command_overlay._stop_thinking_timer()
-                        self._command_overlay.set_utterance(last_utterance)
-                        # Append entire response at once (not char by char)
-                        self._command_overlay.append_token(last_response)
-                        self._command_overlay.finish()
+                        try:
+                            self._command_overlay.show()
+                            self._command_overlay._stop_thinking_timer()
+                            self._command_overlay.set_utterance(last_utterance)
+                            logger.info("Recall: appending %d chars of response", len(last_response))
+                            self._command_overlay.append_token(last_response)
+                            self._command_overlay.finish()
+                            logger.info("Recall: complete")
+                        except Exception:
+                            logger.exception("Recall crashed")
                 else:
                     logger.info("Shift+empty — no content in history to recall")
             elif command_visible:
