@@ -1293,25 +1293,21 @@ class SpokeAppDelegate(NSObject):
         return lock
 
     def _inject_result_text(self, text: str, status_text: str) -> None:
+        # Hide the overlay before checking focus — the overlay sits at
+        # window level 25, and the AX system reports it as the focused
+        # element if it's visible, masking the actual text field underneath.
+        if self._overlay is not None:
+            self._overlay.hide()
+
         if has_focused_text_input():
             # Normal path: paste via Cmd+V
             def _on_clipboard_restored():
                 if self._menubar is not None:
                     self._menubar.set_status_text("Ready — hold spacebar")
 
-            if self._overlay is not None:
-                self._overlay.set_text(text)
-
             inject_text(text, on_restored=_on_clipboard_restored)
             if self._menubar is not None:
                 self._menubar.set_status_text(status_text)
-
-            if self._overlay is not None:
-                from Foundation import NSTimer
-
-                NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                    0.12, self, "hideOverlayAfterInject:", None, False
-                )
         else:
             # Recovery path: no text field focused
             logger.warning("No focused text input — entering paste recovery mode")

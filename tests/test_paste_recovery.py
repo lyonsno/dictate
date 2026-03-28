@@ -54,8 +54,8 @@ class TestRecoveryFlowBranching:
             d._inject_result_text("hello world", "Pasted!")
 
         mock_inject.assert_called_once()
-        # Overlay should get the text and then be hidden
-        d._overlay.set_text.assert_called_with("hello world")
+        # Overlay should be hidden before the focus check
+        d._overlay.hide.assert_called()
 
     def test_recovery_mode_when_no_text_field(self, main_module, monkeypatch):
         """When no text field is focused, enter recovery mode."""

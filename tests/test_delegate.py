@@ -902,18 +902,14 @@ class TestEnvValidation:
 class TestResultInjection:
     """Test timing of the post-injection overlay cleanup."""
 
-    def test_inject_result_text_hides_overlay_soon_after_injection(
+    def test_inject_result_text_hides_overlay_before_focus_check(
         self, main_module, monkeypatch
     ):
-        """Final text should not leave the overlay hanging around after injection."""
+        """Overlay should be hidden before the focus check runs so the AX
+        system sees the underlying text field, not the overlay."""
         d = _make_delegate(main_module, monkeypatch)
 
         with patch.object(main_module, "inject_text"):
-            with patch("Foundation.NSTimer") as MockTimer:
-                d._inject_result_text("hello", "Ready")
+            d._inject_result_text("hello", "Ready")
 
-        MockTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called_once()
-        assert (
-            MockTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args.args[0]
-            == 0.12
-        )
+        d._overlay.hide.assert_called()
