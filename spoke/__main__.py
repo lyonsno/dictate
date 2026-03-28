@@ -722,20 +722,24 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_status_text("Ready — hold spacebar")
 
     def commandFailed_(self, payload: dict) -> None:
-        """Main thread: handle command pathway error."""
+        """Main thread: show error in the command overlay, then fade."""
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
         error = payload.get("error", "Unknown error")
         logger.error("Command pathway error: %s", error)
         if self._glow is not None:
-            self._glow.hide()  # dimmer recedes on error too
+            self._glow.hide()
         if self._overlay is not None:
             self._overlay.hide()
+        # Show the error in the command overlay like a response
         if self._command_overlay is not None:
-            self._command_overlay.hide()
+            if not self._command_overlay._visible:
+                self._command_overlay.show()
+            self._command_overlay.append_token("couldn't reach the model — try again in a moment")
+            self._command_overlay.finish()
         if self._menubar is not None:
-            self._menubar.set_status_text("Error — try again")
+            self._menubar.set_status_text("Ready — hold spacebar")
 
     # ── helpers ─────────────────────────────────────────────
 
