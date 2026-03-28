@@ -1488,29 +1488,8 @@ class SpokeAppDelegate(NSObject):
         self._clear_recovery_state()
 
     def _on_recovery_insert(self) -> None:
-        """Insert button: attempt paste if a text field is now focused."""
-        if self._recovery_text is None:
-            return  # already dismissed
-
-        text = self._recovery_text or ""
-        saved = self._recovery_saved_clipboard
-
-        # Dismiss the overlay so it's gone before the paste.
-        if self._overlay is not None:
-            self._overlay.dismiss_recovery()
-
-        # Don't force-activate a captured previous app — the user may have
-        # switched to a different app since recovery started. Whatever is
-        # currently frontmost is where they want to paste. The NSPanel
-        # overlay doesn't steal activation, so the frontmost app should
-        # still be the right target.
-        #
-        # Short delay to let the overlay fully dismiss before pasting.
-        self._recovery_pending_insert = (text, saved)
-        from Foundation import NSTimer
-        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            0.15, self, "doRecoveryInsert:", None, False
-        )
+        """Insert button: same as spacebar retry — check first, bounce on failure."""
+        self._recovery_retry_insert()
 
     def doRecoveryInsert_(self, timer) -> None:
         """Delayed paste after recovery Insert — gives target app time to refocus."""

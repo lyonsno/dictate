@@ -157,21 +157,39 @@ class TestRecoveryDismiss:
 class TestRecoveryInsert:
     """Recovery Insert button behavior."""
 
-    def test_insert_dismisses_overlay_and_schedules_paste(self, main_module, monkeypatch):
-        """Insert should dismiss overlay and schedule a delayed paste."""
-        Foundation = __import__("Foundation")
+    def test_insert_button_delegates_to_retry(self, main_module, monkeypatch):
+        """Insert button should use the same logic as spacebar retry."""
         d = _make_delegate(main_module, monkeypatch)
         d._recovery_text = "transcribed text"
-        d._recovery_saved_clipboard = [("public.utf8-plain-text", b"old")]
 
-        d._on_recovery_insert()
+        with patch.object(d, "_recovery_retry_insert") as mock_retry:
+            d._on_recovery_insert()
 
-        # Overlay should be dismissed immediately
+        mock_retry.assert_called_once()
+
+    def test_retry_bounces_when_no_text_field(self, main_module, monkeypatch):
+        """Retry should bounce overlay when no text field is focused."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._recovery_text = "transcribed text"
+
+        with patch("spoke.__main__.has_focused_text_input", return_value=False):
+            d._recovery_retry_insert()
+
+        d._overlay.bounce.assert_called_once()
+        # Should NOT have dismissed
+        d._overlay.dismiss_recovery.assert_not_called()
+
+    def test_retry_pastes_when_text_field_available(self, main_module, monkeypatch):
+        """Retry should paste and dismiss when a text field is focused."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._recovery_text = "transcribed text"
+
+        with patch("spoke.__main__.has_focused_text_input", return_value=True), \
+             patch("spoke.__main__.inject_text") as mock_inject:
+            d._recovery_retry_insert()
+
+        mock_inject.assert_called_once()
         d._overlay.dismiss_recovery.assert_called_once()
-        # Paste should be scheduled via NSTimer (not called immediately)
-        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called()
-        # Pending insert should be stored
-        assert d._recovery_pending_insert == ("transcribed text", [("public.utf8-plain-text", b"old")])
 
     def test_delayed_insert_reenters_recovery_when_no_text_field(self, main_module, monkeypatch):
         """doRecoveryInsert_ should re-enter recovery if target didn't refocus."""
