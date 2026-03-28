@@ -704,20 +704,20 @@ class CommandOverlay(NSObject):
                 )
             except Exception:
                 pass
-            # Response text: full pulse at assistant phase
+            # Response text: takes on the current glow color
             resp_start = utt_len + 2  # skip \n\n separator
             if resp_start < total_len:
                 try:
                     ts.addAttribute_value_range_(
                         _FG_pulse,
-                        NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, alpha_a),
+                        NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, alpha_a),
                         (resp_start, total_len - resp_start),
                     )
                 except Exception:
                     pass
         else:
             self._text_view.setTextColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, alpha_a)
+                NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, alpha_a)
             )
 
         # Pulse the glow with assistant phase oscillating color
