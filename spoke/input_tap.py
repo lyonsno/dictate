@@ -93,6 +93,7 @@ class SpacebarHoldDetector(NSObject):
         self._hold_s = hold_ms / 1000.0
 
         self._state = _State.IDLE
+        self._shift_at_press = False
         self._hold_timer: NSTimer | None = None
         self._safety_timer: NSTimer | None = None
         self._forwarding = False
@@ -168,6 +169,7 @@ class SpacebarHoldDetector(NSObject):
 
         if self._state == _State.IDLE:
             self._state = _State.WAITING
+            self._shift_at_press = bool(flags & kCGEventFlagMaskShift)
             self._start_hold_timer()
             return True  # suppress the space
 

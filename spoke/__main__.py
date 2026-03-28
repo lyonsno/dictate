@@ -267,12 +267,18 @@ class SpokeAppDelegate(NSObject):
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
 
-        logger.info("Hold started — recording")
+        shift_at_press = getattr(self._detector, '_shift_at_press', False)
+        logger.info("Hold started — recording (shift_at_press=%s)", shift_at_press)
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
         if self._glow is not None:
-            self._glow.show()
+            if shift_at_press:
+                # Shift pseudo-haptic: spike the glow to signal shift registered
+                self._glow.show()
+                self._glow.update_amplitude(0.5)  # bright spike
+            else:
+                self._glow.show()
         if self._overlay is not None:
             self._overlay.show()
         self._capture.start(amplitude_callback=self._on_amplitude)
