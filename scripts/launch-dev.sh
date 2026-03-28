@@ -1,21 +1,34 @@
 #!/bin/bash
 # Launch spoke dev build. Bind to a hotkey via macOS Shortcuts or Automator.
-# Kills any existing instance first.
+# Lets the single-instance guard handle any existing instance.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOG_DIR="${HOME}/Library/Logs"
 LOG_FILE="${LOG_DIR}/spoke-dev-launch.log"
+LOCK_FILE="${LOG_DIR}/.spoke.lock"
 
-pkill -TERM -f "python.*spoke" 2>/dev/null
-sleep 0.5
-rm -f ~/Library/Logs/.spoke.lock
 mkdir -p "$LOG_DIR"
 
 {
   printf '\n=== %s ===\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+  printf 'Launcher PID %d (PPID %d) invoked from %s\n' "$$" "$PPID" "$PWD"
   printf 'Launching Spoke from %s\n' "$REPO_ROOT"
 } >>"$LOG_FILE"
+
+OLD_PID=""
+if [ -r "$LOCK_FILE" ]; then
+  OLD_PID="$(tr -d '[:space:]' < "$LOCK_FILE")"
+fi
+
+if [[ "$OLD_PID" =~ ^[0-9]+$ ]]; then
+  {
+    printf 'Launcher preflight: observed lock-holder pid %s in %s\n' "$OLD_PID" "$LOCK_FILE"
+    printf 'Launcher preflight: deferring termination to single-instance guard\n'
+  } >>"$LOG_FILE"
+else
+  printf 'Launcher preflight: no numeric lock-holder pid in %s\n' "$LOCK_FILE" >>"$LOG_FILE"
+fi
 
 export REPO_ROOT LOG_FILE
 export VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
@@ -53,6 +66,10 @@ with log_file.open("a", encoding="utf-8") as log:
             )
             log.flush()
             raise SystemExit(1)
+
+        log.write(f"Launcher PID context: pid={os.getpid()} ppid={os.getppid()}\n")
+        log.write(f"Launcher child command: {command!r}\n")
+        log.flush()
 
         subprocess.Popen(
             command,
