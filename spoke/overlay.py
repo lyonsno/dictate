@@ -751,6 +751,11 @@ class TranscriptionOverlay(NSObject):
         self._window.setAlphaValue_(1.0)
         self._window.orderFrontRegardless()
 
+        # Entrance pop: expand slightly then ease back to normal size.
+        # Communicates "I just appeared" on first show, and "paste failed,
+        # I'm back" on re-entry after a failed retry.
+        self._pop_entrance()
+
         logger.info("Recovery overlay shown")
 
     def bounce(self) -> None:
@@ -767,7 +772,6 @@ class TranscriptionOverlay(NSObject):
 
         content_layer = self._content_view.layer()
 
-        # Shrink phase
         shrink = CABasicAnimation.animationWithKeyPath_("transform.scale")
         shrink.setFromValue_(1.0)
         shrink.setToValue_(0.97)
@@ -775,6 +779,30 @@ class TranscriptionOverlay(NSObject):
         shrink.setAutoreverses_(True)
         shrink.setRemovedOnCompletion_(True)
         content_layer.addAnimation_forKey_(shrink, "bounce")
+
+    def _pop_entrance(self) -> None:
+        """Entrance pop: expand ~1mm on each side then ease back to normal.
+
+        A quick overshoot that says "I just arrived" on first appearance,
+        or "paste failed, I'm back" on re-entry. The ease-in on the
+        return makes it feel like the overlay settles into place.
+        """
+        if self._window is None:
+            return
+
+        from Quartz import CABasicAnimation, CAMediaTimingFunction
+
+        content_layer = self._content_view.layer()
+
+        pop = CABasicAnimation.animationWithKeyPath_("transform.scale")
+        pop.setFromValue_(1.015)  # ~1mm overshoot on a 600px overlay
+        pop.setToValue_(1.0)
+        pop.setDuration_(0.2)
+        pop.setTimingFunction_(
+            CAMediaTimingFunction.functionWithName_("easeIn")
+        )
+        pop.setRemovedOnCompletion_(True)
+        content_layer.addAnimation_forKey_(pop, "pop_entrance")
 
     def dismiss_recovery(self) -> None:
         """Exit recovery mode and hide the overlay."""
