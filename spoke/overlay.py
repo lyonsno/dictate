@@ -377,6 +377,21 @@ class TranscriptionOverlay(NSObject):
         self._start_fade_out()
         logger.info("Overlay hide")
 
+    def order_out(self) -> None:
+        """Immediately remove the overlay from screen (no fade).
+
+        Used before the AX focus check so the overlay window doesn't
+        mask the underlying focused element.
+        """
+        if self._window is None:
+            return
+        self._visible = False
+        self._cancel_fade()
+        self._cancel_typewriter()
+        self._window.setAlphaValue_(0.0)
+        self._window.orderOut_(None)
+        logger.info("Overlay ordered out")
+
     def _start_fade_out(self) -> None:
         """Animate fade-out using a repeating timer for smooth steps."""
         self._cancel_fade()
@@ -757,7 +772,7 @@ class TranscriptionOverlay(NSObject):
             ).CGColor()
         )
 
-        self.hide()
+        self.order_out()
 
     def flash_insert_reject(self) -> None:
         """Brief visual signal that Insert was rejected (no text field)."""

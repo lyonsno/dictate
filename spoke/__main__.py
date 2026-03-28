@@ -1293,11 +1293,11 @@ class SpokeAppDelegate(NSObject):
         return lock
 
     def _inject_result_text(self, text: str, status_text: str) -> None:
-        # Hide the overlay before checking focus — the overlay sits at
-        # window level 25, and the AX system reports it as the focused
+        # Remove the overlay from screen before checking focus — the overlay
+        # sits at window level 25, and the AX system reports it as the focused
         # element if it's visible, masking the actual text field underneath.
         if self._overlay is not None:
-            self._overlay.hide()
+            self._overlay.order_out()
 
         if has_focused_text_input():
             # Normal path: paste via Cmd+V
