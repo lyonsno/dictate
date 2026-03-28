@@ -39,9 +39,8 @@ _OVERLAY_CORNER_RADIUS = 16.0
 _OVERLAY_MAX_HEIGHT = 400.0
 _FONT_SIZE = 16.0
 _FADE_IN_S = 0.5
-_FADE_OUT_S = 2.7  # slow graceful fade
-_FADE_STEPS = 30
-_LINGER_S = 3.3  # short linger, long fade
+_FADE_OUT_S = 0.5  # fast dismiss fade (750ms total with 250ms hold)
+_FADE_STEPS = 15
 
 def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
@@ -329,10 +328,10 @@ class CommandOverlay(NSObject):
         self._start_thinking_timer()
 
     def cancel_dismiss(self) -> None:
-        """Pseudo-haptic cancel: swell to bright → hold → snap off.
+        """Pseudo-haptic dismiss: 250ms hold at bright → 500ms fade off.
 
-        Visual confirmation feedback that the cancel was received:
-        500ms ease-out swell to full opacity, 500ms hold, 250ms snap to zero.
+        Total: 750ms from spacebar hold to gone. The user taps space,
+        the overlay brightens briefly (confirmation), then snaps away.
         """
         if self._window is None:
             return
@@ -340,48 +339,34 @@ class CommandOverlay(NSObject):
         self._streaming = False
         self._visible = True  # keep visible for the animation
 
-        # Swell phase: ease-out to full brightness over 500ms
         self._cancel_step = 0
-        self._cancel_phase = "swell"  # swell → hold → snap
-        _CANCEL_SWELL_STEPS = 15  # 500ms at 30fps
-        self._cancel_swell_steps = _CANCEL_SWELL_STEPS
+        self._cancel_phase = "hold"  # hold → fade
+        # Brighten to full immediately
+        self._window.setAlphaValue_(1.0)
+        if self._text_view is not None:
+            self._text_view.setTextColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 1.0)
+            )
+        if hasattr(self, '_inner_shadow'):
+            self._inner_shadow.setShadowOpacity_(1.0)
         self._cancel_timer_anim = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0 / 30.0, self, "_cancelAnimStep:", None, True
         )
 
     def _cancelAnimStep_(self, timer) -> None:
-        """Animate the cancel dismiss sequence."""
+        """Animate the dismiss sequence: hold → fade."""
         self._cancel_step += 1
 
-        if self._cancel_phase == "swell":
-            # Ease-out swell to full brightness
+        if self._cancel_phase == "hold":
+            # Hold at full brightness for 250ms (~8 steps at 30fps)
+            if self._cancel_step >= 8:
+                self._cancel_step = 0
+                self._cancel_phase = "fade"
+
+        elif self._cancel_phase == "fade":
+            # Fade to zero over 500ms (~15 steps at 30fps)
             progress = min(self._cancel_step / 15.0, 1.0)
-            eased = 1.0 - (1.0 - progress) * (1.0 - progress)  # ease-out
-            self._window.setAlphaValue_(eased)
-            # Swell the tight glow
-            if hasattr(self, '_inner_shadow'):
-                self._inner_shadow.setShadowOpacity_(eased)
-            if hasattr(self, '_outer_glow_tight'):
-                self._outer_glow_tight.setShadowOpacity_(eased * 0.8)
-            # Brighten all text to full
-            if self._text_view is not None:
-                self._text_view.setTextColor_(
-                    NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, eased)
-                )
-            if self._cancel_step >= 15:
-                self._cancel_step = 0
-                self._cancel_phase = "hold"
-
-        elif self._cancel_phase == "hold":
-            # Hold at full brightness for 500ms (15 steps at 30fps)
-            if self._cancel_step >= 15:
-                self._cancel_step = 0
-                self._cancel_phase = "snap"
-
-        elif self._cancel_phase == "snap":
-            # Snap off: ease-out to zero over 250ms (~8 steps at 30fps)
-            progress = min(self._cancel_step / 8.0, 1.0)
-            eased = progress * progress  # ease-in (accelerating disappearance)
+            eased = progress * progress
             alpha = 1.0 - eased
             self._window.setAlphaValue_(alpha)
             if self._cancel_step >= 8:
@@ -477,10 +462,31 @@ class CommandOverlay(NSObject):
 
         self._update_layout()
 
+    def _current_hue_rgb(self):
+        """Get the current hue rotation color as (r, g, b)."""
+        hue = getattr(self, '_color_phase', 0.0)
+        s, v = 1.0, 1.0
+        c = v * s
+        x = c * (1.0 - abs((hue * 6.0) % 2.0 - 1.0))
+        m = v - c
+        h6 = hue * 6.0
+        if h6 < 1:
+            return (c + m, x + m, m)
+        elif h6 < 2:
+            return (x + m, c + m, m)
+        elif h6 < 3:
+            return (m, c + m, x + m)
+        elif h6 < 4:
+            return (m, x + m, c + m)
+        elif h6 < 5:
+            return (x + m, m, c + m)
+        else:
+            return (c + m, m, x + m)
+
     def _make_response_fragment(self, token: str):
         """Create an attributed string fragment for a response token.
 
-        White text with a violet-amber glow (low radius, text-shape visible).
+        Text color matches the current hue rotation. Glow matches too.
         """
         from AppKit import (
             NSMutableAttributedString,
@@ -489,9 +495,10 @@ class CommandOverlay(NSObject):
             NSShadowAttributeName,
             NSShadow,
         )
+        r, g, b = self._current_hue_rgb()
         frag = NSMutableAttributedString.alloc().initWithString_(token)
         response_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            1.0, 1.0, 1.0, _TEXT_ALPHA_MAX
+            r, g, b, _TEXT_ALPHA_MAX
         )
         frag.addAttribute_value_range_(
             NSForegroundColorAttributeName, response_color, (0, len(token))
@@ -501,12 +508,10 @@ class CommandOverlay(NSObject):
             NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
             (0, len(token)),
         )
-        # Assistant text glow — violet/amber mix, low radius
+        # Text glow in the current hue color
         glow = NSShadow.alloc().init()
         glow.setShadowColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(
-                _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 0.6
-            )
+            NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 0.6)
         )
         glow.setShadowOffset_((0, 0))
         glow.setShadowBlurRadius_(3.0)
@@ -566,15 +571,15 @@ class CommandOverlay(NSObject):
         self._text_view.textStorage().setAttributedString_(parts)
 
     def finish(self) -> None:
-        """Called when the response stream is complete. Start the linger timer."""
+        """Called when the response stream is complete.
+
+        The overlay stays visible indefinitely — the user dismisses it
+        by holding spacebar (which triggers cancel_dismiss via __main__).
+        No linger timer. The user is in control.
+        """
         self._streaming = False
-        # Stop thinking timer but keep pulse alive — it continues through
-        # linger and fade-out for visual continuity
         self._stop_thinking_timer()
-        # Linger then fade
-        self._linger_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            _LINGER_S, self, "lingerDone:", None, False
-        )
+        # Pulse keeps running — the overlay is alive until dismissed
 
     # ── animation ───────────────────────────────────────────
 
