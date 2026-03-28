@@ -438,10 +438,6 @@ class CommandOverlay(NSObject):
 
         frag = self._make_response_fragment(token)
         self._text_view.textStorage().appendAttributedString_(frag)
-        else:
-            # Subsequent tokens: append in-place (no flicker)
-            frag = self._make_response_fragment(token)
-            self._text_view.textStorage().appendAttributedString_(frag)
 
         self._update_layout()
 
