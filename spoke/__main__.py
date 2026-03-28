@@ -258,7 +258,21 @@ class SpokeAppDelegate(NSObject):
                     self._menubar.set_status_text("Loading models…")
             return
         if self._transcribing:
-            logger.warning("Hold started while transcription in flight — ignoring")
+            # Cancel any in-flight command/transcription
+            logger.info("Hold during transcription — cancelling")
+            self._transcription_token += 1  # invalidate in-flight work
+            self._transcribing = False
+            if self._overlay is not None:
+                self._overlay.hide()
+            if self._command_overlay is not None:
+                self._command_overlay.hide()
+            if self._menubar is not None:
+                self._menubar.set_status_text("Cancelled")
+            # Don't start a new recording — just cancel and return to ready
+            from Foundation import NSTimer
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.5, self, "_resetStatusAfterCancel:", None, False
+            )
             return
 
         logger.info("Hold started — recording")
@@ -593,6 +607,11 @@ class SpokeAppDelegate(NSObject):
         """Hide the overlay after briefly showing the final transcription."""
         if self._overlay is not None:
             self._overlay.hide()
+
+    def _resetStatusAfterCancel_(self, timer) -> None:
+        """Reset menubar status after a cancel."""
+        if self._menubar is not None and not self._transcribing:
+            self._menubar.set_status_text("Ready — hold spacebar")
 
     # ── command pathway ────────────────────────────────────
 
