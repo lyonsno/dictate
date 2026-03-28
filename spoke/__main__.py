@@ -1373,7 +1373,7 @@ class SpokeAppDelegate(NSObject):
         self._verify_paste_attempt = 0
         from Foundation import NSTimer
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            0.1, self, "verifyPaste:", None, False
+            0.15, self, "verifyPaste:", None, False
         )
 
     def _enter_recovery_mode(self, text: str) -> None:

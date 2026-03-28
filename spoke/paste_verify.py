@@ -96,31 +96,35 @@ def text_appears_on_screen(expected: str, screen_text: str) -> bool:
     screen_norm = " ".join(screen_text.split()).lower()
 
     # Check if a substantial substring of expected appears in screen text.
-    # SequenceMatcher finds the longest common subsequence ratio.
-    # We use it on the expected text against a sliding window of the
-    # screen text to find the best local match.
-    #
-    # For efficiency, if the expected text appears as a literal substring
-    # (common case), skip the fuzzy match.
     if expected_norm in screen_norm:
-        logger.debug("Exact match found in screen text")
+        logger.info("Paste verify: exact substring match found")
         return True
 
-    # Fuzzy match: find the best ratio between expected and any
-    # similarly-sized window of the screen text.
-    ratio = SequenceMatcher(None, expected_norm, screen_norm).ratio()
-
-    # The ratio is over the full screen text which dilutes the match.
-    # Use find_longest_match to get the actual overlap quality.
+    # Fuzzy match using SequenceMatcher ratio over the full texts.
+    # This accounts for OCR errors, line breaks splitting words,
+    # and partial visibility at screen edges.
     matcher = SequenceMatcher(None, expected_norm, screen_norm)
-    match = matcher.find_longest_match(0, len(expected_norm), 0, len(screen_norm))
-    if match.size == 0:
-        logger.debug("No common subsequence found")
-        return False
 
-    # What fraction of the expected text was found as a contiguous match?
-    coverage = match.size / len(expected_norm)
-    logger.debug("Best contiguous match: %d/%d chars (%.0f%% coverage)",
-                 match.size, len(expected_norm), coverage * 100)
+    # get_matching_blocks returns all matching subsequences, not just
+    # the longest one. Sum their lengths for total character coverage.
+    blocks = matcher.get_matching_blocks()
+    total_matched = sum(b.size for b in blocks)
+    coverage = total_matched / len(expected_norm) if expected_norm else 0
+
+    logger.info(
+        "Paste verify: %d/%d chars matched (%.0f%% coverage, %d blocks, threshold %.0f%%)",
+        total_matched, len(expected_norm), coverage * 100,
+        len(blocks) - 1,  # last block is always (len_a, len_b, 0)
+        _MATCH_THRESHOLD * 100,
+    )
+    if logger.isEnabledFor(logging.DEBUG):
+        # Show the first 100 chars of expected and a sample of screen text
+        logger.debug("  expected: %r", expected_norm[:100])
+        # Find the region of screen text near the best match
+        best = max(blocks[:-1], key=lambda b: b.size) if len(blocks) > 1 else None
+        if best:
+            start = max(0, best.b - 20)
+            end = min(len(screen_norm), best.b + best.size + 20)
+            logger.debug("  best match region: %r", screen_norm[start:end])
 
     return coverage >= _MATCH_THRESHOLD

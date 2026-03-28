@@ -76,3 +76,40 @@ class TestTextAppearsOnScreen:
         screen = "abcde totally completely different text here"
         result = mod.text_appears_on_screen(expected, screen)
         assert result is False  # 5/26 = ~19% coverage
+
+    def test_text_appended_to_existing_content(self):
+        """Pasted text appended after existing text in a field should match."""
+        mod = _import_module()
+        assert mod.text_appears_on_screen(
+            "This is the newly dictated text that was just pasted",
+            "Some existing content in the field This is the newly dictated text that was just pasted more chrome"
+        ) is True
+
+    def test_text_split_across_ocr_observations(self):
+        """OCR may split text across line boundaries — should still match."""
+        mod = _import_module()
+        # The OCR returns observations that get joined with spaces,
+        # potentially splitting words at line breaks
+        assert mod.text_appears_on_screen(
+            "Hello world this is a test sentence for OCR verification",
+            "menu bar stuff Hello world this is a test sentence for OCR verific ation bottom bar"
+        ) is True
+
+    def test_ocr_minor_errors_still_match(self):
+        """OCR may misread a few characters — should still match above threshold."""
+        mod = _import_module()
+        assert mod.text_appears_on_screen(
+            "The quick brown fox jumps over the lazy dog",
+            "chrome The quicK brown fox jumps 0ver the lazy dog more stuff"
+        ) is True
+
+    def test_text_partially_clipped_at_edge(self):
+        """Text near screen edge may be partially clipped by OCR."""
+        mod = _import_module()
+        # Only the first 70% of the text is visible
+        expected = "This is a long dictated sentence that goes to the edge of the screen"
+        visible = expected[:int(len(expected) * 0.7)]
+        assert mod.text_appears_on_screen(
+            expected,
+            f"some chrome {visible} more stuff"
+        ) is True
