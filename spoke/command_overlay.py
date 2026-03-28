@@ -39,9 +39,9 @@ _OVERLAY_CORNER_RADIUS = 16.0
 _OVERLAY_MAX_HEIGHT = 400.0
 _FONT_SIZE = 16.0
 _FADE_IN_S = 0.5
-_FADE_OUT_S = 0.9  # 50% faster fade
-_FADE_STEPS = 15
-_LINGER_S = 10.0  # seconds to linger after response completes
+_FADE_OUT_S = 2.7  # slow graceful fade
+_FADE_STEPS = 30
+_LINGER_S = 3.3  # short linger, long fade
 
 def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
@@ -59,7 +59,7 @@ _COLOR_B = (
     _env("SPOKE_COMMAND_COLOR_B_B", 0.3),
 )  # warm amber
 _GLOW_COLOR = _COLOR_A  # initial color for setup
-_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.55)  # visible pulse dip while staying readable
+_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.35)  # strong visible pulse
 _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
 _BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.35)
 _PULSE_PERIOD = _env("SPOKE_COMMAND_PULSE_PERIOD", 2.0)  # seconds per cycle
@@ -334,23 +334,34 @@ class CommandOverlay(NSObject):
         self._start_fade_out()
 
     def set_utterance(self, text: str) -> None:
-        """Show the user's utterance in the overlay at reduced opacity."""
+        """Show the user's utterance in the overlay with a blue text glow."""
         self._utterance_text = text
         if self._text_view is None or not self._visible:
             return
-        # Display the utterance immediately — dimmed to distinguish from response
         from AppKit import (
             NSMutableAttributedString,
             NSForegroundColorAttributeName,
+            NSShadowAttributeName,
+            NSShadow,
         )
         attr_str = NSMutableAttributedString.alloc().initWithString_(text)
         utterance_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            1.0, 1.0, 1.0, 0.35
+            1.0, 1.0, 1.0, 0.4
         )
         attr_str.addAttribute_value_range_(
             NSForegroundColorAttributeName,
             utterance_color,
             (0, len(text)),
+        )
+        # Blue text glow — low radius so text shape is visible in the glow
+        glow = NSShadow.alloc().init()
+        glow.setShadowColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(0.38, 0.52, 1.0, 0.7)
+        )
+        glow.setShadowOffset_((0, 0))
+        glow.setShadowBlurRadius_(3.0)
+        attr_str.addAttribute_value_range_(
+            NSShadowAttributeName, glow, (0, len(text))
         )
         self._text_view.textStorage().setAttributedString_(attr_str)
         self._update_layout()
@@ -375,6 +386,8 @@ class CommandOverlay(NSObject):
                 NSMutableAttributedString as _NMAS_first,
                 NSForegroundColorAttributeName as _FG_first,
                 NSFontAttributeName as _Font_first,
+                NSShadowAttributeName as _Shadow_first,
+                NSShadow as _NSShadow_first,
             )
             sep = _NMAS_first.alloc().initWithString_("\n\n")
             sep.addAttribute_value_range_(
@@ -384,41 +397,52 @@ class CommandOverlay(NSObject):
             )
             self._text_view.textStorage().appendAttributedString_(sep)
 
-            frag = _NMAS_first.alloc().initWithString_(token)
-            response_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-                1.0, 1.0, 1.0, _TEXT_ALPHA_MAX
-            )
-            frag.addAttribute_value_range_(
-                _FG_first, response_color, (0, len(token))
-            )
-            frag.addAttribute_value_range_(
-                _Font_first,
-                NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
-                (0, len(token)),
-            )
+            frag = self._make_response_fragment(token)
             self._text_view.textStorage().appendAttributedString_(frag)
         else:
             # Subsequent tokens: append in-place (no flicker)
-            from AppKit import (
-                NSMutableAttributedString,
-                NSForegroundColorAttributeName,
-                NSFontAttributeName,
-            )
-            frag = NSMutableAttributedString.alloc().initWithString_(token)
-            response_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-                1.0, 1.0, 1.0, _TEXT_ALPHA_MAX
-            )
-            frag.addAttribute_value_range_(
-                NSForegroundColorAttributeName, response_color, (0, len(token))
-            )
-            frag.addAttribute_value_range_(
-                NSFontAttributeName,
-                NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
-                (0, len(token)),
-            )
+            frag = self._make_response_fragment(token)
             self._text_view.textStorage().appendAttributedString_(frag)
 
         self._update_layout()
+
+    def _make_response_fragment(self, token: str):
+        """Create an attributed string fragment for a response token.
+
+        White text with a violet-amber glow (low radius, text-shape visible).
+        """
+        from AppKit import (
+            NSMutableAttributedString,
+            NSForegroundColorAttributeName,
+            NSFontAttributeName,
+            NSShadowAttributeName,
+            NSShadow,
+        )
+        frag = NSMutableAttributedString.alloc().initWithString_(token)
+        response_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            1.0, 1.0, 1.0, _TEXT_ALPHA_MAX
+        )
+        frag.addAttribute_value_range_(
+            NSForegroundColorAttributeName, response_color, (0, len(token))
+        )
+        frag.addAttribute_value_range_(
+            NSFontAttributeName,
+            NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
+            (0, len(token)),
+        )
+        # Assistant text glow — violet/amber mix, low radius
+        glow = NSShadow.alloc().init()
+        glow.setShadowColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                _COLOR_A[0], _COLOR_A[1], _COLOR_A[2], 0.6
+            )
+        )
+        glow.setShadowOffset_((0, 0))
+        glow.setShadowBlurRadius_(3.0)
+        frag.addAttribute_value_range_(
+            NSShadowAttributeName, glow, (0, len(token))
+        )
+        return frag
 
     def _rebuild_attributed_text(self) -> None:
         """Rebuild the overlay text with utterance (dim) + response (bright)."""
