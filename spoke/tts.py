@@ -61,6 +61,10 @@ class TTSClient:
             self._model = tts_load(self._model_id)
             logger.info("TTS model loaded.")
 
+    def warm(self) -> None:
+        """Pre-load the model in a background thread so first speak() is fast."""
+        threading.Thread(target=self._ensure_model, daemon=True).start()
+
     def speak(self, text: str) -> None:
         """Generate speech and play it synchronously.  Blocks until done."""
         if not text:

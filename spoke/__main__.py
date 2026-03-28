@@ -148,6 +148,7 @@ class SpokeAppDelegate(NSObject):
         self._tts_client = TTSClient.from_env()
         if self._tts_client is not None:
             logger.info("TTS enabled: voice=%s", self._tts_client._voice)
+            self._tts_client.warm()
 
         # Recovery mode state
         # _NOT_CAPTURED sentinel distinguishes "not captured yet" from
