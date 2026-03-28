@@ -191,6 +191,11 @@ class TranscriptionOverlay(NSObject):
         content.setWantsLayer_(True)
         content.layer().setCornerRadius_(_OVERLAY_CORNER_RADIUS)
         content.layer().setMasksToBounds_(True)
+        # Anchor point at center so scale animations expand symmetrically.
+        # Setting anchorPoint shifts the layer visually, so also set position
+        # to the center of the content frame to compensate.
+        content.layer().setAnchorPoint_((0.5, 0.5))
+        content.layer().setPosition_((f + _OVERLAY_WIDTH / 2, f + _OVERLAY_HEIGHT / 2))
         content.layer().setBackgroundColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, _BG_ALPHA_MIN).CGColor()
         )

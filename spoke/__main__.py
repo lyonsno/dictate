@@ -521,8 +521,9 @@ class SpokeAppDelegate(NSObject):
             self._overlay.set_text(text)
 
     def _on_hold_end(self, shift_held: bool = False) -> None:
-        # Recovery overlay intercept: spacebar retries Insert, shift+space dismisses
-        if getattr(self, "_recovery_hold_active", False):
+        # Recovery overlay intercept: spacebar retries Insert, shift+space sends to assistant
+        recovery_active = getattr(self, "_recovery_text", None) is not None
+        if recovery_active or getattr(self, "_recovery_hold_active", False):
             self._recovery_hold_active = False
             if shift_held:
                 if self._command_client is not None and self._recovery_text:
