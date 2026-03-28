@@ -257,21 +257,23 @@ class SpokeAppDelegate(NSObject):
                 else:
                     self._menubar.set_status_text("Loading models…")
             return
-        if self._transcribing:
-            # Cancel: invalidate in-flight work, run dismiss animation
-            logger.info("Hold during transcription — cancelling")
+        # Dismiss visible command overlay or cancel in-flight work
+        command_visible = (
+            self._command_overlay is not None
+            and getattr(self._command_overlay, '_visible', False)
+        )
+        if self._transcribing or command_visible:
+            logger.info("Hold — dismissing command overlay")
             self._transcription_token += 1
             self._transcribing = False
             if self._overlay is not None:
                 self._overlay.hide()
+            if self._glow is not None:
+                self._glow.hide()
             if self._command_overlay is not None:
                 self._command_overlay.cancel_dismiss()
             if self._menubar is not None:
-                self._menubar.set_status_text("Cancelled")
-            from Foundation import NSTimer
-            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                1.5, self, "_resetStatusAfterCancel:", None, False
-            )
+                self._menubar.set_status_text("Ready — hold spacebar")
             return
 
         logger.info("Hold started — recording")

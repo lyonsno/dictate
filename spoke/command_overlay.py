@@ -465,7 +465,7 @@ class CommandOverlay(NSObject):
     def _current_hue_rgb(self):
         """Get the current hue rotation color as (r, g, b)."""
         hue = getattr(self, '_color_phase', 0.0)
-        s, v = 1.0, 1.0
+        s, v = 0.75, 0.95
         c = v * s
         x = c * (1.0 - abs((hue * 6.0) % 2.0 - 1.0))
         m = v - c
@@ -652,7 +652,7 @@ class CommandOverlay(NSObject):
         # (dips quickly). Raw sine → squared so it spends more time high.
         raw_breath = 0.5 * (1.0 + math.cos(2.0 * math.pi * self._pulse_phase_asst))
         breath = raw_breath * raw_breath  # squared: lingers near 1.0, dips briefly
-        alpha_a = 0.55 + 0.30 * breath
+        alpha_a = 0.40 + 0.25 * breath  # lower overall opacity, subtle pulse
 
         # User: raw sine → single smoothstep (same aggressiveness as before)
         raw_u = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase_user))
@@ -672,7 +672,7 @@ class CommandOverlay(NSObject):
             self._color_phase -= 1.0
         hue = self._color_phase
         # HSV to RGB (saturation=0.6, value=0.9 for soft vivid colors)
-        s, v = 1.0, 1.0  # maximum saturation and brightness
+        s, v = 0.75, 0.95  # vivid but not neon
         c = v * s
         x = c * (1.0 - abs((hue * 6.0) % 2.0 - 1.0))
         m = v - c
