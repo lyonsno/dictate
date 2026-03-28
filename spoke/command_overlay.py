@@ -95,7 +95,7 @@ class CommandOverlay(NSObject):
         self._pulse_phase_asst = 0.0
 
         self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
-        self._color_phase = 0.0
+        self._color_phase = 0.75  # start at violet, not red
         self._color_velocity_phase = 0.0
 
         # Linger timer
@@ -318,7 +318,7 @@ class CommandOverlay(NSObject):
         self._pulse_phase_asst = 0.0
 
         self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
-        self._color_phase = 0.0
+        self._color_phase = 0.75  # start at violet, not red
         self._color_velocity_phase = 0.0
         self._pulse_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0 / _PULSE_HZ, self, "pulseStep:", None, True
@@ -341,11 +341,12 @@ class CommandOverlay(NSObject):
 
         self._cancel_step = 0
         self._cancel_phase = "hold"  # hold → fade
-        # Brighten to full immediately
+        # Brighten to full immediately in the current hue color
         self._window.setAlphaValue_(1.0)
         if self._text_view is not None:
+            r, g, b = self._current_hue_rgb()
             self._text_view.setTextColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 1.0)
+                NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
             )
         if hasattr(self, '_inner_shadow'):
             self._inner_shadow.setShadowOpacity_(1.0)
