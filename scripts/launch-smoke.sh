@@ -4,29 +4,33 @@
 #
 # The smoke target is read from ~/.config/spoke/smoke-target, which should
 # contain the absolute path to the repo/worktree to launch from.
-# If the file doesn't exist, falls back to the main checkout.
+#
+# If the target file doesn't exist or the target directory is gone,
+# plays the system alert sound and exits — no modal dialog, no fallback.
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DEFAULT_REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
 SMOKE_TARGET_FILE="${HOME}/.config/spoke/smoke-target"
-
-if [ -f "$SMOKE_TARGET_FILE" ]; then
-  REPO_ROOT="$(cat "$SMOKE_TARGET_FILE" | tr -d '[:space:]')"
-  if [ ! -d "$REPO_ROOT" ]; then
-    echo "Smoke target $REPO_ROOT does not exist, falling back to $DEFAULT_REPO" >&2
-    REPO_ROOT="$DEFAULT_REPO"
-  fi
-else
-  REPO_ROOT="$DEFAULT_REPO"
-fi
-
 LOG_DIR="${HOME}/Library/Logs"
 LOG_FILE="${LOG_DIR}/spoke-smoke-launch.log"
+mkdir -p "$LOG_DIR"
+
+# Read smoke target
+if [ ! -f "$SMOKE_TARGET_FILE" ]; then
+  osascript -e 'display notification "No smoke target configured" with title "Spoke Smoke" subtitle "Set ~/.config/spoke/smoke-target"' 2>/dev/null
+  afplay /System/Library/Sounds/Basso.aiff 2>/dev/null &
+  exit 0
+fi
+
+REPO_ROOT="$(cat "$SMOKE_TARGET_FILE" | tr -d '[:space:]')"
+
+if [ -z "$REPO_ROOT" ] || [ ! -d "$REPO_ROOT" ]; then
+  osascript -e "display notification \"Target gone: $REPO_ROOT\" with title \"Spoke Smoke\" subtitle \"Worktree may have been cleaned up\"" 2>/dev/null
+  afplay /System/Library/Sounds/Basso.aiff 2>/dev/null &
+  exit 0
+fi
 
 pkill -TERM -f "python.*spoke" 2>/dev/null
 sleep 0.5
 rm -f ~/Library/Logs/.spoke.lock
-mkdir -p "$LOG_DIR"
 
 {
   printf '\n=== %s ===\n' "$(date '+%Y-%m-%d %H:%M:%S')"
