@@ -62,6 +62,32 @@ Do not silently fall back to the stable Automator or `main` launcher when the us
 
 When reading epistaxis, if any recorded state doesn't match what you observe in the code or thread, flag it before proceeding — even if the mismatch might just be stale rather than wrong. Multiple sessions may write to the same epistaxis file concurrently; merge your changes without overwriting entries you didn't write.
 
+## Epistaxis Intent Model
+
+For `spoke`, do not treat `Repo/task` in `**Current intent**` as a single
+repo-global active intent that must summarize the whole repository.
+
+`spoke` can carry one durable strategic direction while multiple active
+surfaces proceed in parallel. In this repo, use the layers below:
+
+- `Session:` the active intent for the current thread.
+- `Repo/task:` the specific surface, branch, worktree, or task this session is
+  advancing. It does not need to summarize unrelated concurrent work.
+- Strategic direction: durable product-level direction belongs in repo
+  Epistaxis status/decisions or roadmap surfaces, not in the per-session
+  `Repo/task` line.
+
+When updating `spoke` Epistaxis state:
+
+- Keep concurrent surfaces as separate scoped local state entries.
+- Name a default continuation surface only when one is actually intended as the
+  default for future pickup.
+- Do not churn `**Current intent**` just because another unrelated surface is
+  also active.
+- Treat incoherence as contested surface ownership, landing target, shared
+  invariant, or contradictory strategic direction, not merely the existence of
+  several active branches.
+
 ## Demo video
 
 - `scripts/demo-convert.sh` converts screen recordings (.mov) to optimized MP4s. Run with `--help` for options.

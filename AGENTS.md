@@ -10,6 +10,32 @@ When writing or updating docs, reviews, Epistaxis notes, PR text, release notes,
 
 Treat the repo as renamed for documentation purposes and keep naming consistent with `spoke`.
 
+## Epistaxis Intent Model
+
+For `spoke`, do not treat `Repo/task` in `**Current intent**` as a single
+repo-global active intent that must summarize the whole repository.
+
+`spoke` can carry one durable strategic direction while multiple active
+surfaces proceed in parallel. In this repo, use the layers below:
+
+- `Session:` the active intent for the current thread.
+- `Repo/task:` the specific surface, branch, worktree, or task this session is
+  advancing. It does not need to summarize unrelated concurrent work.
+- Strategic direction: durable product-level direction belongs in repo
+  Epistaxis status/decisions or roadmap surfaces, not in the per-session
+  `Repo/task` line.
+
+When updating `spoke` Epistaxis state:
+
+- Keep concurrent surfaces as separate scoped local state entries.
+- Name a default continuation surface only when one is actually intended as the
+  default for future pickup.
+- Do not churn `**Current intent**` just because another unrelated surface is
+  also active.
+- Treat incoherence as contested surface ownership, landing target, shared
+  invariant, or contradictory strategic direction, not merely the existence of
+  several active branches.
+
 ## Commits
 
 Unless the user explicitly says otherwise, push commits after creating them.
