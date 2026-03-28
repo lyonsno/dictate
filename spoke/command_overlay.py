@@ -599,7 +599,12 @@ class CommandOverlay(NSObject):
         if self._color_phase > 1.0:
             self._color_phase -= 1.0
         hue = self._color_phase
-        # HSV to RGB (saturation=0.6, value=0.9 for soft vivid colors)
+        # Log color phase every ~1s (every 30th tick)
+        if not hasattr(self, '_color_log_counter'):
+            self._color_log_counter = 0
+        self._color_log_counter += 1
+        if self._color_log_counter % 30 == 0:
+            logger.info("Color phase: %.3f hue, vel_phase=%.3f", hue, self._color_velocity_phase)
         s, v = 0.75, 0.95  # vivid but not neon
         c = v * s
         x = c * (1.0 - abs((hue * 6.0) % 2.0 - 1.0))
