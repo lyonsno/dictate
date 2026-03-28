@@ -7,7 +7,7 @@ causing a beachball that survives SIGTERM.
 
 import threading
 import time
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 
 def _make_mic_delegate(main_module, monkeypatch):
