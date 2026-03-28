@@ -481,6 +481,13 @@ class SpokeAppDelegate(NSObject):
         self._preview_cancelled_on_release = True
         wav_bytes = self._capture.stop()
 
+        # Short shift-hold (under 800ms of recording) = instant recall/dismiss
+        # The user didn't have time to say anything meaningful
+        elapsed = time.monotonic() - self._record_start_time if self._record_start_time else 0
+        if shift_held and elapsed < 0.8:
+            logger.info("Short shift-hold (%.0fms) — treating as instant", elapsed * 1000)
+            wav_bytes = b""  # force the empty-audio path
+
         # Glow/dimmer: hide immediately for text insertion, persist for commands
         if not shift_held and self._glow is not None:
             self._glow.hide()
