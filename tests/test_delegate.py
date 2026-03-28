@@ -32,6 +32,15 @@ def _make_delegate(main_module, monkeypatch):
     delegate._last_preview_text = ""
     delegate._command_client = None
     delegate._command_overlay = None
+    # Recovery mode state
+    delegate._pre_paste_clipboard = None
+    delegate._verify_paste_text = None
+    delegate._verify_paste_attempt = 0
+    delegate._recovery_saved_clipboard = None
+    delegate._recovery_text = None
+    delegate._recovery_clipboard_state = "idle"
+    delegate._recovery_previous_app = None
+    delegate._recovery_pending_insert = None
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
@@ -893,18 +902,14 @@ class TestEnvValidation:
 class TestResultInjection:
     """Test timing of the post-injection overlay cleanup."""
 
-    def test_inject_result_text_hides_overlay_soon_after_injection(
+    def test_inject_result_text_orders_out_overlay_before_focus_check(
         self, main_module, monkeypatch
     ):
-        """Final text should not leave the overlay hanging around after injection."""
+        """Overlay should be ordered out (not faded) before the focus check
+        runs so the AX system sees the underlying text field, not the overlay."""
         d = _make_delegate(main_module, monkeypatch)
 
         with patch.object(main_module, "inject_text"):
-            with patch("Foundation.NSTimer") as MockTimer:
-                d._inject_result_text("hello", "Ready")
+            d._inject_result_text("hello", "Ready")
 
-        MockTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called_once()
-        assert (
-            MockTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args.args[0]
-            == 0.12
-        )
+        d._overlay.order_out.assert_called()

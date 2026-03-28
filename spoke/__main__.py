@@ -32,8 +32,9 @@ from Foundation import NSObject
 
 from .capture import AudioCapture
 from .command import CommandClient
+from .focus_check import has_focused_text_input
 from .glow import GlowOverlay
-from .inject import inject_text
+from .inject import inject_text, save_pasteboard, restore_pasteboard, set_pasteboard_only
 from .input_tap import SpacebarHoldDetector
 from .menubar import MenuBarIcon
 from .overlay import TranscriptionOverlay
@@ -138,6 +139,16 @@ class SpokeAppDelegate(NSObject):
         else:
             self._command_client = None
             self._command_overlay = None
+
+        # Recovery mode state
+        self._pre_paste_clipboard: list[tuple[str, bytes]] | None = None
+        self._verify_paste_text: str | None = None
+        self._verify_paste_attempt: int = 0
+        self._recovery_saved_clipboard: list[tuple[str, bytes]] | None = None
+        self._recovery_text: str | None = None
+        self._recovery_clipboard_state: str = "idle"
+        self._recovery_previous_app: object | None = None
+        self._recovery_pending_insert = None
 
         if self._local_mode and _MAX_RECORD_SECS is not None:
             logger.info(
@@ -266,6 +277,10 @@ class SpokeAppDelegate(NSObject):
         # Note: if command overlay is visible but finished, leave it up.
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
+
+        # Cancel any active recovery overlay or pending verification
+        self._verify_paste_text = None
+        self._cancel_recovery()
 
         shift_at_press = getattr(self._detector, '_shift_at_press', False)
         logger.info("Hold started — recording (shift_at_press=%s)", shift_at_press)
@@ -800,6 +815,58 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
 
+    def verifyPaste_(self, timer) -> None:
+        """Background OCR verification — confirm the pasted text appeared on screen."""
+        text = getattr(self, "_verify_paste_text", None)
+        if text is None:
+            return
+
+        attempt = getattr(self, "_verify_paste_attempt", 0)
+
+        # Run OCR in background thread to avoid blocking the main thread
+        import threading
+        def _verify():
+            from .paste_verify import capture_screen_text, text_appears_on_screen
+            screen_text = capture_screen_text()
+            found = text_appears_on_screen(text, screen_text)
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "verifyPasteResult:",
+                {"found": found, "text": text, "attempt": attempt},
+                False,
+            )
+        threading.Thread(target=_verify, daemon=True).start()
+
+    def verifyPasteResult_(self, payload) -> None:
+        """Main thread: handle OCR verification result."""
+        found = payload["found"]
+        text = payload["text"]
+        attempt = payload["attempt"]
+
+        # If we've moved on (new recording started, or recovery already active),
+        # discard this result.
+        if getattr(self, "_verify_paste_text", None) != text:
+            return
+
+        if found:
+            logger.info("Paste verified by OCR (attempt %d)", attempt + 1)
+            self._verify_paste_text = None
+            return
+
+        if attempt == 0:
+            # First check failed — retry once at 300ms to give slow apps time
+            logger.debug("Paste not verified on first check, retrying in 200ms")
+            self._verify_paste_attempt = 1
+            from Foundation import NSTimer
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.2, self, "verifyPaste:", None, False
+            )
+            return
+
+        # Second check also failed — paste didn't land, enter recovery
+        logger.warning("Paste not verified by OCR after %d attempts — entering recovery", attempt + 1)
+        self._verify_paste_text = None
+        self._enter_recovery_mode(text)
+
     # ── helpers ─────────────────────────────────────────────
 
     _MODEL_OPTIONS = [
@@ -1278,23 +1345,181 @@ class SpokeAppDelegate(NSObject):
         return lock
 
     def _inject_result_text(self, text: str, status_text: str) -> None:
+        # Remove the overlay from screen so it doesn't appear in the
+        # verification screenshot or mask the focused element.
+        if self._overlay is not None:
+            self._overlay.order_out()
+
+        # Always attempt the paste immediately — the user perceives no delay.
+        # Save clipboard state before inject_text overwrites it, in case we
+        # need to enter recovery mode after OCR verification.
+        self._pre_paste_clipboard = save_pasteboard()
+
         def _on_clipboard_restored():
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
-
-        if self._overlay is not None:
-            self._overlay.set_text(text)
 
         inject_text(text, on_restored=_on_clipboard_restored)
         if self._menubar is not None:
             self._menubar.set_status_text(status_text)
 
-        if self._overlay is not None:
-            from Foundation import NSTimer
+        # Schedule background OCR verification to confirm the paste landed.
+        # If it didn't, we'll enter recovery mode.
+        self._verify_paste_text = text
+        self._verify_paste_attempt = 0
+        from Foundation import NSTimer
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.1, self, "verifyPaste:", None, False
+        )
 
-            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                0.12, self, "hideOverlayAfterInject:", None, False
+    def _enter_recovery_mode(self, text: str) -> None:
+        """Show the recovery overlay with Dismiss / Insert / Clipboard buttons."""
+        from AppKit import NSWorkspace
+
+        # Use pre-saved clipboard if available (from _inject_result_text),
+        # otherwise save current clipboard.
+        self._recovery_saved_clipboard = getattr(self, "_pre_paste_clipboard", None) or save_pasteboard()
+        self._pre_paste_clipboard = None
+        self._recovery_text = text
+        self._recovery_clipboard_state = "idle"
+
+        # Capture the frontmost app so Insert can re-activate it
+        try:
+            self._recovery_previous_app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        except Exception:
+            self._recovery_previous_app = None
+
+        # Put transcription on pasteboard for manual paste
+        set_pasteboard_only(text)
+
+        if self._overlay is not None:
+            self._overlay.show_recovery(
+                text,
+                on_dismiss=self._on_recovery_dismiss,
+                on_insert=self._on_recovery_insert,
+                on_clipboard_toggle=self._on_recovery_clipboard_toggle,
             )
+        if self._menubar is not None:
+            self._menubar.set_status_text("No text field — ⌘V to paste")
+
+    def _on_recovery_dismiss(self) -> None:
+        """Dismiss button: restore clipboard and hide overlay."""
+        if self._recovery_text is None:
+            return  # already dismissed
+        restore_pasteboard(self._recovery_saved_clipboard)
+        if self._overlay is not None:
+            self._overlay.dismiss_recovery()
+        if self._menubar is not None:
+            self._menubar.set_status_text("Ready — hold spacebar")
+        self._clear_recovery_state()
+
+    def _on_recovery_insert(self) -> None:
+        """Insert button: attempt paste if a text field is now focused."""
+        if self._recovery_text is None:
+            return  # already dismissed
+
+        text = self._recovery_text or ""
+        saved = self._recovery_saved_clipboard
+
+        # Dismiss the overlay FIRST so it's not stealing focus
+        if self._overlay is not None:
+            self._overlay.dismiss_recovery()
+
+        # Re-activate the previous app so it regains focus
+        if self._recovery_previous_app is not None:
+            try:
+                self._recovery_previous_app.activateWithOptions_(0)
+            except Exception:
+                logger.debug("Failed to re-activate previous app", exc_info=True)
+
+        # Schedule the actual paste after a short delay to let the target
+        # app regain focus and re-establish the text field as first responder.
+        self._recovery_pending_insert = (text, saved)
+        from Foundation import NSTimer
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.15, self, "doRecoveryInsert:", None, False
+        )
+
+    def doRecoveryInsert_(self, timer) -> None:
+        """Delayed paste after recovery Insert — gives target app time to refocus."""
+        pending = getattr(self, "_recovery_pending_insert", None)
+        if pending is None:
+            return
+        text, saved = pending
+        self._recovery_pending_insert = None
+
+        if not has_focused_text_input():
+            # Still no text field — the target app didn't refocus in time.
+            # Re-enter recovery mode rather than losing the text.
+            logger.warning("Insert failed — target app did not refocus, re-entering recovery")
+            self._enter_recovery_mode(text)
+            return
+
+        # Restore original clipboard BEFORE calling inject_text so that
+        # inject_text's save/restore cycle preserves the original contents.
+        restore_pasteboard(saved)
+
+        def _on_restored():
+            if self._menubar is not None:
+                self._menubar.set_status_text("Ready — hold spacebar")
+
+        inject_text(text, on_restored=_on_restored)
+        if self._menubar is not None:
+            self._menubar.set_status_text("Pasted!")
+        self._clear_recovery_state()
+
+    def _on_recovery_clipboard_toggle(self) -> None:
+        """Clipboard button: toggle between transcription and original clipboard."""
+        if self._recovery_clipboard_state == "idle":
+            # First click: transcription is already on clipboard from _enter_recovery_mode
+            self._recovery_clipboard_state = "transcription_on_clipboard"
+            # Show preview of what was clobbered
+            old_text = self._get_clipboard_preview_text(self._recovery_saved_clipboard)
+            if self._overlay is not None:
+                self._overlay.set_clipboard_preview(old_text)
+        elif self._recovery_clipboard_state == "transcription_on_clipboard":
+            # Restore old clipboard, show transcription preview
+            restore_pasteboard(self._recovery_saved_clipboard)
+            self._recovery_clipboard_state = "original_on_clipboard"
+            if self._overlay is not None:
+                self._overlay.set_clipboard_preview(self._recovery_text or "")
+        elif self._recovery_clipboard_state == "original_on_clipboard":
+            # Put transcription back on clipboard, show old preview
+            set_pasteboard_only(self._recovery_text or "")
+            self._recovery_clipboard_state = "transcription_on_clipboard"
+            old_text = self._get_clipboard_preview_text(self._recovery_saved_clipboard)
+            if self._overlay is not None:
+                self._overlay.set_clipboard_preview(old_text)
+
+    def _cancel_recovery(self) -> None:
+        """Cancel recovery mode if active. Restores original clipboard."""
+        if getattr(self, "_recovery_text", None) is not None:
+            restore_pasteboard(getattr(self, "_recovery_saved_clipboard", None))
+            if self._overlay is not None:
+                self._overlay.dismiss_recovery()
+            self._clear_recovery_state()
+
+    def _clear_recovery_state(self) -> None:
+        """Reset recovery state fields."""
+        self._recovery_saved_clipboard = None
+        self._recovery_text = None
+        self._recovery_clipboard_state = "idle"
+        self._recovery_previous_app = None
+        self._recovery_pending_insert = None
+
+    @staticmethod
+    def _get_clipboard_preview_text(saved: list[tuple[str, bytes]] | None) -> str:
+        """Extract a text preview from saved clipboard contents."""
+        if not saved:
+            return "(empty)"
+        for ptype, data in saved:
+            if "utf8" in ptype.lower() or "string" in ptype.lower() or "text" in ptype.lower():
+                try:
+                    return data.decode("utf-8")
+                except UnicodeDecodeError:
+                    pass
+        # Non-text content
+        return "(non-text)"
 
     @staticmethod
     def _model_allowed(model_id: str) -> bool:
