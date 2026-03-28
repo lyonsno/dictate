@@ -303,10 +303,16 @@ def _event_tap_callback(proxy, event_type, event, refcon):
 
     if event_type == kCGEventKeyDown:
         flags = CGEventGetFlags(event)
+        if keycode == SPACEBAR_KEYCODE:
+            logger.info("keyDown space: flags=%#x shift=%s state=%s",
+                        flags, bool(flags & kCGEventFlagMaskShift), det._state)
         if det.handle_key_down(keycode, flags):
             return None  # suppress
     elif event_type == kCGEventKeyUp:
         flags = CGEventGetFlags(event)
+        if keycode == SPACEBAR_KEYCODE:
+            logger.info("keyUp space: flags=%#x shift=%s state=%s",
+                        flags, bool(flags & kCGEventFlagMaskShift), det._state)
         if det.handle_key_up(keycode, flags=flags):
             return None  # suppress
 

@@ -39,30 +39,26 @@ _OVERLAY_CORNER_RADIUS = 16.0
 _OVERLAY_MAX_HEIGHT = 400.0
 _FONT_SIZE = 16.0
 _FADE_IN_S = 0.5
-_FADE_OUT_S = 1.8  # slow fade for readability
-_FADE_STEPS = 20  # more steps for the slower fade
-_LINGER_S = 10.0  # seconds to linger after response completes
+_FADE_OUT_S = 0.5  # fast dismiss fade (750ms total with 250ms hold)
+_FADE_STEPS = 15
 
 def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
     return float(v) if v is not None else default
 
-# Color oscillation endpoints — violet and warm amber
-_COLOR_A = (
-    _env("SPOKE_COMMAND_COLOR_A_R", 0.6),
-    _env("SPOKE_COMMAND_COLOR_A_G", 0.4),
-    _env("SPOKE_COMMAND_COLOR_A_B", 0.9),
-)  # soft violet
-_COLOR_B = (
-    _env("SPOKE_COMMAND_COLOR_B_R", 0.85),
-    _env("SPOKE_COMMAND_COLOR_B_G", 0.6),
-    _env("SPOKE_COMMAND_COLOR_B_B", 0.3),
-)  # warm amber
-_GLOW_COLOR = _COLOR_A  # initial color for setup
-_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.75)  # higher floor — always readable
+# Assistant glow: full spectrum rotation with velocity undulation
+_COLOR_CYCLE_PERIOD = _env("SPOKE_COMMAND_COLOR_PERIOD", 6.0)  # seconds per full hue rotation
+_COLOR_VELOCITY_PERIOD = 7.0  # velocity oscillation period (out of phase with everything)
+_COLOR_VELOCITY_MIN = 0.3  # slowest speed multiplier (dwells)
+_COLOR_VELOCITY_MAX = 1.7  # fastest speed multiplier (transitions)
+_GLOW_COLOR = (0.6, 0.4, 0.9)  # initial color for setup (violet)
+_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.35)  # strong visible pulse
 _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
-_BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.35)
-_PULSE_PERIOD = _env("SPOKE_COMMAND_PULSE_PERIOD", 2.0)  # seconds per cycle
+_BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.55)
+_PULSE_PERIOD = _env("SPOKE_COMMAND_PULSE_PERIOD", 2.0)  # base period (seconds)
+_PULSE_PERIOD_USER = _PULSE_PERIOD * 1.5  # user text: 50% slower
+_PULSE_PERIOD_ASST = 5.0  # assistant text: slow deep breath
+_PULSE_PHASE_OFFSET_USER = 0.3  # user starts 30% ahead in phase
 _PULSE_HZ = 30.0  # timer frequency for pulse animation
 
 _OUTER_FEATHER = 40.0
@@ -87,6 +83,7 @@ class CommandOverlay(NSObject):
         self._streaming = False
         self._response_text = ""
         self._utterance_text = ""
+        self._utterance_label = None  # pinned header for user text
 
         # Fade state
         self._fade_timer: NSTimer | None = None
@@ -96,7 +93,11 @@ class CommandOverlay(NSObject):
 
         # Pulse state
         self._pulse_timer: NSTimer | None = None
-        self._pulse_phase = 0.0
+        self._pulse_phase_asst = 0.0
+
+        self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
+        self._color_phase = 0.75  # start at violet, not red
+        self._color_velocity_phase = 0.0
 
         # Linger timer
         self._linger_timer: NSTimer | None = None
@@ -216,7 +217,7 @@ class CommandOverlay(NSObject):
         wrapper.addSubview_(content)
         self._content_view = content
 
-        # Scroll view with text view
+        # Scroll view with text view for response text
         scroll_frame = NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
         self._scroll_view = NSScrollView.alloc().initWithFrame_(scroll_frame)
         self._scroll_view.setHasVerticalScroller_(False)
@@ -315,7 +316,11 @@ class CommandOverlay(NSObject):
         )
 
         # Start pulse animation
-        self._pulse_phase = 0.0
+        self._pulse_phase_asst = 0.0
+
+        self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
+        self._color_phase = 0.75  # start at violet, not red
+        self._color_velocity_phase = 0.0
         self._pulse_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0 / _PULSE_HZ, self, "pulseStep:", None, True
         )
@@ -323,144 +328,189 @@ class CommandOverlay(NSObject):
         # Start thinking timer (glowing number mode)
         self._start_thinking_timer()
 
+    def cancel_dismiss(self) -> None:
+        """Pseudo-haptic dismiss: 250ms hold at bright → 500ms fade off.
+
+        Total: 750ms from spacebar hold to gone. The user taps space,
+        the overlay brightens briefly (confirmation), then snaps away.
+        """
+        if self._window is None:
+            return
+        self._cancel_all_timers()
+        self._streaming = False
+        self._visible = True  # keep visible for the animation
+
+        self._cancel_step = 0
+        self._cancel_phase = "hold"  # hold → fade
+        # Brighten window to full — don't touch text color (no flash)
+        self._window.setAlphaValue_(1.0)
+        self._cancel_timer_anim = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0 / 30.0, self, "_cancelAnimStep:", None, True
+        )
+
+    def _cancelAnimStep_(self, timer) -> None:
+        """Animate the dismiss sequence: hold → fade."""
+        self._cancel_step += 1
+
+        if self._cancel_phase == "hold":
+            # Hold at full brightness for 250ms (~8 steps at 30fps)
+            if self._cancel_step >= 8:
+                self._cancel_step = 0
+                self._cancel_phase = "fade"
+
+        elif self._cancel_phase == "fade":
+            # Fade to zero over 500ms (~15 steps at 30fps)
+            progress = min(self._cancel_step / 15.0, 1.0)
+            eased = progress * progress
+            alpha = 1.0 - eased
+            self._window.setAlphaValue_(alpha)
+            if self._cancel_step >= 8:
+                if self._cancel_timer_anim is not None:
+                    self._cancel_timer_anim.invalidate()
+                    self._cancel_timer_anim = None
+                self._window.setAlphaValue_(0.0)
+                self._window.orderOut_(None)
+                self._visible = False
+                self._cancel_pulse()
+
     def hide(self) -> None:
-        """Fade out and stop all animation."""
+        """Fade out — pulse continues during fade for visual continuity."""
         if self._window is None:
             return
         self._visible = False
         self._streaming = False
-        self._cancel_pulse()
         self._cancel_linger()
+        # Don't cancel pulse here — let it continue during fade-out.
+        # It will be cancelled when the fade completes (window ordered out).
         self._start_fade_out()
 
     def set_utterance(self, text: str) -> None:
-        """Show the user's utterance in the overlay at reduced opacity."""
+        """Show the user's utterance in the text view at reduced opacity."""
         self._utterance_text = text
         if self._text_view is None or not self._visible:
             return
-        # Display the utterance immediately — dimmed to distinguish from response
         from AppKit import (
             NSMutableAttributedString,
             NSForegroundColorAttributeName,
         )
         attr_str = NSMutableAttributedString.alloc().initWithString_(text)
-        utterance_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            1.0, 1.0, 1.0, 0.35
-        )
         attr_str.addAttribute_value_range_(
             NSForegroundColorAttributeName,
-            utterance_color,
+            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.4),
             (0, len(text)),
+        )
+        self._text_view.textStorage().setAttributedString_(attr_str)
+        self._update_layout()
+        glow.setShadowBlurRadius_(3.0)
+        attr_str.addAttribute_value_range_(
+            NSShadowAttributeName, glow, (0, len(text))
         )
         self._text_view.textStorage().setAttributedString_(attr_str)
         self._update_layout()
 
     def append_token(self, token: str) -> None:
-        """Append a streamed response token.
-
-        On the first token, rebuilds the text view with the utterance
-        (dimmed) above a separator and the response (bright) below.
-        Subsequent tokens append an attributed fragment in-place to
-        avoid full-redraw flicker.
-        """
+        """Append a streamed response token."""
         if self._text_view is None or not self._visible:
             return
         first_token = len(self._response_text) == 0
         self._response_text += token
 
-        if first_token:
-            # First token: full rebuild to lay out utterance + response
-            self._rebuild_attributed_text()
-        else:
-            # Subsequent tokens: append in-place (no flicker)
+        if first_token and self._utterance_text:
+            # Add separator between utterance and response
             from AppKit import (
                 NSMutableAttributedString,
                 NSForegroundColorAttributeName,
-                NSFontAttributeName,
             )
-            frag = NSMutableAttributedString.alloc().initWithString_(token)
-            response_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-                1.0, 1.0, 1.0, _TEXT_ALPHA_MAX
+            sep = NSMutableAttributedString.alloc().initWithString_("\n\n")
+            sep.addAttribute_value_range_(
+                NSForegroundColorAttributeName,
+                NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
+                (0, 2),
             )
-            frag.addAttribute_value_range_(
-                NSForegroundColorAttributeName, response_color, (0, len(token))
-            )
-            frag.addAttribute_value_range_(
-                NSFontAttributeName,
-                NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
-                (0, len(token)),
-            )
-            self._text_view.textStorage().appendAttributedString_(frag)
+            self._text_view.textStorage().appendAttributedString_(sep)
+
+        frag = self._make_response_fragment(token)
+        self._text_view.textStorage().appendAttributedString_(frag)
 
         self._update_layout()
 
-    def _rebuild_attributed_text(self) -> None:
-        """Rebuild the overlay text with utterance (dim) + response (bright)."""
+    def _current_hue_rgb(self):
+        """Get the current hue rotation color as (r, g, b)."""
+        hue = getattr(self, '_color_phase', 0.0)
+        s, v = 0.75, 0.95
+        c = v * s
+        x = c * (1.0 - abs((hue * 6.0) % 2.0 - 1.0))
+        m = v - c
+        h6 = hue * 6.0
+        if h6 < 1:
+            return (c + m, x + m, m)
+        elif h6 < 2:
+            return (x + m, c + m, m)
+        elif h6 < 3:
+            return (m, c + m, x + m)
+        elif h6 < 4:
+            return (m, x + m, c + m)
+        elif h6 < 5:
+            return (x + m, m, c + m)
+        else:
+            return (c + m, m, x + m)
+
+    def _make_response_fragment(self, token: str):
+        """Create an attributed string fragment for a response token.
+
+        Text color matches the current hue rotation. Glow matches too.
+        """
         from AppKit import (
             NSMutableAttributedString,
             NSForegroundColorAttributeName,
             NSFontAttributeName,
+            NSShadowAttributeName,
+            NSShadow,
         )
-        parts = NSMutableAttributedString.alloc().init()
-
-        if self._utterance_text:
-            utterance_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-                1.0, 1.0, 1.0, 0.35
-            )
-            utt = NSMutableAttributedString.alloc().initWithString_(
-                self._utterance_text + "\n\n"
-            )
-            utt.addAttribute_value_range_(
-                NSForegroundColorAttributeName,
-                utterance_color,
-                (0, len(self._utterance_text) + 2),
-            )
-            # Slightly smaller font for the utterance
-            utt.addAttribute_value_range_(
-                NSFontAttributeName,
-                NSFont.systemFontOfSize_weight_(14.0, 0.0),
-                (0, len(self._utterance_text) + 2),
-            )
-            parts.appendAttributedString_(utt)
-
-        if self._response_text:
-            response_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-                1.0, 1.0, 1.0, _TEXT_ALPHA_MAX
-            )
-            resp = NSMutableAttributedString.alloc().initWithString_(
-                self._response_text
-            )
-            resp.addAttribute_value_range_(
-                NSForegroundColorAttributeName,
-                response_color,
-                (0, len(self._response_text)),
-            )
-            resp.addAttribute_value_range_(
-                NSFontAttributeName,
-                NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
-                (0, len(self._response_text)),
-            )
-            parts.appendAttributedString_(resp)
-
-        self._text_view.textStorage().setAttributedString_(parts)
+        r, g, b = self._current_hue_rgb()
+        frag = NSMutableAttributedString.alloc().initWithString_(token)
+        response_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            r, g, b, _TEXT_ALPHA_MAX
+        )
+        frag.addAttribute_value_range_(
+            NSForegroundColorAttributeName, response_color, (0, len(token))
+        )
+        frag.addAttribute_value_range_(
+            NSFontAttributeName,
+            NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
+            (0, len(token)),
+        )
+        # Text glow in the current hue color
+        glow = NSShadow.alloc().init()
+        glow.setShadowColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 0.6)
+        )
+        glow.setShadowOffset_((0, 0))
+        glow.setShadowBlurRadius_(3.0)
+        frag.addAttribute_value_range_(
+            NSShadowAttributeName, glow, (0, len(token))
+        )
+        return frag
 
     def finish(self) -> None:
-        """Called when the response stream is complete. Start the linger timer."""
+        """Called when the response stream is complete.
+
+        The overlay stays visible indefinitely — the user dismisses it
+        by holding spacebar (which triggers cancel_dismiss via __main__).
+        No linger timer. The user is in control.
+        """
         self._streaming = False
-        # Stop pulse and thinking timer, leave text visible
-        self._cancel_pulse()
         self._stop_thinking_timer()
-        # Rebuild with final attributed text (utterance dim, response bright)
-        self._rebuild_attributed_text()
-        # Linger then fade
-        self._linger_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            _LINGER_S, self, "lingerDone:", None, False
-        )
+        # Pulse keeps running — the overlay is alive until dismissed
 
     # ── animation ───────────────────────────────────────────
 
     def fadeStep_(self, timer) -> None:
-        """One step of the fade animation."""
+        """One step of the fade animation.
+
+        During fade-out, the utterance text fades at double rate so it
+        disappears before the assistant response.
+        """
         self._fade_step += 1
         progress = self._fade_step / _FADE_STEPS
 
@@ -471,6 +521,22 @@ class CommandOverlay(NSObject):
             eased = progress * progress
             alpha = self._fade_from * (1.0 - eased)
 
+            # Fade utterance at double rate
+            if self._text_view is not None and self._utterance_text:
+                from AppKit import NSForegroundColorAttributeName
+                utt_progress = min(progress * 2.0, 1.0)
+                utt_alpha = 0.35 * (1.0 - utt_progress * utt_progress)
+                utt_len = min(len(self._utterance_text), self._text_view.textStorage().length() if hasattr(self._text_view.textStorage(), 'length') else 0)
+                if utt_len > 0:
+                    try:
+                        self._text_view.textStorage().addAttribute_value_range_(
+                            NSForegroundColorAttributeName,
+                            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, utt_alpha),
+                            (0, utt_len),
+                        )
+                    except Exception:
+                        pass
+
         self._window.setAlphaValue_(alpha)
 
         if self._fade_step >= _FADE_STEPS:
@@ -478,45 +544,121 @@ class CommandOverlay(NSObject):
             if self._fade_direction == -1:
                 self._window.setAlphaValue_(0.0)
                 self._window.orderOut_(None)
+                self._cancel_pulse()  # now kill the pulse
             else:
                 self._window.setAlphaValue_(1.0)
 
     def pulseStep_(self, timer) -> None:
-        """Animate text opacity and glow color with asymmetric ease.
+        """Dual-phase pulse: user and assistant text breathe independently.
 
-        The pulse spends more time opaque and quick-dips to transparent:
-        a power curve biases the phase so the "transparent" trough is
-        narrow and the "opaque" plateau is wide.  Color oscillates between
-        violet (_COLOR_A) and warm amber (_COLOR_B) on the same cadence.
+        Assistant text: faster period (0.8x base), double-smoothstep for
+        extra-aggressive easing, violet-amber color oscillation.
+        User text: slower period (1.5x base), single smoothstep, blue
+        color shift, phase-offset by 0.3 and diverging naturally.
         """
-        if not self._streaming or self._text_view is None:
+        try:
+            self._pulseStepInner()
+        except Exception:
+            logger.exception("pulseStep_ crashed")
+
+    def _pulseStepInner(self):
+        if self._text_view is None:
             return
-        self._pulse_phase += (1.0 / _PULSE_HZ) / _PULSE_PERIOD
-        if self._pulse_phase > 1.0:
-            self._pulse_phase -= 1.0
+        dt = 1.0 / _PULSE_HZ
 
-        # Raw sine: 0→1→0 over one period
-        raw = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase))
+        # Advance phases
+        self._pulse_phase_asst += dt / _PULSE_PERIOD_ASST
+        if self._pulse_phase_asst > 1.0:
+            self._pulse_phase_asst -= 1.0
+        self._pulse_phase_user += dt / _PULSE_PERIOD_USER
+        if self._pulse_phase_user > 1.0:
+            self._pulse_phase_user -= 1.0
 
-        # Asymmetric ease: power curve makes the dip narrow and the
-        # plateau wide.  raw^0.3 spends most of its range near 1.0 and
-        # only briefly dips toward 0.0.
-        pulse = raw ** 0.3
+        # Assistant: one slow breath, 5 seconds. Asymmetric:
+        # ease-out toward bright (lingers near peak), ease-in back to dim
+        # (dips quickly). Raw sine → squared so it spends more time high.
+        raw_breath = 0.5 * (1.0 + math.cos(2.0 * math.pi * self._pulse_phase_asst))
+        breath = raw_breath * raw_breath  # squared: lingers near 1.0, dips briefly
+        alpha_a = 0.40 + 0.25 * breath  # lower overall opacity, subtle pulse
 
-        alpha = _TEXT_ALPHA_MIN + pulse * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
+        # User: raw sine → single smoothstep (same aggressiveness as before)
+        raw_u = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase_user))
+        pulse_u = raw_u * raw_u * (3.0 - 2.0 * raw_u)
+        utt_alpha = 0.2 + 0.25 * pulse_u
 
-        # Color oscillation: lerp between violet and amber on the same phase
-        r = _COLOR_A[0] + raw * (_COLOR_B[0] - _COLOR_A[0])
-        g = _COLOR_A[1] + raw * (_COLOR_B[1] - _COLOR_A[1])
-        b = _COLOR_A[2] + raw * (_COLOR_B[2] - _COLOR_A[2])
+        # Full spectrum hue rotation with velocity undulation
+        # The speed varies sinusoidally so it dwells in some colors and
+        # glides through others — always moving, never truly paused.
+        self._color_velocity_phase += dt / _COLOR_VELOCITY_PERIOD
+        if self._color_velocity_phase > 1.0:
+            self._color_velocity_phase -= 1.0
+        vel_raw = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._color_velocity_phase))
+        vel = _COLOR_VELOCITY_MIN + vel_raw * (_COLOR_VELOCITY_MAX - _COLOR_VELOCITY_MIN)
+        self._color_phase += (dt / _COLOR_CYCLE_PERIOD) * vel
+        if self._color_phase > 1.0:
+            self._color_phase -= 1.0
+        hue = self._color_phase
+        # Log color phase every ~1s (every 30th tick)
+        if not hasattr(self, '_color_log_counter'):
+            self._color_log_counter = 0
+        self._color_log_counter += 1
+        if self._color_log_counter % 30 == 0:
+            logger.info("Color phase: %.3f hue, vel_phase=%.3f", hue, self._color_velocity_phase)
+        s, v = 0.38, 0.81  # soft pastel — readable, not neon
+        c = v * s
+        x = c * (1.0 - abs((hue * 6.0) % 2.0 - 1.0))
+        m = v - c
+        h6 = hue * 6.0
+        if h6 < 1:
+            r, g, b = c + m, x + m, m
+        elif h6 < 2:
+            r, g, b = x + m, c + m, m
+        elif h6 < 3:
+            r, g, b = m, c + m, x + m
+        elif h6 < 4:
+            r, g, b = m, x + m, c + m
+        elif h6 < 5:
+            r, g, b = x + m, m, c + m
+        else:
+            r, g, b = c + m, m, x + m
 
-        self._text_view.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, alpha)
-        )
+        # Update text colors per-range
+        if self._text_view is not None:
+            from AppKit import NSForegroundColorAttributeName as _FG_pulse
+            ts = self._text_view.textStorage()
+            total_len = ts.length() if hasattr(ts, 'length') else 0
+            if total_len > 0 and self._utterance_text:
+                utt_len = min(len(self._utterance_text), total_len)
+                # User text: white with blue tint, breathing
+                try:
+                    ur = 0.85 + 0.15 * pulse_u
+                    ug = 0.9 + 0.1 * pulse_u
+                    ts.addAttribute_value_range_(
+                        _FG_pulse,
+                        NSColor.colorWithSRGBRed_green_blue_alpha_(ur, ug, 1.0, utt_alpha),
+                        (0, utt_len),
+                    )
+                except Exception:
+                    pass
+                # Response text: current hue color
+                resp_start = utt_len + 2
+                if resp_start < total_len:
+                    try:
+                        ts.addAttribute_value_range_(
+                            _FG_pulse,
+                            NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, alpha_a),
+                            (resp_start, total_len - resp_start),
+                        )
+                    except Exception:
+                        pass
+            elif total_len > 0:
+                self._text_view.setTextColor_(
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, alpha_a)
+                )
 
-        # Pulse the glow with the oscillating color
+        # Pulse the glow with assistant phase oscillating color
         glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
-        glow_opacity = 0.5 + 0.3 * pulse
+        glow_opacity = 0.5 + 0.3 * breath
         if hasattr(self, '_inner_shadow'):
             self._inner_shadow.setShadowColor_(glow_nscolor.CGColor())
             self._inner_shadow.setFillColor_(

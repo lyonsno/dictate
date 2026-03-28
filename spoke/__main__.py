@@ -43,8 +43,8 @@ from .transcribe_qwen import LocalQwenClient
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
-_DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-large-v3-turbo"
+_DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx"
+_DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 
@@ -257,9 +257,15 @@ class SpokeAppDelegate(NSObject):
                 else:
                     self._menubar.set_status_text("Loading models…")
             return
+        # If a command is actively streaming, cancel it
         if self._transcribing:
-            logger.warning("Hold started while transcription in flight — ignoring")
-            return
+            logger.info("Hold during active stream — cancelling")
+            self._transcription_token += 1
+            self._transcribing = False
+            # Fall through to start recording
+        # Note: if command overlay is visible but finished, leave it up.
+        # It will be dismissed if the user says nothing (empty recording)
+        # or replaced if they send a new command.
 
         logger.info("Hold started — recording")
         if self._menubar is not None:
@@ -468,7 +474,8 @@ class SpokeAppDelegate(NSObject):
         self._preview_cancelled_on_release = True
         wav_bytes = self._capture.stop()
 
-        if self._glow is not None:
+        # Glow/dimmer: hide immediately for text insertion, persist for commands
+        if not shift_held and self._glow is not None:
             self._glow.hide()
         if self._menubar is not None:
             self._menubar.set_recording(False)
@@ -477,6 +484,16 @@ class SpokeAppDelegate(NSObject):
             logger.warning("No audio captured")
             if self._overlay is not None:
                 self._overlay.hide()
+            # Empty recording with command overlay visible = dismiss
+            command_visible = (
+                self._command_overlay is not None
+                and getattr(self._command_overlay, '_visible', False)
+            )
+            if command_visible:
+                logger.info("Empty recording — dismissing command overlay")
+                self._command_overlay.cancel_dismiss()
+                if self._glow is not None:
+                    self._glow.hide()
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
             return
@@ -594,6 +611,11 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             self._overlay.hide()
 
+    def _resetStatusAfterCancel_(self, timer) -> None:
+        """Reset menubar status after a cancel."""
+        if self._menubar is not None and not self._transcribing:
+            self._menubar.set_status_text("Ready — hold spacebar")
+
     # ── command pathway ────────────────────────────────────
 
     def _command_transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
@@ -695,28 +717,37 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
+        if self._glow is not None:
+            self._glow.hide()  # dimmer recedes when generation finishes
         if self._command_overlay is not None:
             self._command_overlay.finish()
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
 
     def commandFailed_(self, payload: dict) -> None:
-        """Main thread: handle command pathway error."""
+        """Main thread: show error in the command overlay, then fade."""
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
         error = payload.get("error", "Unknown error")
         logger.error("Command pathway error: %s", error)
+        if self._glow is not None:
+            self._glow.hide()
         if self._overlay is not None:
             self._overlay.hide()
+        # Show the error in the command overlay like a response
         if self._command_overlay is not None:
-            self._command_overlay.hide()
+            if not self._command_overlay._visible:
+                self._command_overlay.show()
+            self._command_overlay.append_token("couldn't reach the model — try again in a moment")
+            self._command_overlay.finish()
         if self._menubar is not None:
-            self._menubar.set_status_text("Error — try again")
+            self._menubar.set_status_text("Ready — hold spacebar")
 
     # ── helpers ─────────────────────────────────────────────
 
     _MODEL_OPTIONS = [
+        ("mlx-community/whisper-base.en-mlx", "Base.en (bf16)"),
         ("mlx-community/whisper-base.en-mlx-8bit", "Base.en (8bit)"),
         ("mlx-community/whisper-small.en-mlx-8bit", "Small.en (8bit)"),
         ("mlx-community/whisper-medium.en-mlx-4bit", "Medium.en (4bit)"),
