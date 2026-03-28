@@ -114,13 +114,29 @@ class TestTextAppearsOnScreen:
             f"some chrome {visible} more stuff"
         ) is True
 
-    def test_distinctive_word_fallback_matches(self):
-        """Even one distinctive word on screen should confirm paste success."""
+    def test_bigram_fallback_matches(self):
+        """Adjacent word pair from expected on screen should confirm paste."""
         mod = _import_module()
-        # Most of the text is not visible, but one distinctive word is
         assert mod.text_appears_on_screen(
             "The preliminary investigation revealed surprising results",
-            "totally unrelated screen content surprising more unrelated"
+            "totally unrelated surprising results more unrelated"
+        ) is True
+
+    def test_single_chrome_word_does_not_match(self):
+        """A single word matching UI chrome should NOT confirm paste."""
+        mod = _import_module()
+        # "settings" appears in chrome but not as part of a bigram from the expected text
+        assert mod._has_distinctive_word_match(
+            "please open the settings panel and adjust volume",
+            "system settings general about privacy security"
+        ) is False
+
+    def test_bigram_with_context_does_match(self):
+        """Same word but with adjacent context from the dictation should match."""
+        mod = _import_module()
+        assert mod._has_distinctive_word_match(
+            "please open the settings panel and adjust volume",
+            "other stuff settings panel more stuff"
         ) is True
 
     def test_stopwords_only_do_not_match(self):
@@ -131,19 +147,20 @@ class TestTextAppearsOnScreen:
             "the and is to for with from that this"
         ) is False
 
-    def test_distinctive_word_must_be_long_enough(self):
-        """Very short words (< 3 chars) should not count as distinctive."""
+    def test_short_text_uses_single_word_fallback(self):
+        """Very short text (< 4 words) falls back to single word match."""
         mod = _import_module()
-        # "go" and "do" are too short; no distinctive words overlap
+        # 3 words — too short for reliable bigrams, uses single word fallback
+        # but also under _MIN_VERIFY_LENGTH so auto-passes
         assert mod._has_distinctive_word_match(
-            "we should go and do it now",
-            "go do it the and is to for"
-        ) is False
+            "surprising results here",
+            "unrelated surprising content"
+        ) is True
 
-    def test_url_bar_overflow_with_one_word_visible(self):
-        """Long text pasted into URL bar — most clipped, one word visible."""
+    def test_url_bar_overflow_with_bigram_visible(self):
+        """Long text pasted into URL bar — most clipped, one bigram visible."""
         mod = _import_module()
         assert mod.text_appears_on_screen(
             "Please navigate to the authentication dashboard and check credentials",
-            "chrome tabs authentication other browser stuff"
+            "chrome tabs authentication dashboard browser stuff"
         ) is True

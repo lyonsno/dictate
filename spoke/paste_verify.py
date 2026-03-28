@@ -154,14 +154,44 @@ _MIN_WORD_LENGTH = 3
 
 
 def _has_distinctive_word_match(expected: str, screen: str) -> bool:
-    """Check if any distinctive word from expected appears in screen text."""
-    screen_words = set(screen.split())
-    for word in expected.split():
-        if len(word) < _MIN_WORD_LENGTH:
-            continue
-        if word in _STOPWORDS:
-            continue
-        if word in screen_words:
-            logger.info("Paste verify: distinctive word match '%s'", word)
-            return True
+    """Check if a distinctive phrase from expected appears in screen text.
+
+    Uses sliding bigram windows: if any two adjacent words (where at least
+    one is distinctive) appear together in the screen text, the paste is
+    confirmed. A single word like "settings" could match UI chrome, but
+    "adjust settings" or "settings panel" is specific enough to confirm
+    the paste landed.
+
+    Falls back to single distinctive words only if the expected text is
+    very short (< 4 words) and there aren't enough words for bigrams.
+    """
+    expected_words = expected.split()
+    screen_words_set = set(screen.split())
+
+    # Build bigrams from expected text
+    if len(expected_words) >= 2:
+        for i in range(len(expected_words) - 1):
+            w1, w2 = expected_words[i], expected_words[i + 1]
+            # At least one word in the bigram must be distinctive
+            w1_distinctive = len(w1) >= _MIN_WORD_LENGTH and w1 not in _STOPWORDS
+            w2_distinctive = len(w2) >= _MIN_WORD_LENGTH and w2 not in _STOPWORDS
+            if not (w1_distinctive or w2_distinctive):
+                continue
+            # Check if the bigram appears as adjacent words in screen text
+            bigram = f"{w1} {w2}"
+            if bigram in screen:
+                logger.info("Paste verify: bigram match '%s'", bigram)
+                return True
+
+    # Short text fallback: single distinctive word match
+    if len(expected_words) < 4:
+        for word in expected_words:
+            if len(word) < _MIN_WORD_LENGTH:
+                continue
+            if word in _STOPWORDS:
+                continue
+            if word in screen_words_set:
+                logger.info("Paste verify: single word match '%s' (short text)", word)
+                return True
+
     return False
