@@ -461,13 +461,10 @@ class TestCommandThinking:
             )
 
         with patch.object(urllib.request, "urlopen", fake_urlopen):
-            # Consume the generator
-            try:
-                for _ in client.stream_command("test"):
-                    pass
-            except Exception:
+            for _ in client.stream_command("test"):
                 pass
 
+        assert "data" in captured_body, "urlopen was never called — request body not captured"
         assert "chat_template_kwargs" in captured_body["data"]
         assert captured_body["data"]["chat_template_kwargs"] == {"enable_thinking": False}
 
@@ -490,10 +487,8 @@ class TestCommandThinking:
             )
 
         with patch.object(urllib.request, "urlopen", fake_urlopen):
-            try:
-                for _ in client.stream_command("test"):
-                    pass
-            except Exception:
+            for _ in client.stream_command("test"):
                 pass
 
+        assert "data" in captured_body, "urlopen was never called — request body not captured"
         assert "chat_template_kwargs" not in captured_body["data"]

@@ -974,6 +974,21 @@ class TestRecordingCap:
         d._detector.force_end.assert_not_called()
         assert d._cap_fired is False
 
+    def test_cap_noop_when_max_record_secs_none(self, main_module, monkeypatch):
+        """On high-RAM machines (>=36GB), _MAX_RECORD_SECS is None — cap is disabled."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._cap_fired = False
+        d._record_start_time = time.monotonic() - 25.0
+        self._setup_glow_mock(d)
+
+        monkeypatch.setattr(main_module, "_MAX_RECORD_SECS", None)
+
+        d.amplitudeUpdate_(MagicMock(return_value=0.01))
+
+        d._detector.force_end.assert_not_called()
+        assert d._cap_fired is False
+
 
 class TestCommandTranscribeWorker:
     """Test _command_transcribe_worker branching and dispatch."""

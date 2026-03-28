@@ -313,9 +313,10 @@ class TestOCRVerifyRetry:
 
         # Should schedule retry timer, not enter recovery
         Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called_once()
-        # Timer delay should be 0.2s
+        # Timer delay should be 0.2s with correct selector
         call_args = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
         assert call_args[0][0] == 0.2
+        assert call_args[0][2] == "verifyPaste:"
         # Attempt counter should be incremented
         assert d._verify_paste_attempt == 1
         # Should NOT have entered recovery
