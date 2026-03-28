@@ -665,7 +665,7 @@ class CommandOverlay(NSObject):
 
         # Pulse the glow with assistant phase oscillating color
         glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
-        glow_opacity = 0.5 + 0.3 * pulse_a
+        glow_opacity = 0.5 + 0.3 * breath
         if hasattr(self, '_inner_shadow'):
             self._inner_shadow.setShadowColor_(glow_nscolor.CGColor())
             self._inner_shadow.setFillColor_(
