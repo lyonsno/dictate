@@ -922,10 +922,13 @@ class SpokeAppDelegate(NSObject):
         tts = getattr(self, "_tts_client", None)
         if response and tts is not None:
             # Reset glow state for TTS — the noise floor has adapted up during
-            # command streaming and would eat the TTS signal otherwise
+            # command streaming and would eat the TTS signal otherwise.
+            # Also raise the peak target so the glow is fully visible.
             if self._glow is not None:
                 self._glow._noise_floor = 0.0
                 self._glow._smoothed_amplitude = 0.0
+                self._glow._tts_peak_save = self._glow._glow_peak_target
+                self._glow._glow_peak_target = 1.0
             tts.speak_async(
                 response,
                 amplitude_callback=self._on_amplitude,
@@ -937,8 +940,11 @@ class SpokeAppDelegate(NSObject):
             self._glow.hide()
 
     def ttsFinished_(self, _) -> None:
-        """Main thread: TTS playback ended — hide glow."""
+        """Main thread: TTS playback ended — restore glow peak and hide."""
         if self._glow is not None:
+            saved = getattr(self._glow, "_tts_peak_save", None)
+            if saved is not None:
+                self._glow._glow_peak_target = saved
             self._glow.hide()
 
     def commandFailed_(self, payload: dict) -> None:
