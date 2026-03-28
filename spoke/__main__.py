@@ -273,13 +273,7 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
         if self._glow is not None:
-            if shift_at_press:
-                # Shift pseudo-haptic: spike glow directly to max, bypassing smoothing
-                self._glow.show()
-                self._glow._smoothed_amplitude = 1.0
-                self._glow._glow_layer.setOpacity_(1.0)
-            else:
-                self._glow.show()
+            self._glow.show()
         if self._overlay is not None:
             self._overlay.show()
         self._capture.start(amplitude_callback=self._on_amplitude)
@@ -498,19 +492,7 @@ class SpokeAppDelegate(NSObject):
             logger.info("No audio — instant path (shift=%s)", shift_held)
             if self._overlay is not None:
                 self._overlay.hide()
-            # Shift+empty: always do the same glow flash (pseudo-haptic)
-            if shift_held and self._glow is not None:
-                # Hide first to reset, then spike, so flash is visible
-                # even if glow was already showing from RECORDING path
-                self._glow.hide()
-                self._glow._smoothed_amplitude = 1.0
-                self._glow._glow_layer.setOpacity_(1.0)
-                self._glow.show()
-                from Foundation import NSTimer as _NSTimer
-                _NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                    0.2, self, "_hideGlowAfterFlash:", None, False
-                )
-            elif self._glow is not None:
+            if self._glow is not None:
                 self._glow.hide()
 
             command_visible = (
@@ -683,11 +665,6 @@ class SpokeAppDelegate(NSObject):
         logger.info("No history to recall")
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
-
-    def _hideGlowAfterFlash_(self, timer) -> None:
-        """Hide the glow after the shift pseudo-haptic flash."""
-        if self._glow is not None:
-            self._glow.hide()
 
     def _resetStatusAfterCancel_(self, timer) -> None:
         """Reset menubar status after a cancel."""
