@@ -212,8 +212,8 @@ class TestLocalTranscriptionClient:
         mock_mlx_whisper.transcribe.assert_not_called()
 
     @patch("spoke.transcribe_local.load_model")
-    def test_prepare_uses_bfloat16_for_bf16_whisper_repos(self, mock_load_model):
-        """Unquantized `-mlx` Whisper repos should warm with bfloat16."""
+    def test_prepare_uses_float16_for_unquantized_whisper_repos(self, mock_load_model):
+        """Unquantized MLX Whisper repos should warm with float16."""
         from spoke.transcribe_local import LocalTranscriptionClient, mx
 
         mock_load_model.return_value = MagicMock()
@@ -222,7 +222,7 @@ class TestLocalTranscriptionClient:
 
         mock_load_model.assert_called_once_with(
             "mlx-community/whisper-small.en-mlx",
-            dtype=mx.bfloat16,
+            dtype=mx.float16,
         )
 
     @patch("spoke.transcribe_local.load_model")

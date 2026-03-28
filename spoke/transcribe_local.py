@@ -88,9 +88,7 @@ class LocalTranscriptionClient:
         transcribe_module.ModelHolder.model_path = self._model
 
     def _load_dtype(self):
-        """Choose the MLX dtype implied by the selected Whisper repo."""
-        if self._model.endswith("-mlx"):
-            return mx.bfloat16
+        """Choose the MLX dtype used to warm the selected Whisper repo."""
         return mx.float16
 
     def prepare(self) -> None:
