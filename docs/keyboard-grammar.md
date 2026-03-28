@@ -3,6 +3,15 @@
 Internal reference for Spoke's input gesture design. Everything routes through
 one physical key (spacebar) plus timing and modifier state.
 
+## Design principle
+
+Clean means you never need to move your hand, use the mouse, or look at the
+keyboard. One hand resting on the desk near spacebar and shift — that's the
+entire physical interface. If a gesture requires reaching for escape, tab,
+or any key outside the spacebar/shift cluster, it has lost cleanliness status.
+The only exception is features that inherently require a full keyboard (like
+text editing), which can use additional keys because you're already there.
+
 ## Core gestures
 
 | Gesture | Duration | Shift at release | Result |
@@ -151,6 +160,21 @@ what to do with it.
 The shift-tap cancel is the universal "abort" — same gesture in both contexts.
 It requires no hand repositioning since shift is adjacent to spacebar.
 
+### Migration from current command pathway
+
+Currently, shift+release after a long hold (≥ 800ms) routes directly to the
+command pathway (transcribe → stream to assistant). With staging mode, this
+gesture enters staging instead. The command pathway moves to Enter from
+within staging. This means:
+
+- **Before staging**: shift+release = send to assistant immediately
+- **After staging**: shift+release = enter staging, then Enter = send to assistant
+
+This adds one keystroke to the command flow but gains the ability to preview,
+edit, or redirect the transcription before committing. The short shift-hold
+recall gesture (< 800ms) may also need to be re-evaluated — it could become
+a direct entry to staging with the last Q&A pair pre-loaded.
+
 ### Relationship to recovery mode
 
 Recovery mode (triggered by OCR paste verification failure) is a subset of
@@ -180,6 +204,7 @@ recording force-stops. No cap in sidecar mode.
 | Recording | live preview (typewriter) | amplitude-reactive border | filled mic |
 | Transcribing | preview holds | fading | filled mic |
 | Recovery | three-column interactive | off | unfilled mic |
+| Staging (planned) | same as recovery + pop entrance | off | unfilled mic |
 | Command streaming | command overlay (violet, pulsing) | off | filled mic |
 
 ## Key source files
