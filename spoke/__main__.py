@@ -500,21 +500,30 @@ class SpokeAppDelegate(NSObject):
                 and getattr(self._command_overlay, '_visible', False)
             )
 
+            # Safety: clear any stuck _transcribing flag
+            self._transcribing = False
+
             if shift_held and not command_visible and self._command_client is not None:
                 # Shift + empty recording + no overlay = recall last response
+                # Find the last response that actually has content
                 history = self._command_client.history
-                if history:
-                    last_utterance, last_response = history[-1]
-                    logger.info("Shift+empty — recalling last response")
+                last_with_content = None
+                for utt, resp in reversed(history):
+                    if resp.strip():
+                        last_with_content = (utt, resp)
+                        break
+                if last_with_content:
+                    last_utterance, last_response = last_with_content
+                    logger.info("Shift+empty — recalling: %r", last_utterance[:50])
                     if self._command_overlay is not None:
                         self._command_overlay.show()
+                        self._command_overlay._stop_thinking_timer()  # not thinking, recalling
                         self._command_overlay.set_utterance(last_utterance)
-                        # Append the full response at once
-                        for token in last_response:
-                            self._command_overlay.append_token(token)
+                        for ch in last_response:
+                            self._command_overlay.append_token(ch)
                         self._command_overlay.finish()
                 else:
-                    logger.info("Shift+empty — no history to recall")
+                    logger.info("Shift+empty — no content in history to recall")
             elif command_visible:
                 # Empty recording with overlay visible = dismiss
                 logger.info("Empty recording — dismissing command overlay")
@@ -638,7 +647,7 @@ class SpokeAppDelegate(NSObject):
             self._overlay.hide()
 
     def _recallLastResponse_(self, payload) -> None:
-        """Main thread: recall the last command/response from history."""
+        """Main thread: recall the last command/response with content."""
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
@@ -649,11 +658,17 @@ class SpokeAppDelegate(NSObject):
 
         if self._command_client is not None:
             history = self._command_client.history
-            if history:
-                last_utterance, last_response = history[-1]
-                logger.info("Recalling last response: %r", last_utterance[:50])
+            last_with_content = None
+            for utt, resp in reversed(history):
+                if resp.strip():
+                    last_with_content = (utt, resp)
+                    break
+            if last_with_content:
+                last_utterance, last_response = last_with_content
+                logger.info("Recalling: %r", last_utterance[:50])
                 if self._command_overlay is not None:
                     self._command_overlay.show()
+                    self._command_overlay._stop_thinking_timer()
                     self._command_overlay.set_utterance(last_utterance)
                     for ch in last_response:
                         self._command_overlay.append_token(ch)
