@@ -49,6 +49,8 @@ _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 
+_NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
+
 
 def _get_ram_gb() -> float:
     """Return system RAM in GB via sysctl."""
@@ -141,7 +143,9 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay = None
 
         # Recovery mode state
-        self._pre_paste_clipboard: list[tuple[str, bytes]] | None = None
+        # _NOT_CAPTURED sentinel distinguishes "not captured yet" from
+        # "captured but clipboard was empty (None)".
+        self._pre_paste_clipboard: list[tuple[str, bytes]] | None | object = _NOT_CAPTURED
         self._verify_paste_text: str | None = None
         self._verify_paste_attempt: int = 0
         self._recovery_saved_clipboard: list[tuple[str, bytes]] | None = None
@@ -1376,10 +1380,16 @@ class SpokeAppDelegate(NSObject):
         """Show the recovery overlay with Dismiss / Insert / Clipboard buttons."""
         from AppKit import NSWorkspace
 
-        # Use pre-saved clipboard if available (from _inject_result_text),
-        # otherwise save current clipboard.
-        self._recovery_saved_clipboard = getattr(self, "_pre_paste_clipboard", None) or save_pasteboard()
-        self._pre_paste_clipboard = None
+        # Use pre-saved clipboard if available (from _inject_result_text).
+        # _pre_paste_clipboard is _NOT_CAPTURED when not set, and None when
+        # the clipboard was empty — both are valid states. Only fall back to
+        # save_pasteboard() if we never captured it at all.
+        pre = getattr(self, "_pre_paste_clipboard", _NOT_CAPTURED)
+        if pre is not _NOT_CAPTURED:
+            self._recovery_saved_clipboard = pre
+        else:
+            self._recovery_saved_clipboard = save_pasteboard()
+        self._pre_paste_clipboard = _NOT_CAPTURED
         self._recovery_text = text
         self._recovery_clipboard_state = "idle"
 
