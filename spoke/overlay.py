@@ -733,7 +733,6 @@ class TranscriptionOverlay(NSObject):
         self._visible = True
         self._window.setAlphaValue_(1.0)
         self._window.orderFrontRegardless()
-        self._window.makeKeyWindow()
 
         logger.info("Recovery overlay shown")
 
@@ -896,10 +895,19 @@ class TranscriptionOverlay(NSObject):
 
 
 class _ClickableWindow(NSWindow):
-    """Borderless window that accepts key status for mouse event delivery."""
+    """Borderless window that accepts mouse events without stealing focus.
+
+    canBecomeKeyWindow returns False to prevent the window from taking
+    key status away from the target app. Mouse events are still delivered
+    because the window does not ignore mouse events (setIgnoresMouseEvents_
+    is set to False in recovery mode).
+    """
 
     def canBecomeKeyWindow(self):
-        return True
+        return False
+
+    def canBecomeMainWindow(self):
+        return False
 
 
 class _RecoveryButton(NSView):

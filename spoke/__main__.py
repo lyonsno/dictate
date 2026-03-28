@@ -1360,24 +1360,46 @@ class SpokeAppDelegate(NSObject):
         """Insert button: attempt paste if a text field is now focused."""
         if self._recovery_text is None:
             return  # already dismissed
-        if not has_focused_text_input():
-            # No text field — reject with visual signal
-            if self._overlay is not None:
-                self._overlay.flash_insert_reject()
-            return
 
-        # Re-activate the previous app before pasting
+        text = self._recovery_text or ""
+        saved = self._recovery_saved_clipboard
+
+        # Dismiss the overlay FIRST so it's not stealing focus
+        if self._overlay is not None:
+            self._overlay.dismiss_recovery()
+
+        # Re-activate the previous app so it regains focus
         if self._recovery_previous_app is not None:
             try:
                 self._recovery_previous_app.activateWithOptions_(0)
             except Exception:
                 logger.debug("Failed to re-activate previous app", exc_info=True)
 
+        # Schedule the actual paste after a short delay to let the target
+        # app regain focus and re-establish the text field as first responder.
+        self._recovery_pending_insert = (text, saved)
+        from Foundation import NSTimer
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.15, self, "doRecoveryInsert:", None, False
+        )
+
+    def doRecoveryInsert_(self, timer) -> None:
+        """Delayed paste after recovery Insert — gives target app time to refocus."""
+        pending = getattr(self, "_recovery_pending_insert", None)
+        if pending is None:
+            return
+        text, saved = pending
+        self._recovery_pending_insert = None
+
+        if not has_focused_text_input():
+            # Still no text field — the target app didn't refocus in time.
+            # Re-enter recovery mode rather than losing the text.
+            logger.warning("Insert failed — target app did not refocus, re-entering recovery")
+            self._enter_recovery_mode(text)
+            return
+
         # Restore original clipboard BEFORE calling inject_text so that
-        # inject_text's save/restore cycle preserves the original contents
-        # (not the transcription that's currently on the pasteboard).
-        text = self._recovery_text or ""
-        saved = self._recovery_saved_clipboard
+        # inject_text's save/restore cycle preserves the original contents.
         restore_pasteboard(saved)
 
         def _on_restored():
@@ -1385,9 +1407,6 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_status_text("Ready — hold spacebar")
 
         inject_text(text, on_restored=_on_restored)
-
-        if self._overlay is not None:
-            self._overlay.dismiss_recovery()
         if self._menubar is not None:
             self._menubar.set_status_text("Pasted!")
         self._clear_recovery_state()
@@ -1429,6 +1448,7 @@ class SpokeAppDelegate(NSObject):
         self._recovery_text = None
         self._recovery_clipboard_state = "idle"
         self._recovery_previous_app = None
+        self._recovery_pending_insert = None
 
     @staticmethod
     def _get_clipboard_preview_text(saved: list[tuple[str, bytes]] | None) -> str:

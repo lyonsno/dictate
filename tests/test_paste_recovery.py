@@ -123,60 +123,60 @@ class TestRecoveryDismiss:
 class TestRecoveryInsert:
     """Recovery Insert button behavior."""
 
-    def test_insert_pastes_when_text_field_available(self, main_module, monkeypatch):
-        """Insert should Cmd+V and dismiss when a text field is now focused."""
+    def test_insert_dismisses_overlay_and_schedules_paste(self, main_module, monkeypatch):
+        """Insert should dismiss overlay and schedule a delayed paste."""
+        Foundation = __import__("Foundation")
         d = _make_delegate(main_module, monkeypatch)
         d._recovery_text = "transcribed text"
         d._recovery_saved_clipboard = [("public.utf8-plain-text", b"old")]
         d._recovery_previous_app = None
 
-        with patch("spoke.__main__.has_focused_text_input", return_value=True), \
-             patch("spoke.__main__.inject_text") as mock_inject, \
-             patch("spoke.__main__.restore_pasteboard"):
-            d._on_recovery_insert()
+        d._on_recovery_insert()
 
-        mock_inject.assert_called_once()
+        # Overlay should be dismissed immediately
         d._overlay.dismiss_recovery.assert_called_once()
+        # Paste should be scheduled via NSTimer (not called immediately)
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called()
+        # Pending insert should be stored
+        assert d._recovery_pending_insert == ("transcribed text", [("public.utf8-plain-text", b"old")])
 
-    def test_insert_noop_when_no_text_field(self, main_module, monkeypatch):
-        """Insert should be a no-op (with visual reject) when no text field."""
+    def test_delayed_insert_reenters_recovery_when_no_text_field(self, main_module, monkeypatch):
+        """doRecoveryInsert_ should re-enter recovery if target didn't refocus."""
         d = _make_delegate(main_module, monkeypatch)
-        d._recovery_text = "transcribed text"
+        d._recovery_pending_insert = ("transcribed text", None)
 
         with patch("spoke.__main__.has_focused_text_input", return_value=False), \
-             patch("spoke.__main__.inject_text") as mock_inject:
-            d._on_recovery_insert()
+             patch("spoke.__main__.inject_text") as mock_inject, \
+             patch.object(d, "_enter_recovery_mode") as mock_recovery:
+            d.doRecoveryInsert_(None)
 
         mock_inject.assert_not_called()
-        # Should signal rejection on the overlay
-        d._overlay.flash_insert_reject.assert_called_once()
+        mock_recovery.assert_called_once_with("transcribed text")
 
 
 class TestInsertClipboardRestore:
     """Verify Insert path restores original clipboard, not transcription."""
 
-    def test_insert_restores_original_clipboard_before_paste(self, main_module, monkeypatch):
-        """Insert should restore original clipboard before inject_text so the
-        save/restore cycle inside inject_text preserves the original contents."""
+    def test_delayed_insert_restores_original_clipboard_before_paste(self, main_module, monkeypatch):
+        """doRecoveryInsert_ should restore original clipboard before inject_text."""
         d = _make_delegate(main_module, monkeypatch)
-        d._recovery_text = "transcribed text"
-        d._recovery_saved_clipboard = [("public.utf8-plain-text", b"original")]
-        d._recovery_previous_app = None
+        d._recovery_pending_insert = (
+            "transcribed text",
+            [("public.utf8-plain-text", b"original")],
+        )
 
         restore_calls = []
         with patch("spoke.__main__.has_focused_text_input", return_value=True), \
              patch("spoke.__main__.inject_text") as mock_inject, \
              patch("spoke.__main__.restore_pasteboard") as mock_restore:
-            # Track call order
             mock_restore.side_effect = lambda saved: restore_calls.append(("restore", saved))
             mock_inject.side_effect = lambda text, on_restored=None: restore_calls.append(("inject", text))
-            d._on_recovery_insert()
+            d.doRecoveryInsert_(None)
 
         # restore_pasteboard must be called BEFORE inject_text
         assert len(restore_calls) == 2
         assert restore_calls[0][0] == "restore"
         assert restore_calls[1][0] == "inject"
-        # The restored clipboard should be the original, not the transcription
         assert restore_calls[0][1] == [("public.utf8-plain-text", b"original")]
 
 
