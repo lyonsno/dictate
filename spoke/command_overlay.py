@@ -501,9 +501,8 @@ class CommandOverlay(NSObject):
     def finish(self) -> None:
         """Called when the response stream is complete. Start the linger timer."""
         self._streaming = False
-        # Stop pulse and thinking timer, leave text as-is (already correct
-        # from the last append_token — don't rebuild, that causes a flash)
-        self._cancel_pulse()
+        # Stop thinking timer but keep pulse alive — it continues through
+        # linger and fade-out for visual continuity
         self._stop_thinking_timer()
         # Linger then fade
         self._linger_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
@@ -576,24 +575,24 @@ class CommandOverlay(NSObject):
         if self._pulse_phase_user > 1.0:
             self._pulse_phase_user -= 1.0
 
-        # Assistant: heartbeat throb — sharp attack, brief clench, slow release
-        # Phase 0.0-0.15: rapid rise (attack)
-        # Phase 0.15-0.3: hold near peak (clench)
-        # Phase 0.3-1.0: gradual decay (release)
+        # Assistant: inverted heartbeat — mostly bright, brief wink-out
+        # Phase 0.0-0.7: hold near full brightness (plateau)
+        # Phase 0.7-0.85: sharp dip down (wink)
+        # Phase 0.85-1.0: fast recovery back to bright
         p = self._pulse_phase_asst
-        if p < 0.15:
-            # Attack: fast cubic rise
-            t = p / 0.15
-            pulse_a = t * t * t
-        elif p < 0.3:
-            # Clench: hold near peak with subtle wobble
-            t = (p - 0.15) / 0.15
-            pulse_a = 0.92 + 0.08 * math.cos(math.pi * t)
+        if p < 0.7:
+            # Plateau: near full brightness with very subtle drift
+            t = p / 0.7
+            pulse_a = 0.95 + 0.05 * math.cos(2.0 * math.pi * t)
+        elif p < 0.85:
+            # Wink: sharp cubic dip
+            t = (p - 0.7) / 0.15
+            dip = t * t * t  # cubic into the dip
+            pulse_a = 1.0 - 0.65 * dip  # dips to ~0.35
         else:
-            # Release: slow ease-out decay
-            t = (p - 0.3) / 0.7
-            decay = 1.0 - t
-            pulse_a = decay * decay  # quadratic decay
+            # Recovery: fast cubic return to bright
+            t = (p - 0.85) / 0.15
+            pulse_a = 0.35 + 0.65 * (t * t * t)
         alpha_a = _TEXT_ALPHA_MIN + pulse_a * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
 
         # User: raw sine → single smoothstep (same aggressiveness as before)
