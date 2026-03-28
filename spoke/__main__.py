@@ -874,17 +874,17 @@ class SpokeAppDelegate(NSObject):
     # ── helpers ─────────────────────────────────────────────
 
     _MODEL_OPTIONS = [
-        ("mlx-community/whisper-tiny.en-mlx", "Tiny.en (bf16)"),
-        ("mlx-community/whisper-base.en-mlx", "Base.en (bf16)"),
+        ("mlx-community/whisper-tiny.en-mlx", "Tiny.en (float16)"),
+        ("mlx-community/whisper-base.en-mlx", "Base.en (float16)"),
         ("mlx-community/whisper-base.en-mlx-8bit", "Base.en (8bit)"),
-        ("mlx-community/whisper-small.en-mlx", "Small.en (bf16)"),
+        ("mlx-community/whisper-small.en-mlx", "Small.en (float16)"),
         ("mlx-community/whisper-small.en-mlx-8bit", "Small.en (8bit)"),
         ("mlx-community/whisper-medium.en-mlx-4bit", "Medium.en (4bit)"),
         ("mlx-community/whisper-medium.en-mlx-8bit", "Medium.en (8bit)"),
-        ("mlx-community/whisper-medium.en-mlx", "Medium.en (bf16)"),
+        ("mlx-community/whisper-medium.en-mlx", "Medium.en (float16)"),
         ("mlx-community/whisper-large-v3-turbo-4bit", "v3 Large Turbo (4bit)"),
         ("mlx-community/whisper-large-v3-turbo-8bit", "v3 Large Turbo (8bit)"),
-        ("mlx-community/whisper-large-v3-turbo", "v3 Large Turbo (bf16)"),
+        ("mlx-community/whisper-large-v3-turbo", "v3 Large Turbo (float16)"),
         ("Qwen/Qwen3-ASR-0.6B", "Qwen3 ASR 0.6B (streaming)"),
     ]
 

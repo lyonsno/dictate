@@ -666,7 +666,7 @@ class TestModelPicker:
         assert "Qwen/Qwen3-ASR-0.6B" in model_ids
         assert "mlx-community/whisper-large-v3-turbo" not in model_ids
 
-    def test_select_model_none_exposes_bf16_laptop_tiers_with_labels(
+    def test_select_model_none_exposes_float16_laptop_tiers_with_labels(
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
@@ -675,16 +675,18 @@ class TestModelPicker:
 
         labels_by_id = {model_id: label for model_id, label, _enabled in models}
 
-        assert labels_by_id["mlx-community/whisper-tiny.en-mlx"] == "Tiny.en (bf16)"
-        assert labels_by_id["mlx-community/whisper-base.en-mlx"] == "Base.en (bf16)"
-        assert labels_by_id["mlx-community/whisper-small.en-mlx"] == "Small.en (bf16)"
+        assert labels_by_id["mlx-community/whisper-tiny.en-mlx"] == "Tiny.en (float16)"
+        assert labels_by_id["mlx-community/whisper-base.en-mlx"] == "Base.en (float16)"
+        assert labels_by_id["mlx-community/whisper-small.en-mlx"] == "Small.en (float16)"
+        assert labels_by_id["mlx-community/whisper-medium.en-mlx"] == "Medium.en (float16)"
 
     def test_select_model_none_includes_large_on_high_ram(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         monkeypatch.setattr(main_module, "_RAM_GB", 36.0)
         models = d._select_model(None)
-        model_ids = [m[0] for m in models]
-        assert "mlx-community/whisper-large-v3-turbo" in model_ids
+        labels_by_id = {model_id: label for model_id, label, _enabled in models}
+        assert "mlx-community/whisper-large-v3-turbo" in labels_by_id
+        assert labels_by_id["mlx-community/whisper-large-v3-turbo"] == "v3 Large Turbo (float16)"
 
 
 class TestDualModelConfiguration:
@@ -731,10 +733,10 @@ class TestDualModelConfiguration:
             == "mlx-community/whisper-medium.en-mlx-8bit"
         )
 
-    def test_init_accepts_new_bf16_whisper_model_ids(
+    def test_init_accepts_new_float16_whisper_model_ids(
         self, main_module, monkeypatch
     ):
-        """New tiny/base/small bf16 IDs should flow through the normal local init path."""
+        """New tiny/base/small float16 IDs should flow through the normal local init path."""
         monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
         monkeypatch.setenv("SPOKE_PREVIEW_MODEL", "mlx-community/whisper-small.en-mlx")
         monkeypatch.setenv("SPOKE_TRANSCRIPTION_MODEL", "mlx-community/whisper-tiny.en-mlx")
