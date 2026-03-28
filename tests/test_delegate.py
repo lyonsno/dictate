@@ -1099,6 +1099,34 @@ class TestDualModelConfiguration:
         assert loaded["preview_model"] == "mlx-community/whisper-tiny.en-mlx"
         assert loaded["transcription_model"] == "mlx-community/whisper-medium.en-mlx"
 
+    def test_model_switch_does_not_relaunch_on_preference_save_failure(
+        self, main_module, monkeypatch
+    ):
+        """A failed save should not be masked by relaunching into env-only model state."""
+        monkeypatch.delenv("SPOKE_PREVIEW_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_TRANSCRIPTION_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_WHISPER_MODEL", raising=False)
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_model_id = "Qwen/Qwen3-ASR-0.6B"
+        d._transcription_model_id = "Qwen/Qwen3-ASR-0.6B"
+        d._save_model_preferences = MagicMock(return_value=False)
+
+        with patch.object(main_module.os, "execv") as mock_execv:
+            d._apply_model_selection(
+                "mlx-community/whisper-base.en-mlx-8bit",
+                "mlx-community/whisper-medium.en-mlx-8bit",
+            )
+
+        d._save_model_preferences.assert_called_once_with(
+            "mlx-community/whisper-base.en-mlx-8bit",
+            "mlx-community/whisper-medium.en-mlx-8bit",
+        )
+        mock_execv.assert_not_called()
+        assert "SPOKE_PREVIEW_MODEL" not in os.environ
+        assert "SPOKE_TRANSCRIPTION_MODEL" not in os.environ
+        assert "SPOKE_WHISPER_MODEL" not in os.environ
+
 
 class TestWarmupContract:
     """Test explicit warm-before-ready behavior."""
@@ -1133,13 +1161,16 @@ class TestWarmupContract:
         )
 
     def test_prepare_failure_still_allows_model_selection_recovery(
-        self, main_module, monkeypatch
+        self, main_module, monkeypatch, tmp_path
     ):
         """A failed warmup should still leave model selection available for recovery."""
         d = _make_delegate(main_module, monkeypatch)
         d._detector.install.return_value = True
         d._prepare_clients = MagicMock(side_effect=RuntimeError("warm failed"))
         d._show_model_load_alert = MagicMock()
+        monkeypatch.setenv(
+            "SPOKE_MODEL_PREFERENCES_PATH", str(tmp_path / "model_preferences.json")
+        )
         monkeypatch.setenv(
             "SPOKE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
         )
