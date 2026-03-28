@@ -1086,7 +1086,13 @@ class SpokeAppDelegate(NSObject):
             current_transcription,
             transcription_model,
         )
-        self._save_model_preferences(preview_model, transcription_model)
+        if not self._save_model_preferences(preview_model, transcription_model):
+            logger.warning(
+                "Skipping relaunch because the new model selection could not be persisted"
+            )
+            if self._menubar is not None:
+                self._menubar.set_status_text("Couldn't save model selection")
+            return
         os.environ["SPOKE_PREVIEW_MODEL"] = preview_model
         os.environ["SPOKE_TRANSCRIPTION_MODEL"] = transcription_model
         if preview_model == transcription_model:
@@ -1170,29 +1176,31 @@ class SpokeAppDelegate(NSObject):
 
     def _save_model_preferences(
         self, preview_model: str, transcription_model: str
-    ) -> None:
+    ) -> bool:
         payload = self._load_preferences()
         payload["preview_model"] = preview_model
         payload["transcription_model"] = transcription_model
-        self._save_preferences(payload)
+        return self._save_preferences(payload)
 
     def _save_local_whisper_preferences(
         self, decode_timeout: float | None, eager_eval: bool
-    ) -> None:
+    ) -> bool:
         payload = self._load_preferences()
         payload["local_whisper_decode_timeout"] = decode_timeout
         payload["local_whisper_eager_eval"] = eager_eval
-        self._save_preferences(payload)
+        return self._save_preferences(payload)
 
-    def _save_preferences(self, payload: dict) -> None:
+    def _save_preferences(self, payload: dict) -> bool:
         path = self._preferences_path()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(payload, indent=2))
             tmp.rename(path)
+            return True
         except Exception:
             logger.warning("Failed to save model preferences to %s", path, exc_info=True)
+            return False
 
     def _get_client(self, whisper_url: str, model_id: str):
         cache_key = (whisper_url, model_id)
