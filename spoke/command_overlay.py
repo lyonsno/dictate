@@ -54,7 +54,7 @@ _COLOR_VELOCITY_MAX = 1.7  # fastest speed multiplier (transitions)
 _GLOW_COLOR = (0.6, 0.4, 0.9)  # initial color for setup (violet)
 _TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.35)  # strong visible pulse
 _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
-_BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.35)
+_BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.55)
 _PULSE_PERIOD = _env("SPOKE_COMMAND_PULSE_PERIOD", 2.0)  # base period (seconds)
 _PULSE_PERIOD_USER = _PULSE_PERIOD * 1.5  # user text: 50% slower
 _PULSE_PERIOD_ASST = 5.0  # assistant text: slow deep breath
@@ -342,15 +342,8 @@ class CommandOverlay(NSObject):
 
         self._cancel_step = 0
         self._cancel_phase = "hold"  # hold → fade
-        # Brighten to full immediately in the current hue color
+        # Brighten window to full — don't touch text color (no flash)
         self._window.setAlphaValue_(1.0)
-        if self._text_view is not None:
-            r, g, b = self._current_hue_rgb()
-            self._text_view.setTextColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
-            )
-        if hasattr(self, '_inner_shadow'):
-            self._inner_shadow.setShadowOpacity_(1.0)
         self._cancel_timer_anim = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0 / 30.0, self, "_cancelAnimStep:", None, True
         )
@@ -611,7 +604,7 @@ class CommandOverlay(NSObject):
         self._color_log_counter += 1
         if self._color_log_counter % 30 == 0:
             logger.info("Color phase: %.3f hue, vel_phase=%.3f", hue, self._color_velocity_phase)
-        s, v = 0.75, 0.95  # vivid but not neon
+        s, v = 0.38, 0.81  # soft pastel — readable, not neon
         c = v * s
         x = c * (1.0 - abs((hue * 6.0) % 2.0 - 1.0))
         m = v - c
