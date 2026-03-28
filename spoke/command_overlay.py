@@ -576,9 +576,24 @@ class CommandOverlay(NSObject):
         if self._pulse_phase_user > 1.0:
             self._pulse_phase_user -= 1.0
 
-        # Assistant: raw sine → smoothstep (punchy but visible)
-        raw_a = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase_asst))
-        pulse_a = raw_a * raw_a * (3.0 - 2.0 * raw_a)
+        # Assistant: heartbeat throb — sharp attack, brief clench, slow release
+        # Phase 0.0-0.15: rapid rise (attack)
+        # Phase 0.15-0.3: hold near peak (clench)
+        # Phase 0.3-1.0: gradual decay (release)
+        p = self._pulse_phase_asst
+        if p < 0.15:
+            # Attack: fast cubic rise
+            t = p / 0.15
+            pulse_a = t * t * t
+        elif p < 0.3:
+            # Clench: hold near peak with subtle wobble
+            t = (p - 0.15) / 0.15
+            pulse_a = 0.92 + 0.08 * math.cos(math.pi * t)
+        else:
+            # Release: slow ease-out decay
+            t = (p - 0.3) / 0.7
+            decay = 1.0 - t
+            pulse_a = decay * decay  # quadratic decay
         alpha_a = _TEXT_ALPHA_MIN + pulse_a * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
 
         # User: raw sine → single smoothstep (same aggressiveness as before)
@@ -599,7 +614,7 @@ class CommandOverlay(NSObject):
             self._color_phase -= 1.0
         hue = self._color_phase
         # HSV to RGB (saturation=0.6, value=0.9 for soft vivid colors)
-        s, v = 0.6, 0.9
+        s, v = 0.92, 0.95  # vivid — each color immediately recognizable
         c = v * s
         x = c * (1.0 - abs((hue * 6.0) % 2.0 - 1.0))
         m = v - c
