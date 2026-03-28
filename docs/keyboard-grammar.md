@@ -180,6 +180,21 @@ windup.
 If shift is released before the timer, the overlay eases back to its resting
 position (spring relaxing, no flick).
 
+**Why the flick works (accidental illusion).** The current command pathway
+already produces a convincing illusion of continuous upward motion even though
+no such animation exists. What actually happens: the preview overlay fades out
+very quickly (fast ease-out) while the command overlay pops in just above it
+at almost the same instant, with the user's utterance text appearing at the
+top of the command overlay. Because the transitions are faster than the eye
+can track, the brain perceives a single continuous motion — the preview text
+flicking upward and fusing into the command overlay. The spring pullback
+turns this optical coincidence into a deliberate gestalt: the downward drift
+creates visible tension, the upward flick releases it, and the two
+independent transitions (staging fade-out, command overlay fade-in) land
+in the same perceptual moment as the flick's apex. The animation that the
+user "sees" never actually exists as a single coordinated motion — it is
+two unrelated transitions that rhyme.
+
 **Timing with transcription:** The commit timer begins when spacebar comes up,
 not when transcription completes. If the user holds shift through the timer
 but transcription is still running, the hold-through is treated as
