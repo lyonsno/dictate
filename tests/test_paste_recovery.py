@@ -57,35 +57,50 @@ class TestRecoveryFlowBranching:
         # Overlay should be ordered out before the focus check
         d._overlay.order_out.assert_called()
 
-    def test_recovery_mode_when_no_text_field(self, main_module, monkeypatch):
-        """When no text field is focused, enter recovery mode."""
+    def test_always_attempts_paste(self, main_module, monkeypatch):
+        """_inject_result_text should always attempt paste, regardless of focus."""
         d = _make_delegate(main_module, monkeypatch)
 
-        with patch("spoke.__main__.has_focused_text_input", return_value=False), \
-             patch("spoke.__main__.inject_text") as mock_inject, \
-             patch("spoke.__main__.set_pasteboard_only") as mock_pb:
+        with patch("spoke.__main__.inject_text") as mock_inject, \
+             patch("spoke.__main__.save_pasteboard", return_value=None):
             d._inject_result_text("hello world", "Pasted!")
 
-        # Should NOT have called inject_text (no Cmd+V)
-        mock_inject.assert_not_called()
-        # Should have put text on pasteboard without pasting
-        mock_pb.assert_called_once_with("hello world")
-        # Should show recovery overlay
+        # Should always attempt paste
+        mock_inject.assert_called_once()
+
+    def test_schedules_ocr_verification(self, main_module, monkeypatch):
+        """After paste, should schedule OCR verification timer."""
+        Foundation = __import__("Foundation")
+        d = _make_delegate(main_module, monkeypatch)
+
+        with patch("spoke.__main__.inject_text"), \
+             patch("spoke.__main__.save_pasteboard", return_value=None):
+            d._inject_result_text("hello world", "Pasted!")
+
+        # Verification timer should be scheduled
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called()
+        assert d._verify_paste_text == "hello world"
+
+    def test_verify_result_enters_recovery_on_failure(self, main_module, monkeypatch):
+        """verifyPasteResult_ should enter recovery when OCR doesn't find the text."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._verify_paste_text = "hello world"
+        d._pre_paste_clipboard = [("public.utf8-plain-text", b"original")]
+
+        with patch("spoke.__main__.set_pasteboard_only"), \
+             patch("spoke.__main__.save_pasteboard", return_value=None):
+            d.verifyPasteResult_({"found": False, "text": "hello world", "attempt": 1})
+
         d._overlay.show_recovery.assert_called_once()
 
-    def test_recovery_sets_menubar_status(self, main_module, monkeypatch):
-        """Recovery mode should update menubar to indicate no text field."""
+    def test_verify_result_clears_state_on_success(self, main_module, monkeypatch):
+        """verifyPasteResult_ should clear verify state when text is found."""
         d = _make_delegate(main_module, monkeypatch)
+        d._verify_paste_text = "hello world"
 
-        with patch("spoke.__main__.has_focused_text_input", return_value=False), \
-             patch("spoke.__main__.inject_text"), \
-             patch("spoke.__main__.set_pasteboard_only"):
-            d._inject_result_text("hello world", "Pasted!")
+        d.verifyPasteResult_({"found": True, "text": "hello world", "attempt": 0})
 
-        # Menubar should show recovery status
-        status_calls = [c[0][0] for c in d._menubar.set_status_text.call_args_list]
-        assert any("text field" in s.lower() or "⌘v" in s.lower() or "clipboard" in s.lower()
-                    for s in status_calls), f"Expected recovery status, got: {status_calls}"
+        assert d._verify_paste_text is None
 
 
 class TestRecoveryDismiss:

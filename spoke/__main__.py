@@ -815,6 +815,58 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
 
+    def verifyPaste_(self, timer) -> None:
+        """Background OCR verification — confirm the pasted text appeared on screen."""
+        text = getattr(self, "_verify_paste_text", None)
+        if text is None:
+            return
+
+        attempt = getattr(self, "_verify_paste_attempt", 0)
+
+        # Run OCR in background thread to avoid blocking the main thread
+        import threading
+        def _verify():
+            from .paste_verify import capture_screen_text, text_appears_on_screen
+            screen_text = capture_screen_text()
+            found = text_appears_on_screen(text, screen_text)
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "verifyPasteResult:",
+                {"found": found, "text": text, "attempt": attempt},
+                False,
+            )
+        threading.Thread(target=_verify, daemon=True).start()
+
+    def verifyPasteResult_(self, payload) -> None:
+        """Main thread: handle OCR verification result."""
+        found = payload["found"]
+        text = payload["text"]
+        attempt = payload["attempt"]
+
+        # If we've moved on (new recording started, or recovery already active),
+        # discard this result.
+        if getattr(self, "_verify_paste_text", None) != text:
+            return
+
+        if found:
+            logger.info("Paste verified by OCR (attempt %d)", attempt + 1)
+            self._verify_paste_text = None
+            return
+
+        if attempt == 0:
+            # First check failed — retry once at 300ms to give slow apps time
+            logger.debug("Paste not verified on first check, retrying in 200ms")
+            self._verify_paste_attempt = 1
+            from Foundation import NSTimer
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.2, self, "verifyPaste:", None, False
+            )
+            return
+
+        # Second check also failed — paste didn't land, enter recovery
+        logger.warning("Paste not verified by OCR after %d attempts — entering recovery", attempt + 1)
+        self._verify_paste_text = None
+        self._enter_recovery_mode(text)
+
     # ── helpers ─────────────────────────────────────────────
 
     _MODEL_OPTIONS = [
@@ -1293,32 +1345,41 @@ class SpokeAppDelegate(NSObject):
         return lock
 
     def _inject_result_text(self, text: str, status_text: str) -> None:
-        # Remove the overlay from screen before checking focus — the overlay
-        # sits at window level 25, and the AX system reports it as the focused
-        # element if it's visible, masking the actual text field underneath.
+        # Remove the overlay from screen so it doesn't appear in the
+        # verification screenshot or mask the focused element.
         if self._overlay is not None:
             self._overlay.order_out()
 
-        if has_focused_text_input():
-            # Normal path: paste via Cmd+V
-            def _on_clipboard_restored():
-                if self._menubar is not None:
-                    self._menubar.set_status_text("Ready — hold spacebar")
+        # Always attempt the paste immediately — the user perceives no delay.
+        # Save clipboard state before inject_text overwrites it, in case we
+        # need to enter recovery mode after OCR verification.
+        self._pre_paste_clipboard = save_pasteboard()
 
-            inject_text(text, on_restored=_on_clipboard_restored)
+        def _on_clipboard_restored():
             if self._menubar is not None:
-                self._menubar.set_status_text(status_text)
-        else:
-            # Recovery path: no text field focused
-            logger.warning("No focused text input — entering paste recovery mode")
-            self._enter_recovery_mode(text)
+                self._menubar.set_status_text("Ready — hold spacebar")
+
+        inject_text(text, on_restored=_on_clipboard_restored)
+        if self._menubar is not None:
+            self._menubar.set_status_text(status_text)
+
+        # Schedule background OCR verification to confirm the paste landed.
+        # If it didn't, we'll enter recovery mode.
+        self._verify_paste_text = text
+        self._verify_paste_attempt = 0
+        from Foundation import NSTimer
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.1, self, "verifyPaste:", None, False
+        )
 
     def _enter_recovery_mode(self, text: str) -> None:
         """Show the recovery overlay with Dismiss / Insert / Clipboard buttons."""
         from AppKit import NSWorkspace
 
-        # Save clipboard before we touch it
-        self._recovery_saved_clipboard = save_pasteboard()
+        # Use pre-saved clipboard if available (from _inject_result_text),
+        # otherwise save current clipboard.
+        self._recovery_saved_clipboard = getattr(self, "_pre_paste_clipboard", None) or save_pasteboard()
+        self._pre_paste_clipboard = None
         self._recovery_text = text
         self._recovery_clipboard_state = "idle"
 
