@@ -39,7 +39,7 @@ class TestLocalTranscriptionClient:
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_transcribe_calls_mlx_whisper(self, mock_mlx_whisper):
         """transcribe() should call mlx_whisper.transcribe with correct args."""
-        from spoke.transcribe_local import LocalTranscriptionClient
+        from spoke.transcribe_local import LocalTranscriptionClient, mx
 
         mock_mlx_whisper.transcribe.return_value = {"text": "  hello world  "}
         client = LocalTranscriptionClient(model="test/model")
@@ -61,6 +61,7 @@ class TestLocalTranscriptionClient:
         mock_mlx_whisper.transcribe.assert_called_once()
         call_kwargs = mock_mlx_whisper.transcribe.call_args
         assert call_kwargs[1]["path_or_hf_repo"] == "test/model"
+        assert call_kwargs[1]["model_dtype"] == mx.float16
         assert call_kwargs[1]["language"] == "en"
         assert call_kwargs[1]["decode_timeout"] == 30.0
         assert call_kwargs[1]["eager_eval"] is False
@@ -68,7 +69,7 @@ class TestLocalTranscriptionClient:
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_transcribe_uses_custom_decode_controls(self, mock_mlx_whisper):
         """Custom local Whisper guards should flow through to mlx_whisper."""
-        from spoke.transcribe_local import LocalTranscriptionClient
+        from spoke.transcribe_local import LocalTranscriptionClient, mx
 
         mock_mlx_whisper.transcribe.return_value = {"text": "hello world"}
         client = LocalTranscriptionClient(
@@ -81,6 +82,7 @@ class TestLocalTranscriptionClient:
 
         assert result == "hello world"
         call_kwargs = mock_mlx_whisper.transcribe.call_args
+        assert call_kwargs[1]["model_dtype"] == mx.float16
         assert call_kwargs[1]["decode_timeout"] is None
         assert call_kwargs[1]["eager_eval"] is True
 
@@ -224,6 +226,30 @@ class TestLocalTranscriptionClient:
             "mlx-community/whisper-small.en-mlx",
             dtype=mx.bfloat16,
         )
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_passes_bfloat16_model_dtype_for_bf16_repos(self, mock_mlx_whisper):
+        """BF16 Whisper repos should tell mlx-whisper to keep the BF16 model path."""
+        from spoke.transcribe_local import LocalTranscriptionClient, mx
+
+        mock_mlx_whisper.transcribe.return_value = {"text": "hello"}
+        client = LocalTranscriptionClient(model="mlx-community/whisper-base.en-mlx")
+
+        assert client.transcribe(_make_wav_bytes()) == "hello"
+        assert mock_mlx_whisper.transcribe.call_args.kwargs["model_dtype"] == mx.bfloat16
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_passes_float16_model_dtype_for_quantized_whisper_repos(
+        self, mock_mlx_whisper
+    ):
+        """Quantized Whisper repos should keep the float16 model-dtype path."""
+        from spoke.transcribe_local import LocalTranscriptionClient, mx
+
+        mock_mlx_whisper.transcribe.return_value = {"text": "hello"}
+        client = LocalTranscriptionClient(model="mlx-community/whisper-base.en-mlx-8bit")
+
+        assert client.transcribe(_make_wav_bytes()) == "hello"
+        assert mock_mlx_whisper.transcribe.call_args.kwargs["model_dtype"] == mx.float16
 
     @patch("spoke.transcribe_local.load_model")
     def test_prepare_keeps_float16_for_quantized_whisper_repos(self, mock_load_model):

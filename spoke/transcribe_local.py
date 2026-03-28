@@ -86,6 +86,9 @@ class LocalTranscriptionClient:
         transcribe_module = importlib.import_module("mlx_whisper.transcribe")
         transcribe_module.ModelHolder.model = self._model_instance
         transcribe_module.ModelHolder.model_path = self._model
+        transcribe_module.ModelHolder.model_dtype = getattr(
+            self._model_instance, "dtype", self._load_dtype()
+        )
 
     def _load_dtype(self):
         """Choose the MLX dtype implied by the selected Whisper repo."""
@@ -120,6 +123,7 @@ class LocalTranscriptionClient:
 
         kwargs = {
             "path_or_hf_repo": self._model,
+            "model_dtype": self._load_dtype(),
             "language": "en",
             "decode_timeout": self._decode_timeout,
         }

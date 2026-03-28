@@ -9,7 +9,7 @@ dependencies = [
     "sounddevice",
     "numpy",
     "httpx",
-    "mlx-whisper @ git+https://github.com/lyonsno/mlx-whisper-patched.git",
+    "mlx-whisper @ git+https://github.com/lyonsno/mlx-whisper-patched.git@a7b36914ff594135d4997f747978ea974bdfc3ea",
     "mlx-qwen3-asr>=0.3.2",
 ]
 
