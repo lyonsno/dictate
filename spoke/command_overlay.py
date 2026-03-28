@@ -401,12 +401,6 @@ class CommandOverlay(NSObject):
         )
         self._text_view.textStorage().setAttributedString_(attr_str)
         self._update_layout()
-        glow.setShadowBlurRadius_(3.0)
-        attr_str.addAttribute_value_range_(
-            NSShadowAttributeName, glow, (0, len(text))
-        )
-        self._text_view.textStorage().setAttributedString_(attr_str)
-        self._update_layout()
 
     def append_token(self, token: str) -> None:
         """Append a streamed response token."""
