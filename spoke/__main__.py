@@ -43,8 +43,8 @@ from .transcribe_qwen import LocalQwenClient
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx"
-_DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx"
+_DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx-8bit"
+_DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 
