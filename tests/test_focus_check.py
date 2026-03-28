@@ -55,6 +55,18 @@ class TestHasFocusedTextInput:
         with patch.object(mod, "_get_focused_role", return_value=None):
             assert mod.has_focused_text_input() is False
 
+    def test_returns_true_when_window_focused(self):
+        """AXWindow → treated as pasteable (terminals, Electron apps)."""
+        mod = _import_focus_check()
+        with patch.object(mod, "_get_focused_role", return_value="AXWindow"):
+            assert mod.has_focused_text_input() is True
+
+    def test_returns_true_when_group_focused(self):
+        """AXGroup → treated as pasteable (custom app views)."""
+        mod = _import_focus_check()
+        with patch.object(mod, "_get_focused_role", return_value="AXGroup"):
+            assert mod.has_focused_text_input() is True
+
     def test_returns_false_when_button_focused(self):
         """AXButton → not a text input."""
         mod = _import_focus_check()

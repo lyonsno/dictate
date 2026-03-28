@@ -17,17 +17,20 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Roles that accept pasted text.
-# AXWebArea is included because browsers report it as the focused element even
-# when a <textarea> or <input> is focused. This means pasting into a
-# non-editable web page will still fail silently (same as current behavior),
-# but the alternative — falsely triggering recovery in browsers — is worse.
-_TEXT_INPUT_ROLES = frozenset({
-    "AXTextField",
-    "AXTextArea",
-    "AXComboBox",
-    "AXSearchField",
-    "AXWebArea",
+# Roles where paste definitely won't work — these are non-text UI elements
+# that happen to be focused. Everything else (including AXWindow, AXGroup,
+# AXWebArea, etc.) is treated as potentially pasteable because many apps
+# (terminals, Electron apps, etc.) don't report standard text roles.
+_NON_TEXT_ROLES = frozenset({
+    "AXButton",
+    "AXMenu",
+    "AXMenuItem",
+    "AXMenuBar",
+    "AXMenuBarItem",
+    "AXToolbar",
+    "AXImage",
+    "AXStaticText",
+    "AXProgressIndicator",
 })
 
 # ── ctypes setup (loaded once at module level) ──────────────────
@@ -147,9 +150,12 @@ def has_focused_text_input() -> bool:
         logger.info("Focus check: no focused element — recovery mode")
         return False
 
-    is_text = role in _TEXT_INPUT_ROLES
-    logger.info("Focus check: role=%s, is_text_input=%s", role, is_text)
-    return is_text
+    if role in _NON_TEXT_ROLES:
+        logger.info("Focus check: role=%s — non-text element, recovery mode", role)
+        return False
+
+    logger.info("Focus check: role=%s — treating as pasteable", role)
+    return True
 
 
 # ── CFString helpers ────────────────────────────────────────────
