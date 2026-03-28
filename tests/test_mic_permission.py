@@ -5,8 +5,11 @@ Blocking the main thread with sd.rec(blocking=True) deadlocks the NSRunLoop,
 causing a beachball that survives SIGTERM.
 """
 
+import signal
+import sys
 import threading
 import time
+import types
 from unittest.mock import MagicMock, patch, call
 
 
@@ -212,3 +215,84 @@ class TestSigtermMenuBarCleanup:
         captured_handlers[signal_mod.SIGTERM](signal_mod.SIGTERM, None)
 
         delegate._menubar.cleanup.assert_called_once()
+
+    def test_sigterm_handler_logs_pid_context(self, main_module, monkeypatch):
+        """The SIGTERM handler should log PID context for disappearance forensics."""
+        monkeypatch.setenv("SPOKE_WHISPER_URL", "http://test:8000")
+
+        import signal as signal_mod
+
+        captured_handlers = {}
+
+        def capture_signal(signum, handler):
+            captured_handlers[signum] = handler
+
+        with patch.object(main_module, "NSApp", MagicMock()):
+            with patch.object(main_module, "NSApplication", MagicMock()) as mock_nsapp_cls:
+                mock_nsapp_cls.sharedApplication.return_value = MagicMock()
+                with patch.object(signal_mod, "signal", side_effect=capture_signal):
+                    delegate = MagicMock()
+                    delegate._menubar = MagicMock()
+                    delegate._detector = MagicMock()
+
+                    with patch.object(main_module, "logger", MagicMock()) as mock_logger:
+                        with patch.object(main_module.os, "getpid", return_value=4242):
+                            with patch.object(main_module.os, "getppid", return_value=2121):
+                                with patch.object(main_module.os, "getcwd", return_value="/tmp/spoke"):
+                                    with patch.object(
+                                        main_module.SpokeAppDelegate, "alloc", return_value=MagicMock()
+                                    ) as mock_alloc:
+                                        mock_alloc.return_value.init.return_value = delegate
+
+                                        with patch("PyObjCTools.AppHelper.runEventLoop"):
+                                            main_module.main()
+
+                                        captured_handlers[signal_mod.SIGTERM](
+                                            signal_mod.SIGTERM, None
+                                        )
+
+                        mock_logger.info.assert_any_call(
+                            "Received SIGTERM — cleaning up (pid=%d ppid=%d cwd=%s lock_pid=%s)",
+                            4242,
+                            2121,
+                            "/tmp/spoke",
+                            "4242",
+                        )
+
+
+class TestSingleInstanceGuardDiagnostics:
+    """The single-instance guard should leave enough diagnostics to attribute kills."""
+
+    def test_instance_lock_logs_pid_context_before_killing_old_process(
+        self, main_module, tmp_path
+    ):
+        """If the lock is held, the new instance should log who is killing whom."""
+        lock_path = tmp_path / ".spoke.lock"
+        lock_path.write_text("111")
+        fake_fcntl = types.SimpleNamespace(
+            LOCK_EX=1,
+            LOCK_NB=2,
+            flock=MagicMock(side_effect=[OSError("busy"), None]),
+        )
+
+        with patch.dict(sys.modules, {"fcntl": fake_fcntl}):
+            with patch.object(main_module.os.path, "expanduser", return_value=str(lock_path)):
+                with patch.object(main_module.os, "getpid", return_value=222):
+                    with patch.object(main_module.os, "getppid", return_value=333):
+                        with patch.object(main_module.os, "kill") as mock_kill:
+                            with patch.object(main_module, "logger", MagicMock()) as mock_logger:
+                                with patch("time.sleep"):
+                                    main_module._acquire_instance_lock()
+
+        mock_kill.assert_called_once_with(111, signal.SIGTERM)
+        mock_logger.info.assert_any_call(
+            "Single-instance guard starting (pid=%d ppid=%d lock=%s)",
+            222,
+            333,
+            str(lock_path),
+        )
+        mock_logger.warning.assert_any_call(
+            "Single-instance guard sending SIGTERM to prior pid=%d from pid=%d",
+            111,
+            222,
+        )

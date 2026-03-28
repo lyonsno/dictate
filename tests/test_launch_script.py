@@ -66,6 +66,17 @@ def test_launch_script_seeds_default_command_url():
     assert 'SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"' in text
 
 
+def test_launch_script_logs_preflight_kill_diagnostics():
+    """The launcher should log its preflight without broad process killing."""
+    text = _script_text()
+
+    assert "Launcher PID" in text
+    assert "Launcher preflight:" in text
+    assert "lock-holder pid" in text
+    assert 'pkill -TERM -f "python.*spoke"' not in text
+    assert "rm -f ~/Library/Logs/.spoke.lock" not in text
+
+
 def test_launch_script_avoids_nohup_detach():
     """The launcher should use the plain background-launch form that survived manual smoke."""
     text = _script_text()
@@ -159,6 +170,32 @@ def test_inline_launcher_preserves_default_command_url(tmp_path):
         raise AssertionError("expected detached child output to reach launch log")
 
     assert "command_url=http://localhost:8001\n" in log_file.read_text()
+
+
+def test_inline_launcher_logs_child_spawn_context(tmp_path):
+    """Detached launch should log the exact child command and launcher PID context."""
+    repo_root = tmp_path / "repo"
+    python_exe = repo_root / ".venv" / "bin" / "python"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("#!/bin/sh\nprintf 'child-started\\n'\n")
+    python_exe.chmod(0o755)
+
+    log_file = tmp_path / "launch.log"
+    result = _run_inline_launcher(repo_root, log_file)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "child-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected detached child output to reach launch log")
+
+    log_text = log_file.read_text()
+    assert "Launcher child command:" in log_text
+    assert "Launcher PID context:" in log_text
 
 
 def test_inline_launcher_logs_spawn_failure_to_log(tmp_path):

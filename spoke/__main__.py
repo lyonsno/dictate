@@ -1714,15 +1714,32 @@ def _acquire_instance_lock() -> None:
     import time
 
     lock_path = os.path.expanduser("~/Library/Logs/.spoke.lock")
+    current_pid = os.getpid()
+    parent_pid = os.getppid()
+    logger.info(
+        "Single-instance guard starting (pid=%d ppid=%d lock=%s)",
+        current_pid,
+        parent_pid,
+        lock_path,
+    )
     lock_file = open(lock_path, "a+")
     lock_file.seek(0)
     try:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
+        logger.info(
+            "Single-instance guard found an existing lock holder (pid=%d lock=%s)",
+            current_pid,
+            lock_path,
+        )
         try:
             lock_file.seek(0)
             old_pid = int(lock_file.read().strip())
-            logger.info("Killing old instance (pid=%d)", old_pid)
+            logger.warning(
+                "Single-instance guard sending SIGTERM to prior pid=%d from pid=%d",
+                old_pid,
+                current_pid,
+            )
             os.kill(old_pid, sig.SIGTERM)
         except (ValueError, ProcessLookupError, PermissionError):
             pass
@@ -1745,8 +1762,13 @@ def _acquire_instance_lock() -> None:
 
     lock_file.seek(0)
     lock_file.truncate()
-    lock_file.write(str(os.getpid()))
+    lock_file.write(str(current_pid))
     lock_file.flush()
+    logger.info(
+        "Single-instance guard acquired lock (pid=%d lock=%s)",
+        current_pid,
+        lock_path,
+    )
     # Keep lock_file alive for process lifetime
     _acquire_instance_lock._lock_file = lock_file
 
@@ -1771,7 +1793,19 @@ def main() -> None:
     # Clean shutdown on SIGTERM — uninstall event tap and remove status item
     # before dying so we don't leave a zombie tap or ghost menu bar icon
     def _handle_sigterm(signum, frame):
-        logger.info("Received SIGTERM — cleaning up")
+        lock_pid = "unavailable"
+        try:
+            with open(os.path.expanduser("~/Library/Logs/.spoke.lock"), encoding="utf-8") as lock_file:
+                lock_pid = lock_file.read().strip() or "empty"
+        except OSError:
+            pass
+        logger.info(
+            "Received SIGTERM — cleaning up (pid=%d ppid=%d cwd=%s lock_pid=%s)",
+            os.getpid(),
+            os.getppid(),
+            os.getcwd(),
+            lock_pid,
+        )
         delegate._detector.uninstall()
         if delegate._menubar is not None:
             delegate._menubar.cleanup()
