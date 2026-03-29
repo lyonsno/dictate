@@ -11,9 +11,7 @@ from __future__ import annotations
 import importlib
 import logging
 import os
-import re
 import threading
-import time
 from typing import Callable, Optional
 
 import numpy as np
@@ -26,22 +24,6 @@ _DEFAULT_VOICE = "casual_female"
 _DEFAULT_TEMPERATURE = 0.5
 _DEFAULT_TOP_K = 50
 _DEFAULT_TOP_P = 0.95
-_AUDIO_TOGGLE_FADE_S = 0.5
-_ABBREVIATION_SUFFIXES = (
-    "dr.",
-    "mr.",
-    "mrs.",
-    "ms.",
-    "prof.",
-    "sr.",
-    "jr.",
-    "vs.",
-    "etc.",
-    "e.g.",
-    "i.e.",
-    "u.s.",
-    "u.k.",
-)
 
 
 def _playback_device_summary() -> str:
@@ -60,54 +42,6 @@ def _playback_device_summary() -> str:
         return f"default={default_device!r} output={output_index!r} name={device_name}"
     except Exception as exc:
         return f"default=<unavailable: {exc}>"
-
-
-def _split_sentences(text: str) -> list[str]:
-    """Split text conservatively on sentence boundaries."""
-    text = text.strip()
-    if not text:
-        return []
-
-    sentences: list[str] = []
-    start = 0
-    i = 0
-    while i < len(text):
-        char = text[i]
-        if char not in ".!?":
-            i += 1
-            continue
-
-        end = i + 1
-        while end < len(text) and text[end] in "\"'”’)]}":
-            end += 1
-        candidate = text[start:end].strip()
-        lowered = candidate.lower()
-
-        if char == ".":
-            if any(lowered.endswith(suffix) for suffix in _ABBREVIATION_SUFFIXES):
-                i += 1
-                continue
-            if i > 0 and i + 1 < len(text) and text[i - 1].isdigit() and text[i + 1].isdigit():
-                i += 1
-                continue
-
-        next_nonspace = end
-        while next_nonspace < len(text) and text[next_nonspace].isspace():
-            next_nonspace += 1
-
-        if next_nonspace < len(text) and text[next_nonspace].islower() and char == ".":
-            i += 1
-            continue
-
-        if candidate:
-            sentences.append(candidate)
-        start = next_nonspace
-        i = next_nonspace
-
-    tail = text[start:].strip()
-    if tail:
-        sentences.append(tail)
-    return sentences or [text]
 
 
 def tts_load(model_id: str):
@@ -154,11 +88,6 @@ class TTSClient:
         self._stream: sd.OutputStream | None = None
         self._last_chunk: np.ndarray | None = None
         self._speak_lock = threading.Lock()
-        self._audio_fade_lock = threading.Lock()
-        self._playback_active = False
-        self._audio_fade_start_gain = 1.0
-        self._audio_fade_target_gain = 1.0
-        self._audio_fade_started_at = time.monotonic()
 
     @classmethod
     def from_env(cls, gpu_lock: threading.Lock | None = None) -> Optional["TTSClient"]:
@@ -192,120 +121,6 @@ class TTSClient:
                 self._ensure_model()
         threading.Thread(target=_warm, daemon=True).start()
 
-    def _current_audio_gain_locked(self, now: float) -> float:
-        progress = min(max((now - self._audio_fade_started_at) / _AUDIO_TOGGLE_FADE_S, 0.0), 1.0)
-        eased = progress * progress * (3.0 - 2.0 * progress)
-        return self._audio_fade_start_gain + (
-            self._audio_fade_target_gain - self._audio_fade_start_gain
-        ) * eased
-
-    def _current_audio_gain(self) -> float:
-        with self._audio_fade_lock:
-            return self._current_audio_gain_locked(time.monotonic())
-
-    def toggle_audio(self) -> bool:
-        """Toggle audible playback with a 500ms eased fade."""
-        with self._audio_fade_lock:
-            now = time.monotonic()
-            if self._playback_active or self._stream is not None:
-                current_gain = self._current_audio_gain_locked(now)
-            else:
-                current_gain = self._audio_fade_target_gain
-            target_gain = 0.0 if self._audio_fade_target_gain > 0.0 else 1.0
-            self._audio_fade_start_gain = current_gain
-            self._audio_fade_target_gain = target_gain
-            self._audio_fade_started_at = now
-            return target_gain > 0.0
-
-    def _play_result(
-        self,
-        result,
-        amplitude_callback: Callable[[float], None] | None = None,
-    ) -> None:
-        audio = np.array(result.audio, dtype=np.float32)
-        if audio.ndim == 1:
-            audio = audio.reshape(-1, 1)
-
-        sr = result.sample_rate
-        chunk_size = int(sr * 0.064)
-        playback_device = _playback_device_summary()
-        logger.info(
-            "TTS playback starting: samples=%d sample_rate=%d channels=%d chunk_size=%d device=%s",
-            len(audio),
-            sr,
-            audio.shape[1],
-            chunk_size,
-            playback_device,
-        )
-
-        done = threading.Event()
-        stream = sd.OutputStream(
-            samplerate=sr,
-            channels=audio.shape[1],
-            dtype="float32",
-            finished_callback=lambda: done.set(),
-        )
-        self._stream = stream
-        self._last_chunk = None
-        stream.start()
-
-        try:
-            offset = 0
-            while offset < len(audio):
-                if self._cancelled:
-                    break
-                end = min(offset + chunk_size, len(audio))
-                chunk = audio[offset:end]
-                gain = self._current_audio_gain()
-                shaped_chunk = chunk * gain
-                self._last_chunk = shaped_chunk
-                stream.write(shaped_chunk)
-                if amplitude_callback is not None:
-                    rms = float(np.sqrt(np.mean(shaped_chunk ** 2)))
-                    amplitude_callback(rms)
-                offset = end
-
-            while not done.is_set():
-                if self._cancelled:
-                    break
-                done.wait(timeout=0.05)
-
-            if self._cancelled and not done.is_set() and self._last_chunk is not None:
-                fade_samples = int(sr * 0.05)
-                last_amp = float(np.mean(np.abs(self._last_chunk[-1:])))
-                fade_ramp = np.linspace(last_amp, 0.0, fade_samples, dtype=np.float32).reshape(-1, 1)
-                try:
-                    stream.write(fade_ramp)
-                except Exception:
-                    pass
-            logger.info(
-                "TTS playback finished: samples=%d sample_rate=%d channels=%d cancelled=%s device=%s",
-                len(audio),
-                sr,
-                audio.shape[1],
-                self._cancelled,
-                playback_device,
-            )
-        except Exception:
-            logger.warning(
-                "TTS playback failed: samples=%d sample_rate=%d channels=%d cancelled=%s device=%s",
-                len(audio),
-                sr,
-                audio.shape[1],
-                self._cancelled,
-                playback_device,
-                exc_info=True,
-            )
-            raise
-        finally:
-            stream.stop()
-            stream.close()
-            self._stream = None
-            self._last_chunk = None
-
-        if amplitude_callback is not None:
-            amplitude_callback(0.0)
-
     def speak(
         self,
         text: str,
@@ -326,41 +141,120 @@ class TTSClient:
 
         from contextlib import nullcontext
 
-        sentences = _split_sentences(text)
-        if not sentences:
-            return
-
         lock_ctx = self._gpu_lock if self._gpu_lock is not None else nullcontext()
 
         with self._speak_lock:
             if self._cancelled:
                 return
-            with self._audio_fade_lock:
-                self._playback_active = True
-            try:
-                for sentence in sentences:
+                if self._cancelled:
+                    return
+            with lock_ctx:
+                self._ensure_model()
+                if self._cancelled:
+                    return
+                # Generate audio while holding the GPU lock
+                results = []
+                for result in self._model.generate(
+                    text=text,
+                    voice=self._voice,
+                    temperature=self._temperature,
+                    top_k=self._top_k,
+                    top_p=self._top_p,
+                ):
                     if self._cancelled:
                         return
-                    with lock_ctx:
-                        self._ensure_model()
+                    results.append(result)
+            # GPU lock released — play audio without blocking Whisper
+            for result in results:
+                if self._cancelled:
+                    return
+                audio = np.array(result.audio, dtype=np.float32)
+                if audio.ndim == 1:
+                    audio = audio.reshape(-1, 1)
+
+                sr = result.sample_rate
+                # ~64ms chunks for amplitude updates (matches mic capture cadence)
+                chunk_size = int(sr * 0.064)
+                playback_device = _playback_device_summary()
+                logger.info(
+                    "TTS playback starting: samples=%d sample_rate=%d channels=%d chunk_size=%d device=%s",
+                    len(audio),
+                    sr,
+                    audio.shape[1],
+                    chunk_size,
+                    playback_device,
+                )
+
+                done = threading.Event()
+                stream = sd.OutputStream(
+                    samplerate=sr,
+                    channels=audio.shape[1],
+                    dtype="float32",
+                    finished_callback=lambda: done.set(),
+                )
+                self._stream = stream
+                self._last_chunk = None
+                stream.start()
+
+                try:
+                    # Write in chunks, emitting RMS for each
+                    offset = 0
+                    while offset < len(audio):
                         if self._cancelled:
-                            return
-                        results = list(
-                            self._model.generate(
-                                text=sentence,
-                                voice=self._voice,
-                                temperature=self._temperature,
-                                top_k=self._top_k,
-                                top_p=self._top_p,
-                            )
-                        )
-                    for result in results:
+                            break
+                        end = min(offset + chunk_size, len(audio))
+                        chunk = audio[offset:end]
+                        self._last_chunk = chunk
+                        stream.write(chunk)
+                        if amplitude_callback is not None:
+                            rms = float(np.sqrt(np.mean(chunk ** 2)))
+                            amplitude_callback(rms)
+                        offset = end
+
+                    # Wait for remaining audio to finish playing
+                    while not done.is_set():
                         if self._cancelled:
-                            return
-                        self._play_result(result, amplitude_callback=amplitude_callback)
-            finally:
-                with self._audio_fade_lock:
-                    self._playback_active = False
+                            break
+                        done.wait(timeout=0.05)
+
+                    # Fade out over ~50ms if cancelled mid-playback:
+                    # ramp from last chunk's amplitude down to zero
+                    if self._cancelled and not done.is_set() and self._last_chunk is not None:
+                        fade_samples = int(sr * 0.05)
+                        last_amp = float(np.mean(np.abs(self._last_chunk[-1:])))
+                        fade_ramp = np.linspace(last_amp, 0.0, fade_samples, dtype=np.float32).reshape(-1, 1)
+                        try:
+                            stream.write(fade_ramp)
+                        except Exception:
+                            pass
+                    logger.info(
+                        "TTS playback finished: samples=%d sample_rate=%d channels=%d cancelled=%s device=%s",
+                        len(audio),
+                        sr,
+                        audio.shape[1],
+                        self._cancelled,
+                        playback_device,
+                    )
+                except Exception:
+                    logger.warning(
+                        "TTS playback failed: samples=%d sample_rate=%d channels=%d cancelled=%s device=%s",
+                        len(audio),
+                        sr,
+                        audio.shape[1],
+                        self._cancelled,
+                        playback_device,
+                        exc_info=True,
+                    )
+                    raise
+                finally:
+                    stream.stop()
+                    stream.close()
+                    self._stream = None
+                    self._last_chunk = None
+
+                # Signal zero amplitude when playback ends
+                if amplitude_callback is not None:
+                    amplitude_callback(0.0)
 
     def speak_async(
         self,

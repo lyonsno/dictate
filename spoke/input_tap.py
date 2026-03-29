@@ -123,12 +123,10 @@ class SpacebarHoldDetector(NSObject):
         self.tray_active = False
         self._on_shift_tap: Callable[[], None] | None = None
         self._on_shift_tap_during_hold: Callable[[], None] | None = None
-        self._on_shift_tap_idle: Callable[[], None] | None = None
         self._on_enter_pressed: Callable[[], None] | None = None
         self._on_tray_delete: Callable[[], None] | None = None
         self._tray_shift_down = False
         self._tray_space_between = False
-        self._idle_shift_down = False
         self._shift_down_during_hold = False  # tracks shift press while spacebar held
         self._tray_gesture_consumed = False  # True if a tray gesture already fired this hold
         # Double-tap detection for delete gesture (shift held + double-tap spacebar)
@@ -203,7 +201,6 @@ class SpacebarHoldDetector(NSObject):
         self._pending_release_active = False
         self._pending_release_shift_held = False
         self.tray_active = False
-        self._idle_shift_down = False
         self._state = _State.IDLE
 
         global _active_detector  # noqa: PLW0603
@@ -571,13 +568,5 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                     on_shift_tap = getattr(det, '_on_shift_tap', None)
                     if on_shift_tap is not None:
                         on_shift_tap()
-        elif det._state == _State.IDLE:
-            if shift_now and not getattr(det, '_idle_shift_down', False):
-                det._idle_shift_down = True
-            elif not shift_now and getattr(det, '_idle_shift_down', False):
-                det._idle_shift_down = False
-                on_shift_tap_idle = getattr(det, '_on_shift_tap_idle', None)
-                if on_shift_tap_idle is not None:
-                    on_shift_tap_idle()
 
     return event
