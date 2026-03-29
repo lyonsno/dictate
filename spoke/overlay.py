@@ -57,11 +57,11 @@ def _scale_color_saturation(
 
 _TEXT_ALPHA_MIN = _env("SPOKE_TEXT_ALPHA_MIN", 0.066)
 _TEXT_ALPHA_MAX = _env("SPOKE_TEXT_ALPHA_MAX", 0.75)
-_TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.07)
-_BG_ALPHA_MIN = _env("SPOKE_BG_ALPHA_MIN", 0.105)
+_TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.06)
+_BG_ALPHA_MIN = _env("SPOKE_BG_ALPHA_MIN", 0.08)
 _BG_ALPHA_MAX = _env("SPOKE_BG_ALPHA_MAX", 0.96)
 _BG_AMP_SATURATION = _env("SPOKE_BG_AMP_SATURATION", 0.17)
-_SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.08)
+_SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.10)
 _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 
 # Inner glow — matches screen border glow, scaled to overlay size
@@ -71,7 +71,7 @@ _GLOW_COLOR = _scale_color_saturation(
 _INNER_GLOW_WIDTH = 3.0  # proportional to overlay vs screen size
 _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
 _OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
-_OUTER_GLOW_PEAK_TARGET = 0.35
+_OUTER_GLOW_PEAK_TARGET = 0.50
 _OVERLAY_INNER_SATURATION_SCALE = 0.70
 _OVERLAY_OUTER_SATURATION_SCALE = 1.80
 
@@ -521,8 +521,8 @@ class TranscriptionOverlay(NSObject):
             NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, text_alpha)
         )
 
-        # Darken background at saturation: 170% of base at full amplitude
-        bg_alpha = _BG_ALPHA_MIN * (1.0 + 0.70 * scaled)
+        # Darken background at saturation: 325% of base at full amplitude
+        bg_alpha = _BG_ALPHA_MIN * (1.0 + 2.25 * scaled)
         if hasattr(self, '_content_view') and self._content_view is not None:
             self._content_view.layer().setBackgroundColor_(
                 NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, bg_alpha).CGColor()
