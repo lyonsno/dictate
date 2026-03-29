@@ -321,7 +321,9 @@ class SpokeAppDelegate(NSObject):
         self._verify_paste_text = None
         if getattr(self, "_tray_active", False):
             shift_at_press = getattr(self._detector, '_shift_at_press', False)
-            if shift_at_press:
+            logger.info("Tray hold: shift_at_press=%s, shift_latched=%s",
+                         shift_at_press, getattr(self._detector, '_shift_latched', 'N/A'))
+            if shift_at_press or getattr(self._detector, '_shift_latched', False):
                 # Shift+space hold during tray = navigation gesture, not recording.
                 # Wait for release to route through _on_hold_end as navigate up.
                 self._recovery_hold_active = True

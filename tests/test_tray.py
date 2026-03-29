@@ -249,6 +249,7 @@ class TestTrayGestures:
         d._tray_index = 0
         d._recovery_text = "old text"
         d._detector._shift_at_press = False  # plain spacebar, no shift
+        d._detector._shift_latched = False
 
         d._on_hold_start()
 

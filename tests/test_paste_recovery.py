@@ -119,6 +119,7 @@ class TestRecoveryDismiss:
         d._tray_stack = ["some text"]
         d._recovery_text = "some text"
         d._detector._shift_at_press = False  # plain spacebar, no shift
+        d._detector._shift_latched = False
 
         d._on_hold_start()
 
