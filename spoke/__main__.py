@@ -138,6 +138,7 @@ class SpokeAppDelegate(NSObject):
         self._models_ready = False
         self._warm_error: Exception | None = None
         self._warmup_in_flight = False
+        self._hold_rejected_during_warmup = False
         self._mic_probe_in_flight = False
 
         # Command pathway — initialized if SPOKE_COMMAND_URL is configured
@@ -275,13 +276,10 @@ class SpokeAppDelegate(NSObject):
         self._complete_event_tap_startup()
 
     def _complete_event_tap_startup(self) -> None:
-        if self._menubar is not None:
-            self._menubar.set_status_text("Loading models…")
-        self._show_startup_status(
-            "Loading models...\nFirst launch may download selected models."
-        )
+        self._hold_rejected_during_warmup = False
         self._models_ready = False
         self._warm_error = None
+        self._refresh_startup_status()
         if self._warmup_in_flight:
             return
         self._warmup_in_flight = True
@@ -310,6 +308,7 @@ class SpokeAppDelegate(NSObject):
         self._warmup_in_flight = False
         self._models_ready = True
         self._warm_error = None
+        self._hold_rejected_during_warmup = False
         logger.info("spoke ready — hold spacebar to record")
         self._menubar.set_status_text("Ready — hold spacebar")
         self._hide_startup_status()
@@ -326,13 +325,10 @@ class SpokeAppDelegate(NSObject):
     def clientWarmupFailed_(self, _sender) -> None:
         self._warmup_in_flight = False
         self._models_ready = False
+        self._hold_rejected_during_warmup = False
         exc = self._warm_error or RuntimeError("Model warmup failed")
-        self._show_startup_status(
-            "Model load failed.\nChoose another model from the menu."
-        )
+        self._refresh_startup_status()
         self._show_model_load_alert(exc)
-        if self._menubar is not None:
-            self._menubar.set_status_text("Model load failed — choose another model")
 
     def _warm_tts_in_background(self) -> None:
         tts = getattr(self, "_tts_client", None)
@@ -356,6 +352,23 @@ class SpokeAppDelegate(NSObject):
             return
         overlay.hide()
 
+    def _refresh_startup_status(self) -> None:
+        if getattr(self, "_warm_error", None) is not None:
+            self._show_startup_status(
+                "Model load failed.\nChoose another model from the menu."
+            )
+            if self._menubar is not None:
+                self._menubar.set_status_text(
+                    "Model load failed — choose another model"
+                )
+            return
+
+        self._show_startup_status(
+            "Loading models...\nFirst launch may download selected models."
+        )
+        if self._menubar is not None:
+            self._menubar.set_status_text("Loading models…")
+
     def retryEventTap_(self, timer) -> None:
         """Retry event tap installation."""
         if self._detector.install():
@@ -371,11 +384,8 @@ class SpokeAppDelegate(NSObject):
     def _on_hold_start(self) -> None:
         if not getattr(self, "_models_ready", True):
             logger.warning("Hold started before models were ready — ignoring")
-            if self._menubar is not None:
-                if getattr(self, "_warm_error", None) is not None:
-                    self._menubar.set_status_text("Model load failed — choose another model")
-                else:
-                    self._menubar.set_status_text("Loading models…")
+            self._hold_rejected_during_warmup = True
+            self._refresh_startup_status()
             return
         # If a command is actively streaming, cancel it
         if self._transcribing:
@@ -617,6 +627,15 @@ class SpokeAppDelegate(NSObject):
             self._overlay.set_text(text)
 
     def _on_hold_end(self, shift_held: bool = False, enter_held: bool = False) -> None:
+        if getattr(self, "_hold_rejected_during_warmup", False):
+            self._hold_rejected_during_warmup = False
+            logger.info(
+                "Hold ended before models were ready — keeping startup status"
+            )
+            if not getattr(self, "_models_ready", True):
+                self._refresh_startup_status()
+            return
+
         # ── Tray intercept ──
         # When the tray is active, gestures route through the tray handler.
         tray_active = getattr(self, "_tray_active", False)

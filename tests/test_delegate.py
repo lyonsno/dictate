@@ -1276,12 +1276,56 @@ class TestWarmupContract:
         monkeypatch.setenv(
             "SPOKE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
         )
-
         with patch.object(main_module.os, "execv") as mock_execv:
             d.clientWarmupFailed_(None)
             d._select_model("Qwen/Qwen3-ASR-0.6B")
 
         mock_execv.assert_called_once()
+
+
+class TestWarmupHoldGuard:
+    """Test that pre-ready holds cannot push the UI back to a false ready state."""
+
+    def test_hold_end_before_models_ready_keeps_loading_status(
+        self, main_module, monkeypatch
+    ):
+        """Warmup should stay authoritative until models are actually ready."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._models_ready = False
+        d._warm_error = None
+
+        d._on_hold_start()
+        d._on_hold_end()
+
+        d._capture.stop.assert_not_called()
+        d._overlay.hide.assert_not_called()
+        assert "Ready — hold spacebar" not in [
+            call.args[0] for call in d._menubar.set_status_text.call_args_list
+        ]
+        assert d._menubar.set_status_text.call_args_list[-1].args[0] == "Loading models…"
+        assert d._overlay.set_text.call_args_list[-1].args[0] == (
+            "Loading models...\nFirst launch may download selected models."
+        )
+
+    def test_hold_end_after_warmup_failure_keeps_failure_status(
+        self, main_module, monkeypatch
+    ):
+        """Model-load failure should remain visible even if the user taps hold/release."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._models_ready = False
+        d._warm_error = RuntimeError("warm failed")
+
+        d._on_hold_start()
+        d._on_hold_end()
+
+        d._capture.stop.assert_not_called()
+        d._overlay.hide.assert_not_called()
+        assert d._menubar.set_status_text.call_args_list[-1].args[0] == (
+            "Model load failed — choose another model"
+        )
+        assert d._overlay.set_text.call_args_list[-1].args[0] == (
+            "Model load failed.\nChoose another model from the menu."
+        )
 
 
 class TestEnvValidation:
