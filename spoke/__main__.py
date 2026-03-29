@@ -115,6 +115,9 @@ class SpokeAppDelegate(NSObject):
             self._on_hold_end,
             hold_ms,
         )
+        # Wire tray callbacks on the detector
+        self._detector._on_shift_tap = self._on_tray_shift_tap
+        self._detector._on_enter_pressed = self._on_tray_enter_pressed
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
@@ -319,6 +322,7 @@ class SpokeAppDelegate(NSObject):
             logger.info("Hold started during tray — dismissing tray, starting new recording")
             self._cancel_recovery()
             self._tray_active = False
+            self._detector.tray_active = False
             # Fall through to start recording
         elif getattr(self, "_recovery_text", None) is not None:
             self._recovery_hold_active = True
@@ -838,6 +842,7 @@ class SpokeAppDelegate(NSObject):
         self._tray_stack.append(text)
         self._tray_index = len(self._tray_stack) - 1
         self._tray_active = True
+        self._detector.tray_active = True
 
         if self._glow is not None:
             self._glow.hide()
@@ -867,9 +872,22 @@ class SpokeAppDelegate(NSObject):
     def _dismiss_tray(self) -> None:
         """Dismiss the tray overlay. Stack is preserved for re-entry."""
         self._tray_active = False
+        self._detector.tray_active = False
         self._cancel_recovery()
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
+
+    def _on_tray_shift_tap(self) -> None:
+        """Shift tap (no spacebar between) during tray = navigate down."""
+        if self._tray_active:
+            logger.info("Shift tap during tray — navigate down")
+            self._tray_navigate_down()
+
+    def _on_tray_enter_pressed(self) -> None:
+        """Enter pressed during tray = send current entry to assistant."""
+        if self._tray_active:
+            logger.info("Enter during tray — sending to assistant")
+            self._tray_send_current()
 
     def _tray_navigate_up(self) -> None:
         """Navigate up toward more recent entries. Dismiss at top."""
@@ -929,6 +947,7 @@ class SpokeAppDelegate(NSObject):
             self._tray_index = len(self._tray_stack) - 1
 
         self._tray_active = False
+        self._detector.tray_active = False
         self._cancel_recovery()
         if self._menubar is not None:
             self._menubar.set_status_text("Pasted!")
@@ -945,6 +964,7 @@ class SpokeAppDelegate(NSObject):
             self._tray_index = len(self._tray_stack) - 1
 
         self._tray_active = False
+        self._detector.tray_active = False
         self._cancel_recovery()
 
         if self._command_client is not None:
