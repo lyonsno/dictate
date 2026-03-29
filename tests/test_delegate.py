@@ -646,21 +646,26 @@ class TestHoldMsBounds:
 class TestModelPicker:
     """Test model selection menu and RAM guard."""
 
-    def test_model_allowed_blocks_large_on_low_ram(self, main_module, monkeypatch):
+    def test_model_allowed_blocks_large_below_16gb(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setattr(main_module, "_RAM_GB", 15.0)
+        assert d._model_allowed("mlx-community/whisper-large-v3-turbo") is False
+
+    def test_model_allowed_permits_large_at_16gb(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         monkeypatch.setattr(main_module, "_RAM_GB", 16.0)
         assert d._model_allowed("mlx-community/whisper-medium.en-mlx-8bit") is True
         assert d._model_allowed("Qwen/Qwen3-ASR-0.6B") is True
-        assert d._model_allowed("mlx-community/whisper-large-v3-turbo") is False
+        assert d._model_allowed("mlx-community/whisper-large-v3-turbo") is True
 
-    def test_model_allowed_permits_large_on_high_ram(self, main_module, monkeypatch):
+    def test_model_allowed_permits_large_at_32gb(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
-        monkeypatch.setattr(main_module, "_RAM_GB", 36.0)
+        monkeypatch.setattr(main_module, "_RAM_GB", 32.0)
         assert d._model_allowed("mlx-community/whisper-large-v3-turbo") is True
 
     def test_select_model_none_returns_list(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
-        monkeypatch.setattr(main_module, "_RAM_GB", 16.0)
+        monkeypatch.setattr(main_module, "_RAM_GB", 15.0)
         models = d._select_model(None)
         model_ids = [m[0] for m in models]
         assert "mlx-community/whisper-tiny.en-mlx" in model_ids
@@ -688,7 +693,7 @@ class TestModelPicker:
 
     def test_select_model_none_includes_large_on_high_ram(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
-        monkeypatch.setattr(main_module, "_RAM_GB", 36.0)
+        monkeypatch.setattr(main_module, "_RAM_GB", 16.0)
         models = d._select_model(None)
         labels_by_id = {model_id: label for model_id, label, _enabled in models}
         assert "mlx-community/whisper-large-v3-turbo" in labels_by_id
@@ -1182,44 +1187,93 @@ class TestDualModelConfiguration:
 
 
 class TestWarmupContract:
-    """Test explicit warm-before-ready behavior."""
+    """Test non-blocking warmup behavior."""
 
-    def test_setup_event_tap_prepares_clients_before_ready(
+    def test_setup_event_tap_starts_background_warmup_before_ready(
         self, main_module, monkeypatch
     ):
-        """The app should warm selected clients before advertising readiness."""
+        """The app should not block the main thread on first-run model warmup."""
         d = _make_delegate(main_module, monkeypatch)
         d._detector.install.return_value = True
         d._prepare_clients = MagicMock()
+        d._warmup_in_flight = False
 
-        d._setup_event_tap()
+        with patch.object(main_module.threading, "Thread") as mock_thread_cls:
+            mock_thread = MagicMock()
+            mock_thread_cls.return_value = mock_thread
+            d._setup_event_tap()
 
-        d._prepare_clients.assert_called_once_with()
-        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+        d._prepare_clients.assert_not_called()
+        mock_thread_cls.assert_called_once()
+        mock_thread.start.assert_called_once_with()
+        d._menubar.set_status_text.assert_called_with("Loading models…")
+        d._overlay.show.assert_called_once_with()
+        d._overlay.set_text.assert_called_once_with(
+            "Loading models...\nFirst launch may download selected models."
+        )
 
-    def test_setup_event_tap_surfaces_prepare_failure(
+    def test_background_warmup_dispatches_success_to_main_thread(
         self, main_module, monkeypatch
     ):
-        """Warmup failures should block ready-state and surface a model error."""
+        """Warmup completion should be handed back to the main thread."""
         d = _make_delegate(main_module, monkeypatch)
-        d._detector.install.return_value = True
+        d._prepare_clients = MagicMock()
+
+        d._prepare_clients_in_background()
+
+        d.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_once_with(
+            "clientWarmupSucceeded:", None, False
+        )
+
+    def test_background_warmup_dispatches_failure_to_main_thread(
+        self, main_module, monkeypatch
+    ):
+        """Warmup failures should be surfaced back on the main thread."""
+        d = _make_delegate(main_module, monkeypatch)
         d._prepare_clients = MagicMock(side_effect=RuntimeError("warm failed"))
+
+        d._prepare_clients_in_background()
+
+        d.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_once_with(
+            "clientWarmupFailed:", None, False
+        )
+        assert isinstance(d._warm_error, RuntimeError)
+
+    def test_warmup_success_hides_startup_indicator(
+        self, main_module, monkeypatch
+    ):
+        """Successful warmup should remove the loading overlay."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = None
+        d.clientWarmupSucceeded_(None)
+
+        d._overlay.hide.assert_called_once_with()
+        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+
+    def test_warmup_failure_updates_startup_indicator(
+        self, main_module, monkeypatch
+    ):
+        """Failed warmup should keep a visible on-screen failure message."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._warm_error = RuntimeError("warm failed")
         d._show_model_load_alert = MagicMock()
 
-        d._setup_event_tap()
+        d.clientWarmupFailed_(None)
 
-        d._show_model_load_alert.assert_called_once()
+        d._overlay.show.assert_called_once_with()
+        d._overlay.set_text.assert_called_once_with(
+            "Model load failed.\nChoose another model from the menu."
+        )
         d._menubar.set_status_text.assert_called_with(
             "Model load failed — choose another model"
         )
 
-    def test_prepare_failure_still_allows_model_selection_recovery(
+    def test_warmup_failure_still_allows_model_selection_recovery(
         self, main_module, monkeypatch, tmp_path
     ):
         """A failed warmup should still leave model selection available for recovery."""
         d = _make_delegate(main_module, monkeypatch)
-        d._detector.install.return_value = True
-        d._prepare_clients = MagicMock(side_effect=RuntimeError("warm failed"))
+        d._warm_error = RuntimeError("warm failed")
         d._show_model_load_alert = MagicMock()
         monkeypatch.setenv(
             "SPOKE_MODEL_PREFERENCES_PATH", str(tmp_path / "model_preferences.json")
@@ -1227,12 +1281,56 @@ class TestWarmupContract:
         monkeypatch.setenv(
             "SPOKE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
         )
-
         with patch.object(main_module.os, "execv") as mock_execv:
-            d._setup_event_tap()
+            d.clientWarmupFailed_(None)
             d._select_model("Qwen/Qwen3-ASR-0.6B")
 
         mock_execv.assert_called_once()
+
+
+class TestWarmupHoldGuard:
+    """Test that pre-ready holds cannot push the UI back to a false ready state."""
+
+    def test_hold_end_before_models_ready_keeps_loading_status(
+        self, main_module, monkeypatch
+    ):
+        """Warmup should stay authoritative until models are actually ready."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._models_ready = False
+        d._warm_error = None
+
+        d._on_hold_start()
+        d._on_hold_end()
+
+        d._capture.stop.assert_not_called()
+        d._overlay.hide.assert_not_called()
+        assert "Ready — hold spacebar" not in [
+            call.args[0] for call in d._menubar.set_status_text.call_args_list
+        ]
+        assert d._menubar.set_status_text.call_args_list[-1].args[0] == "Loading models…"
+        assert d._overlay.set_text.call_args_list[-1].args[0] == (
+            "Loading models...\nFirst launch may download selected models."
+        )
+
+    def test_hold_end_after_warmup_failure_keeps_failure_status(
+        self, main_module, monkeypatch
+    ):
+        """Model-load failure should remain visible even if the user taps hold/release."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._models_ready = False
+        d._warm_error = RuntimeError("warm failed")
+
+        d._on_hold_start()
+        d._on_hold_end()
+
+        d._capture.stop.assert_not_called()
+        d._overlay.hide.assert_not_called()
+        assert d._menubar.set_status_text.call_args_list[-1].args[0] == (
+            "Model load failed — choose another model"
+        )
+        assert d._overlay.set_text.call_args_list[-1].args[0] == (
+            "Model load failed.\nChoose another model from the menu."
+        )
 
 
 class TestEnvValidation:
@@ -1296,6 +1394,12 @@ class TestEnvValidation:
 
 class TestRecordingCap:
     """Test the recording cap countdown and force_end trigger."""
+
+    def test_max_record_secs_uses_32gb_cutoff(self, main_module):
+        assert main_module._max_record_secs_for_ram(15.0) == 20.0
+        assert main_module._max_record_secs_for_ram(16.0) == 20.0
+        assert main_module._max_record_secs_for_ram(31.0) == 20.0
+        assert main_module._max_record_secs_for_ram(32.0) is None
 
     def test_cap_fires_after_max_seconds(self, main_module, monkeypatch):
         """When elapsed >= _MAX_RECORD_SECS, cap should fire and call force_end."""
@@ -1370,7 +1474,7 @@ class TestRecordingCap:
         assert d._cap_fired is False
 
     def test_cap_noop_when_max_record_secs_none(self, main_module, monkeypatch):
-        """On high-RAM machines (>=36GB), _MAX_RECORD_SECS is None — cap is disabled."""
+        """At 32GB+, _MAX_RECORD_SECS is None — cap is disabled."""
         d = _make_delegate(main_module, monkeypatch)
         d._local_mode = True
         d._cap_fired = False

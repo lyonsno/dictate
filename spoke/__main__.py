@@ -63,10 +63,22 @@ def _get_ram_gb() -> float:
         return 0.0
 
 
-# Recording cap: 20s on machines with < 36GB RAM to avoid Metal GPU crashes
-# on long MLX inference buffers. No cap in sidecar mode (inference is remote).
+_MIN_RAM_GB_FOR_V3_TURBO = 16.0
+_MIN_RAM_GB_FOR_UNCAPPED_RECORDING = 32.0
+_LOW_RAM_RECORDING_CAP_SECS = 20.0
+
+
+def _max_record_secs_for_ram(ram_gb: float) -> float | None:
+    """Return the recording cap for local inference on this RAM tier."""
+    if ram_gb < _MIN_RAM_GB_FOR_UNCAPPED_RECORDING:
+        return _LOW_RAM_RECORDING_CAP_SECS
+    return None
+
+
+# Recording cap: keep smaller local boxes at 20s, but stop blanket-blocking
+# 16GB/32GB machines from trying v3 turbo. No cap in sidecar mode.
 _RAM_GB = _get_ram_gb()
-_MAX_RECORD_SECS: float | None = 20.0 if _RAM_GB < 36 else None
+_MAX_RECORD_SECS: float | None = _max_record_secs_for_ram(_RAM_GB)
 
 
 class SpokeAppDelegate(NSObject):
@@ -137,6 +149,8 @@ class SpokeAppDelegate(NSObject):
         self._last_preview_text = ""
         self._models_ready = False
         self._warm_error: Exception | None = None
+        self._warmup_in_flight = False
+        self._hold_rejected_during_warmup = False
         self._mic_probe_in_flight = False
 
         # Command pathway — initialized if SPOKE_COMMAND_URL is configured
@@ -174,8 +188,10 @@ class SpokeAppDelegate(NSObject):
 
         if self._local_mode and _MAX_RECORD_SECS is not None:
             logger.info(
-                "RAM %.0fGB < 36GB — recording capped at %.0fs to avoid Metal crashes",
-                _RAM_GB, _MAX_RECORD_SECS,
+                "RAM %.0fGB < %.0fGB — recording capped at %.0fs to avoid Metal crashes",
+                _RAM_GB,
+                _MIN_RAM_GB_FOR_UNCAPPED_RECORDING,
+                _MAX_RECORD_SECS,
             )
 
         return self
@@ -274,28 +290,98 @@ class SpokeAppDelegate(NSObject):
         self._complete_event_tap_startup()
 
     def _complete_event_tap_startup(self) -> None:
-        if self._menubar is not None:
-            self._menubar.set_status_text("Loading models…")
+        self._hold_rejected_during_warmup = False
+        self._models_ready = False
+        self._warm_error = None
+        self._refresh_startup_status()
+        if self._warmup_in_flight:
+            return
+        self._warmup_in_flight = True
+        threading.Thread(
+            target=self._prepare_clients_in_background,
+            daemon=True,
+            name="client-warmup",
+        ).start()
+
+    def _prepare_clients_in_background(self) -> None:
         try:
             self._prepare_clients()
         except Exception as exc:
-            self._models_ready = False
             self._warm_error = exc
             logger.exception("Model preparation failed")
-            self._show_model_load_alert(exc)
-            if self._menubar is not None:
-                self._menubar.set_status_text("Model load failed — choose another model")
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "clientWarmupFailed:", None, False
+            )
             return
 
-        logger.info("spoke ready — hold spacebar to record")
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "clientWarmupSucceeded:", None, False
+        )
+
+    def clientWarmupSucceeded_(self, _sender) -> None:
+        self._warmup_in_flight = False
         self._models_ready = True
         self._warm_error = None
+        self._hold_rejected_during_warmup = False
+        logger.info("spoke ready — hold spacebar to record")
         self._menubar.set_status_text("Ready — hold spacebar")
+        self._hide_startup_status()
 
-        # Warm TTS after Whisper is loaded to avoid Metal GPU contention
+        # Warm TTS after Whisper is loaded, but keep it off the main thread.
         tts = getattr(self, "_tts_client", None)
         if tts is not None:
+            threading.Thread(
+                target=self._warm_tts_in_background,
+                daemon=True,
+                name="tts-warmup",
+            ).start()
+
+    def clientWarmupFailed_(self, _sender) -> None:
+        self._warmup_in_flight = False
+        self._models_ready = False
+        self._hold_rejected_during_warmup = False
+        exc = self._warm_error or RuntimeError("Model warmup failed")
+        self._refresh_startup_status()
+        self._show_model_load_alert(exc)
+
+    def _warm_tts_in_background(self) -> None:
+        tts = getattr(self, "_tts_client", None)
+        if tts is None:
+            return
+        try:
             tts.warm()
+        except Exception:
+            logger.exception("TTS warmup failed")
+
+    def _show_startup_status(self, text: str) -> None:
+        overlay = getattr(self, "_overlay", None)
+        if overlay is None:
+            return
+        overlay.show()
+        overlay.set_text(text)
+
+    def _hide_startup_status(self) -> None:
+        overlay = getattr(self, "_overlay", None)
+        if overlay is None:
+            return
+        overlay.hide()
+
+    def _refresh_startup_status(self) -> None:
+        if getattr(self, "_warm_error", None) is not None:
+            self._show_startup_status(
+                "Model load failed.\nChoose another model from the menu."
+            )
+            if self._menubar is not None:
+                self._menubar.set_status_text(
+                    "Model load failed — choose another model"
+                )
+            return
+
+        self._show_startup_status(
+            "Loading models...\nFirst launch may download selected models."
+        )
+        if self._menubar is not None:
+            self._menubar.set_status_text("Loading models…")
 
     def retryEventTap_(self, timer) -> None:
         """Retry event tap installation."""
@@ -312,11 +398,8 @@ class SpokeAppDelegate(NSObject):
     def _on_hold_start(self) -> None:
         if not getattr(self, "_models_ready", True):
             logger.warning("Hold started before models were ready — ignoring")
-            if self._menubar is not None:
-                if getattr(self, "_warm_error", None) is not None:
-                    self._menubar.set_status_text("Model load failed — choose another model")
-                else:
-                    self._menubar.set_status_text("Loading models…")
+            self._hold_rejected_during_warmup = True
+            self._refresh_startup_status()
             return
         # If a command is actively streaming, cancel it
         if self._transcribing:
@@ -558,6 +641,15 @@ class SpokeAppDelegate(NSObject):
             self._overlay.set_text(text)
 
     def _on_hold_end(self, shift_held: bool = False, enter_held: bool = False) -> None:
+        if getattr(self, "_hold_rejected_during_warmup", False):
+            self._hold_rejected_during_warmup = False
+            logger.info(
+                "Hold ended before models were ready — keeping startup status"
+            )
+            if not getattr(self, "_models_ready", True):
+                self._refresh_startup_status()
+            return
+
         # ── Tray intercept ──
         # When the tray is active, gestures route through the tray handler.
         tray_active = getattr(self, "_tray_active", False)
@@ -2027,8 +2119,8 @@ class SpokeAppDelegate(NSObject):
 
     @staticmethod
     def _model_allowed(model_id: str) -> bool:
-        """Guard: whisper-large-v3-turbo requires >= 36GB RAM."""
-        if "large-v3-turbo" in model_id and _RAM_GB < 36:
+        """Guard: whisper-large-v3-turbo requires >= 16GB RAM."""
+        if "large-v3-turbo" in model_id and _RAM_GB < _MIN_RAM_GB_FOR_V3_TURBO:
             return False
         return True
 
