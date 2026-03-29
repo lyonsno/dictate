@@ -1887,11 +1887,16 @@ class SpokeAppDelegate(NSObject):
                 self._overlay.set_clipboard_preview(old_text)
 
     def _cancel_recovery(self) -> None:
-        """Cancel recovery mode if active. Restores original clipboard."""
+        """Cancel recovery/tray overlay if active. Restores original clipboard."""
         if getattr(self, "_recovery_text", None) is not None:
             restore_pasteboard(getattr(self, "_recovery_saved_clipboard", None))
             if self._overlay is not None:
-                self._overlay.dismiss_recovery()
+                # dismiss_recovery handles button-based recovery mode cleanup.
+                # For tray mode (show_tray), we just need to hide the overlay.
+                if self._overlay._recovery_mode:
+                    self._overlay.dismiss_recovery()
+                else:
+                    self._overlay.hide()
             self._clear_recovery_state()
 
     def _clear_recovery_state(self) -> None:
