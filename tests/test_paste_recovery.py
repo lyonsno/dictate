@@ -127,21 +127,21 @@ class TestRecoveryDismiss:
         d._capture.start.assert_called_once()
         assert d._tray_active is False
 
-    def test_shift_space_during_tray_navigates_up(self, main_module, monkeypatch):
-        """Shift+space during tray should navigate up (was: send to command)."""
+    def test_shift_space_during_tray_navigates_down(self, main_module, monkeypatch):
+        """Shift+space during tray should navigate down (toward older entries)."""
         d = _make_delegate(main_module, monkeypatch)
         d._tray_active = True
         d._tray_stack = ["old", "newest"]
-        d._tray_index = 0
-        d._recovery_text = "old"
+        d._tray_index = 1  # at the top (most recent)
+        d._recovery_text = "newest"
 
         d._on_hold_end(shift_held=True)
 
-        # Should navigate up to more recent entry
-        assert d._tray_index == 1
+        # Should navigate down to older entry
+        assert d._tray_index == 0
 
-    def test_shift_space_at_top_dismisses_tray(self, main_module, monkeypatch):
-        """Shift+space at top of tray should dismiss."""
+    def test_shift_space_at_bottom_stays(self, main_module, monkeypatch):
+        """Shift+space at bottom of tray should stay (no wrap)."""
         d = _make_delegate(main_module, monkeypatch)
         d._tray_active = True
         d._tray_stack = ["only"]
@@ -150,7 +150,9 @@ class TestRecoveryDismiss:
 
         d._on_hold_end(shift_held=True)
 
-        assert d._tray_active is False
+        # Should stay at bottom — no wrap, no dismiss
+        assert d._tray_active is True
+        assert d._tray_index == 0
 
     def test_space_release_during_tray_inserts(self, main_module, monkeypatch):
         """Spacebar release during tray should insert text at cursor."""

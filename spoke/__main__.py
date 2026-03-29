@@ -549,9 +549,12 @@ class SpokeAppDelegate(NSObject):
         if tray_active or recovery_active or getattr(self, "_recovery_hold_active", False):
             self._recovery_hold_active = False
             if shift_held:
-                # Shift+space from tray = navigate up
-                logger.info("Shift+space during tray — navigate up")
-                self._tray_navigate_up()
+                # Shift+space from tray = navigate down (toward older entries).
+                # You enter the tray at the top (most recent), so the natural
+                # first gesture goes deeper into history. Dismiss when you
+                # navigate up past the top via shift-tap.
+                logger.info("Shift+space during tray — navigate down")
+                self._tray_navigate_down()
             elif tray_active:
                 # Spacebar from tray (tap or hold release) = insert
                 logger.info("Spacebar during tray — inserting text")
@@ -898,10 +901,10 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_status_text("Ready — hold spacebar")
 
     def _on_tray_shift_tap(self) -> None:
-        """Shift tap (no spacebar between) during tray = navigate down."""
+        """Shift tap (no spacebar between) during tray = navigate up / dismiss."""
         if self._tray_active:
-            logger.info("Shift tap during tray — navigate down")
-            self._tray_navigate_down()
+            logger.info("Shift tap during tray — navigate up")
+            self._tray_navigate_up()
 
     def _on_tray_enter_pressed(self) -> None:
         """Enter pressed during tray = send current entry to assistant."""
