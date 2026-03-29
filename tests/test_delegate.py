@@ -1182,44 +1182,60 @@ class TestDualModelConfiguration:
 
 
 class TestWarmupContract:
-    """Test explicit warm-before-ready behavior."""
+    """Test non-blocking warmup behavior."""
 
-    def test_setup_event_tap_prepares_clients_before_ready(
+    def test_setup_event_tap_starts_background_warmup_before_ready(
         self, main_module, monkeypatch
     ):
-        """The app should warm selected clients before advertising readiness."""
+        """The app should not block the main thread on first-run model warmup."""
         d = _make_delegate(main_module, monkeypatch)
         d._detector.install.return_value = True
         d._prepare_clients = MagicMock()
+        d._warmup_in_flight = False
 
-        d._setup_event_tap()
+        with patch.object(main_module.threading, "Thread") as mock_thread_cls:
+            mock_thread = MagicMock()
+            mock_thread_cls.return_value = mock_thread
+            d._setup_event_tap()
 
-        d._prepare_clients.assert_called_once_with()
-        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+        d._prepare_clients.assert_not_called()
+        mock_thread_cls.assert_called_once()
+        mock_thread.start.assert_called_once_with()
+        d._menubar.set_status_text.assert_called_with("Loading models…")
 
-    def test_setup_event_tap_surfaces_prepare_failure(
+    def test_background_warmup_dispatches_success_to_main_thread(
         self, main_module, monkeypatch
     ):
-        """Warmup failures should block ready-state and surface a model error."""
+        """Warmup completion should be handed back to the main thread."""
         d = _make_delegate(main_module, monkeypatch)
-        d._detector.install.return_value = True
-        d._prepare_clients = MagicMock(side_effect=RuntimeError("warm failed"))
-        d._show_model_load_alert = MagicMock()
+        d._prepare_clients = MagicMock()
 
-        d._setup_event_tap()
+        d._prepare_clients_in_background()
 
-        d._show_model_load_alert.assert_called_once()
-        d._menubar.set_status_text.assert_called_with(
-            "Model load failed — choose another model"
+        d.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_once_with(
+            "clientWarmupSucceeded:", None, False
         )
 
-    def test_prepare_failure_still_allows_model_selection_recovery(
+    def test_background_warmup_dispatches_failure_to_main_thread(
+        self, main_module, monkeypatch
+    ):
+        """Warmup failures should be surfaced back on the main thread."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._prepare_clients = MagicMock(side_effect=RuntimeError("warm failed"))
+
+        d._prepare_clients_in_background()
+
+        d.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_once_with(
+            "clientWarmupFailed:", None, False
+        )
+        assert isinstance(d._warm_error, RuntimeError)
+
+    def test_warmup_failure_still_allows_model_selection_recovery(
         self, main_module, monkeypatch, tmp_path
     ):
         """A failed warmup should still leave model selection available for recovery."""
         d = _make_delegate(main_module, monkeypatch)
-        d._detector.install.return_value = True
-        d._prepare_clients = MagicMock(side_effect=RuntimeError("warm failed"))
+        d._warm_error = RuntimeError("warm failed")
         d._show_model_load_alert = MagicMock()
         monkeypatch.setenv(
             "SPOKE_MODEL_PREFERENCES_PATH", str(tmp_path / "model_preferences.json")
@@ -1229,7 +1245,7 @@ class TestWarmupContract:
         )
 
         with patch.object(main_module.os, "execv") as mock_execv:
-            d._setup_event_tap()
+            d.clientWarmupFailed_(None)
             d._select_model("Qwen/Qwen3-ASR-0.6B")
 
         mock_execv.assert_called_once()

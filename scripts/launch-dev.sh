@@ -1,19 +1,39 @@
 #!/bin/bash
 # Launch spoke dev build. Bind to a hotkey via macOS Shortcuts or Automator.
 # Lets the single-instance guard handle any existing instance.
+#
+# If ~/.config/spoke/dev-target exists, launch from the absolute repo/worktree
+# path written there. Otherwise fall back to the checkout containing this script.
+# This keeps the Automator binding stable while letting the actual launch target
+# move to a fresh main/dev worktree.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+DEFAULT_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+DEV_TARGET_FILE="${HOME}/.config/spoke/dev-target"
 LOG_DIR="${HOME}/Library/Logs"
 LOG_FILE="${LOG_DIR}/spoke-dev-launch.log"
 LOCK_FILE="${LOG_DIR}/.spoke.lock"
 
 mkdir -p "$LOG_DIR"
 
+REPO_ROOT="$DEFAULT_REPO_ROOT"
+TARGET_SOURCE="script checkout"
+
+if [ -f "$DEV_TARGET_FILE" ]; then
+  CONFIGURED_REPO_ROOT="$(tr -d '[:space:]' < "$DEV_TARGET_FILE")"
+  if [ -z "$CONFIGURED_REPO_ROOT" ] || [ ! -d "$CONFIGURED_REPO_ROOT" ]; then
+    osascript -e "display notification \"Target gone: $CONFIGURED_REPO_ROOT\" with title \"Spoke Dev\" subtitle \"Set ~/.config/spoke/dev-target\"" 2>/dev/null
+    afplay /System/Library/Sounds/Basso.aiff 2>/dev/null &
+    exit 0
+  fi
+  REPO_ROOT="$CONFIGURED_REPO_ROOT"
+  TARGET_SOURCE="~/.config/spoke/dev-target"
+fi
+
 {
   printf '\n=== %s ===\n' "$(date '+%Y-%m-%d %H:%M:%S')"
   printf 'Launcher PID %d (PPID %d) invoked from %s\n' "$$" "$PPID" "$PWD"
-  printf 'Launching Spoke from %s\n' "$REPO_ROOT"
+  printf 'Launching Spoke from %s (%s)\n' "$REPO_ROOT" "$TARGET_SOURCE"
 } >>"$LOG_FILE"
 
 OLD_PID=""

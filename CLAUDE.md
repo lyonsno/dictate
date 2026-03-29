@@ -16,9 +16,16 @@ Always run `uv run pytest -q` after code changes and before committing. All test
 
 There are two Automator-bound launcher scripts:
 
-- `scripts/launch-dev.sh` — always launches from the main repo checkout.
+- `scripts/launch-dev.sh` — launches from `~/.config/spoke/dev-target` when that file exists; otherwise falls back to the checkout containing the script.
 - `scripts/launch-smoke.sh` — launches from whatever worktree path is written
   in `~/.config/spoke/smoke-target`.
+
+When you want the stable dev hotkey to follow a fresh main/dev worktree, point
+the dev launcher at it:
+
+```sh
+echo '/path/to/worktree' > ~/.config/spoke/dev-target
+```
 
 When a change is ready for human smoke testing, point the smoke launcher at
 the active worktree and tell the user it's ready:

@@ -66,6 +66,15 @@ def test_launch_script_seeds_default_command_url():
     assert 'SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"' in text
 
 
+def test_launch_script_supports_configured_dev_target():
+    """The dev launcher should allow a stable Automator binding to target a fresh worktree."""
+    text = _script_text()
+
+    assert 'DEV_TARGET_FILE="${HOME}/.config/spoke/dev-target"' in text
+    assert 'TARGET_SOURCE="~/.config/spoke/dev-target"' in text
+    assert 'Launching Spoke from %s (%s)' in text
+
+
 def test_launch_script_logs_preflight_kill_diagnostics():
     """The launcher should log its preflight without broad process killing."""
     text = _script_text()
@@ -214,3 +223,43 @@ def test_inline_launcher_logs_spawn_failure_to_log(tmp_path):
     assert log_file.exists()
     log_text = log_file.read_text()
     assert "No repo .venv Python found and UV launcher is unavailable." in log_text
+
+
+def test_launch_script_prefers_configured_dev_target(tmp_path):
+    """A configured dev target should override the checkout that contains the script."""
+    target_repo = tmp_path / "target-repo"
+    python_exe = target_repo / ".venv" / "bin" / "python"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("#!/bin/sh\nprintf 'target-repo-started\\n'\n")
+    python_exe.chmod(0o755)
+
+    home = tmp_path / "home"
+    config_dir = home / ".config" / "spoke"
+    config_dir.mkdir(parents=True)
+    (config_dir / "dev-target").write_text(str(target_repo))
+
+    log_dir = home / "Library" / "Logs"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "spoke-dev-launch.log"
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "launch-dev.sh"
+    result = subprocess.run(
+        [str(script)],
+        env={**os.environ, "HOME": str(home)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "target-repo-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected configured dev target output to reach launch log")
+
+    log_text = log_file.read_text()
+    assert f"Launching Spoke from {target_repo} (~/.config/spoke/dev-target)" in log_text

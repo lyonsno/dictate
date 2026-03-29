@@ -137,6 +137,7 @@ class SpokeAppDelegate(NSObject):
         self._last_preview_text = ""
         self._models_ready = False
         self._warm_error: Exception | None = None
+        self._warmup_in_flight = False
         self._mic_probe_in_flight = False
 
         # Command pathway — initialized if SPOKE_COMMAND_URL is configured
@@ -276,26 +277,64 @@ class SpokeAppDelegate(NSObject):
     def _complete_event_tap_startup(self) -> None:
         if self._menubar is not None:
             self._menubar.set_status_text("Loading models…")
+        self._models_ready = False
+        self._warm_error = None
+        if self._warmup_in_flight:
+            return
+        self._warmup_in_flight = True
+        threading.Thread(
+            target=self._prepare_clients_in_background,
+            daemon=True,
+            name="client-warmup",
+        ).start()
+
+    def _prepare_clients_in_background(self) -> None:
         try:
             self._prepare_clients()
         except Exception as exc:
-            self._models_ready = False
             self._warm_error = exc
             logger.exception("Model preparation failed")
-            self._show_model_load_alert(exc)
-            if self._menubar is not None:
-                self._menubar.set_status_text("Model load failed — choose another model")
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "clientWarmupFailed:", None, False
+            )
             return
 
-        logger.info("spoke ready — hold spacebar to record")
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "clientWarmupSucceeded:", None, False
+        )
+
+    def clientWarmupSucceeded_(self, _sender) -> None:
+        self._warmup_in_flight = False
         self._models_ready = True
         self._warm_error = None
+        logger.info("spoke ready — hold spacebar to record")
         self._menubar.set_status_text("Ready — hold spacebar")
 
-        # Warm TTS after Whisper is loaded to avoid Metal GPU contention
+        # Warm TTS after Whisper is loaded, but keep it off the main thread.
         tts = getattr(self, "_tts_client", None)
         if tts is not None:
+            threading.Thread(
+                target=self._warm_tts_in_background,
+                daemon=True,
+                name="tts-warmup",
+            ).start()
+
+    def clientWarmupFailed_(self, _sender) -> None:
+        self._warmup_in_flight = False
+        self._models_ready = False
+        exc = self._warm_error or RuntimeError("Model warmup failed")
+        self._show_model_load_alert(exc)
+        if self._menubar is not None:
+            self._menubar.set_status_text("Model load failed — choose another model")
+
+    def _warm_tts_in_background(self) -> None:
+        tts = getattr(self, "_tts_client", None)
+        if tts is None:
+            return
+        try:
             tts.warm()
+        except Exception:
+            logger.exception("TTS warmup failed")
 
     def retryEventTap_(self, timer) -> None:
         """Retry event tap installation."""
