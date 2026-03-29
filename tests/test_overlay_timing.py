@@ -242,8 +242,8 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_mid_brightness_blends_colors(self, mock_pyobjc):
-        """At 50% brightness, bg and text should be intermediate — not pure dark or light."""
+    def test_mid_brightness_has_contrast_gap(self, mock_pyobjc):
+        """At 50% brightness, text should still be brighter than bg — no muddy collapse."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -254,22 +254,21 @@ class TestAdaptiveOverlayCompositing:
             overlay.update_text_amplitude(10.0)
 
             color_calls = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
-            # Text should be mid-gray (not white, not black)
-            text_r = None
-            for call in color_calls:
-                r, g, b, a = call[0]
-                # The text color call — should be close to mid
-                if 0.3 < r < 0.8 and 0.3 < g < 0.8 and a > 0.5:
-                    text_r = r
-            assert text_r is not None, "Expected mid-tone text at 50% brightness"
+            # First call is text, second is bg (setTextColor_ before setBackgroundColor_)
+            text_r, text_g, text_b, _ = color_calls[0][0]
+            bg_r, bg_g, bg_b, _ = color_calls[1][0]
 
-            # Background should also be intermediate
-            bg_found = False
-            for call in color_calls:
-                r, g, b, a = call[0]
-                if 0.3 < r < 0.8 and 0.3 < g < 0.8:
-                    bg_found = True
-            assert bg_found, "Expected mid-tone bg at 50% brightness"
+            text_lum = 0.299 * text_r + 0.587 * text_g + 0.114 * text_b
+            bg_lum = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b
+
+            # Text should be noticeably brighter than bg at mid-brightness
+            # (the offset text curve keeps text whiter longer)
+            assert text_lum > bg_lum + 0.15, (
+                f"Contrast gap too small at 50% brightness: "
+                f"text_lum={text_lum:.3f} bg_lum={bg_lum:.3f}"
+            )
+            # bg should be intermediate (not pure dark or light)
+            assert 0.3 < bg_lum < 0.7, f"bg not intermediate: {bg_lum:.3f}"
         finally:
             sys.modules.pop("spoke.overlay", None)
 

@@ -550,17 +550,21 @@ class TranscriptionOverlay(NSObject):
 
         text_alpha = _TEXT_ALPHA_MIN + scaled * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
         t = getattr(self, "_brightness", 0.0)
-        tr, tg, tb = _lerp_color(_TEXT_COLOR_DARK, _TEXT_COLOR_LIGHT, t)
+        # Text lags the bg transition — stays white longer, goes dark only
+        # past ~0.65 brightness. Prevents contrast collapse at mid-brightness
+        # where linear interpolation would make text and bg the same gray.
+        text_t = t ** 1.8
+        tr, tg, tb = _lerp_color(_TEXT_COLOR_DARK, _TEXT_COLOR_LIGHT, text_t)
         self._text_view.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, text_alpha)
         )
 
         # Darken/lighten background at saturation: 325% of base at full amplitude
         bg_alpha = _BG_ALPHA_MIN * (1.0 + 2.25 * scaled)
-        br, bg, bb = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
+        bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
         if hasattr(self, '_content_view') and self._content_view is not None:
             self._content_view.layer().setBackgroundColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(br, bg, bb, bg_alpha).CGColor()
+                NSColor.colorWithSRGBRed_green_blue_alpha_(bg_r, bg_g, bg_b, bg_alpha).CGColor()
             )
 
     def update_glow_amplitude(self, opacity: float, cap_factor: float = 1.0) -> None:
