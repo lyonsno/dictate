@@ -47,11 +47,17 @@ class SourceRef:
 
 
 def parse_ref(ref_string: str) -> SourceRef:
-    """Parse a source ref string like 'scene_block:scene-abc:block-1'.
+    """Parse a source ref string to a SourceRef.
 
-    The kind is everything before the first colon. The value is everything
-    after. For scene_block and ax_hint refs, the value contains the full
-    compound ref (e.g., 'scene-abc:block-1').
+    Accepts both prefixed and bare formats:
+      - Prefixed: 'scene_block:scene-abc:block-1' (explicit kind)
+      - Bare:     'scene-abc:block-1' (kind inferred from shape)
+
+    Bare scene refs (matching 'scene-*:block-*') are inferred as
+    scene_block. Bare AX refs (matching 'scene-*:focus' or similar
+    hint patterns) are inferred as ax_hint. This is necessary because
+    models consistently pass the ref values from capture_context
+    directly without prepending the kind prefix.
     """
     colon = ref_string.find(":")
     if colon < 0:
@@ -60,10 +66,19 @@ def parse_ref(ref_string: str) -> SourceRef:
     kind = ref_string[:colon]
     value = ref_string[colon + 1:]
 
-    if kind not in _VALID_KINDS:
-        raise ValueError(f"Unknown source ref kind: {kind!r}")
+    if kind in _VALID_KINDS:
+        return SourceRef(kind=kind, value=value)
 
-    return SourceRef(kind=kind, value=value)
+    # Kind not recognized — try to infer from the full string shape.
+    # Scene block refs look like "scene-abc:block-N"
+    if ref_string.startswith("scene-") and ":block-" in ref_string:
+        return SourceRef(kind="scene_block", value=ref_string)
+
+    # AX hint refs look like "scene-abc:focus" (or other hint suffixes)
+    if ref_string.startswith("scene-") and ":" in ref_string:
+        return SourceRef(kind="ax_hint", value=ref_string)
+
+    raise ValueError(f"Unknown source ref kind: {kind!r}")
 
 
 def resolve(

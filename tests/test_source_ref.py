@@ -81,6 +81,27 @@ class TestParseRef:
         assert ref.kind == "ax_hint"
         assert ref.value == "scene-abc:focus"
 
+    def test_bare_scene_block_ref(self):
+        """Models send bare refs from capture_context without kind prefix."""
+        mod = _import_module()
+        ref = mod.parse_ref("scene-abc123:block-5")
+        assert ref.kind == "scene_block"
+        assert ref.value == "scene-abc123:block-5"
+
+    def test_bare_ax_hint_ref(self):
+        """Bare AX hint ref inferred from scene-*:focus pattern."""
+        mod = _import_module()
+        ref = mod.parse_ref("scene-abc123:focus")
+        assert ref.kind == "ax_hint"
+        assert ref.value == "scene-abc123:focus"
+
+    def test_prefixed_scene_block_still_works(self):
+        """Explicit scene_block: prefix should still parse correctly."""
+        mod = _import_module()
+        ref = mod.parse_ref("scene_block:scene-abc:block-1")
+        assert ref.kind == "scene_block"
+        assert ref.value == "scene-abc:block-1"
+
     def test_invalid_ref_raises(self):
         mod = _import_module()
         with pytest.raises(ValueError, match="Unknown source ref kind"):
