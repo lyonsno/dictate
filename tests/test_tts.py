@@ -1,8 +1,11 @@
 """Tests for the TTS client and command-completion autoplay hook."""
 
+import io
 import threading
+import wave
 from unittest.mock import patch, MagicMock, call
 
+import numpy as np
 import pytest
 
 
@@ -25,6 +28,18 @@ def _setup_stream_mock(mock_sd):
     fake_stream.write = MagicMock(side_effect=write_side_effect)
     mock_sd.OutputStream.return_value = fake_stream
     return fake_stream
+
+
+def _fake_wav_bytes(sample_rate=24000):
+    """Create a small mono PCM WAV payload for remote TTS tests."""
+    audio = (np.array([0.1, -0.1, 0.2, -0.2], dtype=np.float32) * 32767).astype(np.int16)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(audio.tobytes())
+    return buffer.getvalue()
 
 
 class TestTTSClient:
@@ -200,6 +215,62 @@ class TestTTSConfig:
         from spoke.tts import TTSClient
         client = TTSClient.from_env()
         assert client._model_id == "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16"
+
+    @patch.dict("os.environ", {
+        "SPOKE_TTS_VOICE": "neutral_male",
+        "SPOKE_TTS_URL": "http://sidecar:8002/",
+        "SPOKE_TTS_MODEL": "mlx-community/Voxtral-Mini-3B-TTS",
+    })
+    def test_tts_url_from_env_selects_remote_client(self):
+        """SPOKE_TTS_URL switches autoplay to the remote speech endpoint."""
+        from spoke.tts import RemoteTTSClient, TTSClient
+
+        client = TTSClient.from_env()
+
+        assert isinstance(client, RemoteTTSClient)
+        assert client._base_url == "http://sidecar:8002"
+        assert client._model_id == "mlx-community/Voxtral-Mini-3B-TTS"
+        assert client._voice == "neutral_male"
+
+
+class TestRemoteTTSClient:
+    """Verify remote TTS fetches audio from a sidecar and plays it locally."""
+
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.httpx.Client")
+    def test_speak_fetches_audio_from_sidecar_and_plays_it(self, mock_http_client, mock_sd):
+        """Remote TTS should call /v1/audio/speech and play the WAV response."""
+        fake_http = MagicMock()
+        fake_response = MagicMock()
+        fake_response.content = _fake_wav_bytes()
+        fake_http.post.return_value = fake_response
+        mock_http_client.return_value = fake_http
+        fake_stream = _setup_stream_mock(mock_sd)
+
+        from spoke.tts import RemoteTTSClient
+
+        client = RemoteTTSClient(
+            base_url="http://sidecar:8002",
+            model_id="mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
+            voice="casual_female",
+        )
+        client.speak("Hello from the sidecar")
+
+        fake_http.post.assert_called_once_with(
+            "http://sidecar:8002/v1/audio/speech",
+            json={
+                "model": "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit",
+                "voice": "casual_female",
+                "input": "Hello from the sidecar",
+                "response_format": "wav",
+            },
+        )
+        fake_response.raise_for_status.assert_called_once()
+        mock_sd.OutputStream.assert_called_once()
+        fake_stream.start.assert_called_once()
+        fake_stream.write.assert_called_once()
+        fake_stream.stop.assert_called_once()
+        fake_stream.close.assert_called_once()
 
 
 class TestGPULockDiscipline:

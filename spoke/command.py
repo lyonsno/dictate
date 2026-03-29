@@ -1,6 +1,6 @@
-"""Command dispatch to a local OMLX server.
+"""Command dispatch to a configurable OMLX server.
 
-Sends voice command utterances to a local model via the OpenAI-compatible
+Sends voice command utterances to an OpenAI-compatible
 chat completions API, streams the response, and maintains a ring buffer
 of recent exchanges for conversational context.
 """

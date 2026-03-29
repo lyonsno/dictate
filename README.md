@@ -84,6 +84,17 @@ uv tool install "mlx-audio[server]"
 mlx-audio-server --host 0.0.0.0 --port 8000
 ```
 
+Command responses already support a remote OMLX target, and TTS can now do the
+same through an OpenAI-compatible speech endpoint:
+
+```sh
+SPOKE_WHISPER_URL=http://<host>:8000 \
+SPOKE_COMMAND_URL=http://<host>:8001 \
+SPOKE_TTS_URL=http://<host>:8002 \
+SPOKE_TTS_VOICE=casual_female \
+uv run spoke
+```
+
 ## Permissions
 
 On first run, macOS will ask for:
@@ -104,9 +115,13 @@ choices across relaunches.
 | Variable | Default | Description |
 |---|---|---|
 | `SPOKE_WHISPER_URL` | unset | Remote transcription server. When unset, transcription runs locally. |
+| `SPOKE_COMMAND_URL` | unset | Remote OMLX command server. When unset, command mode is disabled. |
 | `SPOKE_WHISPER_MODEL` | unset | Legacy single-model override. When set, both preview and final use the same model. |
 | `SPOKE_PREVIEW_MODEL` | `mlx-community/whisper-medium.en-mlx-8bit` | Preview model identifier. Use `Qwen/Qwen3-ASR-0.6B` for local streaming preview, or any menu-listed Whisper variant. |
 | `SPOKE_TRANSCRIPTION_MODEL` | `mlx-community/whisper-large-v3-turbo` | Final transcription model identifier. Use `Qwen/Qwen3-ASR-0.6B` or any menu-listed Whisper variant. |
+| `SPOKE_TTS_URL` | unset | Remote OpenAI-compatible `/v1/audio/speech` server for command autoplay. When unset, TTS uses local MLX. |
+| `SPOKE_TTS_VOICE` | unset | Enables command autoplay and selects the voice for either local or sidecar TTS. |
+| `SPOKE_TTS_MODEL` | `mlx-community/Voxtral-4B-TTS-2603-mlx-4bit` | TTS model identifier for either local MLX or remote speech sidecar. |
 | `SPOKE_HOLD_MS` | `200` | Spacebar hold threshold in milliseconds. Must be greater than `0`. |
 | `SPOKE_RESTORE_DELAY_MS` | `1000` | Delay before the original pasteboard contents are restored. |
 
