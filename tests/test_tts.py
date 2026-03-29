@@ -202,6 +202,197 @@ class TestTTSConfig:
         assert client._model_id == "mlx-community/Voxtral-4B-TTS-2603-mlx-bf16"
 
 
+class TestGPULockDiscipline:
+    """Verify that the GPU lock is held during generation but not playback."""
+
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_speak_holds_lock_during_generation_only(self, mock_load, mock_sd):
+        """GPU lock is held during model.generate() but released before audio write."""
+        import numpy as np
+        lock = threading.Lock()
+        locked_during_generate = []
+        locked_during_write = []
+
+        fake_model = MagicMock()
+        def fake_generate(**kwargs):
+            locked_during_generate.append(lock.locked())
+            r = MagicMock()
+            r.audio = [0.1] * 2400  # 100ms at 24kHz
+            r.sample_rate = 24000
+            yield r
+        fake_model.generate = fake_generate
+        mock_load.return_value = fake_model
+
+        fake_stream = MagicMock()
+        def write_side_effect(data):
+            locked_during_write.append(lock.locked())
+            for call_args in mock_sd.OutputStream.call_args_list:
+                cb = call_args[1].get("finished_callback")
+                if cb:
+                    cb()
+        fake_stream.write = MagicMock(side_effect=write_side_effect)
+        mock_sd.OutputStream.return_value = fake_stream
+
+        from spoke.tts import TTSClient
+        client = TTSClient(gpu_lock=lock)
+        client.speak("test")
+
+        assert locked_during_generate == [True], "Lock must be held during generate()"
+        assert any(not locked for locked in locked_during_write), "Lock must be released during audio write"
+
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_warm_holds_lock(self, mock_load, mock_sd):
+        """warm() acquires the GPU lock during model loading."""
+        lock = threading.Lock()
+        locked_during_load = []
+
+        original_load = mock_load.side_effect
+        def capture_lock(model_id):
+            locked_during_load.append(lock.locked())
+            return MagicMock()
+        mock_load.side_effect = capture_lock
+
+        from spoke.tts import TTSClient
+        client = TTSClient(gpu_lock=lock)
+        client.warm()
+        # Wait for the background thread
+        import time
+        time.sleep(0.5)
+
+        assert locked_during_load == [True], "Lock must be held during model loading"
+
+
+class TestAmplitudeCallback:
+    """Verify amplitude callback is invoked per chunk during playback."""
+
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_amplitude_callback_called_per_chunk(self, mock_load, mock_sd):
+        """amplitude_callback receives RMS values for each chunk, plus final 0.0."""
+        import numpy as np
+
+        # Create audio long enough for multiple chunks (24kHz, ~200ms = 4800 samples)
+        audio_data = np.random.randn(4800).astype(np.float32) * 0.1
+        fake_model = MagicMock()
+        r = MagicMock()
+        r.audio = audio_data.tolist()
+        r.sample_rate = 24000
+        fake_model.generate.return_value = iter([r])
+        mock_load.return_value = fake_model
+
+        # Stream mock that triggers finished after all writes
+        write_count = [0]
+        # 64ms chunks at 24kHz = 1536 samples, so 4800 / 1536 ≈ 4 chunks
+        expected_chunks = -(-4800 // int(24000 * 0.064))  # ceiling division
+
+        fake_stream = MagicMock()
+        def write_side_effect(data):
+            write_count[0] += 1
+            if write_count[0] >= expected_chunks:
+                for call_args in mock_sd.OutputStream.call_args_list:
+                    cb = call_args[1].get("finished_callback")
+                    if cb:
+                        cb()
+        fake_stream.write = MagicMock(side_effect=write_side_effect)
+        mock_sd.OutputStream.return_value = fake_stream
+
+        rms_values = []
+        def capture_rms(rms):
+            rms_values.append(rms)
+
+        from spoke.tts import TTSClient
+        client = TTSClient()
+        client.speak("test", amplitude_callback=capture_rms)
+
+        # Should have one RMS per chunk + final 0.0
+        assert len(rms_values) >= expected_chunks + 1
+        assert rms_values[-1] == 0.0, "Final callback should be 0.0"
+        assert all(isinstance(v, float) for v in rms_values)
+        assert all(v > 0 for v in rms_values[:-1]), "Non-final RMS values should be positive"
+
+
+class TestCancelDuringPlayback:
+    """Verify cancel during active playback triggers fade-out and cleanup."""
+
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_cancel_during_write_loop_stops_and_cleans_up(self, mock_load, mock_sd):
+        """Cancelling mid-playback stops the write loop and closes the stream."""
+        import numpy as np
+
+        audio_data = np.random.randn(48000).astype(np.float32) * 0.1  # 2s of audio
+        fake_model = MagicMock()
+        r = MagicMock()
+        r.audio = audio_data.tolist()
+        r.sample_rate = 24000
+        fake_model.generate.return_value = iter([r])
+        mock_load.return_value = fake_model
+
+        from spoke.tts import TTSClient
+        client = TTSClient()
+
+        fake_stream = MagicMock()
+        chunks_written = [0]
+        def write_side_effect(data):
+            chunks_written[0] += 1
+            # Cancel directly from inside the write callback on chunk 3
+            if chunks_written[0] == 3:
+                client.cancel()
+        fake_stream.write = MagicMock(side_effect=write_side_effect)
+        mock_sd.OutputStream.return_value = fake_stream
+
+        client.speak("test")
+
+        fake_stream.stop.assert_called_once()
+        fake_stream.close.assert_called_once()
+        # Chunk 3 sets cancel, chunk 4 sees it and breaks (+1 for fade ramp)
+        # Should be well under the full ~32 chunks
+        total_chunks = -(-48000 // int(24000 * 0.064))
+        assert chunks_written[0] <= 5, f"Expected ≤5 writes (3 + cancel check + fade), got {chunks_written[0]}"
+
+
+class TestDoneCallback:
+    """Verify done_callback fires after speak completes."""
+
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_done_callback_fires_after_speak(self, mock_load, mock_sd):
+        """done_callback is invoked after speak() returns."""
+        fake_model = MagicMock()
+        fake_model.generate.return_value = iter([_fake_result()])
+        mock_load.return_value = fake_model
+        _setup_stream_mock(mock_sd)
+
+        done = threading.Event()
+
+        from spoke.tts import TTSClient
+        client = TTSClient()
+        client.speak_async("test", done_callback=lambda: done.set())
+
+        assert done.wait(timeout=5), "done_callback should have been called"
+
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_speak_async_resets_cancel_flag(self, mock_load, mock_sd):
+        """speak_async() clears cancelled flag so new playback proceeds."""
+        fake_model = MagicMock()
+        fake_model.generate.return_value = iter([_fake_result()])
+        mock_load.return_value = fake_model
+        _setup_stream_mock(mock_sd)
+
+        from spoke.tts import TTSClient
+        client = TTSClient()
+        client.cancel()
+        assert client._cancelled is True
+
+        t = client.speak_async("test")
+        t.join(timeout=5)
+
+        mock_sd.OutputStream.assert_called_once()
+
+
 class TestCommandCompletionAutoplay:
     """Test that commandComplete_ triggers TTS when configured."""
 

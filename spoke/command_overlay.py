@@ -292,6 +292,10 @@ class CommandOverlay(NSObject):
         self._streaming = True
         self._response_text = ""
         self._utterance_text = ""
+        # Reset TTS state so stale blend doesn't affect new responses
+        self._tts_active = False
+        self._tts_blend = 0.0
+        self._tts_amplitude = 0.0
         self._text_view.setString_("")
         self._window.setAlphaValue_(0.0)
 
