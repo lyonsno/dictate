@@ -321,8 +321,7 @@ class SpokeAppDelegate(NSObject):
         self._verify_paste_text = None
         if getattr(self, "_tray_active", False):
             self._recovery_hold_active = True
-            logger.info("Hold started during tray — waiting for release (tray_active=%s, det.tray_active=%s)",
-                         self._tray_active, getattr(self._detector, 'tray_active', 'N/A'))
+            logger.info("Hold started during tray — waiting for release")
             return
         elif getattr(self, "_recovery_text", None) is not None:
             self._recovery_hold_active = True
@@ -940,11 +939,7 @@ class SpokeAppDelegate(NSObject):
 
     def _tray_insert_current(self) -> None:
         """Insert the current tray entry at cursor and consume it."""
-        logger.info("_tray_insert_current called: active=%s stack=%d index=%d",
-                     self._tray_active, len(self._tray_stack), self._tray_index)
         if not self._tray_active or not self._tray_stack:
-            logger.info("Tray insert — bailing: active=%s stack_empty=%s",
-                         self._tray_active, not self._tray_stack)
             return
         text = self._tray_stack[self._tray_index]
         self._recovery_text = text
