@@ -179,6 +179,26 @@ class TestMicPermissionAsync:
 class TestSigtermMenuBarCleanup:
     """SIGTERM must remove the NSStatusItem to prevent ghost menu bar icons."""
 
+    def test_main_installs_faulthandler_before_event_loop(
+        self, main_module, monkeypatch
+    ):
+        """Startup should enable fatal crash logging before the app starts running."""
+        monkeypatch.setenv("SPOKE_WHISPER_URL", "http://test:8000")
+
+        with patch.object(main_module, "_install_faulthandler") as mock_install:
+            with patch.object(main_module, "NSApp", MagicMock()):
+                with patch.object(main_module, "NSApplication", MagicMock()) as mock_nsapp_cls:
+                    mock_nsapp_cls.sharedApplication.return_value = MagicMock()
+                    with patch.object(
+                        main_module.SpokeAppDelegate, "alloc", return_value=MagicMock()
+                    ) as mock_alloc:
+                        mock_alloc.return_value.init.return_value = MagicMock()
+
+                        with patch("PyObjCTools.AppHelper.runEventLoop"):
+                            main_module.main()
+
+        mock_install.assert_called_once_with()
+
     def test_sigterm_handler_calls_menubar_cleanup(self, main_module, monkeypatch):
         """The SIGTERM handler should call menubar.cleanup() before
         calling NSApp.terminate_."""
@@ -192,21 +212,22 @@ class TestSigtermMenuBarCleanup:
         def capture_signal(signum, handler):
             captured_handlers[signum] = handler
 
-        with patch.object(main_module, "NSApp", MagicMock()):
-            with patch.object(main_module, "NSApplication", MagicMock()) as mock_nsapp_cls:
-                mock_nsapp_cls.sharedApplication.return_value = MagicMock()
-                with patch.object(signal_mod, "signal", side_effect=capture_signal):
-                    delegate = MagicMock()
-                    delegate._menubar = MagicMock()
-                    delegate._detector = MagicMock()
+        with patch.object(main_module, "_install_faulthandler"):
+            with patch.object(main_module, "NSApp", MagicMock()):
+                with patch.object(main_module, "NSApplication", MagicMock()) as mock_nsapp_cls:
+                    mock_nsapp_cls.sharedApplication.return_value = MagicMock()
+                    with patch.object(signal_mod, "signal", side_effect=capture_signal):
+                        delegate = MagicMock()
+                        delegate._menubar = MagicMock()
+                        delegate._detector = MagicMock()
 
-                    with patch.object(
-                        main_module.SpokeAppDelegate, "alloc", return_value=MagicMock()
-                    ) as mock_alloc:
-                        mock_alloc.return_value.init.return_value = delegate
+                        with patch.object(
+                            main_module.SpokeAppDelegate, "alloc", return_value=MagicMock()
+                        ) as mock_alloc:
+                            mock_alloc.return_value.init.return_value = delegate
 
-                        with patch("PyObjCTools.AppHelper.runEventLoop"):
-                            main_module.main()
+                            with patch("PyObjCTools.AppHelper.runEventLoop"):
+                                main_module.main()
 
         assert signal_mod.SIGTERM in captured_handlers, (
             "main() did not install a SIGTERM handler"
@@ -227,29 +248,30 @@ class TestSigtermMenuBarCleanup:
         def capture_signal(signum, handler):
             captured_handlers[signum] = handler
 
-        with patch.object(main_module, "NSApp", MagicMock()):
-            with patch.object(main_module, "NSApplication", MagicMock()) as mock_nsapp_cls:
-                mock_nsapp_cls.sharedApplication.return_value = MagicMock()
-                with patch.object(signal_mod, "signal", side_effect=capture_signal):
-                    delegate = MagicMock()
-                    delegate._menubar = MagicMock()
-                    delegate._detector = MagicMock()
+        with patch.object(main_module, "_install_faulthandler"):
+            with patch.object(main_module, "NSApp", MagicMock()):
+                with patch.object(main_module, "NSApplication", MagicMock()) as mock_nsapp_cls:
+                    mock_nsapp_cls.sharedApplication.return_value = MagicMock()
+                    with patch.object(signal_mod, "signal", side_effect=capture_signal):
+                        delegate = MagicMock()
+                        delegate._menubar = MagicMock()
+                        delegate._detector = MagicMock()
 
-                    with patch.object(main_module, "logger", MagicMock()) as mock_logger:
-                        with patch.object(main_module.os, "getpid", return_value=4242):
-                            with patch.object(main_module.os, "getppid", return_value=2121):
-                                with patch.object(main_module.os, "getcwd", return_value="/tmp/spoke"):
-                                    with patch.object(
-                                        main_module.SpokeAppDelegate, "alloc", return_value=MagicMock()
-                                    ) as mock_alloc:
-                                        mock_alloc.return_value.init.return_value = delegate
+                        with patch.object(main_module, "logger", MagicMock()) as mock_logger:
+                            with patch.object(main_module.os, "getpid", return_value=4242):
+                                with patch.object(main_module.os, "getppid", return_value=2121):
+                                    with patch.object(main_module.os, "getcwd", return_value="/tmp/spoke"):
+                                        with patch.object(
+                                            main_module.SpokeAppDelegate, "alloc", return_value=MagicMock()
+                                        ) as mock_alloc:
+                                            mock_alloc.return_value.init.return_value = delegate
 
-                                        with patch("PyObjCTools.AppHelper.runEventLoop"):
-                                            main_module.main()
+                                            with patch("PyObjCTools.AppHelper.runEventLoop"):
+                                                main_module.main()
 
-                                        captured_handlers[signal_mod.SIGTERM](
-                                            signal_mod.SIGTERM, None
-                                        )
+                                            captured_handlers[signal_mod.SIGTERM](
+                                                signal_mod.SIGTERM, None
+                                            )
 
                         mock_logger.info.assert_any_call(
                             "Received SIGTERM — cleaning up (pid=%d ppid=%d cwd=%s lock_pid=%s)",

@@ -13,6 +13,7 @@ Configure via environment variables:
 from __future__ import annotations
 
 from contextlib import nullcontext
+import faulthandler
 import json
 import logging
 import os
@@ -51,6 +52,19 @@ _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
+_TRANSCRIBE_BREADCRUMB_PATH = Path(
+    os.environ.get(
+        "SPOKE_TRANSCRIBE_BREADCRUMB_PATH",
+        "~/Library/Logs/spoke-transcribe-breadcrumb.json",
+    )
+).expanduser()
+_FAULTHANDLER_LOG_PATH = Path(
+    os.environ.get(
+        "SPOKE_FAULTHANDLER_LOG_PATH",
+        "~/Library/Logs/spoke-faulthandler.log",
+    )
+).expanduser()
+_FAULTHANDLER_FILE = None
 
 
 def _get_ram_gb() -> float:
@@ -61,6 +75,27 @@ def _get_ram_gb() -> float:
         return int(out.strip()) / (1024 ** 3)
     except Exception:
         return 0.0
+
+
+def _install_faulthandler() -> None:
+    """Mirror fatal Python/native dumps into a durable log file."""
+    global _FAULTHANDLER_FILE
+    if faulthandler.is_enabled():
+        return
+    try:
+        _FAULTHANDLER_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _FAULTHANDLER_FILE = _FAULTHANDLER_LOG_PATH.open("a", encoding="utf-8")
+        _FAULTHANDLER_FILE.write(
+            f"\n=== faulthandler enabled pid={os.getpid()} at {time.strftime('%Y-%m-%dT%H:%M:%S%z')} ===\n"
+        )
+        _FAULTHANDLER_FILE.flush()
+        faulthandler.enable(file=_FAULTHANDLER_FILE, all_threads=True)
+    except Exception:
+        logger.warning(
+            "Failed to enable faulthandler log at %s",
+            _FAULTHANDLER_LOG_PATH,
+            exc_info=True,
+        )
 
 
 # Recording cap: 20s on machines with < 36GB RAM to avoid Metal GPU crashes
@@ -126,6 +161,8 @@ class SpokeAppDelegate(NSObject):
         self._preview_done = threading.Event()
         self._preview_done.set()
         self._preview_session_token = 0
+        self._dictation_id = 0
+        self._local_whisper_operation_seq = 0
         self._local_inference_lock = threading.Lock()
         self._record_start_time: float = 0.0
         self._cap_fired = False
@@ -335,8 +372,14 @@ class SpokeAppDelegate(NSObject):
             return
         self._recovery_hold_active = False
 
+        self._dictation_id = getattr(self, "_dictation_id", 0) + 1
+        dictation_id = self._dictation_id
         shift_at_press = getattr(self._detector, '_shift_at_press', False)
-        logger.info("Hold started — recording (shift_at_press=%s)", shift_at_press)
+        logger.info(
+            "Hold started — recording (dictation_id=%d shift_at_press=%s)",
+            dictation_id,
+            shift_at_press,
+        )
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
@@ -406,6 +449,142 @@ class SpokeAppDelegate(NSObject):
                 min(glow_opacity * 2.5, 1.0),
                 cap_factor=self._glow._cap_factor,
             )
+
+    def _write_transcribe_breadcrumb(self, payload: dict) -> None:
+        path = _TRANSCRIBE_BREADCRUMB_PATH
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(f"{path.name}.tmp")
+            tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
+            tmp.rename(path)
+        except Exception:
+            logger.debug("Failed to update transcription breadcrumb", exc_info=True)
+
+    def _start_local_whisper_operation(
+        self,
+        *,
+        phase: str,
+        client,
+        model_id: str | None,
+        wav_bytes: bytes,
+        token: int | None = None,
+    ) -> dict | None:
+        if not isinstance(client, LocalTranscriptionClient):
+            return None
+
+        operation_seq = getattr(self, "_local_whisper_operation_seq", 0) + 1
+        self._local_whisper_operation_seq = operation_seq
+        operation = {
+            "phase": phase,
+            "dictation_id": getattr(self, "_dictation_id", 0),
+            "operation_seq": operation_seq,
+            "preview_session_token": getattr(self, "_preview_session_token", None),
+            "token": token,
+            "model_id": model_id,
+            "audio_bytes": len(wav_bytes),
+            "thread_name": threading.current_thread().name,
+            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "started_monotonic": time.monotonic(),
+        }
+        self._write_transcribe_breadcrumb(
+            {
+                "state": "active",
+                "updated_at": operation["started_at"],
+                "operation": {
+                    key: value
+                    for key, value in operation.items()
+                    if key != "started_monotonic"
+                },
+            }
+        )
+        logger.info(
+            "Local Whisper %s start (dictation_id=%s op=%s model=%s bytes=%d token=%s thread=%s)",
+            phase,
+            operation["dictation_id"],
+            operation_seq,
+            model_id,
+            len(wav_bytes),
+            token,
+            operation["thread_name"],
+        )
+        return operation
+
+    def _finish_local_whisper_operation(
+        self,
+        operation: dict | None,
+        *,
+        status: str,
+        text: str | None = None,
+        error: BaseException | None = None,
+    ) -> None:
+        if operation is None:
+            return
+
+        finished_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        duration_ms = (time.monotonic() - operation["started_monotonic"]) * 1000
+        summary = {
+            key: value
+            for key, value in operation.items()
+            if key != "started_monotonic"
+        }
+        summary["status"] = status
+        summary["duration_ms"] = round(duration_ms, 1)
+        summary["finished_at"] = finished_at
+        summary["text_chars"] = len(text or "")
+        if error is not None:
+            summary["error"] = repr(error)
+
+        self._write_transcribe_breadcrumb(
+            {
+                "state": "idle",
+                "updated_at": finished_at,
+                "last_operation": summary,
+            }
+        )
+        if error is None:
+            logger.info(
+                "Local Whisper %s end (dictation_id=%s op=%s status=%s duration_ms=%.1f text_chars=%d)",
+                operation["phase"],
+                operation["dictation_id"],
+                operation["operation_seq"],
+                status,
+                duration_ms,
+                len(text or ""),
+            )
+        else:
+            logger.warning(
+                "Local Whisper %s end (dictation_id=%s op=%s status=%s duration_ms=%.1f error=%r)",
+                operation["phase"],
+                operation["dictation_id"],
+                operation["operation_seq"],
+                status,
+                duration_ms,
+                error,
+            )
+
+    def _transcribe_with_local_whisper_diagnostics(
+        self,
+        client,
+        wav_bytes: bytes,
+        *,
+        phase: str,
+        model_id: str | None,
+        token: int | None = None,
+    ) -> str:
+        operation = self._start_local_whisper_operation(
+            phase=phase,
+            client=client,
+            model_id=model_id,
+            wav_bytes=wav_bytes,
+            token=token,
+        )
+        try:
+            text = client.transcribe(wav_bytes)
+        except Exception as exc:
+            self._finish_local_whisper_operation(operation, status="error", error=exc)
+            raise
+        self._finish_local_whisper_operation(operation, status="ok", text=text)
+        return text
 
     def _preview_loop(self, token: int | None = None) -> None:
         """Background thread: preview transcription during recording.
@@ -500,7 +679,13 @@ class SpokeAppDelegate(NSObject):
 
                 try:
                     with self._local_inference_context(self._preview_client):
-                        text = self._preview_client.transcribe(wav_bytes)
+                        text = self._transcribe_with_local_whisper_diagnostics(
+                            self._preview_client,
+                            wav_bytes,
+                            phase="preview",
+                            model_id=getattr(self, "_preview_model_id", None),
+                            token=token,
+                        )
                 except Exception:
                     logger.debug("Preview transcription failed", exc_info=True)
                     time.sleep(0.5)
@@ -675,7 +860,13 @@ class SpokeAppDelegate(NSObject):
                 ):
                     text = self._client.finish_stream()
                 else:
-                    text = self._client.transcribe(wav_bytes)
+                    text = self._transcribe_with_local_whisper_diagnostics(
+                        self._client,
+                        wav_bytes,
+                        phase="final",
+                        model_id=getattr(self, "_transcription_model_id", None),
+                        token=token,
+                    )
         except Exception:
             logger.exception("Transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -830,7 +1021,13 @@ class SpokeAppDelegate(NSObject):
                 ):
                     utterance = self._client.finish_stream()
                 else:
-                    utterance = self._client.transcribe(wav_bytes)
+                    utterance = self._transcribe_with_local_whisper_diagnostics(
+                        self._client,
+                        wav_bytes,
+                        phase="command",
+                        model_id=getattr(self, "_transcription_model_id", None),
+                        token=token,
+                    )
         except Exception:
             logger.exception("Command transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1835,6 +2032,7 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    _install_faulthandler()
 
     _acquire_instance_lock()
 

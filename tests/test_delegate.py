@@ -9,6 +9,8 @@ import json
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 def _make_delegate(main_module, monkeypatch):
     """Create a SpokeAppDelegate with mocked sub-components."""
@@ -609,6 +611,69 @@ class TestConcurrencyContract:
         d._preview_done.wait.assert_called_once_with(timeout=2.0)
         d._local_inference_lock.__enter__.assert_called_once()
         d._client.transcribe.assert_called_once_with(b"wav")
+
+
+class TestLocalWhisperDiagnostics:
+    """Test diagnostic breadcrumbs around local Whisper inference."""
+
+    def test_local_whisper_preview_records_active_and_idle_breadcrumbs(
+        self, main_module, monkeypatch
+    ):
+        """A successful local preview pass should mark active then idle."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._dictation_id = 9
+        d._preview_session_token = 4
+        client = main_module.LocalTranscriptionClient(model="test/model")
+
+        with patch.object(d, "_write_transcribe_breadcrumb") as mock_write:
+            with patch.object(client, "transcribe", return_value="preview text"):
+                text = d._transcribe_with_local_whisper_diagnostics(
+                    client,
+                    b"wav-data",
+                    phase="preview",
+                    model_id="test/model",
+                    token=4,
+                )
+
+        assert text == "preview text"
+        assert mock_write.call_count == 2
+        active = mock_write.call_args_list[0].args[0]
+        idle = mock_write.call_args_list[1].args[0]
+        assert active["state"] == "active"
+        assert active["operation"]["phase"] == "preview"
+        assert active["operation"]["dictation_id"] == 9
+        assert active["operation"]["preview_session_token"] == 4
+        assert active["operation"]["audio_bytes"] == len(b"wav-data")
+        assert idle["state"] == "idle"
+        assert idle["last_operation"]["phase"] == "preview"
+        assert idle["last_operation"]["status"] == "ok"
+        assert idle["last_operation"]["text_chars"] == len("preview text")
+
+    def test_local_whisper_error_records_error_breadcrumb(
+        self, main_module, monkeypatch
+    ):
+        """If local Whisper raises, the breadcrumb should preserve that failure."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._dictation_id = 12
+        client = main_module.LocalTranscriptionClient(model="test/model")
+
+        with patch.object(d, "_write_transcribe_breadcrumb") as mock_write:
+            with patch.object(client, "transcribe", side_effect=RuntimeError("boom")):
+                with pytest.raises(RuntimeError, match="boom"):
+                    d._transcribe_with_local_whisper_diagnostics(
+                        client,
+                        b"wav-data",
+                        phase="final",
+                        model_id="test/model",
+                        token=8,
+                    )
+
+        assert mock_write.call_count == 2
+        idle = mock_write.call_args_list[1].args[0]
+        assert idle["state"] == "idle"
+        assert idle["last_operation"]["phase"] == "final"
+        assert idle["last_operation"]["status"] == "error"
+        assert "RuntimeError('boom')" in idle["last_operation"]["error"]
 
 
 class TestHoldMsBounds:
