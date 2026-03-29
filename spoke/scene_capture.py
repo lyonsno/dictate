@@ -587,6 +587,7 @@ def capture_context(
     scene_ref = _generate_scene_ref()
 
     # Capture
+    t0 = time.perf_counter()
     result = None
     actual_scope: Literal["active_window", "screen"] = scope
 
@@ -602,6 +603,8 @@ def capture_context(
         return None
 
     cg_image, app_name, bundle_id, window_title = result
+    t_capture = time.perf_counter()
+    logger.info("capture_context: screen grab %.0fms", (t_capture - t0) * 1000)
 
     # Dimensions and downsampling
     width, height = _image_dimensions(cg_image)
@@ -612,12 +615,18 @@ def capture_context(
     if not _save_image(cg_image, image_path):
         logger.warning("Failed to save capture image")
         return None
+    t_save = time.perf_counter()
+    logger.info("capture_context: image save %.0fms", (t_save - t_capture) * 1000)
 
     # OCR
     ocr_text, ocr_blocks = _run_ocr(cg_image, width, height, scene_ref)
+    t_ocr = time.perf_counter()
+    logger.info("capture_context: OCR %.0fms (%d blocks)", (t_ocr - t_save) * 1000, len(ocr_blocks))
 
     # AX hints (best-effort, with timeout)
     ax_hints = _collect_ax_hints(scene_ref)
+    t_ax = time.perf_counter()
+    logger.info("capture_context: AX hints %.0fms (%d hints)", (t_ax - t_ocr) * 1000, len(ax_hints))
 
     capture = SceneCapture(
         scene_ref=scene_ref,
