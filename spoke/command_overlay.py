@@ -35,19 +35,23 @@ from Quartz import CALayer, CAShapeLayer, CGPathCreateWithRoundedRect
 
 logger = logging.getLogger(__name__)
 
+def _env(name: str, default: float) -> float:
+    v = os.environ.get(name)
+    return float(v) if v is not None else default
+
+
 _OVERLAY_WIDTH = 600.0
 _OVERLAY_HEIGHT = 80.0
-_OVERLAY_BOTTOM_MARGIN = 300.0  # above the input overlay
+_OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 300.0)
+_OVERLAY_TOP_MARGIN = _env("SPOKE_COMMAND_OVERLAY_TOP_MARGIN", 72.0)
 _OVERLAY_CORNER_RADIUS = 16.0
-_OVERLAY_MAX_HEIGHT = 400.0
 _FONT_SIZE = 16.0
 _FADE_IN_S = 0.5
 _FADE_OUT_S = 0.5  # fast dismiss fade (750ms total with 250ms hold)
 _FADE_STEPS = 15
 
-def _env(name: str, default: float) -> float:
-    v = os.environ.get(name)
-    return float(v) if v is not None else default
+def _max_overlay_height(screen_height: float) -> float:
+    return max(_OVERLAY_HEIGHT, screen_height - _OVERLAY_BOTTOM_MARGIN - _OVERLAY_TOP_MARGIN)
 
 # Assistant glow: full spectrum rotation with velocity undulation
 _COLOR_CYCLE_PERIOD = _env("SPOKE_COMMAND_COLOR_PERIOD", 6.0)  # seconds per full hue rotation
@@ -910,7 +914,8 @@ class CommandOverlay(NSObject):
             else:
                 text_height = _OVERLAY_HEIGHT - 16
 
-            new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), _OVERLAY_MAX_HEIGHT)
+            max_height = _max_overlay_height(self._screen.frame().size.height)
+            new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), max_height)
 
             f = _OUTER_FEATHER
             win_frame = self._window.frame()

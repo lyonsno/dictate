@@ -33,19 +33,30 @@ from Quartz import CAGradientLayer, CALayer, CAShapeLayer, CGPathCreateWithRound
 
 logger = logging.getLogger(__name__)
 
+def _env(name: str, default: float) -> float:
+    v = os.environ.get(name)
+    return float(v) if v is not None else default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v not in {"0", "false", "False", "no", "off"}
+
+
 _OVERLAY_WIDTH = 600.0
 _OVERLAY_HEIGHT = 80.0
-_OVERLAY_BOTTOM_MARGIN = 195.0  # distance from bottom of screen
+_OVERLAY_BOTTOM_MARGIN = _env("SPOKE_PREVIEW_OVERLAY_BOTTOM_MARGIN", 58.5)
 _OVERLAY_CORNER_RADIUS = 16.0
-_OVERLAY_MAX_HEIGHT = 300.0  # max before text scrolls
+_OVERLAY_MAX_HEIGHT = _env("SPOKE_PREVIEW_OVERLAY_MAX_HEIGHT", 300.0)
+_COMMAND_OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 300.0)
+_EXPAND_UPWARD = _env_bool("SPOKE_PREVIEW_EXPAND_UPWARD", True)
 _FONT_SIZE = 16.0
 _FADE_IN_S = 0.75  # slow ease-in — overlay materializes gradually
 _FADE_OUT_S = 0.315  # 75% longer fade keeps the preview legible through fast handoff
 _FADE_STEPS = 12  # number of steps for manual fade animation
 _TYPEWRITER_INTERVAL = 0.02  # seconds between characters (~50 chars/sec)
-def _env(name: str, default: float) -> float:
-    v = os.environ.get(name)
-    return float(v) if v is not None else default
 
 
 def _scale_color_saturation(
@@ -135,6 +146,19 @@ def _overlay_layer_colors(
     return inner, middle, outer
 
 
+def _max_overlay_height(screen_height: float) -> float:
+    assistant_gap_cap = _COMMAND_OVERLAY_BOTTOM_MARGIN - _OVERLAY_BOTTOM_MARGIN
+    capped_height = min(_OVERLAY_MAX_HEIGHT, assistant_gap_cap)
+    return max(_OVERLAY_HEIGHT, capped_height)
+
+
+def _window_origin_y(visible_height: float) -> float:
+    base_y = _OVERLAY_BOTTOM_MARGIN - _OUTER_FEATHER
+    if _EXPAND_UPWARD:
+        return base_y
+    return base_y - (visible_height - _OVERLAY_HEIGHT)
+
+
 class TranscriptionOverlay(NSObject):
     """Manages a frosted overlay window for live transcription preview."""
 
@@ -185,7 +209,7 @@ class TranscriptionOverlay(NSObject):
         # Window is oversized by _OUTER_FEATHER on each side for the feather bleed
         f = _OUTER_FEATHER
         x = (sw - _OVERLAY_WIDTH) / 2 - f
-        y = _OVERLAY_BOTTOM_MARGIN - f
+        y = _window_origin_y(_OVERLAY_HEIGHT)
         win_w = _OVERLAY_WIDTH + 2 * f
         win_h = _OVERLAY_HEIGHT + 2 * f
         frame = NSMakeRect(x, y, win_w, win_h)
@@ -374,7 +398,7 @@ class TranscriptionOverlay(NSObject):
         f = _OUTER_FEATHER
         x = (sw - _OVERLAY_WIDTH) / 2 - f
         self._window.setFrame_display_animate_(
-            NSMakeRect(x, _OVERLAY_BOTTOM_MARGIN - f,
+            NSMakeRect(x, _window_origin_y(_OVERLAY_HEIGHT),
                        _OVERLAY_WIDTH + 2 * f, _OVERLAY_HEIGHT + 2 * f),
             True, False
         )
@@ -683,12 +707,14 @@ class TranscriptionOverlay(NSObject):
             else:
                 text_height = _OVERLAY_HEIGHT - 16
 
-            new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), _OVERLAY_MAX_HEIGHT)
+            max_height = _max_overlay_height(self._screen.frame().size.height)
+            new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), max_height)
 
             f = _OUTER_FEATHER
             win_frame = self._window.frame()
             new_win_h = new_height + 2 * f
             if abs(win_frame.size.height - new_win_h) > 4:
+                win_frame.origin.y = _window_origin_y(new_height)
                 win_frame.size.height = new_win_h
                 self._window.setFrame_display_animate_(win_frame, True, False)
                 self._content_view.setFrame_(
