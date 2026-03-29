@@ -127,6 +127,8 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_shift_tap_during_hold = self._on_tray_navigate_up
         self._detector._on_enter_pressed = self._on_tray_enter_pressed
         self._detector._on_tray_delete = self._on_tray_delete_gesture
+        self._detector._on_external_key_activity = self._on_external_key_activity
+        self._detector._on_external_pointer_activity = self._on_external_pointer_activity
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
@@ -318,6 +320,7 @@ class SpokeAppDelegate(NSObject):
     # ── hold callbacks (called on main thread) ──────────────
 
     def _on_hold_start(self) -> None:
+        self._clear_undoable_tray_insert("new hold")
         if not getattr(self, "_models_ready", True):
             logger.warning("Hold started before models were ready — ignoring")
             if self._menubar is not None:
@@ -913,6 +916,7 @@ class SpokeAppDelegate(NSObject):
 
     def _enter_tray(self, text: str) -> None:
         """Enter the tray with new text, pushing it onto the stack."""
+        self._clear_undoable_tray_insert("new tray entry")
         self._tray_stack.append(text)
         self._tray_index = len(self._tray_stack) - 1
         self._tray_active = True
@@ -1003,6 +1007,7 @@ class SpokeAppDelegate(NSObject):
         """Delete the currently displayed tray entry."""
         if not self._tray_active or not self._tray_stack:
             return
+        self._clear_undoable_tray_insert("tray delete")
         del self._tray_stack[self._tray_index]
         if not self._tray_stack:
             self._dismiss_tray()
@@ -1053,6 +1058,22 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text("Pasted!")
 
+    def _clear_undoable_tray_insert(self, reason: str) -> None:
+        """Disarm the one-shot tray undo target once later activity intervenes."""
+        if getattr(self, "_undoable_tray_insert", None) is None:
+            return
+        logger.info("Clearing pending tray undo (%s)", reason)
+        self._undoable_tray_insert = None
+
+    def _on_external_key_activity(self, keycode: int, flags: int) -> None:
+        """Global non-space key activity invalidates the pending tray undo."""
+        del flags
+        self._clear_undoable_tray_insert(f"external key {keycode}")
+
+    def _on_external_pointer_activity(self) -> None:
+        """Pointer activity also invalidates the pending tray undo."""
+        self._clear_undoable_tray_insert("external pointer")
+
     def _undo_last_tray_insert(self) -> bool:
         """Undo the most recent tray insertion and return it to the tray."""
         text = getattr(self, "_undoable_tray_insert", None)
@@ -1073,6 +1094,7 @@ class SpokeAppDelegate(NSObject):
             return
         if not self._tray_active:
             return
+        self._clear_undoable_tray_insert("tray send")
         text = self._tray_stack[self._tray_index]
 
         # Remove consumed entry from stack

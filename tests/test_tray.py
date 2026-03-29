@@ -327,6 +327,57 @@ class TestTrayGestures:
         assert d._tray_index == 0
         d._overlay.show_tray.assert_called_once_with("restored text")
 
+    def test_external_key_activity_invalidates_pending_tray_undo(self, main_module, monkeypatch):
+        """Unrelated keyboard activity should disarm the one-shot tray undo target."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._undoable_tray_insert = "stale text"
+        d._tray_stack = ["previous text"]
+        d._capture.stop.return_value = b""
+
+        d._on_external_key_activity(0, 0)
+
+        with patch("spoke.__main__.undo_last_insert") as mock_undo:
+            d._on_hold_end(shift_held=True)
+
+        mock_undo.assert_not_called()
+        assert d._tray_active is True
+        assert d._tray_stack == ["previous text"]
+        d._overlay.show_tray.assert_called_once_with("previous text")
+
+    def test_external_pointer_activity_invalidates_pending_tray_undo(self, main_module, monkeypatch):
+        """Pointer activity should also disarm the pending tray undo target."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._undoable_tray_insert = "stale text"
+        d._tray_stack = ["previous text"]
+        d._capture.stop.return_value = b""
+
+        d._on_external_pointer_activity()
+
+        with patch("spoke.__main__.undo_last_insert") as mock_undo:
+            d._on_hold_end(shift_held=True)
+
+        mock_undo.assert_not_called()
+        assert d._tray_active is True
+        d._overlay.show_tray.assert_called_once_with("previous text")
+
+    def test_new_hold_clears_pending_tray_undo(self, main_module, monkeypatch):
+        """Starting a new recording should clear the prior tray-undo target."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._undoable_tray_insert = "stale text"
+
+        d._on_hold_start()
+
+        assert d._undoable_tray_insert is None
+
+    def test_entering_tray_clears_pending_tray_undo(self, main_module, monkeypatch):
+        """A new tray entry should replace any older pending tray undo."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._undoable_tray_insert = "stale text"
+
+        d._enter_tray("newest")
+
+        assert d._undoable_tray_insert is None
+
 
 class TestTrayRecoveryUnification:
     """Paste failure enters the tray automatically."""

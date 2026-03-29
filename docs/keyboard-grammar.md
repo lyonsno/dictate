@@ -125,7 +125,7 @@ central interaction surface between recording and committing.
 | Context | Gesture | Result |
 |---|---|---|
 | Recording | Shift held + release spacebar | Enter tray with transcription |
-| Recording (short, < 800ms) | Shift held + release spacebar | Recall last tray entry (no recording) |
+| Recording (short, < 800ms) | Shift held + release spacebar | Undo the most recent tray insert if it is still pending; otherwise recall last tray entry |
 | Paste failure | *(automatic)* | Enter tray with transcribed text |
 
 ### Tray gestures
@@ -147,6 +147,10 @@ The delete gesture requires a double-tap of spacebar while shift is held
 (two taps within ~300ms). The first tap navigates up as normal; the second
 tap within the window deletes instead. This makes deletion deliberate —
 you cannot accidentally delete with a single shift+spacebar tap.
+
+The idle short-shift undo is intentionally one-shot. It stays armed only
+until the next unrelated keyboard or pointer activity, or the next
+spoke-controlled action that changes tray/recording state.
 
 ### Navigation model
 

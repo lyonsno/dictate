@@ -39,6 +39,9 @@ from Quartz import (
     kCGEventFlagsChanged,
     kCGEventKeyDown,
     kCGEventKeyUp,
+    kCGEventLeftMouseDown,
+    kCGEventOtherMouseDown,
+    kCGEventRightMouseDown,
     kCGEventTapOptionDefault,
     kCGHeadInsertEventTap,
     kCGHIDEventTap,
@@ -114,6 +117,8 @@ class SpacebarHoldDetector(NSObject):
         self._on_shift_tap_during_hold: Callable[[], None] | None = None
         self._on_enter_pressed: Callable[[], None] | None = None
         self._on_tray_delete: Callable[[], None] | None = None
+        self._on_external_key_activity: Callable[[int, int], None] | None = None
+        self._on_external_pointer_activity: Callable[[], None] | None = None
         self._tray_shift_down = False
         self._tray_space_between = False
         self._shift_down_during_hold = False  # tracks shift press while spacebar held
@@ -131,6 +136,9 @@ class SpacebarHoldDetector(NSObject):
             CGEventMaskBit(kCGEventKeyDown)
             | CGEventMaskBit(kCGEventKeyUp)
             | CGEventMaskBit(kCGEventFlagsChanged)
+            | CGEventMaskBit(kCGEventLeftMouseDown)
+            | CGEventMaskBit(kCGEventRightMouseDown)
+            | CGEventMaskBit(kCGEventOtherMouseDown)
         )
 
         # Store self on the module so the C callback can reach it.
@@ -376,10 +384,20 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 det._cancel_forwarding_timer()
         return event
 
+    if event_type in (kCGEventLeftMouseDown, kCGEventRightMouseDown, kCGEventOtherMouseDown):
+        on_pointer = getattr(det, '_on_external_pointer_activity', None)
+        if on_pointer is not None:
+            on_pointer()
+        return event
+
     keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
 
     if event_type == kCGEventKeyDown:
         flags = CGEventGetFlags(event)
+        if keycode != SPACEBAR_KEYCODE:
+            on_external = getattr(det, '_on_external_key_activity', None)
+            if on_external is not None:
+                on_external(keycode, flags)
         # Track enter key state for command fast path
         if keycode == ENTER_KEYCODE:
             det._enter_held = True

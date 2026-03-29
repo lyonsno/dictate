@@ -18,6 +18,9 @@ def _make_fake_quartz():
     q.kCGEventFlagsChanged = 12
     q.kCGEventKeyDown = 10
     q.kCGEventKeyUp = 11
+    q.kCGEventLeftMouseDown = 1
+    q.kCGEventRightMouseDown = 3
+    q.kCGEventOtherMouseDown = 25
     q.kCGEventFlagMaskCommand = 0x00100000
     q.kCGEventFlagMaskControl = 0x00040000
     q.kCGEventFlagMaskAlternate = 0x00080000
