@@ -549,12 +549,12 @@ class SpokeAppDelegate(NSObject):
         if tray_active or recovery_active or getattr(self, "_recovery_hold_active", False):
             self._recovery_hold_active = False
             if shift_held:
-                # Shift+space from tray = navigate down (toward older entries).
-                # You enter the tray at the top (most recent), so the natural
-                # first gesture goes deeper into history. Dismiss when you
-                # navigate up past the top via shift-tap.
-                logger.info("Shift+space during tray — navigate down")
-                self._tray_navigate_down()
+                # Shift+space from tray = cycle to next entry.
+                # Wraps around when reaching the end of the stack.
+                # You enter the tray at the top (most recent), so the first
+                # gesture shows the next-oldest entry. Dismiss via shift-tap.
+                logger.info("Shift+space during tray — cycle")
+                self._tray_cycle()
             elif tray_active:
                 # Spacebar from tray (tap or hold release) = insert
                 logger.info("Spacebar during tray — inserting text")
@@ -601,6 +601,32 @@ class SpokeAppDelegate(NSObject):
                     return
                 else:
                     logger.info("Shift+empty — no tray entries to recall")
+            elif enter_held and self._command_client is not None:
+                # Enter + empty recording = recall last assistant response
+                command_visible = (
+                    self._command_overlay is not None
+                    and getattr(self._command_overlay, '_visible', False)
+                )
+                if command_visible:
+                    # Already showing — dismiss it
+                    logger.info("Enter+empty — dismissing command overlay")
+                    self._command_overlay.cancel_dismiss()
+                else:
+                    # Not showing — recall last response
+                    history = self._command_client.history
+                    if history:
+                        last_utterance, last_response = history[-1]
+                        logger.info("Enter+empty — recalling last response")
+                        if self._command_overlay is not None:
+                            try:
+                                self._command_overlay.show()
+                                self._command_overlay.set_utterance(last_utterance)
+                                self._command_overlay.append_token(last_response)
+                                self._command_overlay.finish()
+                            except Exception:
+                                logger.exception("Recall overlay failed")
+                    else:
+                        logger.info("Enter+empty — no history to recall")
             else:
                 command_visible = (
                     self._command_overlay is not None
@@ -917,6 +943,13 @@ class SpokeAppDelegate(NSObject):
         if self._tray_active:
             logger.info("Double-tap delete during tray")
             self._tray_delete_current()
+
+    def _tray_cycle(self) -> None:
+        """Cycle to the next tray entry, wrapping at the edges."""
+        if not self._tray_active or len(self._tray_stack) < 2:
+            return
+        self._tray_index = (self._tray_index - 1) % len(self._tray_stack)
+        self._show_tray_current()
 
     def _tray_navigate_up(self) -> None:
         """Navigate up toward more recent entries. Dismiss at top."""
