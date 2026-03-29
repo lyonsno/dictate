@@ -8,6 +8,7 @@ and playback on a background thread.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import importlib
 import logging
 import os
@@ -44,6 +45,12 @@ _ABBREVIATION_SUFFIXES = (
     "u.s.",
     "u.k.",
 )
+
+
+@dataclass(slots=True)
+class _PlaybackUnit:
+    audio: np.ndarray
+    sample_rate: int
 
 
 def _playback_device_summary() -> str:
@@ -224,11 +231,14 @@ class TTSClient:
         result,
         amplitude_callback: Callable[[float], None] | None = None,
     ) -> None:
-        audio = np.array(result.audio, dtype=np.float32)
+        if isinstance(result, _PlaybackUnit):
+            audio = result.audio
+            sr = result.sample_rate
+        else:
+            audio = np.array(result.audio, dtype=np.float32)
+            sr = result.sample_rate
         if audio.ndim == 1:
             audio = audio.reshape(-1, 1)
-
-        sr = result.sample_rate
         chunk_size = int(sr * 0.064)
         playback_device = _playback_device_summary()
         logger.info(
@@ -364,7 +374,11 @@ class TTSClient:
                         ):
                             if self._cancelled:
                                 return
-                            if not _queue_put(result):
+                            materialized = _PlaybackUnit(
+                                audio=np.array(result.audio, dtype=np.float32),
+                                sample_rate=int(result.sample_rate),
+                            )
+                            if not _queue_put(materialized):
                                 return
             except Exception as exc:
                 _queue_put(exc)

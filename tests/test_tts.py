@@ -268,6 +268,42 @@ class TestTTSClient:
         thread.join(timeout=5)
         assert not thread.is_alive()
 
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_speak_materializes_generation_results_before_crossing_threads(
+        self, mock_load, mock_sd
+    ):
+        """Queued playback units should not depend on reading model results from another thread."""
+
+        class _ThreadBoundResult:
+            def __init__(self):
+                self._creator = threading.get_ident()
+
+            @property
+            def audio(self):
+                if threading.get_ident() != self._creator:
+                    raise RuntimeError("cross-thread result access")
+                return [0.0] * 8
+
+            @property
+            def sample_rate(self):
+                if threading.get_ident() != self._creator:
+                    raise RuntimeError("cross-thread result access")
+                return 24000
+
+        fake_model = MagicMock()
+
+        def _generate(**kwargs):
+            yield _ThreadBoundResult()
+
+        fake_model.generate.side_effect = _generate
+        mock_load.return_value = fake_model
+        _setup_stream_mock(mock_sd)
+
+        client = self._make_client()
+
+        client.speak("One sentence.")
+
     def test_toggle_audio_uses_500ms_eased_fade(self):
         """Audio toggle should fade toward the new target over 500ms instead of jumping."""
         client = self._make_client()
