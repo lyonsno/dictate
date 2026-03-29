@@ -145,9 +145,8 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay = None
 
         # TTS autoplay — initialized if SPOKE_TTS_VOICE is set
-        self._tts_client = TTSClient.from_env()
+        self._tts_client = TTSClient.from_env(gpu_lock=self._local_inference_lock)
         if self._tts_client is not None:
-            self._tts_client._gpu_lock = self._local_inference_lock
             logger.info("TTS enabled: voice=%s", self._tts_client._voice)
 
         # Recovery mode state
@@ -789,10 +788,12 @@ class SpokeAppDelegate(NSObject):
 
         # Stream the command in a background thread
         def _stream():
+            full_response = ""
             try:
                 for content_token in self._command_client.stream_command(text):
                     if token != self._transcription_token:
                         break  # stale
+                    full_response += content_token
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "commandToken:",
                         {"token": token, "text": content_token},
@@ -806,7 +807,7 @@ class SpokeAppDelegate(NSObject):
                 return
 
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "commandComplete:", {"token": token}, False
+                "commandComplete:", {"token": token, "response": full_response}, False
             )
 
         threading.Thread(target=_stream, daemon=True).start()
@@ -917,7 +918,7 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay.finish()
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
-        # Autoplay response via TTS if enabled — keep glow alive for amplitude
+        # Autoplay response via TTS if enabled — glow hides, overlay breathes with voice
         response = payload.get("response", "")
         tts = getattr(self, "_tts_client", None)
         if response and tts is not None:
