@@ -321,7 +321,8 @@ class SpokeAppDelegate(NSObject):
         self._verify_paste_text = None
         if getattr(self, "_tray_active", False):
             self._recovery_hold_active = True
-            logger.info("Hold started during tray — waiting for release")
+            logger.info("Hold started during tray — waiting for release (tray_active=%s, det.tray_active=%s)",
+                         self._tray_active, getattr(self._detector, 'tray_active', 'N/A'))
             return
         elif getattr(self, "_recovery_text", None) is not None:
             self._recovery_hold_active = True

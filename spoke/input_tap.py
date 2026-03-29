@@ -228,6 +228,7 @@ class SpacebarHoldDetector(NSObject):
             if getattr(self, 'tray_active', False):
                 # During tray, all spacebar taps route through on_hold_end
                 # instead of forwarding a space character.
+                logger.info("TRAY TAP: shift=%s enter=%s", shift_held, enter_held)
                 # Double-tap detection: shift held + two spacebar taps within
                 # 300ms = delete current tray entry.
                 now = time.monotonic()
