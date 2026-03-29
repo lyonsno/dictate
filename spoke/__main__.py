@@ -775,8 +775,10 @@ class SpokeAppDelegate(NSObject):
 
     def _staging_transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: transcribe audio, then enter staging on main thread."""
-        # Wait for preview loop to finish
-        if self._preview_thread is not None:
+        release_cutover = getattr(self, "_preview_cancelled_on_release", False)
+
+        # Wait for preview loop to finish (unless release cutover skips the wait)
+        if self._preview_thread is not None and not release_cutover:
             if getattr(self, "_preview_done", None) is not None:
                 self._preview_done.wait(timeout=2.0)
             self._preview_thread.join(timeout=2.0)
@@ -785,6 +787,16 @@ class SpokeAppDelegate(NSObject):
         try:
             with self._local_inference_context(self._client):
                 if (
+                    release_cutover
+                    and getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    cancel_stream = getattr(self._client, "cancel_stream", None)
+                    if callable(cancel_stream):
+                        cancel_stream()
+                    text = self._client.transcribe(wav_bytes)
+                elif (
                     getattr(self._client, 'supports_streaming', False)
                     and self._client is self._preview_client
                     and getattr(self._client, "has_active_stream", False)
@@ -926,8 +938,9 @@ class SpokeAppDelegate(NSObject):
             self._staging_preauthorized = True
 
     def _dismiss_staging(self) -> None:
-        """Dismiss staging overlay but keep staged text for potential re-entry."""
+        """Dismiss staging overlay and clear staged text."""
         self._staging_active = False
+        self._staging_text = None
         self._detector.staging_active = False
         self._cancel_staging_commit_timer()
         self._staging_preauthorized = False
@@ -1866,6 +1879,8 @@ class SpokeAppDelegate(NSObject):
         self._recovery_text = None
         self._recovery_clipboard_state = "idle"
         self._recovery_pending_insert = None
+        # Clear staging text — the text has been consumed (inserted or sent)
+        self._staging_text = None
 
     @staticmethod
     def _get_clipboard_preview_text(saved: list[tuple[str, bytes]] | None) -> str:

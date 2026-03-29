@@ -170,17 +170,16 @@ class TestStagingGestures:
 class TestStagingPersistence:
     """Staged text lifecycle — persists until consumed or replaced."""
 
-    def test_staged_text_persists_after_dismiss(self, main_module, monkeypatch):
-        """Dismissing staging should hide overlay but keep text available."""
+    def test_staged_text_cleared_after_dismiss(self, main_module, monkeypatch):
+        """Dismissing staging should hide overlay and clear staged text."""
         d = _make_delegate(main_module, monkeypatch, command_client=True)
         d._staging_active = True
-        d._staging_text = "remember me"
+        d._staging_text = "forget me"
 
         d._dismiss_staging()
 
         assert d._staging_active is False
-        # Text should still be available for re-entry
-        assert d._staging_text == "remember me"
+        assert d._staging_text is None
 
     def test_successful_dictation_clears_staged_text(self, main_module, monkeypatch):
         """Normal dictation that pastes successfully should clear staged text."""

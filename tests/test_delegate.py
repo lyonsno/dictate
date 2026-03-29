@@ -33,7 +33,11 @@ def _make_delegate(main_module, monkeypatch):
     delegate._last_preview_text = ""
     delegate._command_client = None
     delegate._command_overlay = None
-    # Recovery mode state
+    # Staging/recovery mode state
+    delegate._staging_text = None
+    delegate._staging_active = False
+    delegate._staging_commit_timer = None
+    delegate._staging_preauthorized = False
     delegate._pre_paste_clipboard = None
     delegate._verify_paste_text = None
     delegate._verify_paste_attempt = 0
@@ -41,6 +45,8 @@ def _make_delegate(main_module, monkeypatch):
     delegate._recovery_text = None
     delegate._recovery_clipboard_state = "idle"
     delegate._recovery_pending_insert = None
+    delegate._recovery_hold_active = False
+    delegate._recovery_retry_pending = False
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
