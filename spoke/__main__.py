@@ -966,7 +966,12 @@ class SpokeAppDelegate(NSObject):
 
     def _tray_send_current(self) -> None:
         """Send the current tray entry to the assistant and consume it."""
-        if not self._tray_active or not self._tray_stack:
+        if not self._tray_stack:
+            # Nothing to send — make sure tray state is clean
+            if self._tray_active:
+                self._dismiss_tray()
+            return
+        if not self._tray_active:
             return
         text = self._tray_stack[self._tray_index]
 

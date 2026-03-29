@@ -176,6 +176,8 @@ class SpacebarHoldDetector(NSObject):
         self._cancel_safety_timer()
         self._cancel_forwarding_timer()
         self._forwarding = False
+        self._enter_held = False
+        self.tray_active = False
         self._state = _State.IDLE
 
         global _active_detector  # noqa: PLW0603
@@ -364,12 +366,15 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         # Track enter key state for command fast path
         if keycode == ENTER_KEYCODE:
             det._enter_held = True
-            # If tray is active, Enter = send to assistant
+            # If tray is active, Enter = send to assistant.
+            # Only suppress Enter if the callback exists and is called.
+            # Always let Enter through if tray is not active.
             if getattr(det, 'tray_active', False):
                 on_enter = getattr(det, '_on_enter_pressed', None)
                 if on_enter is not None:
                     on_enter()
-                return None  # suppress enter during tray
+                    return None  # suppress enter during tray
+            # Enter passes through to the OS when tray is not active
         if keycode == SPACEBAR_KEYCODE:
             logger.info("keyDown space: flags=%#x shift=%s state=%s",
                         flags, bool(flags & kCGEventFlagMaskShift), det._state)
