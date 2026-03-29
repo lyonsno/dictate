@@ -597,12 +597,14 @@ class SpokeAppDelegate(NSObject):
                     last_utterance, last_response = history[-1]
                     logger.info("Shift+empty — recalling last response")
                     if self._command_overlay is not None:
-                        self._command_overlay.show()
-                        self._command_overlay.set_utterance(last_utterance)
-                        # Append the full response at once
-                        for token in last_response:
-                            self._command_overlay.append_token(token)
-                        self._command_overlay.finish()
+                        try:
+                            self._command_overlay.show()
+                            self._command_overlay.set_utterance(last_utterance)
+                            # Append the full response at once
+                            self._command_overlay.append_token(last_response)
+                            self._command_overlay.finish()
+                        except Exception:
+                            logger.exception("Recall overlay failed")
                 else:
                     logger.info("Shift+empty — no history to recall")
             elif command_visible:
