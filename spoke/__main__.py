@@ -316,15 +316,13 @@ class SpokeAppDelegate(NSObject):
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
 
-        # Tray intercept: spacebar hold from tray starts a new recording.
-        # The current tray text stays in the stack (new recording will push on top).
+        # Tray intercept: when tray is active, don't start recording immediately.
+        # Wait for release — short tap = insert, long hold = new recording.
         self._verify_paste_text = None
         if getattr(self, "_tray_active", False):
-            logger.info("Hold started during tray — dismissing tray, starting new recording")
-            self._cancel_recovery()
-            self._tray_active = False
-            self._detector.tray_active = False
-            # Fall through to start recording
+            self._recovery_hold_active = True
+            logger.info("Hold started during tray — waiting for release")
+            return
         elif getattr(self, "_recovery_text", None) is not None:
             self._recovery_hold_active = True
             logger.info("Hold started during recovery — waiting for release")
@@ -539,16 +537,21 @@ class SpokeAppDelegate(NSObject):
         tray_active = getattr(self, "_tray_active", False)
         recovery_active = getattr(self, "_recovery_text", None) is not None
         if tray_active or recovery_active or getattr(self, "_recovery_hold_active", False):
+            was_hold = getattr(self, "_recovery_hold_active", False)
             self._recovery_hold_active = False
-            if not shift_held:
-                # Spacebar from tray = insert text at cursor
+            if shift_held:
+                # Shift+space from tray = navigate up
+                logger.info("Shift+space during tray — navigate up")
+                self._tray_navigate_up()
+            elif was_hold and self._tray_active:
+                # Spacebar was held (went through _on_hold_start tray intercept)
+                # then released — this is a spacebar tap from the tray = insert
                 logger.info("Spacebar during tray — inserting text")
                 self._tray_insert_current()
             else:
-                # Shift+space from tray — navigation handled by input tap callbacks,
-                # not here. If we get here with shift, treat as navigation up.
-                logger.info("Shift+space during tray — navigate up")
-                self._tray_navigate_up()
+                # Spacebar from recovery (non-tray) = retry insert
+                logger.info("Spacebar during recovery — retrying Insert")
+                self._recovery_retry_insert()
             return
 
         # ── Normal recording end ──
@@ -938,7 +941,11 @@ class SpokeAppDelegate(NSObject):
 
     def _tray_insert_current(self) -> None:
         """Insert the current tray entry at cursor and consume it."""
+        logger.info("_tray_insert_current called: active=%s stack=%d index=%d",
+                     self._tray_active, len(self._tray_stack), self._tray_index)
         if not self._tray_active or not self._tray_stack:
+            logger.info("Tray insert — bailing: active=%s stack_empty=%s",
+                         self._tray_active, not self._tray_stack)
             return
         text = self._tray_stack[self._tray_index]
         self._recovery_text = text

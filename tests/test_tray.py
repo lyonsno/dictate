@@ -241,8 +241,8 @@ class TestTrayStack:
 class TestTrayGestures:
     """Gestures available while the tray is active."""
 
-    def test_spacebar_hold_from_tray_starts_recording(self, main_module, monkeypatch):
-        """Holding spacebar from tray should start a new recording."""
+    def test_spacebar_hold_from_tray_waits_for_release(self, main_module, monkeypatch):
+        """Spacebar hold from tray should wait for release, not start recording immediately."""
         d = _make_delegate(main_module, monkeypatch, command_client=True)
         d._tray_active = True
         d._tray_stack = ["old text"]
@@ -251,7 +251,9 @@ class TestTrayGestures:
 
         d._on_hold_start()
 
-        d._capture.start.assert_called_once()
+        # Should NOT start recording — waits for release
+        d._capture.start.assert_not_called()
+        assert d._recovery_hold_active is True
 
     def test_enter_from_tray_sends_to_assistant(self, main_module, monkeypatch):
         """Enter key from tray should send current text to assistant."""

@@ -112,8 +112,8 @@ class TestRecoveryFlowBranching:
 class TestRecoveryDismiss:
     """Recovery overlay dismiss behavior."""
 
-    def test_spacebar_hold_during_tray_starts_recording(self, main_module, monkeypatch):
-        """Spacebar hold during tray should dismiss tray and start recording."""
+    def test_spacebar_hold_during_tray_waits_for_release(self, main_module, monkeypatch):
+        """Spacebar hold during tray should wait for release, not start recording."""
         d = _make_delegate(main_module, monkeypatch)
         d._tray_active = True
         d._tray_stack = ["some text"]
@@ -121,9 +121,9 @@ class TestRecoveryDismiss:
 
         d._on_hold_start()
 
-        # Should start recording (tray dismissed, capture started)
-        d._capture.start.assert_called_once()
-        assert d._tray_active is False
+        # Should NOT start recording — waits for release
+        d._capture.start.assert_not_called()
+        assert d._recovery_hold_active is True
 
     def test_shift_space_during_tray_navigates_up(self, main_module, monkeypatch):
         """Shift+space during tray should navigate up (was: send to command)."""
@@ -157,6 +157,7 @@ class TestRecoveryDismiss:
         d._tray_stack = ["insert this"]
         d._tray_index = 0
         d._recovery_text = "insert this"
+        d._recovery_hold_active = True  # simulates _on_hold_start tray intercept
 
         with patch("spoke.__main__.has_focused_text_input", return_value=True), \
              patch("spoke.__main__.inject_text"):
