@@ -33,6 +33,10 @@ def _make_delegate(main_module, monkeypatch):
     delegate._last_preview_text = ""
     delegate._command_client = None
     delegate._command_overlay = None
+    # Tray state
+    delegate._tray_stack = []
+    delegate._tray_index = 0
+    delegate._tray_active = False
     # Recovery mode state
     delegate._pre_paste_clipboard = None
     delegate._verify_paste_text = None
@@ -41,6 +45,8 @@ def _make_delegate(main_module, monkeypatch):
     delegate._recovery_text = None
     delegate._recovery_clipboard_state = "idle"
     delegate._recovery_pending_insert = None
+    delegate._recovery_hold_active = False
+    delegate._recovery_retry_pending = False
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
@@ -1697,20 +1703,22 @@ class TestShortShiftHold:
         MockThread.assert_called_once()
         mock_thread.start.assert_called_once()
 
-    def test_short_shift_hold_recalls_last_response(self, main_module, monkeypatch):
-        """Short shift-hold with history should recall last response."""
+    def test_short_shift_hold_recalls_tray(self, main_module, monkeypatch):
+        """Short shift-hold with tray entries should recall into tray."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b"audio"
         d._record_start_time = time.monotonic() - 0.1  # 100ms
+        d._tray_stack = ["previous text"]
         d._command_client = MagicMock()
         d._command_client.history = [("hello", "world")]
         d._command_overlay = MagicMock(_visible=False)
 
         d._on_hold_end(shift_held=True)
 
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.set_utterance.assert_called_once_with("hello")
-        d._command_overlay.finish.assert_called_once()
+        # Should enter tray, not command overlay
+        assert d._tray_active is True
+        assert d._tray_index == 0
+        d._overlay.show_recovery.assert_called()
 
 
 class TestCoerceSettings:

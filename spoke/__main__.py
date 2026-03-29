@@ -143,7 +143,12 @@ class SpokeAppDelegate(NSObject):
             self._command_client = None
             self._command_overlay = None
 
-        # Recovery mode state
+        # Tray state — speech-native stacked clipboard
+        self._tray_stack: list[str] = []
+        self._tray_index: int = 0
+        self._tray_active: bool = False
+
+        # Recovery mode state (implementation detail of tray)
         # _NOT_CAPTURED sentinel distinguishes "not captured yet" from
         # "captured but clipboard was empty (None)".
         self._pre_paste_clipboard: list[tuple[str, bytes]] | None | object = _NOT_CAPTURED
@@ -307,12 +312,15 @@ class SpokeAppDelegate(NSObject):
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
 
-        # If recovery overlay is active, don't start recording.
-        # The hold-end handler will check shift state and either:
-        #   - Spacebar alone: retry Insert
-        #   - Shift+Space: dismiss recovery
+        # Tray intercept: spacebar hold from tray starts a new recording.
+        # The current tray text stays in the stack (new recording will push on top).
         self._verify_paste_text = None
-        if getattr(self, "_recovery_text", None) is not None:
+        if getattr(self, "_tray_active", False):
+            logger.info("Hold started during tray — dismissing tray, starting new recording")
+            self._cancel_recovery()
+            self._tray_active = False
+            # Fall through to start recording
+        elif getattr(self, "_recovery_text", None) is not None:
             self._recovery_hold_active = True
             logger.info("Hold started during recovery — waiting for release")
             return
@@ -520,80 +528,67 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             self._overlay.set_text(text)
 
-    def _on_hold_end(self, shift_held: bool = False) -> None:
-        # Recovery overlay intercept: spacebar retries Insert, shift+space sends to assistant
+    def _on_hold_end(self, shift_held: bool = False, enter_held: bool = False) -> None:
+        # ── Tray intercept ──
+        # When the tray is active, gestures route through the tray handler.
+        tray_active = getattr(self, "_tray_active", False)
         recovery_active = getattr(self, "_recovery_text", None) is not None
-        if recovery_active or getattr(self, "_recovery_hold_active", False):
+        if tray_active or recovery_active or getattr(self, "_recovery_hold_active", False):
             self._recovery_hold_active = False
-            if shift_held:
-                if self._command_client is not None and self._recovery_text:
-                    # Send the recovery text to the command pathway as an utterance
-                    logger.info("Shift+space during recovery — sending to assistant: %r",
-                                self._recovery_text[:50])
-                    text = self._recovery_text
-                    self._cancel_recovery()
-                    self._send_text_as_command(text)
-                else:
-                    logger.info("Shift+space during recovery — dismissing (no command client)")
-                    self._cancel_recovery()
-                    if self._menubar is not None:
-                        self._menubar.set_status_text("Ready — hold spacebar")
+            if not shift_held:
+                # Spacebar from tray = insert text at cursor
+                logger.info("Spacebar during tray — inserting text")
+                self._tray_insert_current()
             else:
-                logger.info("Spacebar during recovery — retrying Insert")
-                self._recovery_retry_insert()
+                # Shift+space from tray — navigation handled by input tap callbacks,
+                # not here. If we get here with shift, treat as navigation up.
+                logger.info("Shift+space during tray — navigate up")
+                self._tray_navigate_up()
             return
 
-        logger.info("Hold ended — %s", "command" if shift_held else "transcribing")
+        # ── Normal recording end ──
+        logger.info("Hold ended — shift=%s enter=%s", shift_held, enter_held)
         self._preview_active = False
         self._preview_cancelled_on_release = True
         wav_bytes = self._capture.stop()
 
-        # Short shift-hold (under 800ms of recording) = instant recall/dismiss
-        # The user didn't have time to say anything meaningful
+        # Short shift-hold (under 800ms of recording) = recall into tray
         elapsed = time.monotonic() - self._record_start_time if self._record_start_time else 0
         if shift_held and elapsed < 0.8:
-            logger.info("Short shift-hold (%.0fms) — treating as instant", elapsed * 1000)
+            logger.info("Short shift-hold (%.0fms) — recalling into tray", elapsed * 1000)
             wav_bytes = b""  # force the empty-audio path
 
-        # Glow/dimmer: hide immediately for text insertion, persist for commands
-        if not shift_held and self._glow is not None:
+        # Glow/dimmer: hide immediately for text insertion
+        if not shift_held and not enter_held and self._glow is not None:
             self._glow.hide()
         if self._menubar is not None:
             self._menubar.set_recording(False)
 
         if not wav_bytes:
-            logger.info("No audio — instant path (shift=%s)", shift_held)
+            logger.info("No audio — instant path (shift=%s, enter=%s)", shift_held, enter_held)
             if self._overlay is not None:
                 self._overlay.hide()
             if self._glow is not None:
                 self._glow.hide()
 
-            command_visible = (
-                self._command_overlay is not None
-                and getattr(self._command_overlay, '_visible', False)
-            )
-
-            if shift_held and not command_visible and self._command_client is not None:
-                # Shift + empty recording + no overlay = recall last response
-                history = self._command_client.history
-                if history:
-                    last_utterance, last_response = history[-1]
-                    logger.info("Shift+empty — recalling last response")
-                    if self._command_overlay is not None:
-                        try:
-                            self._command_overlay.show()
-                            self._command_overlay.set_utterance(last_utterance)
-                            # Append the full response at once
-                            self._command_overlay.append_token(last_response)
-                            self._command_overlay.finish()
-                        except Exception:
-                            logger.exception("Recall overlay failed")
+            if shift_held:
+                # Shift + empty recording = recall tray
+                if self._tray_stack:
+                    logger.info("Shift+empty — recalling tray (stack has %d entries)", len(self._tray_stack))
+                    self._tray_active = True
+                    self._tray_index = len(self._tray_stack) - 1
+                    self._show_tray_current()
+                    return
                 else:
-                    logger.info("Shift+empty — no history to recall")
-            elif command_visible:
-                # Empty recording with overlay visible = dismiss
-                logger.info("Empty recording — dismissing command overlay")
-                self._command_overlay.cancel_dismiss()
+                    logger.info("Shift+empty — no tray entries to recall")
+            else:
+                command_visible = (
+                    self._command_overlay is not None
+                    and getattr(self._command_overlay, '_visible', False)
+                )
+                if command_visible:
+                    logger.info("Empty recording — dismissing command overlay")
+                    self._command_overlay.cancel_dismiss()
 
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
@@ -606,12 +601,22 @@ class SpokeAppDelegate(NSObject):
         self._transcribing = True
         self._transcribe_start = time.monotonic()
 
-        if shift_held and self._command_client is not None:
-            # Command pathway: transcribe then send to OMLX
+        if enter_held and self._command_client is not None:
+            # Command pathway (enter held): transcribe then send to OMLX
             if self._menubar is not None:
                 self._menubar.set_status_text("Transcribing command…")
             thread = threading.Thread(
                 target=self._command_transcribe_worker,
+                args=(wav_bytes, token),
+                daemon=True,
+            )
+        elif shift_held:
+            # Tray pathway: transcribe, then enter tray with the result
+            if self._menubar is not None:
+                self._menubar.set_status_text("Transcribing…")
+            self._tray_active = True
+            thread = threading.Thread(
+                target=self._tray_transcribe_worker,
                 args=(wav_bytes, token),
                 daemon=True,
             )
@@ -745,6 +750,209 @@ class SpokeAppDelegate(NSObject):
         """Reset menubar status after a cancel."""
         if self._menubar is not None and not self._transcribing:
             self._menubar.set_status_text("Ready — hold spacebar")
+
+    # ── tray ───────────────────────────────────────────────
+
+    def _tray_transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
+        """Background thread: transcribe audio, then enter tray on main thread."""
+        release_cutover = getattr(self, "_preview_cancelled_on_release", False)
+
+        if self._preview_thread is not None and not release_cutover:
+            if getattr(self, "_preview_done", None) is not None:
+                self._preview_done.wait(timeout=2.0)
+            self._preview_thread.join(timeout=2.0)
+            self._preview_thread = None
+
+        try:
+            with self._local_inference_context(self._client):
+                if (
+                    release_cutover
+                    and getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    cancel_stream = getattr(self._client, "cancel_stream", None)
+                    if callable(cancel_stream):
+                        cancel_stream()
+                    text = self._client.transcribe(wav_bytes)
+                elif (
+                    getattr(self._client, 'supports_streaming', False)
+                    and self._client is self._preview_client
+                    and getattr(self._client, "has_active_stream", False)
+                ):
+                    text = self._client.finish_stream()
+                else:
+                    text = self._client.transcribe(wav_bytes)
+        except Exception:
+            logger.exception("Tray transcription failed")
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "trayTranscriptionFailed:", {"token": token}, False
+            )
+            return
+
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "trayTranscriptionComplete:",
+            {"token": token, "text": text},
+            False,
+        )
+
+    def trayTranscriptionComplete_(self, payload: dict) -> None:
+        """Main thread: transcription done — enter tray with the text."""
+        if payload["token"] != self._transcription_token:
+            logger.info("Discarding stale tray transcription (token %d)", payload["token"])
+            return
+        self._transcribing = False
+        text = payload["text"]
+        if not text:
+            logger.info("Tray transcription returned empty — dismissing")
+            if self._overlay is not None:
+                self._overlay.hide()
+            if self._glow is not None:
+                self._glow.hide()
+            self._tray_active = False
+            if self._menubar is not None:
+                self._menubar.set_status_text("Ready — hold spacebar")
+            return
+        self._enter_tray(text)
+
+    def trayTranscriptionFailed_(self, payload: dict) -> None:
+        """Main thread: tray transcription failed — fall back to preview text."""
+        if payload["token"] != self._transcription_token:
+            return
+        self._transcribing = False
+        if self._last_preview_text:
+            logger.warning("Tray transcription failed — using preview text")
+            self._enter_tray(self._last_preview_text)
+            return
+        logger.error("Tray transcription failed — no text")
+        if self._overlay is not None:
+            self._overlay.hide()
+        if self._glow is not None:
+            self._glow.hide()
+        self._tray_active = False
+        if self._menubar is not None:
+            self._menubar.set_status_text("Error — try again")
+
+    def _enter_tray(self, text: str) -> None:
+        """Enter the tray with new text, pushing it onto the stack."""
+        self._tray_stack.append(text)
+        self._tray_index = len(self._tray_stack) - 1
+        self._tray_active = True
+
+        if self._glow is not None:
+            self._glow.hide()
+
+        self._show_tray_current()
+
+    def _show_tray_current(self) -> None:
+        """Update the tray overlay to display the current stack entry."""
+        if not self._tray_stack:
+            self._dismiss_tray()
+            return
+        text = self._tray_stack[self._tray_index]
+        # Reuse recovery overlay infrastructure for display
+        self._recovery_text = text
+        self._recovery_clipboard_state = "idle"
+        if self._overlay is not None:
+            self._overlay.show_recovery(
+                text,
+                on_dismiss=self._on_recovery_dismiss,
+                on_insert=self._on_recovery_insert,
+                on_clipboard_toggle=self._on_recovery_clipboard_toggle,
+            )
+        if self._menubar is not None:
+            pos = f"{self._tray_index + 1}/{len(self._tray_stack)}"
+            self._menubar.set_status_text(f"Tray [{pos}]")
+
+    def _dismiss_tray(self) -> None:
+        """Dismiss the tray overlay. Stack is preserved for re-entry."""
+        self._tray_active = False
+        self._cancel_recovery()
+        if self._menubar is not None:
+            self._menubar.set_status_text("Ready — hold spacebar")
+
+    def _tray_navigate_up(self) -> None:
+        """Navigate up toward more recent entries. Dismiss at top."""
+        if not self._tray_active:
+            return
+        if self._tray_index >= len(self._tray_stack) - 1:
+            # Already at the top — dismiss
+            self._dismiss_tray()
+        else:
+            self._tray_index += 1
+            self._show_tray_current()
+
+    def _tray_navigate_down(self) -> None:
+        """Navigate down toward older entries. Stop at bottom."""
+        if not self._tray_active:
+            return
+        if self._tray_index > 0:
+            self._tray_index -= 1
+            self._show_tray_current()
+
+    def _tray_delete_current(self) -> None:
+        """Delete the currently displayed tray entry."""
+        if not self._tray_active or not self._tray_stack:
+            return
+        del self._tray_stack[self._tray_index]
+        if not self._tray_stack:
+            self._dismiss_tray()
+            return
+        # Adjust index: stay at same position or move up if we were at the end
+        if self._tray_index >= len(self._tray_stack):
+            self._tray_index = len(self._tray_stack) - 1
+        self._show_tray_current()
+
+    def _tray_insert_current(self) -> None:
+        """Insert the current tray entry at cursor and consume it."""
+        if not self._tray_active or not self._tray_stack:
+            return
+        text = self._tray_stack[self._tray_index]
+        self._recovery_text = text
+
+        # Check for focused text input
+        if not has_focused_text_input():
+            logger.info("Tray insert — no focused element, bouncing")
+            if self._overlay is not None:
+                self._overlay.bounce()
+            return
+
+        # Dismiss tray overlay and inject
+        if self._overlay is not None:
+            self._overlay.order_out()
+
+        inject_text(text)
+
+        # Remove consumed entry from stack
+        del self._tray_stack[self._tray_index]
+        if self._tray_index >= len(self._tray_stack) and self._tray_stack:
+            self._tray_index = len(self._tray_stack) - 1
+
+        self._tray_active = False
+        self._cancel_recovery()
+        if self._menubar is not None:
+            self._menubar.set_status_text("Pasted!")
+
+    def _tray_send_current(self) -> None:
+        """Send the current tray entry to the assistant and consume it."""
+        if not self._tray_stack:
+            return
+        text = self._tray_stack[self._tray_index]
+
+        # Remove consumed entry from stack
+        del self._tray_stack[self._tray_index]
+        if self._tray_index >= len(self._tray_stack) and self._tray_stack:
+            self._tray_index = len(self._tray_stack) - 1
+
+        self._tray_active = False
+        self._cancel_recovery()
+
+        if self._command_client is not None:
+            self._send_text_as_command(text)
+        else:
+            logger.warning("Tray send — no command client configured")
+            if self._menubar is not None:
+                self._menubar.set_status_text("Ready — hold spacebar")
 
     # ── command pathway ────────────────────────────────────
 
@@ -1513,32 +1721,24 @@ class SpokeAppDelegate(NSObject):
         )
 
     def _enter_recovery_mode(self, text: str) -> None:
-        """Show the recovery overlay with Dismiss / Insert / Clipboard buttons."""
-        # Use pre-saved clipboard if available (from _inject_result_text).
-        # _pre_paste_clipboard is _NOT_CAPTURED when not set, and None when
-        # the clipboard was empty — both are valid states. Only fall back to
-        # save_pasteboard() if we never captured it at all.
+        """Paste verification failed — enter the tray automatically.
+
+        Recovery mode is tray entered automatically when paste verification
+        fails. The tray subsumes recovery as a special case.
+        """
+        # Save clipboard state for potential restore
         pre = getattr(self, "_pre_paste_clipboard", _NOT_CAPTURED)
         if pre is not _NOT_CAPTURED:
             self._recovery_saved_clipboard = pre
         else:
             self._recovery_saved_clipboard = save_pasteboard()
         self._pre_paste_clipboard = _NOT_CAPTURED
-        self._recovery_text = text
-        self._recovery_clipboard_state = "idle"
 
         # Put transcription on pasteboard for manual paste
         set_pasteboard_only(text)
 
-        if self._overlay is not None:
-            self._overlay.show_recovery(
-                text,
-                on_dismiss=self._on_recovery_dismiss,
-                on_insert=self._on_recovery_insert,
-                on_clipboard_toggle=self._on_recovery_clipboard_toggle,
-            )
-        if self._menubar is not None:
-            self._menubar.set_status_text("No text field — ⌘V to paste")
+        # Enter tray with the failed paste text
+        self._enter_tray(text)
 
     def _recovery_retry_insert(self) -> None:
         """Spacebar retry: attempt Insert from recovery, OCR verify after.

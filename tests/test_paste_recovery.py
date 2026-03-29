@@ -34,9 +34,16 @@ def _make_delegate(main_module, monkeypatch):
     delegate._preview_done = MagicMock()
     delegate._preview_done.set = MagicMock()
     delegate._local_inference_lock = MagicMock()
+    # Tray state
+    delegate._tray_stack = []
+    delegate._tray_index = 0
+    delegate._tray_active = False
+    # Recovery state
     delegate._recovery_saved_clipboard = None
     delegate._recovery_text = None
     delegate._recovery_clipboard_state = "idle"
+    delegate._recovery_hold_active = False
+    delegate._recovery_retry_pending = False
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
 
@@ -105,54 +112,57 @@ class TestRecoveryFlowBranching:
 class TestRecoveryDismiss:
     """Recovery overlay dismiss behavior."""
 
-    def test_spacebar_during_recovery_sets_hold_active(self, main_module, monkeypatch):
-        """Spacebar hold during recovery should set _recovery_hold_active, not record."""
+    def test_spacebar_hold_during_tray_starts_recording(self, main_module, monkeypatch):
+        """Spacebar hold during tray should dismiss tray and start recording."""
         d = _make_delegate(main_module, monkeypatch)
+        d._tray_active = True
+        d._tray_stack = ["some text"]
         d._recovery_text = "some text"
-        d._recovery_hold_active = False
 
         d._on_hold_start()
 
-        # Should mark recovery hold active but not start recording
-        assert d._recovery_hold_active is True
-        d._capture.start.assert_not_called()
+        # Should start recording (tray dismissed, capture started)
+        d._capture.start.assert_called_once()
+        assert d._tray_active is False
 
-    def test_shift_space_sends_to_command(self, main_module, monkeypatch):
-        """Shift+space during recovery should send text to command pathway."""
+    def test_shift_space_during_tray_navigates_up(self, main_module, monkeypatch):
+        """Shift+space during tray should navigate up (was: send to command)."""
         d = _make_delegate(main_module, monkeypatch)
-        d._recovery_text = "some text"
-        d._recovery_hold_active = True
-        d._command_client = MagicMock()
+        d._tray_active = True
+        d._tray_stack = ["old", "newest"]
+        d._tray_index = 0
+        d._recovery_text = "old"
 
-        with patch("spoke.__main__.restore_pasteboard"), \
-             patch.object(d, "_send_text_as_command") as mock_send:
-            d._on_hold_end(shift_held=True)
+        d._on_hold_end(shift_held=True)
 
-        mock_send.assert_called_once_with("some text")
-        assert d._recovery_text is None  # recovery cleared
+        # Should navigate up to more recent entry
+        assert d._tray_index == 1
 
-    def test_shift_space_dismisses_when_no_command_client(self, main_module, monkeypatch):
-        """Shift+space without command client should just dismiss recovery."""
+    def test_shift_space_at_top_dismisses_tray(self, main_module, monkeypatch):
+        """Shift+space at top of tray should dismiss."""
         d = _make_delegate(main_module, monkeypatch)
-        d._recovery_text = "some text"
-        d._recovery_hold_active = True
-        d._command_client = None
+        d._tray_active = True
+        d._tray_stack = ["only"]
+        d._tray_index = 0
+        d._recovery_text = "only"
 
-        with patch("spoke.__main__.restore_pasteboard"):
-            d._on_hold_end(shift_held=True)
+        d._on_hold_end(shift_held=True)
 
-        assert d._recovery_text is None
+        assert d._tray_active is False
 
-    def test_space_release_retries_insert(self, main_module, monkeypatch):
-        """Spacebar release during recovery should retry Insert."""
+    def test_space_release_during_tray_inserts(self, main_module, monkeypatch):
+        """Spacebar release during tray should insert text at cursor."""
         d = _make_delegate(main_module, monkeypatch)
-        d._recovery_text = "some text"
-        d._recovery_hold_active = True
+        d._tray_active = True
+        d._tray_stack = ["insert this"]
+        d._tray_index = 0
+        d._recovery_text = "insert this"
 
-        with patch.object(d, "_recovery_retry_insert") as mock_retry:
+        with patch("spoke.__main__.has_focused_text_input", return_value=True), \
+             patch("spoke.__main__.inject_text"):
             d._on_hold_end(shift_held=False)
 
-        mock_retry.assert_called_once()
+        assert d._tray_active is False
 
     def test_dismiss_button_restores_clipboard(self, main_module, monkeypatch):
         """Dismiss callback should restore original clipboard and hide overlay."""
