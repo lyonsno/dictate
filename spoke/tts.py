@@ -87,6 +87,7 @@ class TTSClient:
         self._gpu_lock = gpu_lock
         self._stream: sd.OutputStream | None = None
         self._last_chunk: np.ndarray | None = None
+        self._speak_lock = threading.Lock()
 
     @classmethod
     def from_env(cls, gpu_lock: threading.Lock | None = None) -> Optional["TTSClient"]:
@@ -137,120 +138,123 @@ class TTSClient:
         """
         if not text:
             return
-        if self._cancelled:
-            return
 
         from contextlib import nullcontext
 
         lock_ctx = self._gpu_lock if self._gpu_lock is not None else nullcontext()
 
-        with lock_ctx:
-            self._ensure_model()
+        with self._speak_lock:
             if self._cancelled:
                 return
-            # Generate audio while holding the GPU lock
-            results = []
-            for result in self._model.generate(
-                text=text,
-                voice=self._voice,
-                temperature=self._temperature,
-                top_k=self._top_k,
-                top_p=self._top_p,
-            ):
                 if self._cancelled:
                     return
-                results.append(result)
-        # GPU lock released — play audio without blocking Whisper
-        for result in results:
-            if self._cancelled:
-                return
-            audio = np.array(result.audio, dtype=np.float32)
-            if audio.ndim == 1:
-                audio = audio.reshape(-1, 1)
-
-            sr = result.sample_rate
-            # ~64ms chunks for amplitude updates (matches mic capture cadence)
-            chunk_size = int(sr * 0.064)
-            playback_device = _playback_device_summary()
-            logger.info(
-                "TTS playback starting: samples=%d sample_rate=%d channels=%d chunk_size=%d device=%s",
-                len(audio),
-                sr,
-                audio.shape[1],
-                chunk_size,
-                playback_device,
-            )
-
-            done = threading.Event()
-            stream = sd.OutputStream(
-                samplerate=sr,
-                channels=audio.shape[1],
-                dtype="float32",
-                finished_callback=lambda: done.set(),
-            )
-            self._stream = stream
-            self._last_chunk = None
-            stream.start()
-
-            try:
-                # Write in chunks, emitting RMS for each
-                offset = 0
-                while offset < len(audio):
+            with lock_ctx:
+                self._ensure_model()
+                if self._cancelled:
+                    return
+                # Generate audio while holding the GPU lock
+                results = []
+                for result in self._model.generate(
+                    text=text,
+                    voice=self._voice,
+                    temperature=self._temperature,
+                    top_k=self._top_k,
+                    top_p=self._top_p,
+                ):
                     if self._cancelled:
-                        break
-                    end = min(offset + chunk_size, len(audio))
-                    chunk = audio[offset:end]
-                    self._last_chunk = chunk
-                    stream.write(chunk)
-                    if amplitude_callback is not None:
-                        rms = float(np.sqrt(np.mean(chunk ** 2)))
-                        amplitude_callback(rms)
-                    offset = end
+                        return
+                    results.append(result)
+            # GPU lock released — play audio without blocking Whisper
+            for result in results:
+                if self._cancelled:
+                    return
+                audio = np.array(result.audio, dtype=np.float32)
+                if audio.ndim == 1:
+                    audio = audio.reshape(-1, 1)
 
-                # Wait for remaining audio to finish playing
-                while not done.is_set():
-                    if self._cancelled:
-                        break
-                    done.wait(timeout=0.05)
-
-                # Fade out over ~50ms if cancelled mid-playback:
-                # ramp from last chunk's amplitude down to zero
-                if self._cancelled and not done.is_set() and self._last_chunk is not None:
-                    fade_samples = int(sr * 0.05)
-                    last_amp = float(np.mean(np.abs(self._last_chunk[-1:])))
-                    fade_ramp = np.linspace(last_amp, 0.0, fade_samples, dtype=np.float32).reshape(-1, 1)
-                    try:
-                        stream.write(fade_ramp)
-                    except Exception:
-                        pass
+                sr = result.sample_rate
+                # ~64ms chunks for amplitude updates (matches mic capture cadence)
+                chunk_size = int(sr * 0.064)
+                playback_device = _playback_device_summary()
                 logger.info(
-                    "TTS playback finished: samples=%d sample_rate=%d channels=%d cancelled=%s device=%s",
+                    "TTS playback starting: samples=%d sample_rate=%d channels=%d chunk_size=%d device=%s",
                     len(audio),
                     sr,
                     audio.shape[1],
-                    self._cancelled,
+                    chunk_size,
                     playback_device,
                 )
-            except Exception:
-                logger.warning(
-                    "TTS playback failed: samples=%d sample_rate=%d channels=%d cancelled=%s device=%s",
-                    len(audio),
-                    sr,
-                    audio.shape[1],
-                    self._cancelled,
-                    playback_device,
-                    exc_info=True,
-                )
-                raise
-            finally:
-                stream.stop()
-                stream.close()
-                self._stream = None
-                self._last_chunk = None
 
-            # Signal zero amplitude when playback ends
-            if amplitude_callback is not None:
-                amplitude_callback(0.0)
+                done = threading.Event()
+                stream = sd.OutputStream(
+                    samplerate=sr,
+                    channels=audio.shape[1],
+                    dtype="float32",
+                    finished_callback=lambda: done.set(),
+                )
+                self._stream = stream
+                self._last_chunk = None
+                stream.start()
+
+                try:
+                    # Write in chunks, emitting RMS for each
+                    offset = 0
+                    while offset < len(audio):
+                        if self._cancelled:
+                            break
+                        end = min(offset + chunk_size, len(audio))
+                        chunk = audio[offset:end]
+                        self._last_chunk = chunk
+                        stream.write(chunk)
+                        if amplitude_callback is not None:
+                            rms = float(np.sqrt(np.mean(chunk ** 2)))
+                            amplitude_callback(rms)
+                        offset = end
+
+                    # Wait for remaining audio to finish playing
+                    while not done.is_set():
+                        if self._cancelled:
+                            break
+                        done.wait(timeout=0.05)
+
+                    # Fade out over ~50ms if cancelled mid-playback:
+                    # ramp from last chunk's amplitude down to zero
+                    if self._cancelled and not done.is_set() and self._last_chunk is not None:
+                        fade_samples = int(sr * 0.05)
+                        last_amp = float(np.mean(np.abs(self._last_chunk[-1:])))
+                        fade_ramp = np.linspace(last_amp, 0.0, fade_samples, dtype=np.float32).reshape(-1, 1)
+                        try:
+                            stream.write(fade_ramp)
+                        except Exception:
+                            pass
+                    logger.info(
+                        "TTS playback finished: samples=%d sample_rate=%d channels=%d cancelled=%s device=%s",
+                        len(audio),
+                        sr,
+                        audio.shape[1],
+                        self._cancelled,
+                        playback_device,
+                    )
+                except Exception:
+                    logger.warning(
+                        "TTS playback failed: samples=%d sample_rate=%d channels=%d cancelled=%s device=%s",
+                        len(audio),
+                        sr,
+                        audio.shape[1],
+                        self._cancelled,
+                        playback_device,
+                        exc_info=True,
+                    )
+                    raise
+                finally:
+                    stream.stop()
+                    stream.close()
+                    self._stream = None
+                    self._last_chunk = None
+
+                # Signal zero amplitude when playback ends
+                if amplitude_callback is not None:
+                    amplitude_callback(0.0)
 
     def speak_async(
         self,

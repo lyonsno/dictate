@@ -2,6 +2,7 @@
 
 import logging
 import threading
+import time
 import tomllib
 import types
 from unittest.mock import patch, MagicMock, call
@@ -171,6 +172,45 @@ class TestTTSClient:
         thread.join(timeout=5)
         assert not thread.is_alive()
         mock_sd.OutputStream.assert_called_once()
+
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_speak_async_serializes_same_client_jobs(self, mock_load, mock_sd):
+        """Concurrent speak_async() calls on one client should queue instead of overlapping."""
+        first_started = threading.Event()
+        release_first = threading.Event()
+        second_started = threading.Event()
+        call_order = []
+
+        fake_model = MagicMock()
+
+        def generate_side_effect(*, text, **kwargs):
+            call_order.append(text)
+            if text == "first":
+                first_started.set()
+                assert release_first.wait(timeout=5), "first speak never released"
+            else:
+                second_started.set()
+            return iter([_fake_result()])
+
+        fake_model.generate.side_effect = generate_side_effect
+        mock_load.return_value = fake_model
+        _setup_stream_mock(mock_sd)
+
+        client = self._make_client()
+        t1 = client.speak_async("first")
+        assert first_started.wait(timeout=5), "first speak never started"
+
+        t2 = client.speak_async("second")
+        time.sleep(0.05)
+        assert not second_started.is_set(), "second speak started before first finished"
+
+        release_first.set()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        assert second_started.is_set()
+        assert call_order == ["first", "second"]
 
     @patch("spoke.tts.sd")
     @patch("spoke.tts.tts_load")
