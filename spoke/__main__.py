@@ -537,15 +537,13 @@ class SpokeAppDelegate(NSObject):
         tray_active = getattr(self, "_tray_active", False)
         recovery_active = getattr(self, "_recovery_text", None) is not None
         if tray_active or recovery_active or getattr(self, "_recovery_hold_active", False):
-            was_hold = getattr(self, "_recovery_hold_active", False)
             self._recovery_hold_active = False
             if shift_held:
                 # Shift+space from tray = navigate up
                 logger.info("Shift+space during tray — navigate up")
                 self._tray_navigate_up()
-            elif was_hold and self._tray_active:
-                # Spacebar was held (went through _on_hold_start tray intercept)
-                # then released — this is a spacebar tap from the tray = insert
+            elif tray_active:
+                # Spacebar from tray (tap or hold release) = insert
                 logger.info("Spacebar during tray — inserting text")
                 self._tray_insert_current()
             else:
