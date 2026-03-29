@@ -1718,7 +1718,7 @@ class TestShortShiftHold:
         # Should enter tray, not command overlay
         assert d._tray_active is True
         assert d._tray_index == 0
-        d._overlay.show_recovery.assert_called()
+        d._overlay.show_tray.assert_called()
 
 
 class TestCoerceSettings:

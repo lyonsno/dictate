@@ -97,7 +97,7 @@ class TestRecoveryFlowBranching:
              patch("spoke.__main__.save_pasteboard", return_value=None):
             d.verifyPasteResult_({"found": False, "text": "hello world", "attempt": 1})
 
-        d._overlay.show_recovery.assert_called_once()
+        d._overlay.show_tray.assert_called_once()
 
     def test_verify_result_clears_state_on_success(self, main_module, monkeypatch):
         """verifyPasteResult_ should clear verify state when text is found."""
@@ -246,7 +246,7 @@ class TestRecoveryInsert:
             d.verifyPasteResult_({"found": False, "text": "transcribed text", "attempt": 1})
 
         assert d._recovery_retry_pending is False
-        d._overlay.show_recovery.assert_called_once()
+        d._overlay.show_tray.assert_called_once()
 
     def test_delayed_insert_reenters_recovery_when_no_text_field(self, main_module, monkeypatch):
         """doRecoveryInsert_ should re-enter recovery if target didn't refocus."""

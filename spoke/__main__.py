@@ -815,16 +815,21 @@ class SpokeAppDelegate(NSObject):
         self._transcribing = False
         text = payload["text"]
         if not text:
-            logger.info("Tray transcription returned empty — dismissing")
-            if self._overlay is not None:
-                self._overlay.hide()
-            if self._glow is not None:
-                self._glow.hide()
-            self._tray_active = False
-            self._detector.tray_active = False
-            if self._menubar is not None:
-                self._menubar.set_status_text("Ready — hold spacebar")
-            return
+            # Empty transcription — use last preview text if available
+            if self._last_preview_text:
+                logger.info("Tray transcription empty — using last preview text")
+                text = self._last_preview_text
+            else:
+                logger.info("Tray transcription returned empty — dismissing")
+                if self._overlay is not None:
+                    self._overlay.hide()
+                if self._glow is not None:
+                    self._glow.hide()
+                self._tray_active = False
+                self._detector.tray_active = False
+                if self._menubar is not None:
+                    self._menubar.set_status_text("Ready — hold spacebar")
+                return
         self._enter_tray(text)
 
     def trayTranscriptionFailed_(self, payload: dict) -> None:
@@ -867,16 +872,11 @@ class SpokeAppDelegate(NSObject):
         if self._tray_index >= len(self._tray_stack):
             self._tray_index = len(self._tray_stack) - 1
         text = self._tray_stack[self._tray_index]
-        # Reuse recovery overlay infrastructure for display
+        # Set recovery_text for compatibility with existing dismiss/cleanup
         self._recovery_text = text
         self._recovery_clipboard_state = "idle"
         if self._overlay is not None:
-            self._overlay.show_recovery(
-                text,
-                on_dismiss=self._on_recovery_dismiss,
-                on_insert=self._on_recovery_insert,
-                on_clipboard_toggle=self._on_recovery_clipboard_toggle,
-            )
+            self._overlay.show_tray(text)
         if self._menubar is not None:
             pos = f"{self._tray_index + 1}/{len(self._tray_stack)}"
             self._menubar.set_status_text(f"Tray [{pos}]")
