@@ -455,7 +455,7 @@ class TestShiftReleaseRouting:
         shift_flag = mod.kCGEventFlagMaskShift
         det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=shift_flag)
         assert det._state == mod._State.IDLE
-        on_end.assert_called_once_with(shift_held=True)
+        on_end.assert_called_once_with(shift_held=True, enter_held=False)
 
     def test_normal_release_passes_no_shift(self, input_tap_module):
         """Normal release (no shift) should pass shift_held=False."""
@@ -468,7 +468,7 @@ class TestShiftReleaseRouting:
 
         det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
         assert det._state == mod._State.IDLE
-        on_end.assert_called_once_with(shift_held=False)
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
 
     def test_shift_during_keydown_starts_recording(self, input_tap_module):
         """Shift+Space on keyDown should start recording normally.

@@ -137,11 +137,16 @@ central interaction surface between recording and committing.
 | Enter | Send tray text to assistant |
 | Shift + release spacebar | Navigate up (more recent item; dismiss at top) |
 | Spacebar + tap shift | Navigate down (older item) |
-| Shift held + tap spacebar | Delete current tray entry |
+| Shift held + double-tap spacebar | Delete current tray entry |
 
 The gesture vocabulary uses three keys with consistent identity: spacebar
 commits (insert, record), shift navigates and manages (up, down, delete),
 enter sends.
+
+The delete gesture requires a double-tap of spacebar while shift is held
+(two taps within ~300ms). The first tap navigates up as normal; the second
+tap within the window deletes instead. This makes deletion deliberate —
+you cannot accidentally delete with a single shift+spacebar tap.
 
 ### Navigation model
 

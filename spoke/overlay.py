@@ -657,6 +657,77 @@ class TranscriptionOverlay(NSObject):
         except Exception:
             pass
 
+    # ── tray mode ──────────────────────────────────────────────
+
+    def show_tray(self, text: str) -> None:
+        """Show the tray overlay with the given text.
+
+        Displays the text immediately (no typewriter effect) in the
+        normal overlay style. No buttons, no interactive elements.
+        The tray gesture vocabulary handles all interaction.
+        """
+        if self._window is None:
+            return
+
+        # Clean up any existing recovery state
+        if self._recovery_mode:
+            self._recovery_mode = False
+            self._teardown_recovery_views()
+            self._window.setIgnoresMouseEvents_(True)
+
+        self._cancel_fade()
+        self._cancel_typewriter()
+
+        # Show normal scroll view
+        if self._scroll_view is not None:
+            self._scroll_view.setHidden_(False)
+
+        # Reset background to normal overlay style
+        self._content_view.layer().setBackgroundColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                0.1, 0.1, 0.12, _RECOVERY_BG_ALPHA
+            ).CGColor()
+        )
+
+        # Reset to default height
+        screen_frame = self._screen.frame()
+        sw = screen_frame.size.width
+        f = _OUTER_FEATHER
+        x = (sw - _OVERLAY_WIDTH) / 2 - f
+        self._window.setFrame_display_animate_(
+            NSMakeRect(x, _OVERLAY_BOTTOM_MARGIN - f,
+                       _OVERLAY_WIDTH + 2 * f, _OVERLAY_HEIGHT + 2 * f),
+            True, False
+        )
+        self._content_view.setFrame_(
+            NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
+        )
+        self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
+
+        # Set text immediately (no typewriter)
+        self._typewriter_target = text
+        self._typewriter_displayed = text
+        self._typewriter_hwm = len(text)
+        if self._text_view is not None:
+            self._text_view.setString_(text)
+            # Set text color to higher opacity for tray readability
+            self._text_view.setTextColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(
+                    1.0, 1.0, 1.0, _RECOVERY_TEXT_ALPHA
+                )
+            )
+        self._update_layout()
+
+        # Show overlay
+        self._visible = True
+        self._window.setAlphaValue_(1.0)
+        self._window.orderFrontRegardless()
+
+        # Entrance pop
+        self._pop_entrance()
+
+        logger.info("Tray overlay shown: %r", text[:50] if text else "")
+
     # ── recovery mode ────────────────────────────────────────
 
     def show_recovery(self, text: str, on_dismiss=None, on_insert=None,
