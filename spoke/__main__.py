@@ -1428,20 +1428,9 @@ class SpokeAppDelegate(NSObject):
                 },
             }
             if self._command_client is not None:
-                assistant_models = getattr(self, "_command_model_options", None)
-                if assistant_models is None:
-                    assistant_models = [
-                        (
-                            getattr(self, "_command_model_id", _DEFAULT_COMMAND_MODEL),
-                            getattr(self, "_command_model_id", _DEFAULT_COMMAND_MODEL),
-                            True,
-                        )
-                    ]
                 state["assistant"] = {
-                    "selected": getattr(
-                        self, "_command_model_id", _DEFAULT_COMMAND_MODEL
-                    ),
-                    "models": assistant_models,
+                    "selected": self._command_model_id,
+                    "models": self._command_model_options,
                 }
             if self._local_whisper_controls_available():
                 eager_eval_available = self._local_whisper_eager_eval_available()
@@ -1746,9 +1735,7 @@ class SpokeAppDelegate(NSObject):
         self._command_models_refresh_in_flight = True
 
         def _load():
-            options = self._discover_command_models(
-                getattr(self, "_command_model_id", _DEFAULT_COMMAND_MODEL)
-            )
+            options = self._discover_command_models(self._command_model_id)
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "commandModelsDiscovered:",
                 {"options": options},
@@ -1763,7 +1750,7 @@ class SpokeAppDelegate(NSObject):
 
     def commandModelsDiscovered_(self, payload: dict) -> None:
         self._command_models_refresh_in_flight = False
-        current_model = getattr(self, "_command_model_id", _DEFAULT_COMMAND_MODEL)
+        current_model = self._command_model_id
         options = payload.get("options") or []
         if current_model not in [model_id for model_id, _, _ in options]:
             options = [(current_model, current_model, True), *options]
@@ -1772,13 +1759,7 @@ class SpokeAppDelegate(NSObject):
             self._menubar.refresh_menu()
 
     def _apply_command_model_selection(self, model_id: str) -> None:
-        current_model = getattr(
-            self,
-            "_command_model_id",
-            os.environ.get("SPOKE_COMMAND_MODEL")
-            or self._load_command_model_preference()
-            or _DEFAULT_COMMAND_MODEL,
-        )
+        current_model = self._command_model_id
         if model_id == current_model:
             if self._load_command_model_preference() != model_id:
                 logger.info(
