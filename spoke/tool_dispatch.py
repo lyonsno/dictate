@@ -63,9 +63,9 @@ _READ_ALOUD_SCHEMA = {
                 "source_ref": {
                     "type": "string",
                     "description": (
-                        "A source ref string. Format: 'kind:value'. "
-                        "Examples: 'scene_block:scene-abc:block-1', "
-                        "'ax_hint:scene-abc:focus', 'clipboard:current', "
+                        "A source ref string. Pass block refs from "
+                        "capture_context directly (e.g., 'scene-abc:block-1'). "
+                        "Other formats: 'clipboard:current', "
                         "'selection:frontmost', 'last_response:current', "
                         "'literal:text to speak'."
                     ),
