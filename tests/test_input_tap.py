@@ -465,11 +465,13 @@ class TestTrayAwareness:
         on_end = MagicMock()
         on_shift_tap = MagicMock()
         on_enter_pressed = MagicMock()
+        on_tray_delete = MagicMock()
         det = mod.SpacebarHoldDetector.__new__(mod.SpacebarHoldDetector)
         det._on_hold_start = on_start
         det._on_hold_end = on_end
         det._on_shift_tap = on_shift_tap
         det._on_enter_pressed = on_enter_pressed
+        det._on_tray_delete = on_tray_delete
         det._hold_s = hold_ms / 1000.0
         det._state = mod._State.IDLE
         det._hold_timer = None
@@ -484,12 +486,13 @@ class TestTrayAwareness:
         det.tray_active = False
         det._tray_shift_down = False
         det._tray_space_between = False
-        return det, on_start, on_end, on_shift_tap, on_enter_pressed
+        det._tray_last_shift_space_up = 0.0
+        return det, on_start, on_end, on_shift_tap, on_enter_pressed, on_tray_delete
 
     def test_tray_spacebar_tap_calls_hold_end_not_forward(self, input_tap_module):
         """During tray, quick spacebar tap should call on_hold_end, not forward space."""
         mod = input_tap_module
-        det, _, on_end, _, _ = self._make_detector(input_tap_module)
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
         det.tray_active = True
 
         det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
@@ -501,7 +504,7 @@ class TestTrayAwareness:
     def test_non_tray_quick_release_still_forwards_space(self, input_tap_module):
         """Regression: when NOT in tray, quick release should forward space."""
         mod = input_tap_module
-        det, _, on_end, _, _ = self._make_detector(input_tap_module)
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
         det.tray_active = False
 
         det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
@@ -515,7 +518,7 @@ class TestTrayAwareness:
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
-        det, _, _, _, _ = self._make_detector(input_tap_module)
+        det, _, _, _, _, _ = self._make_detector(input_tap_module)
         mod._active_detector = det
 
         Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
@@ -530,7 +533,7 @@ class TestTrayAwareness:
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
-        det, _, _, _, _ = self._make_detector(input_tap_module)
+        det, _, _, _, _, _ = self._make_detector(input_tap_module)
         det._enter_held = True
         mod._active_detector = det
 
@@ -546,7 +549,7 @@ class TestTrayAwareness:
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
-        det, _, _, _, on_enter = self._make_detector(input_tap_module)
+        det, _, _, _, on_enter, _ = self._make_detector(input_tap_module)
         det.tray_active = True
         mod._active_detector = det
 
@@ -562,7 +565,7 @@ class TestTrayAwareness:
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
-        det, _, _, _, on_enter = self._make_detector(input_tap_module)
+        det, _, _, _, on_enter, _ = self._make_detector(input_tap_module)
         det.tray_active = False
         mod._active_detector = det
 
@@ -577,7 +580,7 @@ class TestTrayAwareness:
     def test_enter_held_passed_on_recording_release(self, input_tap_module):
         """Enter held during recording should pass enter_held=True to on_hold_end."""
         mod = input_tap_module
-        det, _, on_end, _, _ = self._make_detector(input_tap_module)
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
         det._enter_held = True
 
         det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
@@ -591,7 +594,7 @@ class TestTrayAwareness:
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
-        det, _, _, on_shift_tap, _ = self._make_detector(input_tap_module)
+        det, _, _, on_shift_tap, _, _ = self._make_detector(input_tap_module)
         det.tray_active = True
         mod._active_detector = det
 
@@ -610,7 +613,7 @@ class TestTrayAwareness:
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
-        det, _, _, on_shift_tap, _ = self._make_detector(input_tap_module)
+        det, _, _, on_shift_tap, _, _ = self._make_detector(input_tap_module)
         det.tray_active = True
         mod._active_detector = det
 
@@ -629,3 +632,47 @@ class TestTrayAwareness:
         mod._event_tap_callback(None, Quartz.kCGEventFlagsChanged, event, None)
 
         on_shift_tap.assert_not_called()
+
+    def test_double_tap_spacebar_with_shift_fires_delete(self, input_tap_module):
+        """Shift held + double-tap spacebar during tray should fire on_tray_delete."""
+        mod = input_tap_module
+        det, _, on_end, _, _, on_delete = self._make_detector(input_tap_module)
+        det.tray_active = True
+
+        shift_flag = mod.kCGEventFlagMaskShift
+
+        # First tap: shift+spacebar down then up (navigates up)
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, shift_flag)
+        det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=shift_flag)
+        on_end.assert_called_once()  # first tap = navigate up
+        on_delete.assert_not_called()
+
+        # Second tap: shift+spacebar down then up within 300ms (deletes)
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, shift_flag)
+        det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=shift_flag)
+        on_delete.assert_called_once()
+        # on_hold_end should NOT be called a second time (delete takes priority)
+        assert on_end.call_count == 1
+
+    def test_slow_double_tap_does_not_delete(self, input_tap_module):
+        """Two shift+spacebar taps > 300ms apart should both navigate, not delete."""
+        import time as _time
+        mod = input_tap_module
+        det, _, on_end, _, _, on_delete = self._make_detector(input_tap_module)
+        det.tray_active = True
+
+        shift_flag = mod.kCGEventFlagMaskShift
+
+        # First tap
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, shift_flag)
+        det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=shift_flag)
+
+        # Force the timestamp to be old
+        det._tray_last_shift_space_up = _time.monotonic() - 0.5
+
+        # Second tap (after window expired)
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, shift_flag)
+        det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=shift_flag)
+
+        on_delete.assert_not_called()
+        assert on_end.call_count == 2  # both were navigate

@@ -112,8 +112,12 @@ class SpacebarHoldDetector(NSObject):
         self.tray_active = False
         self._on_shift_tap: Callable[[], None] | None = None
         self._on_enter_pressed: Callable[[], None] | None = None
+        self._on_tray_delete: Callable[[], None] | None = None
         self._tray_shift_down = False
         self._tray_space_between = False
+        # Double-tap detection for delete gesture (shift held + double-tap spacebar)
+        self._tray_last_shift_space_up: float = 0.0
+        _TRAY_DOUBLE_TAP_WINDOW_S = 0.3
 
         return self
 
@@ -223,6 +227,21 @@ class SpacebarHoldDetector(NSObject):
             if getattr(self, 'tray_active', False):
                 # During tray, all spacebar taps route through on_hold_end
                 # instead of forwarding a space character.
+                # Double-tap detection: shift held + two spacebar taps within
+                # 300ms = delete current tray entry.
+                now = time.monotonic()
+                last = getattr(self, '_tray_last_shift_space_up', 0.0)
+                if shift_held and (now - last) < 0.3:
+                    # Double-tap with shift held = delete
+                    self._tray_last_shift_space_up = 0.0  # reset
+                    on_delete = getattr(self, '_on_tray_delete', None)
+                    if on_delete is not None:
+                        on_delete()
+                    return True
+                if shift_held:
+                    self._tray_last_shift_space_up = now
+                else:
+                    self._tray_last_shift_space_up = 0.0
                 self._on_hold_end(shift_held=shift_held, enter_held=enter_held)
             elif shift_held:
                 # Shift + quick tap = signal for tray recall (no space)

@@ -118,6 +118,7 @@ class SpokeAppDelegate(NSObject):
         # Wire tray callbacks on the detector
         self._detector._on_shift_tap = self._on_tray_shift_tap
         self._detector._on_enter_pressed = self._on_tray_enter_pressed
+        self._detector._on_tray_delete = self._on_tray_delete_gesture
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
@@ -893,6 +894,12 @@ class SpokeAppDelegate(NSObject):
         if self._tray_active:
             logger.info("Enter during tray — sending to assistant")
             self._tray_send_current()
+
+    def _on_tray_delete_gesture(self) -> None:
+        """Shift held + double-tap spacebar = delete current tray entry."""
+        if self._tray_active:
+            logger.info("Double-tap delete during tray")
+            self._tray_delete_current()
 
     def _tray_navigate_up(self) -> None:
         """Navigate up toward more recent entries. Dismiss at top."""
