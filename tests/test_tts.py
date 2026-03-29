@@ -489,6 +489,7 @@ class TestCommandCompletionAutoplay:
         delegate._command_overlay = MagicMock()
         delegate._menubar = MagicMock()
         delegate._tts_client = tts_client
+        delegate._command_tool_used_tts = False
         return delegate
 
     def test_command_complete_triggers_tts(self, main_module):
@@ -504,6 +505,18 @@ class TestCommandCompletionAutoplay:
         assert args[0] == "Hello there"
         assert kwargs.get("amplitude_callback") is not None
         assert kwargs.get("done_callback") is not None
+
+    def test_command_complete_skips_autoplay_when_tool_already_spoke(self, main_module):
+        """If read_aloud already launched speech this turn, skip final-response autoplay."""
+        tts = MagicMock()
+        delegate = self._make_delegate(main_module, tts_client=tts)
+        delegate._command_tool_used_tts = True
+
+        delegate.commandComplete_({"token": 1, "response": "Reading that now"})
+
+        tts.speak_async.assert_not_called()
+        delegate._command_overlay.tts_start.assert_not_called()
+        assert delegate._command_tool_used_tts is False
 
     def test_command_complete_no_tts_when_disabled(self, main_module):
         """When TTS client is None, commandComplete_ works normally without TTS."""

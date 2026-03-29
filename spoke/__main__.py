@@ -233,6 +233,7 @@ class SpokeAppDelegate(NSObject):
 
         # TTS autoplay — initialized if SPOKE_TTS_VOICE is set
         self._tts_client = TTSClient.from_env(gpu_lock=self._local_inference_lock)
+        self._command_tool_used_tts = False
         if self._tts_client is not None:
             logger.info("TTS enabled: voice=%s", self._tts_client._voice)
 
@@ -1278,6 +1279,7 @@ class SpokeAppDelegate(NSObject):
         self._transcription_token += 1
         token = self._transcription_token
         self._transcribing = True
+        self._command_tool_used_tts = False
         self._transcribe_start = time.monotonic()
 
         if self._menubar is not None:
@@ -1323,7 +1325,8 @@ class SpokeAppDelegate(NSObject):
     def _make_tool_executor(self):
         """Build a tool executor closure with current app state."""
         scene_cache = self._scene_cache
-        tts_client = getattr(self, "_tts_client", None)
+        raw_tts_client = getattr(self, "_tts_client", None)
+        tts_client = raw_tts_client
         # Get last assistant response for last_response refs
         last_response = None
         try:
@@ -1332,6 +1335,26 @@ class SpokeAppDelegate(NSObject):
                 _, last_response = history[-1]
         except (TypeError, ValueError):
             pass
+
+        if raw_tts_client is not None:
+            delegate = self
+
+            class _ToolTTSProxy:
+                def __init__(self, client):
+                    self._client = client
+
+                def speak_async(self, text, *args, **kwargs):
+                    delegate._command_tool_used_tts = True
+                    return self._client.speak_async(text, *args, **kwargs)
+
+                def speak(self, text, *args, **kwargs):
+                    delegate._command_tool_used_tts = True
+                    return self._client.speak(text, *args, **kwargs)
+
+                def __getattr__(self, name):
+                    return getattr(self._client, name)
+
+            tts_client = _ToolTTSProxy(raw_tts_client)
 
         def _executor(name, arguments, **kwargs):
             return execute_tool(
@@ -1345,6 +1368,7 @@ class SpokeAppDelegate(NSObject):
 
     def _command_transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: transcribe then send command to OMLX."""
+        self._command_tool_used_tts = False
         # Wait for preview loop to finish
         if self._preview_thread is not None:
             if getattr(self, "_preview_done", None) is not None:
@@ -1457,7 +1481,9 @@ class SpokeAppDelegate(NSObject):
         # Autoplay response via TTS if enabled — glow hides, overlay breathes with voice
         response = payload.get("response", "")
         tts = getattr(self, "_tts_client", None)
-        if response and tts is not None:
+        tool_used_tts = getattr(self, "_command_tool_used_tts", False)
+        self._command_tool_used_tts = False
+        if response and tts is not None and not tool_used_tts:
             if self._glow is not None:
                 self._glow.hide()
             if self._command_overlay is not None:

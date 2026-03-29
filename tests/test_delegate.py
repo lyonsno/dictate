@@ -33,6 +33,9 @@ def _make_delegate(main_module, monkeypatch):
     delegate._last_preview_text = ""
     delegate._command_client = None
     delegate._command_overlay = None
+    delegate._scene_cache = None
+    delegate._tts_client = None
+    delegate._command_tool_used_tts = False
     # Tray state
     delegate._tray_stack = []
     delegate._tray_index = 0
@@ -2167,6 +2170,19 @@ class TestCommandCallbacks:
         assert d._transcribing is False
         d._command_overlay.finish.assert_called_once()
         d._glow.hide.assert_called()
+
+    def test_tool_executor_marks_tool_tts_usage(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._tts_client = MagicMock()
+
+        executor = d._make_tool_executor()
+        result = executor("read_aloud", {"source_ref": "literal:hello world"})
+
+        assert result == "Speaking: hello world"
+        assert d._command_tool_used_tts is True
+        d._tts_client.speak_async.assert_called_once_with("hello world")
 
     def test_command_failed_shows_error_in_overlay(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
