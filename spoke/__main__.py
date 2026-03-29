@@ -320,9 +320,13 @@ class SpokeAppDelegate(NSObject):
         # Wait for release — short tap = insert, long hold = new recording.
         self._verify_paste_text = None
         if getattr(self, "_tray_active", False):
-            self._recovery_hold_active = True
-            logger.info("Hold started during tray — waiting for release")
-            return
+            # Tray is active. For quick taps (< hold threshold), we wait
+            # for release and route through _on_hold_end as insert/navigate.
+            # For long holds (hold timer already fired = we're here), dismiss
+            # the tray and start recording.
+            logger.info("Hold started during tray — dismissing tray, starting new recording")
+            self._dismiss_tray()
+            # Fall through to start recording
         elif getattr(self, "_recovery_text", None) is not None:
             self._recovery_hold_active = True
             logger.info("Hold started during recovery — waiting for release")

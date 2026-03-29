@@ -112,8 +112,8 @@ class TestRecoveryFlowBranching:
 class TestRecoveryDismiss:
     """Recovery overlay dismiss behavior."""
 
-    def test_spacebar_hold_during_tray_waits_for_release(self, main_module, monkeypatch):
-        """Spacebar hold during tray should wait for release, not start recording."""
+    def test_spacebar_hold_during_tray_starts_recording(self, main_module, monkeypatch):
+        """Spacebar hold during tray should dismiss tray and start recording."""
         d = _make_delegate(main_module, monkeypatch)
         d._tray_active = True
         d._tray_stack = ["some text"]
@@ -121,9 +121,9 @@ class TestRecoveryDismiss:
 
         d._on_hold_start()
 
-        # Should NOT start recording — waits for release
-        d._capture.start.assert_not_called()
-        assert d._recovery_hold_active is True
+        # Should dismiss tray and start recording
+        d._capture.start.assert_called_once()
+        assert d._tray_active is False
 
     def test_shift_space_during_tray_navigates_up(self, main_module, monkeypatch):
         """Shift+space during tray should navigate up (was: send to command)."""
