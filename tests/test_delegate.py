@@ -962,6 +962,57 @@ class TestDualModelConfiguration:
         assert os.environ["SPOKE_COMMAND_MODEL"] == "qwen3-14b"
         mock_execv.assert_called_once()
 
+    def test_discover_command_models_merges_server_and_local_inventory(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Assistant discovery should include local LM Studio models alongside /v1/models."""
+        model_root = tmp_path / "models"
+        (model_root / "lmstudio-community" / "Qwen3-4B-Instruct-2507-MLX-6bit").mkdir(
+            parents=True
+        )
+        (model_root / "unsloth" / "Qwen3-4B-Instruct-2507-GGUF").mkdir(parents=True)
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.list_models.return_value = ["qwen3p5-35B-A3B", "qwen3-14b"]
+
+        options = d._discover_command_models("qwen3p5-35B-A3B")
+
+        assert options == [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("qwen3-14b", "qwen3-14b", True),
+            (
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                True,
+            ),
+            (
+                "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+                "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+                True,
+            ),
+        ]
+
+    def test_discover_command_models_keeps_selected_model_when_server_is_unavailable(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Selected assistant model should stay visible even if only local inventory is available."""
+        model_root = tmp_path / "models"
+        (model_root / "mlx-community" / "Qwen3-0.6B-8bit").mkdir(parents=True)
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.list_models.side_effect = RuntimeError("offline")
+
+        options = d._discover_command_models("qwen3p5-35B-A3B")
+
+        assert options == [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("mlx-community/Qwen3-0.6B-8bit", "mlx-community/Qwen3-0.6B-8bit", True),
+        ]
+
     def test_reselecting_current_assistant_model_repairs_stale_preference_without_relaunch(
         self, main_module, monkeypatch, tmp_path
     ):

@@ -49,6 +49,7 @@ _DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx-8bit"
 _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
+_DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
 
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
 
@@ -73,6 +74,25 @@ def _max_record_secs_for_ram(ram_gb: float) -> float | None:
     if ram_gb < _MIN_RAM_GB_FOR_UNCAPPED_RECORDING:
         return _LOW_RAM_RECORDING_CAP_SECS
     return None
+
+
+def _iter_local_command_model_ids(model_dir: Path) -> list[str]:
+    """Return OMLX-friendly model ids discovered from a local model directory."""
+    if not model_dir.is_dir():
+        return []
+
+    model_ids: list[str] = []
+    for child in sorted(model_dir.iterdir(), key=lambda path: path.name.lower()):
+        if not child.is_dir():
+            continue
+        child_entries = list(child.iterdir())
+        if any(entry.is_file() for entry in child_entries):
+            model_ids.append(child.name)
+            continue
+        for grandchild in sorted(child_entries, key=lambda path: path.name.lower()):
+            if grandchild.is_dir():
+                model_ids.append(f"{child.name}/{grandchild.name}")
+    return model_ids
 
 
 # Recording cap: let 16GB+ local boxes that can run v3 turbo record freely.
@@ -1871,6 +1891,11 @@ class SpokeAppDelegate(NSObject):
                 model_ids = self._command_client.list_models()
             except Exception:
                 logger.warning("Failed to fetch assistant models from OMLX", exc_info=True)
+        local_model_dir = Path(
+            os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
+        ).expanduser()
+        local_model_ids = _iter_local_command_model_ids(local_model_dir)
+        model_ids.extend(local_model_ids)
         if selected_model and selected_model not in model_ids:
             model_ids.insert(0, selected_model)
         seen: set[str] = set()
