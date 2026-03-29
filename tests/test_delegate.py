@@ -1202,6 +1202,10 @@ class TestWarmupContract:
         mock_thread_cls.assert_called_once()
         mock_thread.start.assert_called_once_with()
         d._menubar.set_status_text.assert_called_with("Loading models…")
+        d._overlay.show.assert_called_once_with()
+        d._overlay.set_text.assert_called_once_with(
+            "Loading models...\nFirst launch may download selected models."
+        )
 
     def test_background_warmup_dispatches_success_to_main_thread(
         self, main_module, monkeypatch
@@ -1229,6 +1233,35 @@ class TestWarmupContract:
             "clientWarmupFailed:", None, False
         )
         assert isinstance(d._warm_error, RuntimeError)
+
+    def test_warmup_success_hides_startup_indicator(
+        self, main_module, monkeypatch
+    ):
+        """Successful warmup should remove the loading overlay."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = None
+        d.clientWarmupSucceeded_(None)
+
+        d._overlay.hide.assert_called_once_with()
+        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+
+    def test_warmup_failure_updates_startup_indicator(
+        self, main_module, monkeypatch
+    ):
+        """Failed warmup should keep a visible on-screen failure message."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._warm_error = RuntimeError("warm failed")
+        d._show_model_load_alert = MagicMock()
+
+        d.clientWarmupFailed_(None)
+
+        d._overlay.show.assert_called_once_with()
+        d._overlay.set_text.assert_called_once_with(
+            "Model load failed.\nChoose another model from the menu."
+        )
+        d._menubar.set_status_text.assert_called_with(
+            "Model load failed — choose another model"
+        )
 
     def test_warmup_failure_still_allows_model_selection_recovery(
         self, main_module, monkeypatch, tmp_path
