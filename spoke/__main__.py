@@ -115,6 +115,9 @@ class SpokeAppDelegate(NSObject):
             self._on_hold_end,
             hold_ms,
         )
+        # Wire staging-mode shift callbacks on the detector
+        self._detector._on_shift_tap = self._on_staging_shift_tap
+        self._detector._on_shift_released = self._on_staging_shift_released
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
@@ -322,6 +325,7 @@ class SpokeAppDelegate(NSObject):
             logger.info("Hold started during staging — dismissing staging, starting new recording")
             self._cancel_recovery()
             self._staging_active = False
+            self._detector.staging_active = False
             # Fall through to start recording
         elif getattr(self, "_recovery_text", None) is not None:
             self._recovery_hold_active = True
@@ -548,18 +552,21 @@ class SpokeAppDelegate(NSObject):
                     self._cancel_recovery()
                     self._staging_text = None
                     self._staging_active = False
+                    self._detector.staging_active = False
                     self._send_text_as_command(text)
                 else:
                     logger.info("Shift+space during staging — dismissing (no command client or no text)")
                     self._cancel_recovery()
                     self._staging_text = None
                     self._staging_active = False
+                    self._detector.staging_active = False
                     if self._menubar is not None:
                         self._menubar.set_status_text("Ready — hold spacebar")
             else:
                 # Spacebar from staging = insert text at cursor
                 logger.info("Spacebar during staging — inserting text")
                 self._staging_active = False
+                self._detector.staging_active = False
                 self._recovery_retry_insert()
             return
 
@@ -830,6 +837,7 @@ class SpokeAppDelegate(NSObject):
         if self._glow is not None:
             self._glow.hide()
         self._staging_active = False
+        self._detector.staging_active = False
         if self._menubar is not None:
             self._menubar.set_status_text("Error — try again")
 
@@ -842,6 +850,7 @@ class SpokeAppDelegate(NSObject):
         """
         self._staging_text = text
         self._staging_active = True
+        self._detector.staging_active = True
 
         # Reuse recovery overlay infrastructure
         self._recovery_text = text
@@ -863,9 +872,23 @@ class SpokeAppDelegate(NSObject):
     def _dismiss_staging(self) -> None:
         """Dismiss staging overlay but keep staged text for potential re-entry."""
         self._staging_active = False
+        self._detector.staging_active = False
         self._cancel_recovery()
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
+
+    def _on_staging_shift_tap(self) -> None:
+        """Shift tap (no spacebar between) during staging = dismiss."""
+        if self._staging_active:
+            logger.info("Shift tap during staging — dismissing")
+            self._dismiss_staging()
+
+    def _on_staging_shift_released(self) -> None:
+        """Shift released after a staging gesture — used for hold-through fast path."""
+        # Slice 3 will use this for cancelling the hold-through commit timer.
+        # For now, just log it.
+        if self._staging_active:
+            logger.info("Shift released during staging")
 
     # ── command pathway ────────────────────────────────────
 

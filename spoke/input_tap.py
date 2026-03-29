@@ -102,6 +102,16 @@ class SpacebarHoldDetector(NSObject):
         self._forwarding_timer: NSTimer | None = None
         self._tap = None
         self._tap_source = None
+
+        # Staging mode support — set by the delegate when staging is active.
+        # When True, quick spacebar taps call on_hold_end instead of
+        # forwarding a space character, and shift taps/releases are tracked.
+        self.staging_active = False
+        self._on_shift_tap: Callable[[], None] | None = None
+        self._on_shift_released: Callable[[], None] | None = None
+        self._staging_shift_down = False
+        self._staging_space_between = False
+
         return self
 
     # ── public ──────────────────────────────────────────────
@@ -177,6 +187,10 @@ class SpacebarHoldDetector(NSObject):
             self._state = _State.WAITING
             self._shift_at_press = bool(flags & kCGEventFlagMaskShift)
             self._shift_latched = self._shift_at_press
+            # Mark that spacebar was pressed between shift down/up for
+            # staging shift-tap vs shift-release discrimination.
+            if getattr(self, 'staging_active', False) and getattr(self, '_staging_shift_down', False):
+                self._staging_space_between = True
             self._start_hold_timer()
             return True  # suppress the space
 
@@ -203,7 +217,11 @@ class SpacebarHoldDetector(NSObject):
             self._state = _State.IDLE
             shift_held = bool(flags & kCGEventFlagMaskShift) or self._shift_latched
             self._shift_latched = False
-            if shift_held:
+            if getattr(self, 'staging_active', False):
+                # During staging, all spacebar taps route through on_hold_end
+                # instead of forwarding a space character.
+                self._on_hold_end(shift_held=shift_held)
+            elif shift_held:
                 # Shift + quick tap = signal for recall/dismiss (no space)
                 self._on_hold_end(shift_held=True)
             else:
@@ -333,12 +351,33 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         if det.handle_key_up(keycode, flags=flags):
             return None  # suppress
     elif event_type == kCGEventFlagsChanged:
-        # Latch shift if it arrives while we're in WAITING or RECORDING
         flags = CGEventGetFlags(event)
-        if flags & kCGEventFlagMaskShift:
+        shift_now = bool(flags & kCGEventFlagMaskShift)
+
+        # Latch shift if it arrives while we're in WAITING or RECORDING
+        if shift_now:
             if det._state in (_State.WAITING, _State.RECORDING):
                 if not det._shift_latched:
                     logger.info("Shift latched during %s", det._state)
                 det._shift_latched = True
+
+        # Staging mode: track shift press/release for shift-tap detection
+        # and hold-through fast path notifications.
+        if getattr(det, 'staging_active', False) and det._state == _State.IDLE:
+            if shift_now and not det._staging_shift_down:
+                # Shift just pressed
+                det._staging_shift_down = True
+                det._staging_space_between = False
+            elif not shift_now and det._staging_shift_down:
+                # Shift just released
+                det._staging_shift_down = False
+                if not det._staging_space_between:
+                    # No spacebar between shift down and up = shift tap
+                    if det._on_shift_tap is not None:
+                        det._on_shift_tap()
+                else:
+                    # Spacebar was pressed between = shift released after gesture
+                    if det._on_shift_released is not None:
+                        det._on_shift_released()
 
     return event
