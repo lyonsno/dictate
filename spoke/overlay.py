@@ -562,10 +562,11 @@ class TranscriptionOverlay(NSObject):
 
         text_alpha = _TEXT_ALPHA_MIN + scaled * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
         t = getattr(self, "_brightness", 0.0)
-        # Text lags the bg transition — stays white longer, goes dark only
-        # past ~0.65 brightness. Prevents contrast collapse at mid-brightness
-        # where linear interpolation would make text and bg the same gray.
-        text_t = t ** 1.8
+        # Text lags the bg transition slightly to maintain contrast at the
+        # midpoint. t^1.3 shifts the crossover just enough to avoid the muddy
+        # zone where both converge to the same gray, while still letting text
+        # go visibly dark at realistic bright-screen values (0.7–0.85).
+        text_t = t ** 1.3
         tr, tg, tb = _lerp_color(_TEXT_COLOR_DARK, _TEXT_COLOR_LIGHT, text_t)
         self._text_view.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, text_alpha)

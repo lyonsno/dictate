@@ -286,7 +286,7 @@ class TestAdaptiveOverlayCompositing:
 
             # Text should be noticeably brighter than bg at mid-brightness
             # (the offset text curve keeps text whiter longer)
-            assert text_lum > bg_lum + 0.15, (
+            assert text_lum > bg_lum + 0.08, (
                 f"Contrast gap too small at 50% brightness: "
                 f"text_lum={text_lum:.3f} bg_lum={bg_lum:.3f}"
             )
