@@ -113,11 +113,12 @@ class TestRecoveryDismiss:
     """Recovery overlay dismiss behavior."""
 
     def test_spacebar_hold_during_tray_starts_recording(self, main_module, monkeypatch):
-        """Spacebar hold during tray should dismiss tray and start recording."""
+        """Plain spacebar hold during tray should dismiss tray and start recording."""
         d = _make_delegate(main_module, monkeypatch)
         d._tray_active = True
         d._tray_stack = ["some text"]
         d._recovery_text = "some text"
+        d._detector._shift_at_press = False  # plain spacebar, no shift
 
         d._on_hold_start()
 

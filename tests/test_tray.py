@@ -242,18 +242,34 @@ class TestTrayGestures:
     """Gestures available while the tray is active."""
 
     def test_spacebar_hold_from_tray_starts_recording(self, main_module, monkeypatch):
-        """Spacebar hold from tray should dismiss tray and start recording."""
+        """Plain spacebar hold from tray should dismiss tray and start recording."""
         d = _make_delegate(main_module, monkeypatch, command_client=True)
         d._tray_active = True
         d._tray_stack = ["old text"]
         d._tray_index = 0
         d._recovery_text = "old text"
+        d._detector._shift_at_press = False  # plain spacebar, no shift
 
         d._on_hold_start()
 
         # Should dismiss tray and start recording
         d._capture.start.assert_called_once()
         assert d._tray_active is False
+
+    def test_shift_spacebar_hold_from_tray_navigates(self, main_module, monkeypatch):
+        """Shift+spacebar hold from tray should wait for release (navigation)."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._tray_active = True
+        d._tray_stack = ["old text"]
+        d._tray_index = 0
+        d._recovery_text = "old text"
+        d._detector._shift_at_press = True  # shift held
+
+        d._on_hold_start()
+
+        # Should NOT start recording — waits for release to navigate
+        d._capture.start.assert_not_called()
+        assert d._recovery_hold_active is True
 
     def test_enter_from_tray_sends_to_assistant(self, main_module, monkeypatch):
         """Enter key from tray should send current text to assistant."""

@@ -320,10 +320,14 @@ class SpokeAppDelegate(NSObject):
         # Wait for release — short tap = insert, long hold = new recording.
         self._verify_paste_text = None
         if getattr(self, "_tray_active", False):
-            # Tray is active. For quick taps (< hold threshold), we wait
-            # for release and route through _on_hold_end as insert/navigate.
-            # For long holds (hold timer already fired = we're here), dismiss
-            # the tray and start recording.
+            shift_at_press = getattr(self._detector, '_shift_at_press', False)
+            if shift_at_press:
+                # Shift+space hold during tray = navigation gesture, not recording.
+                # Wait for release to route through _on_hold_end as navigate up.
+                self._recovery_hold_active = True
+                logger.info("Hold started during tray with shift — waiting for release (navigate)")
+                return
+            # Plain spacebar hold during tray = dismiss tray, start recording
             logger.info("Hold started during tray — dismissing tray, starting new recording")
             self._dismiss_tray()
             # Fall through to start recording
