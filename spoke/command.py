@@ -30,6 +30,10 @@ _SYSTEM_PROMPT = (
     '(e.g. "read that", "what does this say", "read the tab title").\n'
     "- read_aloud: resolves a source ref to exact text and speaks it via TTS. "
     "Use scene_block refs from capture_context, or clipboard/selection/literal refs.\n\n"
+    "You also have run_epistaxis_ops: a bounded local operator for private "
+    "Epistaxis review-ticket and pointer work in a dedicated Epistaxis "
+    "worktree. Use it only for narrow Epistaxis state operations, never for "
+    "arbitrary shell or general coding work.\n\n"
     "Prefer refs over regenerated text. If the user asks you to read something "
     "visible, call capture_context first, then read_aloud with a scene_block ref. "
     "If the user asks to read selected text or the clipboard, use read_aloud directly "
