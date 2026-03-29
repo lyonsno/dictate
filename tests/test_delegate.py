@@ -1332,6 +1332,45 @@ class TestWarmupHoldGuard:
             "Model load failed.\nChoose another model from the menu."
         )
 
+    def test_hold_end_after_warmup_success_still_ignores_rejected_hold(
+        self, main_module, monkeypatch
+    ):
+        """A hold that began during warmup stays invalid even if warmup finishes before release."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = None
+
+        d._models_ready = False
+        d._warm_error = None
+        d._on_hold_start()
+        d.clientWarmupSucceeded_(None)
+        d._on_hold_end()
+
+        d._capture.stop.assert_not_called()
+        d._menubar.set_recording.assert_not_called()
+        assert d._menubar.set_status_text.call_args_list[-1].args[0] == (
+            "Ready — hold spacebar"
+        )
+
+    def test_hold_end_after_warmup_failure_transition_still_ignores_rejected_hold(
+        self, main_module, monkeypatch
+    ):
+        """A rejected hold should not mutate UI state after warmup flips into failure."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._show_model_load_alert = MagicMock()
+
+        d._models_ready = False
+        d._warm_error = None
+        d._on_hold_start()
+        d._warm_error = RuntimeError("warm failed")
+        d.clientWarmupFailed_(None)
+        d._on_hold_end()
+
+        d._capture.stop.assert_not_called()
+        d._overlay.hide.assert_not_called()
+        assert d._menubar.set_status_text.call_args_list[-1].args[0] == (
+            "Model load failed — choose another model"
+        )
+
 
 class TestEnvValidation:
     """Test environment variable validation in SpokeAppDelegate.init."""

@@ -322,7 +322,6 @@ class SpokeAppDelegate(NSObject):
         self._warmup_in_flight = False
         self._models_ready = True
         self._warm_error = None
-        self._hold_rejected_during_warmup = False
         logger.info("spoke ready — hold spacebar to record")
         self._menubar.set_status_text("Ready — hold spacebar")
         self._hide_startup_status()
@@ -339,7 +338,6 @@ class SpokeAppDelegate(NSObject):
     def clientWarmupFailed_(self, _sender) -> None:
         self._warmup_in_flight = False
         self._models_ready = False
-        self._hold_rejected_during_warmup = False
         exc = self._warm_error or RuntimeError("Model warmup failed")
         self._refresh_startup_status()
         self._show_model_load_alert(exc)
