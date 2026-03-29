@@ -146,17 +146,18 @@ def _run_ocr(cg_image, image_width: int, image_height: int, scene_ref: str):
         from Vision import (
             VNImageRequestHandler,
             VNRecognizeTextRequest,
-            VNRequestTextRecognitionLevelAccurate,
+            VNRequestTextRecognitionLevelFast,
         )
 
         handler = VNImageRequestHandler.alloc().initWithCGImage_options_(
             cg_image, None
         )
         request = VNRecognizeTextRequest.alloc().init()
-        # Use accurate level for block-level detail (slightly slower than
-        # fast, but V1 captures once per request so this is fine).
-        request.setRecognitionLevel_(VNRequestTextRecognitionLevelAccurate)
-        request.setUsesLanguageCorrection_(True)
+        # Fast level is critical for conversational latency (~50ms vs 60s+
+        # for Accurate on a full retina screen). Block-level bboxes and
+        # confidence are still available at Fast level.
+        request.setRecognitionLevel_(VNRequestTextRecognitionLevelFast)
+        request.setUsesLanguageCorrection_(False)
 
         success, error = handler.performRequests_error_([request], None)
         if not success:
@@ -334,38 +335,78 @@ def _capture_active_window():
             kCGWindowListOptionOnScreenOnly,
         )
 
-        # Get frontmost app info
-        workspace = NSWorkspace.sharedWorkspace()
-        front_app = workspace.frontmostApplication()
-        if front_app is None:
-            return None
-
-        app_name = front_app.localizedName()
-        bundle_id = front_app.bundleIdentifier()
-        app_pid = front_app.processIdentifier()
-
-        # Find the frontmost app's main window
+        # Get the on-screen window list (ordered front-to-back by the
+        # window server, so the first match is the topmost).
         window_list = CGWindowListCopyWindowInfo(
             kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
             0,  # kCGNullWindowID
         )
         if not window_list:
+            logger.debug("CGWindowListCopyWindowInfo returned empty")
             return None
 
+        # Try to identify the frontmost app via NSWorkspace
+        app_pid = None
+        app_name = None
+        bundle_id = None
+        window_title = None
+        try:
+            workspace = NSWorkspace.sharedWorkspace()
+            front_app = workspace.frontmostApplication()
+            if front_app is not None:
+                app_pid = front_app.processIdentifier()
+                app_name = front_app.localizedName()
+                bundle_id = front_app.bundleIdentifier()
+                logger.debug(
+                    "Frontmost app: %s (pid=%s, bundle=%s)",
+                    app_name, app_pid, bundle_id,
+                )
+        except Exception:
+            logger.debug("NSWorkspace frontmost app lookup failed", exc_info=True)
+
+        my_pid = os.getpid()
         target_window = None
-        for win in window_list:
-            if win.get("kCGWindowOwnerPID") == app_pid:
-                # Skip windows with no bounds (menubar items, etc.)
+
+        if app_pid is not None:
+            # Look for the frontmost app's main window
+            for win in window_list:
+                if win.get("kCGWindowOwnerPID") == app_pid:
+                    bounds = win.get("kCGWindowBounds")
+                    if bounds and bounds.get("Height", 0) > 50:
+                        target_window = win
+                        break
+
+        if target_window is None:
+            # Fallback: pick the first on-screen window that isn't ours
+            # and has a reasonable size. The window list is front-to-back
+            # ordered, so this gets the topmost visible window.
+            logger.debug("PID-based lookup failed, falling back to first large window")
+            for win in window_list:
+                win_pid = win.get("kCGWindowOwnerPID", 0)
+                if win_pid == my_pid:
+                    continue
                 bounds = win.get("kCGWindowBounds")
-                if bounds and bounds.get("Height", 0) > 50:
+                if bounds and bounds.get("Height", 0) > 50 and bounds.get("Width", 0) > 50:
                     target_window = win
+                    # Fill in app info from the window if we don't have it
+                    if app_name is None:
+                        app_name = win.get("kCGWindowOwnerName")
                     break
 
         if target_window is None:
+            logger.debug("No suitable window found in window list")
             return None
 
         window_id = target_window.get("kCGWindowNumber", 0)
-        window_title = target_window.get("kCGWindowName")
+        if not window_title:
+            window_title = target_window.get("kCGWindowName")
+        if app_name is None:
+            app_name = target_window.get("kCGWindowOwnerName")
+
+        logger.debug(
+            "Capturing window %s: %s — %s",
+            window_id, app_name, window_title,
+        )
 
         # Capture just this window
         image = CGWindowListCreateImage(
@@ -375,6 +416,7 @@ def _capture_active_window():
             kCGWindowImageBoundsIgnoreFraming,
         )
         if image is None:
+            logger.debug("CGWindowListCreateImage returned None for window %s", window_id)
             return None
 
         return (image, app_name, bundle_id, window_title)
