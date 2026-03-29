@@ -2,7 +2,7 @@
 
 Global hold-to-dictate for macOS.
 
-Hold the spacebar anywhere on the system, speak, release, and `spoke` pastes the transcription at the current cursor. It runs as a menubar app, uses PyObjC instead of Swift, and supports three transcription modes:
+Hold the spacebar anywhere on the system, speak, release, and `spoke` pastes the transcription at the current cursor. It runs as a menubar app with PyObjC, supports three transcription backends, and optionally routes voice commands to a local LLM:
 
 - Local MLX Whisper
 - Local Qwen3-ASR via MLX
@@ -16,7 +16,7 @@ Hold the spacebar anywhere on the system, speak, release, and `spoke` pastes the
 Hold spacebar → record mic audio → preview text while speaking → transcribe on release → paste at cursor
 ```
 
-Quick taps still produce a normal space. Longer holds trigger recording, show the glow/overlay UI, then inject the final text with pasteboard save/restore plus synthetic `Cmd+V`.
+Quick taps still produce a normal space. Longer holds trigger recording, show the glow/overlay UI, then inject the final text with pasteboard save/restore plus synthetic `Cmd+V`. If the paste doesn't land (wrong app focused, no text field, etc.), a recovery overlay appears with retry and dismiss options.
 
 ## Features
 
@@ -25,6 +25,9 @@ Quick taps still produce a normal space. Longer holds trigger recording, show th
 - Screen-edge glow driven by microphone amplitude
 - Local transcription by default (Whisper or Qwen3-ASR) when `SPOKE_WHISPER_URL` is unset
 - Optional remote sidecar mode for heavier models
+- Voice command pathway via Shift+Space — sends utterances to a local LLM with streaming response overlay
+- OCR-verified paste with automatic recovery overlay on failure
+- Decoder-loop and silence-hallucination deduplication
 - Single-instance app behavior
 - Menubar-only UI with no Dock icon
 
@@ -84,6 +87,14 @@ uv tool install "mlx-audio[server]"
 mlx-audio-server --host 0.0.0.0 --port 8000
 ```
 
+### Voice commands
+
+When `SPOKE_COMMAND_URL` is set, Shift+Space activates the command pathway instead of dictation. Spoken input is sent to a local LLM (OpenAI-compatible chat completions API) and the streamed response appears in a dedicated overlay.
+
+```sh
+SPOKE_COMMAND_URL=http://localhost:8001 uv run spoke
+```
+
 ## Permissions
 
 On first run, macOS will ask for:
@@ -109,6 +120,8 @@ choices across relaunches.
 | `SPOKE_TRANSCRIPTION_MODEL` | `mlx-community/whisper-large-v3-turbo` | Final transcription model identifier. Use `Qwen/Qwen3-ASR-0.6B` or any menu-listed Whisper variant. |
 | `SPOKE_HOLD_MS` | `200` | Spacebar hold threshold in milliseconds. Must be greater than `0`. |
 | `SPOKE_RESTORE_DELAY_MS` | `1000` | Delay before the original pasteboard contents are restored. |
+| `SPOKE_COMMAND_URL` | unset | Local LLM server for voice commands (Shift+Space). Chat completions endpoint. |
+| `SPOKE_COMMAND_MODEL` | `qwen3p5-35B-A3B` | Model name sent in command requests. |
 
 ### UI tuning
 
@@ -126,16 +139,22 @@ Each layer is independent and testable in isolation.
 
 ```text
 spoke/
-├── __main__.py          # app delegate and runtime wiring
-├── input_tap.py         # global spacebar hold detection
-├── capture.py           # sounddevice recording and WAV encoding
-├── transcribe.py        # remote OpenAI-compatible client
-├── transcribe_local.py  # local MLX Whisper backend
-├── transcribe_qwen.py   # local Qwen3-ASR backend
-├── inject.py            # pasteboard save/paste/restore
-├── glow.py              # screen-edge amplitude glow
-├── overlay.py           # live transcription overlay
-└── menubar.py           # status item and menu
+├── __main__.py               # app delegate and runtime wiring
+├── input_tap.py              # global spacebar hold detection
+├── capture.py                # sounddevice recording and WAV encoding
+├── transcribe.py             # remote OpenAI-compatible client
+├── transcribe_local.py       # local MLX Whisper backend
+├── transcribe_qwen.py        # local Qwen3-ASR backend
+├── patch_qwen3_streaming.py  # upstream Qwen3-ASR overlap fix
+├── dedup.py                  # decoder-loop and hallucination cleanup
+├── inject.py                 # pasteboard save/paste/restore
+├── paste_verify.py           # post-paste OCR verification
+├── focus_check.py            # text-field focus detection via Accessibility
+├── command.py                # voice command dispatch to local LLM
+├── command_overlay.py        # streaming command response overlay
+├── glow.py                   # screen-edge amplitude glow
+├── overlay.py                # live transcription overlay
+└── menubar.py                # status item and menu
 ```
 
 ## Build
