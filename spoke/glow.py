@@ -89,7 +89,7 @@ _DIM_HIDE_FADE_S = 2.4
 _WINDOW_TEARDOWN_CUSHION_S = 0.05
 
 
-_BRIGHTNESS_SAMPLE_INTERVAL = 2.5  # seconds between recurring samples
+_BRIGHTNESS_SAMPLE_INTERVAL = 1.0  # seconds between recurring samples
 _BRIGHTNESS_PATCH_SIZE = 50  # pixels per patch side
 
 
