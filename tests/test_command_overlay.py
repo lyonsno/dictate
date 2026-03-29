@@ -7,10 +7,16 @@ All tests use mocked PyObjC — no GUI runtime required.
 
 import importlib
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
+def _make_rect(x, y, width, height):
+    return SimpleNamespace(
+        origin=SimpleNamespace(x=x, y=y),
+        size=SimpleNamespace(width=width, height=height),
+    )
 
 def _make_overlay(mock_pyobjc):
     """Create a CommandOverlay with mocked internals."""
@@ -60,6 +66,17 @@ def _make_overlay(mock_pyobjc):
     overlay._cancel_step = 0
     overlay._cancel_phase = ""
     return overlay, mod
+
+
+class _FakeLayoutManager:
+    def __init__(self, height):
+        self.height = height
+
+    def ensureLayoutForTextContainer_(self, container):
+        self._container = container
+
+    def usedRectForTextContainer_(self, container):
+        return _make_rect(0.0, 0.0, 0.0, self.height)
 
 
 class TestThinkingTimer:
@@ -274,7 +291,6 @@ class TestLingerDone:
         overlay.lingerDone_(None)
         assert overlay._visible is False
 
-
 class TestAdaptiveCompositing:
     """Test brightness-adaptive command overlay styling."""
 
@@ -325,3 +341,21 @@ class TestAdaptiveCompositing:
             assert max(light) < 0.17
         finally:
             sys.modules.pop("spoke.command_overlay", None)
+
+class TestGeometryCaps:
+    def test_update_layout_can_grow_assistant_overlay_near_notch(self, mock_pyobjc, monkeypatch):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(1000.0)
+        overlay._text_view.textContainer.return_value = object()
+        string_obj = MagicMock()
+        string_obj.length.return_value = 0
+        overlay._text_view.string.return_value = string_obj
+
+        overlay._update_layout()
+
+        frame = overlay._window.setFrame_display_animate_.call_args[0][0]
+        expected_height = 708.0
+        assert frame.size.height == pytest.approx(expected_height + 2 * mod._OUTER_FEATHER)
+        assert overlay._content_view.setFrame_.call_args[0][0].size.height == pytest.approx(expected_height)

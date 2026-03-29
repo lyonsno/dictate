@@ -4,6 +4,8 @@ import importlib
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 
 def _make_rect(x, y, width, height):
     return SimpleNamespace(
@@ -80,6 +82,8 @@ class _FakeTextView:
         self._frame = frame
         self._text = text
         self._text_container = _FakeTextContainer()
+        self._layout_manager = None
+        self.scrolled_range = None
 
     def setString_(self, text):
         self._text = text
@@ -95,6 +99,26 @@ class _FakeTextView:
 
     def textContainer(self):
         return self._text_container
+
+    def layoutManager(self):
+        return self._layout_manager
+
+    def set_layout_height(self, height):
+        self._layout_manager = _FakeLayoutManager(height)
+
+    def scrollRangeToVisible_(self, visible_range):
+        self.scrolled_range = visible_range
+
+
+class _FakeLayoutManager:
+    def __init__(self, height):
+        self.height = height
+
+    def ensureLayoutForTextContainer_(self, container):
+        self._container = container
+
+    def usedRectForTextContainer_(self, container):
+        return _make_rect(0.0, 0.0, 0.0, self.height)
 
 
 class _FakeLayer:
@@ -237,3 +261,80 @@ def test_show_resets_stale_overlay_chrome_height(mock_pyobjc, monkeypatch):
     assert overlay._inner_shadow.mask().frame().size.height == default_height + 2 * margin
     assert overlay._outer_glow_tight.frame().size.height == default_height
     assert overlay._outer_glow_wide.frame().size.height == default_height
+
+
+def test_show_positions_preview_much_closer_to_screen_bottom(mock_pyobjc, monkeypatch):
+    overlay_module = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay._window = _FakeWindow()
+    overlay._content_view = _FakeView(
+        _make_rect(40.0, 40.0, overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)
+    )
+    overlay._text_view = _FakeTextView(
+        _make_rect(0.0, 0.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        "stale",
+    )
+    overlay._scroll_view = _FakeScrollView(
+        _make_rect(12.0, 8.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        overlay._text_view,
+        y_offset=0.0,
+    )
+
+    overlay.show()
+
+    assert overlay._window.frame().origin.y == pytest.approx(18.5)
+
+
+def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, monkeypatch):
+    overlay_module = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay._window = _FakeWindow()
+    overlay._content_view = _FakeView(
+        _make_rect(40.0, 40.0, overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)
+    )
+    overlay._text_view = _FakeTextView(
+        _make_rect(0.0, 0.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        "live preview",
+    )
+    overlay._text_view.set_layout_height(1000.0)
+    overlay._scroll_view = _FakeScrollView(
+        _make_rect(12.0, 8.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        overlay._text_view,
+        y_offset=0.0,
+    )
+
+    f = overlay_module._OUTER_FEATHER
+    margin = overlay_module._INNER_GLOW_DEPTH + 50
+    overlay._inner_shadow = _FakeLayer(
+        _make_rect(
+            f - margin,
+            f - margin,
+            overlay_module._OVERLAY_WIDTH + 2 * margin,
+            overlay_module._OVERLAY_HEIGHT + 2 * margin,
+        )
+    )
+    inner_mask = _FakeLayer(
+        _make_rect(
+            0.0,
+            0.0,
+            overlay_module._OVERLAY_WIDTH + 2 * margin,
+            overlay_module._OVERLAY_HEIGHT + 2 * margin,
+        )
+    )
+    overlay._inner_shadow.setMask_(inner_mask)
+    overlay._outer_glow_tight = _FakeLayer(
+        _make_rect(f, f, overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)
+    )
+    overlay._outer_glow_wide = _FakeLayer(
+        _make_rect(f, f, overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)
+    )
+
+    overlay._update_layout()
+
+    expected_height = 241.5
+    assert overlay._content_view.frame().size.height == pytest.approx(expected_height)
+    assert overlay._window.frame().size.height == pytest.approx(expected_height + 2 * f)
