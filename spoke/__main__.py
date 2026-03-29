@@ -93,8 +93,6 @@ def _iter_local_command_model_ids(model_dir: Path) -> list[str]:
             if grandchild.is_dir():
                 model_ids.append(f"{child.name}/{grandchild.name}")
     return model_ids
-
-
 # Recording cap: let 16GB+ local boxes that can run v3 turbo record freely.
 # Keep the 20s cap only for smaller local machines. No cap in sidecar mode.
 _RAM_GB = _get_ram_gb()
