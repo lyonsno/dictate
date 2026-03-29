@@ -64,7 +64,7 @@ def _get_ram_gb() -> float:
 
 
 _MIN_RAM_GB_FOR_V3_TURBO = 16.0
-_MIN_RAM_GB_FOR_UNCAPPED_RECORDING = 32.0
+_MIN_RAM_GB_FOR_UNCAPPED_RECORDING = 16.0
 _LOW_RAM_RECORDING_CAP_SECS = 20.0
 
 
@@ -75,8 +75,8 @@ def _max_record_secs_for_ram(ram_gb: float) -> float | None:
     return None
 
 
-# Recording cap: keep smaller local boxes at 20s, but stop blanket-blocking
-# 16GB/32GB machines from trying v3 turbo. No cap in sidecar mode.
+# Recording cap: let 16GB+ local boxes that can run v3 turbo record freely.
+# Keep the 20s cap only for smaller local machines. No cap in sidecar mode.
 _RAM_GB = _get_ram_gb()
 _MAX_RECORD_SECS: float | None = _max_record_secs_for_ram(_RAM_GB)
 

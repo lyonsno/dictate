@@ -1434,10 +1434,10 @@ class TestEnvValidation:
 class TestRecordingCap:
     """Test the recording cap countdown and force_end trigger."""
 
-    def test_max_record_secs_uses_32gb_cutoff(self, main_module):
+    def test_max_record_secs_uses_16gb_cutoff(self, main_module):
         assert main_module._max_record_secs_for_ram(15.0) == 20.0
-        assert main_module._max_record_secs_for_ram(16.0) == 20.0
-        assert main_module._max_record_secs_for_ram(31.0) == 20.0
+        assert main_module._max_record_secs_for_ram(16.0) is None
+        assert main_module._max_record_secs_for_ram(31.0) is None
         assert main_module._max_record_secs_for_ram(32.0) is None
 
     def test_cap_fires_after_max_seconds(self, main_module, monkeypatch):
