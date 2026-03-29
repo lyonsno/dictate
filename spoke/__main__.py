@@ -580,6 +580,7 @@ class SpokeAppDelegate(NSObject):
                 if self._tray_stack:
                     logger.info("Shift+empty — recalling tray (stack has %d entries)", len(self._tray_stack))
                     self._tray_active = True
+                    self._detector.tray_active = True
                     self._tray_index = len(self._tray_stack) - 1
                     self._show_tray_current()
                     return
@@ -619,6 +620,7 @@ class SpokeAppDelegate(NSObject):
             if self._menubar is not None:
                 self._menubar.set_status_text("Transcribing…")
             self._tray_active = True
+            self._detector.tray_active = True
             thread = threading.Thread(
                 target=self._tray_transcribe_worker,
                 args=(wav_bytes, token),
@@ -854,6 +856,9 @@ class SpokeAppDelegate(NSObject):
         if not self._tray_stack:
             self._dismiss_tray()
             return
+        # Defensive bounds clamp
+        if self._tray_index >= len(self._tray_stack):
+            self._tray_index = len(self._tray_stack) - 1
         text = self._tray_stack[self._tray_index]
         # Reuse recovery overlay infrastructure for display
         self._recovery_text = text
@@ -954,7 +959,7 @@ class SpokeAppDelegate(NSObject):
 
     def _tray_send_current(self) -> None:
         """Send the current tray entry to the assistant and consume it."""
-        if not self._tray_stack:
+        if not self._tray_active or not self._tray_stack:
             return
         text = self._tray_stack[self._tray_index]
 

@@ -157,7 +157,10 @@ class SpacebarHoldDetector(NSObject):
         if self._state == _State.RECORDING:
             self._cancel_safety_timer()
             self._state = _State.IDLE
-            self._on_hold_end(shift_held=False)
+            self._on_hold_end(
+                shift_held=False,
+                enter_held=getattr(self, '_enter_held', False),
+            )
 
     def uninstall(self) -> None:
         """Disable and remove the event tap."""

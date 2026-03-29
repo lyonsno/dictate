@@ -295,7 +295,7 @@ class TestForceEnd:
 
         det.force_end()
         assert det._state == mod._State.IDLE
-        on_end.assert_called_once_with(shift_held=False)
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
 
     def test_force_end_while_idle_is_noop(self, input_tap_module):
         """force_end while IDLE should do nothing."""
