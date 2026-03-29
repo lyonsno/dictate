@@ -454,3 +454,178 @@ class TestShiftLateLatching:
         mod._event_tap_callback(None, Quartz.kCGEventFlagsChanged, event, None)
 
         assert det._shift_latched is False
+
+
+class TestTrayAwareness:
+    """Test input tap behavior when tray_active is set."""
+
+    def _make_detector(self, input_tap_module, hold_ms=400):
+        mod = input_tap_module
+        on_start = MagicMock()
+        on_end = MagicMock()
+        on_shift_tap = MagicMock()
+        on_enter_pressed = MagicMock()
+        det = mod.SpacebarHoldDetector.__new__(mod.SpacebarHoldDetector)
+        det._on_hold_start = on_start
+        det._on_hold_end = on_end
+        det._on_shift_tap = on_shift_tap
+        det._on_enter_pressed = on_enter_pressed
+        det._hold_s = hold_ms / 1000.0
+        det._state = mod._State.IDLE
+        det._hold_timer = None
+        det._safety_timer = None
+        det._forwarding = False
+        det._forwarding_timer = None
+        det._tap = None
+        det._tap_source = None
+        det._shift_latched = False
+        det._shift_at_press = False
+        det._enter_held = False
+        det.tray_active = False
+        det._tray_shift_down = False
+        det._tray_space_between = False
+        return det, on_start, on_end, on_shift_tap, on_enter_pressed
+
+    def test_tray_spacebar_tap_calls_hold_end_not_forward(self, input_tap_module):
+        """During tray, quick spacebar tap should call on_hold_end, not forward space."""
+        mod = input_tap_module
+        det, _, on_end, _, _ = self._make_detector(input_tap_module)
+        det.tray_active = True
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
+
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
+        assert det._forwarding is False
+
+    def test_non_tray_quick_release_still_forwards_space(self, input_tap_module):
+        """Regression: when NOT in tray, quick release should forward space."""
+        mod = input_tap_module
+        det, _, on_end, _, _ = self._make_detector(input_tap_module)
+        det.tray_active = False
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
+
+        on_end.assert_not_called()
+        assert det._forwarding is True
+
+    def test_enter_keydown_sets_enter_held(self, input_tap_module):
+        """Enter keyDown should set _enter_held flag."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, _, _, _ = self._make_detector(input_tap_module)
+        mod._active_detector = det
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        event = MagicMock()
+        mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+
+        assert det._enter_held is True
+
+    def test_enter_keyup_clears_enter_held(self, input_tap_module):
+        """Enter keyUp should clear _enter_held flag."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, _, _, _ = self._make_detector(input_tap_module)
+        det._enter_held = True
+        mod._active_detector = det
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        event = MagicMock()
+        mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+
+        assert det._enter_held is False
+
+    def test_enter_during_tray_fires_callback(self, input_tap_module):
+        """Enter pressed while tray is active should fire on_enter_pressed."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, _, _, on_enter = self._make_detector(input_tap_module)
+        det.tray_active = True
+        mod._active_detector = det
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        event = MagicMock()
+        mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+
+        on_enter.assert_called_once()
+
+    def test_enter_outside_tray_no_callback(self, input_tap_module):
+        """Enter pressed outside tray should not fire on_enter_pressed."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, _, _, on_enter = self._make_detector(input_tap_module)
+        det.tray_active = False
+        mod._active_detector = det
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        event = MagicMock()
+        mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+
+        on_enter.assert_not_called()
+        assert det._enter_held is True
+
+    def test_enter_held_passed_on_recording_release(self, input_tap_module):
+        """Enter held during recording should pass enter_held=True to on_hold_end."""
+        mod = input_tap_module
+        det, _, on_end, _, _ = self._make_detector(input_tap_module)
+        det._enter_held = True
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)
+        det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
+
+        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+
+    def test_shift_tap_during_tray_fires_callback(self, input_tap_module):
+        """Shift down then up (no spacebar) during tray should fire on_shift_tap."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, _, on_shift_tap, _ = self._make_detector(input_tap_module)
+        det.tray_active = True
+        mod._active_detector = det
+
+        Quartz.CGEventGetFlags.return_value = mod.kCGEventFlagMaskShift
+        Quartz.CGEventGetIntegerValueField.return_value = 0
+        event = MagicMock()
+        mod._event_tap_callback(None, Quartz.kCGEventFlagsChanged, event, None)
+
+        Quartz.CGEventGetFlags.return_value = 0
+        mod._event_tap_callback(None, Quartz.kCGEventFlagsChanged, event, None)
+
+        on_shift_tap.assert_called_once()
+
+    def test_shift_space_not_shift_tap(self, input_tap_module):
+        """Shift down, spacebar, shift up should NOT fire on_shift_tap."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, _, on_shift_tap, _ = self._make_detector(input_tap_module)
+        det.tray_active = True
+        mod._active_detector = det
+
+        Quartz.CGEventGetFlags.return_value = mod.kCGEventFlagMaskShift
+        Quartz.CGEventGetIntegerValueField.return_value = 0
+        event = MagicMock()
+        mod._event_tap_callback(None, Quartz.kCGEventFlagsChanged, event, None)
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
+        Quartz.CGEventGetFlags.return_value = mod.kCGEventFlagMaskShift
+        mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+
+        Quartz.CGEventGetFlags.return_value = 0
+        Quartz.CGEventGetIntegerValueField.return_value = 0
+        mod._event_tap_callback(None, Quartz.kCGEventFlagsChanged, event, None)
+
+        on_shift_tap.assert_not_called()
