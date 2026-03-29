@@ -179,6 +179,7 @@ class SpokeAppDelegate(NSObject):
         # Wire tray callbacks on the detector
         self._detector._on_shift_tap = self._on_tray_shift_tap
         self._detector._on_shift_tap_during_hold = self._on_tray_navigate_up
+        self._detector._on_shift_tap_idle = self._on_audio_shift_tap
         self._detector._on_enter_pressed = self._on_tray_enter_pressed
         self._detector._on_tray_delete = self._on_tray_delete_gesture
         self._menubar: MenuBarIcon | None = None
@@ -478,11 +479,6 @@ class SpokeAppDelegate(NSObject):
         # Note: if command overlay is visible but finished, leave it up.
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
-
-        # Cancel any in-flight TTS playback
-        tts = getattr(self, "_tts_client", None)
-        if tts is not None:
-            tts.cancel()
 
         # Tray intercept: shift+space from tray = navigation, plain space = record.
         self._verify_paste_text = None
@@ -1138,6 +1134,18 @@ class SpokeAppDelegate(NSObject):
         if self._tray_active:
             logger.info("Shift tap during tray — dismiss")
             self._dismiss_tray()
+
+    def _on_audio_shift_tap(self) -> None:
+        """Shift tap while idle toggles current TTS audibility."""
+        if self._tray_active:
+            return
+        tts = getattr(self, "_tts_client", None)
+        if tts is None:
+            return
+        audible = tts.toggle_audio()
+        logger.info("Idle shift tap — audio target now %s", "on" if audible else "off")
+        if self._menubar is not None:
+            self._menubar.set_status_text("Audio on" if audible else "Audio muted")
 
     def _on_tray_navigate_up(self) -> None:
         """Spacebar held + shift tapped during tray = navigate up (more recent)."""

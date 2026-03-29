@@ -477,6 +477,24 @@ class TestShiftLateLatching:
 
         assert det._shift_latched is False
 
+    def test_shift_tap_during_idle_fires_idle_callback(self, input_tap_module):
+        """Standalone shift tap while idle should trigger the idle shift callback."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, _ = self._make_detector(input_tap_module)
+        det._on_shift_tap_idle = MagicMock()
+        mod._active_detector = det
+
+        Quartz.CGEventGetFlags.return_value = mod.kCGEventFlagMaskShift
+        event = MagicMock()
+        mod._event_tap_callback(None, Quartz.kCGEventFlagsChanged, event, None)
+
+        Quartz.CGEventGetFlags.return_value = 0
+        mod._event_tap_callback(None, Quartz.kCGEventFlagsChanged, event, None)
+
+        det._on_shift_tap_idle.assert_called_once_with()
+
 
 class TestLatchedRecording:
     """Hands-free latched recording after shift tap during an active hold."""

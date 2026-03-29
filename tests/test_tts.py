@@ -214,6 +214,101 @@ class TestTTSClient:
 
     @patch("spoke.tts.sd")
     @patch("spoke.tts.tts_load")
+    def test_speak_generates_one_sentence_at_a_time(self, mock_load, mock_sd):
+        """Long text should be generated sentence-by-sentence instead of as one monolith."""
+        fake_model = MagicMock()
+        fake_model.generate.side_effect = lambda **kwargs: iter([_fake_result()])
+        mock_load.return_value = fake_model
+        _setup_stream_mock(mock_sd)
+
+        client = self._make_client()
+        client.speak("First sentence. Second sentence?")
+
+        texts = [call.kwargs["text"] for call in fake_model.generate.call_args_list]
+        assert texts == ["First sentence.", "Second sentence?"]
+
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_speak_starts_playback_before_later_sentence_generation_finishes(self, mock_load, mock_sd):
+        """Sentence batching should let playback start while a later sentence is still generating."""
+        second_started = threading.Event()
+        release_second = threading.Event()
+        playback_started = threading.Event()
+
+        fake_model = MagicMock()
+
+        def generate_side_effect(*, text, **kwargs):
+            if text == "Second sentence.":
+                second_started.set()
+                assert release_second.wait(timeout=5), "second sentence was never released"
+            return iter([_fake_result()])
+
+        fake_model.generate.side_effect = generate_side_effect
+        mock_load.return_value = fake_model
+
+        fake_stream = MagicMock()
+
+        def write_side_effect(data):
+            playback_started.set()
+            for call_args in mock_sd.OutputStream.call_args_list:
+                cb = call_args[1].get("finished_callback")
+                if cb:
+                    cb()
+
+        fake_stream.write = MagicMock(side_effect=write_side_effect)
+        mock_sd.OutputStream.return_value = fake_stream
+
+        client = self._make_client()
+        thread = client.speak_async("First sentence. Second sentence.")
+
+        assert second_started.wait(timeout=5), "second sentence generation never started"
+        assert playback_started.wait(timeout=5), "playback did not start while second sentence was blocked"
+
+        release_second.set()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+
+    def test_toggle_audio_uses_500ms_eased_fade(self):
+        """Audio toggle should fade toward the new target over 500ms instead of jumping."""
+        client = self._make_client()
+        client._playback_active = True
+
+        with patch("spoke.tts.time.monotonic", return_value=10.0):
+            assert client.toggle_audio() is False
+
+        with client._audio_fade_lock:
+            assert client._current_audio_gain_locked(10.0) == pytest.approx(1.0)
+            assert 0.0 < client._current_audio_gain_locked(10.25) < 1.0
+            assert client._current_audio_gain_locked(10.5) == pytest.approx(0.0)
+
+        with patch("spoke.tts.time.monotonic", return_value=12.0):
+            assert client.toggle_audio() is True
+
+        with client._audio_fade_lock:
+            assert client._current_audio_gain_locked(12.0) == pytest.approx(0.0)
+            assert 0.0 < client._current_audio_gain_locked(12.25) < 1.0
+            assert client._current_audio_gain_locked(12.5) == pytest.approx(1.0)
+
+    def test_toggle_audio_while_idle_updates_future_target(self):
+        """Idle toggles should update the target gain for later playback too."""
+        client = self._make_client()
+
+        with patch("spoke.tts.time.monotonic", return_value=3.0):
+            assert client.toggle_audio() is False
+
+        with client._audio_fade_lock:
+            assert client._audio_fade_start_gain == pytest.approx(1.0)
+            assert client._audio_fade_target_gain == pytest.approx(0.0)
+
+        with patch("spoke.tts.time.monotonic", return_value=4.0):
+            assert client.toggle_audio() is True
+
+        with client._audio_fade_lock:
+            assert client._audio_fade_start_gain == pytest.approx(0.0)
+            assert client._audio_fade_target_gain == pytest.approx(1.0)
+
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
     def test_speak_logs_playback_start_and_finish(self, mock_load, mock_sd, caplog):
         """speak() should log playback boundaries with enough context to debug silent output."""
         fake_model = MagicMock()
@@ -567,8 +662,8 @@ class TestCommandCompletionAutoplay:
 
         delegate._command_overlay.finish.assert_called_once()
 
-    def test_hold_start_cancels_tts(self, main_module):
-        """Starting a new hold cancels any in-flight TTS playback."""
+    def test_hold_start_does_not_cancel_tts(self, main_module):
+        """Starting a new hold should leave TTS running."""
         tts = MagicMock()
         delegate = self._make_delegate(main_module, tts_client=tts)
         delegate._models_ready = True
@@ -582,4 +677,16 @@ class TestCommandCompletionAutoplay:
 
         delegate._on_hold_start()
 
-        tts.cancel.assert_called_once()
+        tts.cancel.assert_not_called()
+
+    def test_idle_shift_tap_toggles_audio(self, main_module):
+        """Idle shift tap should route to the TTS audio toggle callback."""
+        tts = MagicMock()
+        tts.toggle_audio.return_value = False
+        delegate = self._make_delegate(main_module, tts_client=tts)
+        delegate._tray_active = False
+
+        delegate._on_audio_shift_tap()
+
+        tts.toggle_audio.assert_called_once_with()
+        delegate._menubar.set_status_text.assert_called_with("Audio muted")
