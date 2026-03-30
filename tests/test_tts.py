@@ -669,8 +669,8 @@ class TestCommandCompletionAutoplay:
 
         delegate._command_overlay.finish.assert_called_once()
 
-    def test_hold_start_does_not_cancel_tts(self, main_module):
-        """Starting a new hold should leave TTS running."""
+    def test_hold_start_cancels_tts(self, main_module):
+        """Starting a new hold should interrupt active TTS before reopening input."""
         tts = MagicMock()
         delegate = self._make_delegate(main_module, tts_client=tts)
         delegate._models_ready = True
@@ -684,7 +684,7 @@ class TestCommandCompletionAutoplay:
 
         delegate._on_hold_start()
 
-        tts.cancel.assert_not_called()
+        tts.cancel.assert_called_once_with()
 
     def test_idle_shift_tap_toggles_audio(self, main_module):
         """Idle shift tap should route to the TTS audio toggle callback."""
