@@ -1605,12 +1605,6 @@ class SpokeAppDelegate(NSObject):
 
         # Second check also failed
         self._verify_paste_text = None
-        if not is_retry and has_focused_text_input():
-            logger.warning(
-                "Paste not verified by OCR after %d attempts, but a text field is still focused — treating as likely OCR false negative",
-                attempt + 1,
-            )
-            return
         if is_retry:
             # Retry from recovery failed — bounce the overlay back
             logger.warning("Recovery retry not verified by OCR — bouncing back")
@@ -1618,7 +1612,10 @@ class SpokeAppDelegate(NSObject):
             self._enter_recovery_mode(text)
         else:
             # Normal paste failed — enter recovery for the first time
-            logger.warning("Paste not verified by OCR after %d attempts — entering recovery", attempt + 1)
+            logger.warning(
+                "Paste not verified by OCR after %d attempts — entering recovery",
+                attempt + 1,
+            )
             self._enter_recovery_mode(text)
 
     # ── helpers ─────────────────────────────────────────────

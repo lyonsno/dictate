@@ -100,10 +100,10 @@ class TestRecoveryFlowBranching:
 
         d._overlay.show_tray.assert_called_once()
 
-    def test_verify_result_skips_recovery_when_text_field_still_focused(
+    def test_verify_result_enters_recovery_when_text_field_still_focused(
         self, main_module, monkeypatch
     ):
-        """A second OCR miss should not force recovery if a text field is still focused."""
+        """A second OCR miss should still recover to tray even if focus remains."""
         d = _make_delegate(main_module, monkeypatch)
         d._verify_paste_text = "hello world"
         d._pre_paste_clipboard = [("public.utf8-plain-text", b"original")]
@@ -114,7 +114,7 @@ class TestRecoveryFlowBranching:
             d.verifyPasteResult_({"found": False, "text": "hello world", "attempt": 1})
 
         assert d._verify_paste_text is None
-        d._overlay.show_recovery.assert_not_called()
+        d._overlay.show_tray.assert_called_once()
 
     def test_verify_result_clears_state_on_success(self, main_module, monkeypatch):
         """verifyPasteResult_ should clear verify state when text is found."""
