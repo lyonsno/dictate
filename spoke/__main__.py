@@ -275,16 +275,76 @@ class SpokeAppDelegate(NSObject):
         """Background-thread mic probe — dispatches result to main thread."""
         import sounddevice as sd
         try:
-            sd.rec(1600, samplerate=16000, channels=1, dtype='float32', blocking=True)
+            self._run_mic_permission_probe(sd)
             logger.info("Microphone access granted")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "micPermissionGranted:", None, False
             )
-        except Exception as e:
-            logger.warning("Mic permission not yet granted: %s", e)
-            self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                "micPermissionDenied:", None, False
+        except Exception as exc:
+            if self._is_permission_probe_denial(exc):
+                logger.warning("Mic permission not yet granted: %s", exc)
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "micPermissionDenied:", None, False
+                )
+                return
+
+            logger.warning(
+                "Mic probe hit audio runtime failure — resetting PortAudio",
+                exc_info=True,
             )
+            self._reset_portaudio_probe(sd)
+
+            try:
+                self._run_mic_permission_probe(sd)
+                logger.info("Microphone access granted after PortAudio reset")
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "micPermissionGranted:", None, False
+                )
+            except Exception as retry_exc:
+                if self._is_permission_probe_denial(retry_exc):
+                    logger.warning("Mic permission not yet granted: %s", retry_exc)
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "micPermissionDenied:", None, False
+                    )
+                    return
+                logger.warning(
+                    "Mic probe failed after PortAudio reset",
+                    exc_info=True,
+                )
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "micProbeFailed:", None, False
+                )
+
+    def _run_mic_permission_probe(self, sd_module) -> None:
+        sd_module.rec(
+            1600,
+            samplerate=16000,
+            channels=1,
+            dtype='float32',
+            blocking=True,
+        )
+
+    def _reset_portaudio_probe(self, sd_module) -> None:
+        try:
+            sd_module._terminate()
+        except Exception:
+            logger.debug("Mic probe PortAudio terminate failed", exc_info=True)
+        try:
+            sd_module._initialize()
+        except Exception:
+            logger.debug("Mic probe PortAudio initialize failed", exc_info=True)
+
+    def _is_permission_probe_denial(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        permission_markers = (
+            "permission",
+            "not permitted",
+            "permission denied",
+            "access denied",
+            "access was denied",
+            "operation not permitted",
+        )
+        return any(marker in message for marker in permission_markers)
 
     def micPermissionGranted_(self, _sender) -> None:
         """Main-thread callback after mic probe succeeds."""
@@ -297,6 +357,16 @@ class SpokeAppDelegate(NSObject):
         self._mic_probe_in_flight = False
         if self._menubar is not None:
             self._menubar.set_status_text("Grant mic access, then wait…")
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            2.0, self, "retryMicPermission:", None, False
+        )
+
+    def micProbeFailed_(self, _sender) -> None:
+        """Main-thread callback after a non-permission mic probe failure."""
+        from Foundation import NSTimer
+        self._mic_probe_in_flight = False
+        if self._menubar is not None:
+            self._menubar.set_status_text("Mic unavailable — retrying…")
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             2.0, self, "retryMicPermission:", None, False
         )
