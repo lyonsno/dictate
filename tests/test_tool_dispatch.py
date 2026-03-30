@@ -126,6 +126,46 @@ class TestAccumulateToolCalls:
 
 
 class TestExecuteTool:
+    def _make_scene_cache(self):
+        sc_mod = importlib.import_module("spoke.scene_capture")
+        cache = sc_mod.SceneCaptureCache(max_captures=5)
+        capture = sc_mod.SceneCapture(
+            scene_ref="scene-test",
+            created_at=time.time(),
+            scope="active_window",
+            app_name="Safari",
+            bundle_id="com.apple.Safari",
+            window_title="Test Page",
+            image_path="/tmp/test.png",
+            image_size=(2560, 1440),
+            model_image_size=(1280, 720),
+            ocr_text="Hello World",
+            ocr_blocks=[
+                sc_mod.OCRBlock(
+                    ref="scene-test:block-0",
+                    text="Hello",
+                    bbox=(0, 0, 50, 20),
+                    confidence=0.99,
+                ),
+                sc_mod.OCRBlock(
+                    ref="scene-test:block-1",
+                    text="World",
+                    bbox=(60, 0, 50, 20),
+                    confidence=0.95,
+                ),
+            ],
+            ax_hints=[
+                sc_mod.AXHint(
+                    ref="scene-test:focus",
+                    role="AXTextField",
+                    label="Search",
+                    value="query text",
+                ),
+            ],
+        )
+        cache.store(capture)
+        return cache
+
     def test_execute_capture_context(self):
         """Test that execute_tool serializes a SceneCapture to the correct JSON shape."""
         mod = _import_tools()
@@ -215,6 +255,32 @@ class TestExecuteTool:
             arguments={"source_ref": "bogus_kind:value"},
         )
         assert "error" in result.lower()
+
+    def test_execute_read_aloud_bare_scene_block_ref(self):
+        """read_aloud should accept bare scene block refs from capture_context."""
+        mod = _import_tools()
+        cache = self._make_scene_cache()
+
+        result = mod.execute_tool(
+            name="read_aloud",
+            arguments={"source_ref": "scene-test:block-0"},
+            scene_cache=cache,
+        )
+
+        assert result == "Spoke: Hello"
+
+    def test_execute_read_aloud_bare_ax_hint_ref(self):
+        """read_aloud should accept bare AX hint refs from capture_context."""
+        mod = _import_tools()
+        cache = self._make_scene_cache()
+
+        result = mod.execute_tool(
+            name="read_aloud",
+            arguments={"source_ref": "scene-test:focus"},
+            scene_cache=cache,
+        )
+
+        assert result == "Spoke: query text"
 
     def test_execute_unknown_tool(self):
         mod = _import_tools()
