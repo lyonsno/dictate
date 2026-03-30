@@ -12,9 +12,9 @@ import importlib
 import logging
 import os
 import queue
-import re
 import threading
 import time
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 import numpy as np
@@ -44,6 +44,14 @@ _ABBREVIATION_SUFFIXES = (
     "u.s.",
     "u.k.",
 )
+
+
+@dataclass
+class _PlaybackResult:
+    """Materialized audio payload safe to pass across threads."""
+
+    audio: np.ndarray
+    sample_rate: int
 
 
 def _playback_device_summary() -> str:
@@ -364,7 +372,11 @@ class TTSClient:
                         ):
                             if self._cancelled:
                                 return
-                            if not _queue_put(result):
+                            materialized = _PlaybackResult(
+                                audio=np.asarray(result.audio, dtype=np.float32),
+                                sample_rate=result.sample_rate,
+                            )
+                            if not _queue_put(materialized):
                                 return
             except Exception as exc:
                 _queue_put(exc)

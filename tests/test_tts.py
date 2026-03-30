@@ -268,6 +268,41 @@ class TestTTSClient:
         thread.join(timeout=5)
         assert not thread.is_alive()
 
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_speak_materializes_first_sentence_audio_before_later_generation(self, mock_load, mock_sd):
+        """The first sentence audio must be materialized before later MLX generation starts."""
+        second_started = threading.Event()
+        first_audio_accessed = threading.Event()
+        first_audio_saw_second_started = []
+
+        class FirstSentenceResult:
+            sample_rate = 24000
+
+            @property
+            def audio(self):
+                first_audio_saw_second_started.append(second_started.is_set())
+                first_audio_accessed.set()
+                return [0.1, 0.2, 0.3]
+
+        fake_model = MagicMock()
+
+        def generate_side_effect(*, text, **kwargs):
+            if text == "First sentence.":
+                return iter([FirstSentenceResult()])
+            second_started.set()
+            first_audio_accessed.wait(timeout=0.2)
+            return iter([_fake_result()])
+
+        fake_model.generate.side_effect = generate_side_effect
+        mock_load.return_value = fake_model
+        _setup_stream_mock(mock_sd)
+
+        client = self._make_client()
+        client.speak("First sentence. Second sentence.")
+
+        assert first_audio_saw_second_started == [False]
+
     def test_toggle_audio_uses_500ms_eased_fade(self):
         """Audio toggle should fade toward the new target over 500ms instead of jumping."""
         client = self._make_client()
