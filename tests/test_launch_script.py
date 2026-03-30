@@ -123,6 +123,17 @@ def test_launch_script_logs_preflight_kill_diagnostics():
     assert "rm -f ~/Library/Logs/.spoke.lock" not in text
 
 
+def test_smoke_launch_script_logs_preflight_without_broad_kill():
+    """Smoke launch should hand off through the single-instance guard."""
+    text = _smoke_script_text()
+
+    assert "Launcher PID" in text
+    assert "Launcher preflight:" in text
+    assert "lock-holder pid" in text
+    assert 'pkill -TERM -f "python.*spoke"' not in text
+    assert "rm -f ~/Library/Logs/.spoke.lock" not in text
+
+
 def test_launch_script_avoids_nohup_detach():
     """The launcher should use the plain background-launch form that survived manual smoke."""
     text = _script_text()
