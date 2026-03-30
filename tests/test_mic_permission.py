@@ -84,10 +84,11 @@ class TestMicPermissionAsync:
             "micPermissionGranted:", None, False
         )
 
-    def test_mic_permission_failure_dispatches_denied_and_returns_promptly(
+    def test_mic_permission_denial_dispatches_denied_and_returns_promptly(
         self, main_module, monkeypatch
     ):
-        """When sd.rec raises, micPermissionDenied: should be dispatched to
+        """When sd.rec raises a permission-style error, micPermissionDenied:
+        should be dispatched to
         the main thread, and _request_mic_permission must return promptly."""
         delegate = _make_mic_delegate(main_module, monkeypatch)
 
@@ -95,7 +96,7 @@ class TestMicPermissionAsync:
 
         def blocking_rec(*args, **kwargs):
             rec_called.set()
-            raise RuntimeError("PortAudio error")
+            raise RuntimeError("Permission denied by system")
 
         with patch.dict("sys.modules", {"sounddevice": MagicMock()}):
             import sys
@@ -114,6 +115,63 @@ class TestMicPermissionAsync:
         )
         delegate.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_with(
             "micPermissionDenied:", None, False
+        )
+
+    def test_portaudio_runtime_failure_resets_and_dispatches_probe_failed(
+        self, main_module, monkeypatch
+    ):
+        """A hardware/runtime failure should not be reported as permission denial."""
+        delegate = _make_mic_delegate(main_module, monkeypatch)
+
+        rec_calls = 0
+        rec_called = threading.Event()
+        fake_sd = MagicMock()
+
+        def failing_rec(*args, **kwargs):
+            nonlocal rec_calls
+            rec_calls += 1
+            rec_called.set()
+            raise RuntimeError("Internal PortAudio error [PaErrorCode -9986]")
+
+        fake_sd.rec.side_effect = failing_rec
+
+        with patch.dict("sys.modules", {"sounddevice": fake_sd}):
+            delegate._request_mic_permission()
+            rec_called.wait(timeout=2.0)
+            time.sleep(0.05)
+
+        assert rec_calls == 2, "runtime failure should get one reset-backed retry"
+        fake_sd._terminate.assert_called_once()
+        fake_sd._initialize.assert_called_once()
+        delegate.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_with(
+            "micProbeFailed:", None, False
+        )
+
+    def test_portaudio_runtime_failure_can_recover_after_reset(
+        self, main_module, monkeypatch
+    ):
+        """A transient PortAudio failure should succeed after reset without
+        bouncing through the permission-denied path."""
+        delegate = _make_mic_delegate(main_module, monkeypatch)
+
+        calls = []
+        fake_sd = MagicMock()
+
+        def flaky_rec(*args, **kwargs):
+            calls.append("rec")
+            if len(calls) == 1:
+                raise RuntimeError("Internal PortAudio error [PaErrorCode -9986]")
+
+        fake_sd.rec.side_effect = flaky_rec
+
+        with patch.dict("sys.modules", {"sounddevice": fake_sd}):
+            delegate._request_mic_permission()
+            time.sleep(0.1)
+
+        fake_sd._terminate.assert_called_once()
+        fake_sd._initialize.assert_called_once()
+        delegate.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_with(
+            "micPermissionGranted:", None, False
         )
 
     def test_retry_mic_permission_does_not_block_main_thread(
@@ -251,13 +309,35 @@ class TestSigtermMenuBarCleanup:
                                             signal_mod.SIGTERM, None
                                         )
 
-                        mock_logger.info.assert_any_call(
-                            "Received SIGTERM — cleaning up (pid=%d ppid=%d cwd=%s lock_pid=%s)",
-                            4242,
-                            2121,
-                            "/tmp/spoke",
-                            "4242",
-                        )
+        mock_logger.info.assert_any_call(
+            "Received SIGTERM — cleaning up (pid=%d ppid=%d cwd=%s lock_pid=%s)",
+            4242,
+            2121,
+            "/tmp/spoke",
+            "4242",
+        )
+
+
+class TestMicProbeCallbacks:
+    """Main-thread mic probe callbacks should present the right status."""
+
+    def test_mic_probe_failed_updates_status_and_retries(self, main_module, monkeypatch):
+        delegate = _make_mic_delegate(main_module, monkeypatch)
+
+        scheduled = []
+        fake_nstimer = types.SimpleNamespace(
+            scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_=lambda interval, target, selector, userinfo, repeats: scheduled.append(
+                (interval, selector, repeats)
+            )
+        )
+        fake_foundation = types.SimpleNamespace(NSTimer=fake_nstimer)
+
+        with patch.dict("sys.modules", {"Foundation": fake_foundation}):
+            delegate.micProbeFailed_(None)
+
+        assert delegate._mic_probe_in_flight is False
+        delegate._menubar.set_status_text.assert_called_with("Mic unavailable — retrying…")
+        assert scheduled == [(2.0, "retryMicPermission:", False)]
 
 
 class TestSingleInstanceGuardDiagnostics:
