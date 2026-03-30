@@ -476,6 +476,10 @@ class SpokeAppDelegate(NSObject):
             self._transcription_token += 1
             self._transcribing = False
             # Fall through to start recording
+        tts = getattr(self, "_tts_client", None)
+        if tts is not None:
+            # User speech should interrupt assistant speech before we reopen input.
+            tts.cancel()
         # Note: if command overlay is visible but finished, leave it up.
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
