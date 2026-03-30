@@ -50,3 +50,17 @@ Before launching that branch:
 - relaunch from the target worktree's launcher script
 
 Do not silently fall back to the stable Automator or `main` launcher when the user explicitly asked for the branch variant.
+
+## Human-controlled launch surfaces
+
+Do not kill, relaunch, or otherwise replace a live Spoke app instance unless
+the user explicitly asks for that launch action in the current thread.
+
+When preparing a branch for human smoke:
+- coordinate the destination hotkey or target file first
+- update the agreed target surface without launching it unless the user asked
+- tell the user which hotkey now points at which worktree/branch and that it is ready
+
+If a surface switch would interrupt another likely live smoke session and the
+user has not explicitly requested the switch right now, stop after preparing
+the branch and wait for the user to launch it themselves.
