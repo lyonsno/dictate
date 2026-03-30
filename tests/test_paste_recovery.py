@@ -52,39 +52,55 @@ class TestRecoveryFlowBranching:
     """_inject_result_text should branch on has_focused_text_input."""
 
     def test_normal_paste_when_text_field_focused(self, main_module, monkeypatch):
-        """When a text field is focused, use normal inject_text path."""
+        """When a text field is focused, stage the normal inject after order_out."""
+        Foundation = __import__("Foundation")
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
         d = _make_delegate(main_module, monkeypatch)
 
         with patch("spoke.__main__.has_focused_text_input", return_value=True), \
              patch("spoke.__main__.inject_text") as mock_inject:
             d._inject_result_text("hello world", "Pasted!")
 
-        mock_inject.assert_called_once()
+        mock_inject.assert_not_called()
+        assert d._result_pending_inject == ("hello world", "Pasted!")
+        call_args = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
+        assert call_args[0][0] == 0.05
+        assert call_args[0][2] == "resultInjectDelayed:"
         # Overlay should be ordered out before the focus check
         d._overlay.order_out.assert_called()
 
     def test_always_attempts_paste(self, main_module, monkeypatch):
-        """_inject_result_text should always attempt paste, regardless of focus."""
+        """Normal paste should wait briefly for focus to settle after order_out."""
+        Foundation = __import__("Foundation")
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
         d = _make_delegate(main_module, monkeypatch)
 
         with patch("spoke.__main__.inject_text") as mock_inject, \
              patch("spoke.__main__.save_pasteboard", return_value=None):
             d._inject_result_text("hello world", "Pasted!")
 
-        # Should always attempt paste
-        mock_inject.assert_called_once()
+        mock_inject.assert_not_called()
+        assert d._result_pending_inject == ("hello world", "Pasted!")
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called_once()
+        call_args = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
+        assert call_args[0][0] == 0.05
+        assert call_args[0][2] == "resultInjectDelayed:"
 
     def test_schedules_ocr_verification(self, main_module, monkeypatch):
-        """After paste, should schedule OCR verification timer."""
+        """Delayed normal paste should inject and then schedule OCR verification."""
         Foundation = __import__("Foundation")
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
         d = _make_delegate(main_module, monkeypatch)
+        d._result_pending_inject = ("hello world", "Pasted!")
 
-        with patch("spoke.__main__.inject_text"), \
-             patch("spoke.__main__.save_pasteboard", return_value=None):
-            d._inject_result_text("hello world", "Pasted!")
+        with patch("spoke.__main__.inject_text") as mock_inject:
+            d.resultInjectDelayed_(None)
 
-        # Verification timer should be scheduled
+        mock_inject.assert_called_once()
         Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called()
+        call_args = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
+        assert call_args[0][0] == 0.15
+        assert call_args[0][2] == "verifyPaste:"
         assert d._verify_paste_text == "hello world"
 
     def test_verify_result_enters_recovery_on_failure(self, main_module, monkeypatch):
