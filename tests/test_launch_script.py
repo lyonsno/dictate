@@ -117,7 +117,14 @@ def test_main_launch_script_supports_configured_main_target():
 
     assert 'MAIN_TARGET_FILE="${HOME}/.config/spoke/main-target"' in text
     assert 'TARGET_SOURCE="~/.config/spoke/main-target"' in text
+    assert 'if [ -f "$REPO_ROOT/.spoke-smoke-env" ]; then' in text
     assert 'Launching Spoke main from %s (%s)' in text
+
+
+def test_launch_scripts_support_interpreter_override():
+    """Pinned main/dev surfaces should be able to choose a known-good Python runtime."""
+    assert 'export VENV_PYTHON="${SPOKE_VENV_PYTHON:-$REPO_ROOT/.venv/bin/python}"' in _script_text()
+    assert 'export VENV_PYTHON="${SPOKE_VENV_PYTHON:-$REPO_ROOT/.venv/bin/python}"' in _main_script_text()
 
 
 def test_launch_scripts_preserve_spaces_in_target_paths():
@@ -357,6 +364,50 @@ def test_smoke_inline_launcher_skips_broken_pyenv_shim(tmp_path):
     assert "fallback-uv-started\n" in log_file.read_text()
 
 
+def test_smoke_inline_launcher_falls_back_to_path_uv_for_tts_runtime(tmp_path):
+    """If UV_BIN points nowhere but uv is on PATH, smoke launch should still
+    use the uv TTS runtime instead of falling back to repo python."""
+    repo_root = tmp_path / "repo"
+
+    python_exe = repo_root / ".venv" / "bin" / "python"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("#!/bin/sh\nprintf 'venv-python-started\\n'\n")
+    python_exe.chmod(0o755)
+
+    uv_dir = tmp_path / "bin"
+    uv_dir.mkdir()
+    uv_bin = uv_dir / "uv"
+    uv_bin.write_text("#!/bin/sh\nprintf 'uv-tts-started\\n'\n")
+    uv_bin.chmod(0o755)
+
+    log_file = tmp_path / "launch.log"
+    result = _run_smoke_inline_launcher(
+        repo_root,
+        log_file,
+        extra_env={
+            "SPOKE_TTS_VOICE": "casual_female",
+            "UV_BIN": str(tmp_path / "missing-uv"),
+            "PATH": f"{uv_dir}:{os.environ.get('PATH', '')}",
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected detached child output to reach smoke launch log")
+
+    log_text = log_file.read_text()
+    assert "uv-tts-started\n" in log_text
+    assert "venv-python-started\n" not in log_text
+    assert "--extra" in log_text
+    assert "tts" in log_text
+
+
 def test_launch_script_prefers_configured_dev_target(tmp_path):
     """A configured dev target should override the checkout that contains the script."""
     target_repo = tmp_path / "target-repo"
@@ -515,3 +566,47 @@ def test_main_launch_script_preserves_spaces_in_configured_main_target(tmp_path)
 
     log_text = log_file.read_text()
     assert f"Launching Spoke main from {target_repo} (~/.config/spoke/main-target)" in log_text
+
+
+def test_main_launch_script_honors_target_python_override(tmp_path):
+    """Pinned main should allow the target worktree to override the Python runtime."""
+    target_repo = tmp_path / "target-repo"
+    target_repo.mkdir()
+
+    override_python = tmp_path / "known-good-python"
+    override_python.write_text("#!/bin/sh\nprintf 'main-override-started\\n'\n")
+    override_python.chmod(0o755)
+
+    (target_repo / ".spoke-smoke-env").write_text(
+        f'export SPOKE_VENV_PYTHON="{override_python}"\n'
+    )
+
+    home = tmp_path / "home"
+    config_dir = home / ".config" / "spoke"
+    config_dir.mkdir(parents=True)
+    (config_dir / "main-target").write_text(str(target_repo))
+
+    log_dir = home / "Library" / "Logs"
+    log_dir.mkdir(parents=True)
+    log_file = log_dir / "spoke-main-launch.log"
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "launch-main.sh"
+    result = subprocess.run(
+        [str(script)],
+        env={**os.environ, "HOME": str(home)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "main-override-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected overridden main launch output to reach launch log")
+
+    assert "main-override-started\n" in log_file.read_text()
