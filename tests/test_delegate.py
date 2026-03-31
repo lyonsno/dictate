@@ -141,6 +141,8 @@ class TestTranscriptionToken:
 
         with patch.object(main_module, "inject_text") as mock_inject:
             d.transcriptionComplete_({"token": 5, "text": "hello world"})
+            # Fire the deferred inject timer callback
+            d.resultInjectDelayed_(None)
 
         mock_inject.assert_called_once()
         assert mock_inject.call_args[0][0] == "hello world"
@@ -262,6 +264,8 @@ class TestPreviewFinalizationContract:
 
         with patch.object(main_module, "inject_text") as mock_inject:
             d.transcriptionFailed_({"token": 7})
+            # Fire the deferred inject timer callback
+            d.resultInjectDelayed_(None)
 
         mock_inject.assert_called_once()
         assert mock_inject.call_args[0][0] == "usable preview text"
