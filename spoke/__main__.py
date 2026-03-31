@@ -1604,6 +1604,7 @@ class SpokeAppDelegate(NSObject):
                     if token != self._transcription_token:
                         break  # stale
                     if event.kind == "assistant_delta":
+                        full_response += event.text
                         self.performSelectorOnMainThread_withObject_waitUntilDone_(
                             "commandToken:",
                             {"token": token, "text": event.text},
