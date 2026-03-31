@@ -397,7 +397,9 @@ class TTSClient:
                         if self._cancelled:
                             logger.info("TTS speak: cancelled during playback (after %d chunks)", chunk_count)
                             return
+                        logger.info("TTS speak: acquiring GPU lock for chunk %d", chunk_count + 1)
                         with lock_ctx:
+                            logger.info("TTS speak: GPU lock acquired, calling next(results)")
                             try:
                                 result = next(results)
                             except StopIteration:
