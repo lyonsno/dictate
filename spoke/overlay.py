@@ -466,17 +466,21 @@ class TranscriptionOverlay(NSObject):
                     _dump_view(sv, indent + 1)
         try:
             _dump_view(wrapper)
-            # Check scroll view internals
-            clip = self._scroll_view.contentView() if self._scroll_view else None
-            if clip:
-                draws_bg = clip.drawsBackground() if hasattr(clip, 'drawsBackground') else '?'
-                clip_layer = clip.layer() if hasattr(clip, 'layer') else None
-                clip_bg = clip_layer.backgroundColor() if clip_layer else None
-                logger.info(
-                    "ClipView: drawsBackground=%s hasBG=%s frame=%s",
-                    draws_bg, clip_bg is not None,
-                    clip.frame() if hasattr(clip, 'frame') else '?',
-                )
+            # Dump ALL sublayers of the wrapper layer (includes programmatic CALayers)
+            sublayers = wrapper.layer().sublayers()
+            if sublayers:
+                for i, sl in enumerate(sublayers):
+                    f2 = sl.frame()
+                    bg2 = sl.backgroundColor()
+                    contents = sl.contents()
+                    mask = sl.mask()
+                    opacity = sl.opacity()
+                    logger.info(
+                        "  wrapper sublayer[%d] %s: frame=(%d,%d,%d,%d) opacity=%.2f hasBG=%s hasContents=%s hasMask=%s",
+                        i, type(sl).__name__,
+                        f2.origin.x, f2.origin.y, f2.size.width, f2.size.height,
+                        opacity, bg2 is not None, contents is not None, mask is not None,
+                    )
         except Exception:
             logger.exception("View dump failed")
         logger.info("Transcription overlay created")
