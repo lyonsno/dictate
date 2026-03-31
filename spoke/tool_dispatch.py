@@ -123,11 +123,13 @@ _READ_FILE_SCHEMA = {
     "type": "function",
     "function": {
         "name": "read_file",
-        "description": "Read the contents of a file.",
+        "description": "Read the contents of a file. For large files, it returns an outline of functions/classes instead, requiring you to make a follow-up call with start_line and end_line to read specific sections.",
         "parameters": {
             "type": "object",
             "properties": {
-                "file_path": {"type": "string", "description": "Absolute or relative file path"}
+                "file_path": {"type": "string", "description": "Absolute or relative file path"},
+                "start_line": {"type": "integer", "description": "Optional 1-based line number to start reading from"},
+                "end_line": {"type": "integer", "description": "Optional 1-based line number to end reading at (inclusive)"}
             },
             "required": ["file_path"]
         }
@@ -286,6 +288,16 @@ def _execute_add_to_tray(
 
 
 
+
+
+
+
+
+
+
+
+
+
 def _execute_list_directory(arguments: dict) -> dict[str, Any]:
     import os
     dir_path = arguments.get("dir_path", ".")
@@ -293,28 +305,79 @@ def _execute_list_directory(arguments: dict) -> dict[str, Any]:
         if not os.path.isdir(dir_path):
             return {"error": f"Not a valid directory: {dir_path}"}
         contents = os.listdir(dir_path)
+        if len(contents) > 1000:
+            contents = contents[:1000] + ["... (truncated, over 1000 items)"]
         return {"dir_path": dir_path, "contents": contents}
     except Exception as e:
         return {"error": str(e)}
 
 def _execute_read_file(arguments: dict) -> dict[str, Any]:
     import os
+    import ast
+    import re
+    
     file_path = arguments.get("file_path", "")
+    start_line = arguments.get("start_line")
+    end_line = arguments.get("end_line")
+    
     try:
         if not os.path.isfile(file_path):
             return {"error": f"File not found: {file_path}"}
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        return {"file_path": file_path, "content": content}
+            
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+            
+        total_lines = len(lines)
+        
+        # If line ranges are specified, return that slice
+        if start_line is not None or end_line is not None:
+            start = max(0, (start_line or 1) - 1)
+            end = min(total_lines, (end_line or total_lines))
+            return {
+                "file_path": file_path, 
+                "lines_returned": f"{start + 1}-{end} of {total_lines}",
+                "content": "".join(lines[start:end])
+            }
+            
+        # Large file threshold check
+        max_lines_threshold = int(os.environ.get("SPOKE_MAX_FILE_LINES", "2000"))
+        
+        if total_lines > max_lines_threshold:
+            # Generate outline
+            outline = []
+            if file_path.endswith(".py"):
+                try:
+                    tree = ast.parse("".join(lines))
+                    for node in tree.body:
+                        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                            outline.append(f"Line {node.lineno}: {node.__class__.__name__.replace('Def', '')} {node.name}")
+                except Exception:
+                    pass
+            else:
+                # Basic regex fallback for JS/TS/Go/etc
+                for i, line in enumerate(lines):
+                    if re.match(r'^(export )?(default )?(class|function|const|let|var) [a-zA-Z0-9_]+', line.lstrip()):
+                        outline.append(f"Line {i+1}: {line.strip()}")
+            
+            return {
+                "file_path": file_path,
+                "error": f"File is too large ({total_lines} lines). Please use start_line and end_line.",
+                "outline": outline if outline else "No clear outline extracted."
+            }
+            
+        # Small file, return whole thing
+        return {"file_path": file_path, "content": "".join(lines)}
     except Exception as e:
         return {"error": str(e)}
 
 def _execute_write_file(arguments: dict) -> dict[str, Any]:
+    import os
     file_path = arguments.get("file_path", "")
     content = arguments.get("content", "")
     if not file_path:
         return {"error": "file_path is required"}
     try:
+        os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
         return {"status": "success", "file_path": file_path}
@@ -328,12 +391,18 @@ def _execute_search_file(arguments: dict) -> dict[str, Any]:
     if not pattern:
         return {"error": "pattern is required"}
     try:
-        # Simple grep via subprocess
-        result = subprocess.run(["grep", "-rn", pattern, dir_path], capture_output=True, text=True)
+        # Simple grep via subprocess with timeout and safe flags
+        result = subprocess.run(
+            ["grep", "-rnm", "100", "--", pattern, dir_path], 
+            capture_output=True, 
+            text=True, 
+            timeout=10
+        )
         return {"matches": result.stdout, "dir_path": dir_path, "pattern": pattern}
+    except subprocess.TimeoutExpired:
+        return {"error": "Search timed out after 10 seconds"}
     except Exception as e:
         return {"error": str(e)}
-
 
 def execute_tool(
     name: str,

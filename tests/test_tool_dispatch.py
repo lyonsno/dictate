@@ -459,3 +459,45 @@ class TestCommandClientToolIntegration:
             ))
 
         assert tokens == ["Hello", " there"]
+
+
+
+class TestExecuteToolIntegration:
+    def test_execute_list_directory_real(self, tmp_path):
+        mod = _import_tools()
+        d = tmp_path / "mydir"
+        d.mkdir()
+        (d / "file.txt").write_text("hello")
+        
+        result = mod.execute_tool("list_directory", {"dir_path": str(d)})
+        parsed = json.loads(result)
+        assert "file.txt" in parsed.get("contents", [])
+
+    def test_execute_read_file_real(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "hello.txt"
+        f.write_text("world", encoding="utf-8")
+        
+        result = mod.execute_tool("read_file", {"file_path": str(f)})
+        parsed = json.loads(result)
+        assert parsed.get("content") == "world"
+
+    def test_execute_write_file_real(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "nested" / "new.txt"
+        
+        result = mod.execute_tool("write_file", {"file_path": str(f), "content": "hello there"})
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert f.read_text(encoding="utf-8") == "hello there"
+
+    def test_execute_search_file_real(self, tmp_path):
+        mod = _import_tools()
+        d = tmp_path / "src"
+        d.mkdir()
+        (d / "code.py").write_text("def find_me(): pass")
+        
+        result = mod.execute_tool("search_file", {"pattern": "find_me", "dir_path": str(d)})
+        parsed = json.loads(result)
+        assert "find_me" in parsed.get("matches", "")
+
