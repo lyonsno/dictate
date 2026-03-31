@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import colorsys
 import logging
+import math
 import os
 
 import objc
@@ -153,6 +154,63 @@ def _max_overlay_height(screen_height: float) -> float:
     return max(_OVERLAY_HEIGHT, capped_height)
 
 
+# ── distance-field ridge ────────────────────────────────────
+
+# Ridge shape: exponential peak at the bubble boundary that reads as a
+# glowing edge rather than a stroked outline.  Interior fill preserved,
+# intensity rising toward the boundary, peaking there, then falling off
+# outside.
+
+_RIDGE_FALLOFF = 8.0      # px — half-width of the exponential peak
+_RIDGE_POWER = 5.0        # exponent — higher = sharper ridge
+_RIDGE_BLOOM_FALLOFF = 18.0
+_RIDGE_BLOOM_POWER = 2.5
+
+# Crossover opacity bump — Gaussian centered at brightness 0.5
+_CROSSOVER_CENTER = 0.5
+_CROSSOVER_WIDTH = 0.15
+_CROSSOVER_AMPLITUDE = 0.25
+
+# Light-mode fill
+_BG_ALPHA_LIGHT_BASE = 0.85
+_BG_ALPHA_LIGHT_AMP = 0.10
+
+
+def _overlay_rounded_rect_sdf(width: float, height: float, corner_radius: float, scale: float):
+    """Signed distance field for a rounded rectangle at the overlay's pixel dimensions."""
+    import numpy as np
+
+    pw, ph = int(width * scale), int(height * scale)
+    x = np.arange(pw, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(ph, dtype=np.float32)[:, None] + 0.5
+    cx = x - pw * 0.5
+    cy = y - ph * 0.5
+    r = corner_radius * scale
+    qx = np.abs(cx) - (pw * 0.5 - r)
+    qy = np.abs(cy) - (ph * 0.5 - r)
+    outside = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0))
+    inside = np.minimum(np.maximum(qx, qy), 0.0)
+    return (outside + inside - r).astype(np.float32)
+
+
+def _ridge_alpha(signed_distance, falloff: float, power: float):
+    """Exponential ridge: peaks at boundary (d=0), falls off symmetrically."""
+    import numpy as np
+
+    d = np.abs(signed_distance)
+    return np.exp(-np.power(d / max(falloff, 1e-6), power, dtype=np.float32))
+
+
+def _build_ridge_image(width: float, height: float, corner_radius: float,
+                       scale: float, falloff: float, power: float):
+    """Build a CGImage mask for the ridge effect at the given overlay size."""
+    from .glow import _alpha_field_to_image
+
+    sdf = _overlay_rounded_rect_sdf(width, height, corner_radius, scale)
+    alpha = _ridge_alpha(sdf, falloff * scale, power)
+    return _alpha_field_to_image(alpha)
+
+
 def _window_origin_y(visible_height: float) -> float:
     base_y = _OVERLAY_BOTTOM_MARGIN - _OUTER_FEATHER
     if _EXPAND_UPWARD:
@@ -249,88 +307,42 @@ class TranscriptionOverlay(NSObject):
             NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, _BG_ALPHA_MIN).CGColor()
         )
 
-        # Glow color setup
-        inner_rgb, middle_rgb, outer_rgb = _overlay_layer_colors(_GLOW_COLOR)
-        inner_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            inner_rgb[0], inner_rgb[1], inner_rgb[2], 1.0
-        )
-        middle_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            middle_rgb[0], middle_rgb[1], middle_rgb[2], 1.0
-        )
-        outer_glow = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            outer_rgb[0], outer_rgb[1], outer_rgb[2], 1.0
-        )
-        clear_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(0, 0, 0, 0)
-
-        # Inner glow — inward shadow via even-odd cutout on wrapper
-        # Paths are in the layer's local coordinate space (origin 0,0).
-        # The layer is sized to w+2*margin, h+2*margin and positioned so
-        # the "hole" aligns with the content view.
+        # Distance-field ridge layers — replace the old inner shadow + outer
+        # glow CA-shadow approach with SDF-driven exponential ridges that peak
+        # at the bubble boundary and fall off both inward and outward.
         w, h = _OVERLAY_WIDTH, _OVERLAY_HEIGHT
-        margin = _INNER_GLOW_DEPTH + 50
-        from Quartz import CGPathCreateMutableCopy, CGPathAddPath, kCAFillRuleEvenOdd as kEO
+        _, middle_rgb, _ = _overlay_layer_colors(_GLOW_COLOR)
 
-        lw, lh = w + 2 * margin, h + 2 * margin  # layer size
+        # Determine backing scale for SDF resolution
+        self._ridge_scale = self._screen.backingScaleFactor() if hasattr(self._screen, 'backingScaleFactor') else 2.0
 
-        self._inner_shadow = CAShapeLayer.alloc().init()
-        self._inner_shadow.setFrame_(((f - margin, f - margin), (lw, lh)))
-
-        # All paths in layer-local coords: (0,0) is top-left of the layer
-        outer = CGPathCreateWithRoundedRect(
-            ((0, 0), (lw, lh)), 0, 0, None
+        # Ridge layer — sharp exponential peak at the boundary
+        self._ridge_layer = CALayer.alloc().init()
+        self._ridge_layer.setFrame_(((0, 0), (win_w, win_h)))
+        self._ridge_layer.setBackgroundColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                middle_rgb[0], middle_rgb[1], middle_rgb[2], 1.0
+            ).CGColor()
         )
-        inner = CGPathCreateWithRoundedRect(
-            ((margin, margin), (w, h)),
-            _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None
+        self._ridge_layer.setOpacity_(0.0)
+        self._ridge_layer.setContentsScale_(self._ridge_scale)
+
+        # Bloom layer — wider, softer falloff for ambient halo
+        self._ridge_bloom_layer = CALayer.alloc().init()
+        self._ridge_bloom_layer.setFrame_(((0, 0), (win_w, win_h)))
+        self._ridge_bloom_layer.setBackgroundColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                middle_rgb[0], middle_rgb[1], middle_rgb[2], 1.0
+            ).CGColor()
         )
-        combined = CGPathCreateMutableCopy(outer)
-        CGPathAddPath(combined, None, inner)
+        self._ridge_bloom_layer.setOpacity_(0.0)
+        self._ridge_bloom_layer.setContentsScale_(self._ridge_scale)
 
-        self._inner_shadow.setPath_(combined)
-        self._inner_shadow.setFillRule_(kEO)
-        self._inner_shadow.setFillColor_(inner_glow.colorWithAlphaComponent_(0.15).CGColor())
-        self._inner_shadow.setShadowColor_(inner_glow.CGColor())
-        self._inner_shadow.setShadowOffset_((0, 0))
-        self._inner_shadow.setShadowRadius_(2.4)  # very tight — sharp exponential feel
-        self._inner_shadow.setShadowOpacity_(1.0)
+        # Build initial SDF masks
+        self._apply_ridge_masks(w, h)
 
-        # Mask: only show inside the overlay's rounded rect
-        inner_mask = CAShapeLayer.alloc().init()
-        inner_mask.setFrame_(((0, 0), (lw, lh)))
-        inner_mask.setPath_(CGPathCreateWithRoundedRect(
-            ((margin, margin), (w, h)),
-            _OVERLAY_CORNER_RADIUS, _OVERLAY_CORNER_RADIUS, None
-        ))
-        self._inner_shadow.setMask_(inner_mask)
-
-        wrapper.layer().addSublayer_(self._inner_shadow)
-
-        # Outer feather — two stacked shadows for a dramatic smeared glow
-        # Layer 1: tight, bright — defines the edge
-        self._outer_glow_tight = CALayer.alloc().init()
-        self._outer_glow_tight.setFrame_(((f, f), (w, h)))
-        self._outer_glow_tight.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
-        self._outer_glow_tight.setBackgroundColor_(
-            middle_glow.colorWithAlphaComponent_(0.01).CGColor()
-        )
-        self._outer_glow_tight.setShadowColor_(middle_glow.CGColor())
-        self._outer_glow_tight.setShadowOffset_((0, 0))
-        self._outer_glow_tight.setShadowRadius_(6.2)
-        self._outer_glow_tight.setShadowOpacity_(0.3)
-        wrapper.layer().insertSublayer_below_(self._outer_glow_tight, content.layer())
-
-        # Layer 2: wide, diffuse — the smear
-        self._outer_glow_wide = CALayer.alloc().init()
-        self._outer_glow_wide.setFrame_(((f, f), (w, h)))
-        self._outer_glow_wide.setCornerRadius_(_OVERLAY_CORNER_RADIUS)
-        self._outer_glow_wide.setBackgroundColor_(
-            outer_glow.colorWithAlphaComponent_(0.01).CGColor()
-        )
-        self._outer_glow_wide.setShadowColor_(outer_glow.CGColor())
-        self._outer_glow_wide.setShadowOffset_((0, 0))
-        self._outer_glow_wide.setShadowRadius_(14.0)
-        self._outer_glow_wide.setShadowOpacity_(0.5)
-        wrapper.layer().insertSublayer_below_(self._outer_glow_wide, self._outer_glow_tight)
+        wrapper.layer().insertSublayer_below_(self._ridge_bloom_layer, content.layer())
+        wrapper.layer().insertSublayer_above_(self._ridge_layer, self._ridge_bloom_layer)
 
         wrapper.addSubview_(content)
         self._content_view = content
@@ -581,16 +593,34 @@ class TranscriptionOverlay(NSObject):
         scaled = min(self._text_amplitude / _TEXT_AMP_SATURATION, 1.0)
 
         t = getattr(self, "_brightness", 0.0)
+
+        # Text color and alpha — on light backgrounds, text fades toward
+        # transparent (cutout effect: letter shapes become negative space
+        # through which the bright background shows).
         text_alpha_max = _lerp(_TEXT_ALPHA_MAX, _TEXT_ALPHA_MAX_LIGHT, t)
         text_alpha = _TEXT_ALPHA_MIN + scaled * (text_alpha_max - _TEXT_ALPHA_MIN)
+        if t > 0.7:
+            # Ramp text alpha toward 0 as brightness approaches 1.0
+            cutout_t = (t - 0.7) / 0.3
+            text_alpha = _lerp(text_alpha, 0.0, cutout_t)
         text_t = t ** 1.3
         tr, tg, tb = _lerp_color(_TEXT_COLOR_DARK, _TEXT_COLOR_LIGHT, text_t)
         self._text_view.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, text_alpha)
         )
 
-        # Darken/lighten the frosted panel as amplitude rises.
-        bg_alpha = _BG_ALPHA_MIN * (1.0 + 2.25 * scaled)
+        # Background fill — brightness-adaptive with a crossover opacity bump.
+        # Dark: ethereal low-opacity fill, intensity from the ridge.
+        # Light: near-opaque dark fill, text is negative space.
+        # Crossover (~0.5): fill gets MORE opaque to maintain text contrast
+        # during the mode transition.
+        bg_alpha_dark = _BG_ALPHA_MIN * (1.0 + 2.25 * scaled)
+        bg_alpha_light = _BG_ALPHA_LIGHT_BASE + _BG_ALPHA_LIGHT_AMP * scaled
+        crossover_bump = _CROSSOVER_AMPLITUDE * math.exp(
+            -((t - _CROSSOVER_CENTER) / _CROSSOVER_WIDTH) ** 2
+        )
+        bg_alpha = _lerp(bg_alpha_dark, bg_alpha_light, t) + crossover_bump
+        bg_alpha = min(bg_alpha, 0.96)
         bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
         if hasattr(self, '_content_view') and self._content_view is not None:
             self._content_view.layer().setBackgroundColor_(
@@ -625,15 +655,11 @@ class TranscriptionOverlay(NSObject):
             cap_floor = 0.25
             scale = cap_floor + (1.0 - cap_floor) * cap_factor
             opacity *= scale
-        outer_opacity = _compress_outer_glow_peak(opacity)
-        if hasattr(self, '_inner_shadow'):
-            self._inner_shadow.setShadowOpacity_(
-                min(opacity * 1.68, _INNER_GLOW_PEAK_TARGET * 1.2)
-            )
-        if hasattr(self, '_outer_glow_tight'):
-            self._outer_glow_tight.setShadowOpacity_(min(outer_opacity * 0.7, 1.0))
-        if hasattr(self, '_outer_glow_wide'):
-            self._outer_glow_wide.setShadowOpacity_(min(outer_opacity * _WIDE_OUTER_GLOW_SCALE, 1.0))
+        # Drive ridge layers instead of the old CA shadow layers
+        if hasattr(self, '_ridge_layer') and self._ridge_layer is not None:
+            self._ridge_layer.setOpacity_(min(opacity * 1.5, 1.0))
+        if hasattr(self, '_ridge_bloom_layer') and self._ridge_bloom_layer is not None:
+            self._ridge_bloom_layer.setOpacity_(min(opacity * 0.6, 1.0))
 
     # ── layout helpers ───────────────────────────────────────
 
@@ -658,43 +684,67 @@ class TranscriptionOverlay(NSObject):
             if hasattr(self._scroll_view, "reflectScrolledClipView_"):
                 self._scroll_view.reflectScrolledClipView_(clip_view)
 
+    def _apply_ridge_masks(self, width: float, height: float) -> None:
+        """Compute SDF and apply ridge + bloom masks for the given overlay size.
+
+        The SDF is computed for the content rect (width x height) and embedded
+        in a larger field covering the full window (content + feather margin)
+        so the outer falloff bleeds into the feather zone.
+        """
+        try:
+            import numpy as np
+            from .glow import _alpha_field_to_image
+        except (ImportError, ModuleNotFoundError):
+            return  # numpy or Quartz not available (test environment)
+
+        f = _OUTER_FEATHER
+        scale = getattr(self, '_ridge_scale', 2.0)
+        total_w = width + 2 * f
+        total_h = height + 2 * f
+
+        # Content-rect SDF: zero at boundary, negative inside, positive outside
+        content_sdf = _overlay_rounded_rect_sdf(width, height, _OVERLAY_CORNER_RADIUS, scale)
+
+        # Embed content SDF in the full window field.  Outside the content
+        # rect the distance increases — fill with a large positive value so
+        # the ridge falls off properly in the feather margin.
+        pw, ph = int(total_w * scale), int(total_h * scale)
+        full_sdf = np.full((ph, pw), f * scale, dtype=np.float32)
+        ch, cw = content_sdf.shape
+        y0 = (ph - ch) // 2
+        x0 = (pw - cw) // 2
+        full_sdf[y0:y0 + ch, x0:x0 + cw] = content_sdf
+
+        ridge_alpha = _ridge_alpha(full_sdf, _RIDGE_FALLOFF * scale, _RIDGE_POWER)
+        try:
+            ridge_image, self._ridge_payload = _alpha_field_to_image(ridge_alpha)
+        except (ImportError, Exception):
+            return  # Quartz CGImage APIs not available
+
+        bloom_alpha = _ridge_alpha(full_sdf, _RIDGE_BLOOM_FALLOFF * scale, _RIDGE_BLOOM_POWER)
+        bloom_image, self._bloom_payload = _alpha_field_to_image(bloom_alpha)
+
+        # Apply as layer masks
+        if hasattr(self, '_ridge_layer') and self._ridge_layer is not None:
+            ridge_mask = CALayer.alloc().init()
+            ridge_mask.setFrame_(((0, 0), (total_w, total_h)))
+            ridge_mask.setContents_(ridge_image)
+            ridge_mask.setContentsGravity_("resize")
+            self._ridge_layer.setMask_(ridge_mask)
+            self._ridge_layer.setFrame_(((0, 0), (total_w, total_h)))
+
+        if hasattr(self, '_ridge_bloom_layer') and self._ridge_bloom_layer is not None:
+            bloom_mask = CALayer.alloc().init()
+            bloom_mask.setFrame_(((0, 0), (total_w, total_h)))
+            bloom_mask.setContents_(bloom_image)
+            bloom_mask.setContentsGravity_("resize")
+            self._ridge_bloom_layer.setMask_(bloom_mask)
+            self._ridge_bloom_layer.setFrame_(((0, 0), (total_w, total_h)))
+
     def _reset_overlay_chrome_geometry(self, visible_height: float) -> None:
         """Keep height-dependent overlay layers in sync with the current overlay size."""
-        f = _OUTER_FEATHER
         w = _OVERLAY_WIDTH
-
-        if hasattr(self, '_inner_shadow'):
-            margin = _INNER_GLOW_DEPTH + 50
-            lw, lh = w + 2 * margin, visible_height + 2 * margin
-            from Quartz import CGPathAddPath, CGPathCreateMutableCopy
-
-            self._inner_shadow.setFrame_(((f - margin, f - margin), (lw, lh)))
-            outer = CGPathCreateWithRoundedRect(((0, 0), (lw, lh)), 0, 0, None)
-            inner = CGPathCreateWithRoundedRect(
-                ((margin, margin), (w, visible_height)),
-                _OVERLAY_CORNER_RADIUS,
-                _OVERLAY_CORNER_RADIUS,
-                None,
-            )
-            combined = CGPathCreateMutableCopy(outer)
-            CGPathAddPath(combined, None, inner)
-            self._inner_shadow.setPath_(combined)
-            mask = self._inner_shadow.mask()
-            if mask:
-                mask.setFrame_(((0, 0), (lw, lh)))
-                mask.setPath_(
-                    CGPathCreateWithRoundedRect(
-                        ((margin, margin), (w, visible_height)),
-                        _OVERLAY_CORNER_RADIUS,
-                        _OVERLAY_CORNER_RADIUS,
-                        None,
-                    )
-                )
-
-        if hasattr(self, '_outer_glow_tight'):
-            self._outer_glow_tight.setFrame_(((f, f), (w, visible_height)))
-        if hasattr(self, '_outer_glow_wide'):
-            self._outer_glow_wide.setFrame_(((f, f), (w, visible_height)))
+        self._apply_ridge_masks(w, visible_height)
 
     def _update_layout(self) -> None:
         """Resize window and scroll to bottom after text change."""
