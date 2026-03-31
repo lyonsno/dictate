@@ -85,7 +85,7 @@ _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 _BG_COLOR_DARK = (0.92, 0.92, 0.90)   # light fill on dark backgrounds
 _TEXT_COLOR_DARK = (0.0, 0.0, 0.0)     # dark text on light fill
 _BG_COLOR_LIGHT = (0.10, 0.10, 0.12)   # dark fill on light backgrounds
-_TEXT_COLOR_LIGHT = (0.0, 0.0, 0.0)     # dark text that fades to transparent
+_TEXT_COLOR_LIGHT = (1.0, 1.0, 1.0)     # white text on dark fill (light backgrounds)
 
 # Inner glow — matches screen border glow, scaled to overlay size
 _GLOW_COLOR = _scale_color_saturation(
@@ -726,12 +726,7 @@ class TranscriptionOverlay(NSObject):
         # through which the bright background shows).
         text_alpha_max = _lerp(_TEXT_ALPHA_MAX, _TEXT_ALPHA_MAX_LIGHT, t)
         text_alpha = _TEXT_ALPHA_MIN + scaled * (text_alpha_max - _TEXT_ALPHA_MIN)
-        if t > 0.35:
-            # Ramp text alpha toward 0 as brightness increases — the cutout
-            # effect starts early because the brightness sampler reports lower
-            # values than the local background around the overlay.
-            cutout_t = min((t - 0.35) / 0.45, 1.0)
-            text_alpha = _lerp(text_alpha, 0.0, cutout_t)
+        # Text stays visible in both modes — no cutout ramp for now.
         text_t = t ** 1.3
         tr, tg, tb = _lerp_color(_TEXT_COLOR_DARK, _TEXT_COLOR_LIGHT, text_t)
         self._text_view.setTextColor_(
@@ -757,6 +752,18 @@ class TranscriptionOverlay(NSObject):
         bg_alpha = min(bg_alpha, 0.96)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(bg_alpha, 0.96))
+            # Rebuild the fill image when brightness changes enough to
+            # affect the baked color.  Avoids per-frame CGImage rebuilds.
+            last_t = getattr(self, '_fill_image_brightness', -1.0)
+            if abs(t - last_t) > 0.03:
+                self._fill_image_brightness = t
+                win = getattr(self, '_window', None)
+                if win:
+                    try:
+                        wf = win.frame()
+                        self._update_fill_image(wf.size.width, wf.size.height)
+                    except Exception:
+                        pass
 
     def update_glow_amplitude(self, opacity: float, cap_factor: float = 1.0) -> None:
         """Update inner and outer glow opacity to match the screen glow.

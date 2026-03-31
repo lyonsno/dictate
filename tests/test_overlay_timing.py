@@ -189,8 +189,8 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_light_background_text_becomes_transparent_cutout(self, mock_pyobjc):
-        """On bright backgrounds, text alpha approaches zero (cutout effect)."""
+    def test_light_background_text_is_white_on_dark_fill(self, mock_pyobjc):
+        """On bright backgrounds, text is white against the dark fill."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -201,9 +201,9 @@ class TestAdaptiveOverlayCompositing:
             overlay.update_text_amplitude(10.0)
 
             text_r, text_g, text_b, text_alpha = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0]
-            # Text color is dark (near black) but alpha is near zero — cutout
-            assert text_r < 0.3 and text_g < 0.3 and text_b < 0.3
-            assert text_alpha < 0.05  # approaching transparent
+            # White text on dark fill for light backgrounds
+            assert text_r > 0.7 and text_g > 0.7 and text_b > 0.7
+            assert text_alpha > 0.5
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -224,7 +224,7 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_light_background_preview_text_reaches_true_black(self, mock_pyobjc):
+    def test_light_background_preview_text_reaches_true_white(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -235,9 +235,9 @@ class TestAdaptiveOverlayCompositing:
             overlay.update_text_amplitude(10.0)
 
             text_r, text_g, text_b, _ = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0]
-            assert text_r == pytest.approx(0.0)
-            assert text_g == pytest.approx(0.0)
-            assert text_b == pytest.approx(0.0)
+            assert text_r == pytest.approx(1.0)
+            assert text_g == pytest.approx(1.0)
+            assert text_b == pytest.approx(1.0)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
