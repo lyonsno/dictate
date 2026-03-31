@@ -93,7 +93,7 @@ _GLOW_COLOR = _scale_color_saturation(
 )  # ~10% of original saturation — subtle tint, not a neon outline
 _INNER_GLOW_WIDTH = 3.0  # proportional to overlay vs screen size
 _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
-_OUTER_FEATHER = 160.0  # glow bleed past overlay edge — wide for the stretched-exp tails
+_OUTER_FEATHER = 220.0  # glow bleed past overlay edge — wide for the stretched-exp tails
 _INNER_GLOW_PEAK_TARGET = 0.50
 _OUTER_GLOW_PEAK_TARGET = 0.35
 _WIDE_OUTER_GLOW_SCALE = 0.56
@@ -737,11 +737,11 @@ class TranscriptionOverlay(NSObject):
         )
 
         # SDF fill breathes with amplitude.  Brightness-adaptive ranges:
-        # Dark backgrounds: more transparent at rest (0.08), modest peak (0.55)
-        # Light backgrounds: the SDF peak should get close to full opacity
+        # Dark backgrounds: very transparent at rest, moderate peak
+        # Light backgrounds: the SDF peak should saturate near-full
         fill_drive = scaled
-        fill_min = _lerp(0.08, 0.20, t)   # dark: very transparent at rest
-        fill_max = _lerp(0.55, 0.92, t)   # light: peak nearly full opacity
+        fill_min = _lerp(0.04, 0.15, t)   # dark: barely there at rest
+        fill_max = _lerp(0.45, 0.96, t)   # light: peak saturates
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
@@ -847,8 +847,9 @@ class TranscriptionOverlay(NSObject):
         try:
             scale = getattr(self, '_fill_scale', 2.0)
             # Stretched-exponential fill: sharp cusp, heavy tails.
-            # Larger width = tails stay higher, interior more opaque.
-            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=8.0 * scale)
+            # Width 5 = steeper initial drop from peak than 8, but the
+            # 0.70 interior floor keeps the center present.
+            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=5.0 * scale)
 
             t = getattr(self, '_brightness', 0.0)
             bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
