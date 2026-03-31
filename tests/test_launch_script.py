@@ -404,18 +404,21 @@ def test_smoke_inline_launcher_prefers_uv_tts_runtime(tmp_path):
     assert "tts" in log_text
 
 
-def test_smoke_inline_launcher_logs_pythonpath_for_tts_runtime(tmp_path):
-    """Smoke launch should log whether the TTS runtime override is present at spawn time."""
+def test_smoke_inline_launcher_skips_broken_pyenv_shim(tmp_path):
+    """Smoke launch should fall back to a working uv binary when the configured shim is broken."""
     repo_root = tmp_path / "repo"
+    repo_root.mkdir()
 
-    python_exe = repo_root / ".venv" / "bin" / "python"
-    python_exe.parent.mkdir(parents=True)
-    python_exe.write_text("#!/bin/sh\nprintf 'uv-tts-started\\n'\n")
-    python_exe.chmod(0o755)
+    broken_uv = tmp_path / ".pyenv" / "shims" / "uv"
+    broken_uv.parent.mkdir(parents=True)
+    broken_uv.write_text("#!/bin/sh\nexit 1\n")
+    broken_uv.chmod(0o755)
 
-    uv_bin = tmp_path / "fake-uv"
-    uv_bin.write_text("#!/bin/sh\nprintf 'uv-tts-started\\n'\n")
-    uv_bin.chmod(0o755)
+    fallback_dir = tmp_path / "bin"
+    fallback_dir.mkdir()
+    fallback_uv = fallback_dir / "uv"
+    fallback_uv.write_text("#!/bin/sh\nprintf 'fallback-uv-started\\n'\n")
+    fallback_uv.chmod(0o755)
 
     log_file = tmp_path / "launch.log"
     result = _run_smoke_inline_launcher(
@@ -423,8 +426,8 @@ def test_smoke_inline_launcher_logs_pythonpath_for_tts_runtime(tmp_path):
         log_file,
         extra_env={
             "SPOKE_TTS_VOICE": "casual_female",
-            "PYTHONPATH": "/tmp/local-mlx-audio",
-            "UV_BIN": str(uv_bin),
+            "UV_BIN": str(broken_uv),
+            "PATH": f"{fallback_dir}{os.pathsep}{os.environ.get('PATH', '')}",
         },
     )
 
@@ -432,15 +435,13 @@ def test_smoke_inline_launcher_logs_pythonpath_for_tts_runtime(tmp_path):
     assert result.stderr == ""
 
     for _ in range(20):
-        if log_file.exists() and "uv-tts-started" in log_file.read_text():
+        if log_file.exists() and "fallback-uv-started" in log_file.read_text():
             break
         time.sleep(0.02)
     else:
-        raise AssertionError("expected detached child output to reach smoke launch log")
+        raise AssertionError("expected fallback uv output to reach smoke launch log")
 
-    log_text = log_file.read_text()
-    assert "Smoke launcher TTS runtime:" in log_text
-    assert "PYTHONPATH=/tmp/local-mlx-audio" in log_text
+    assert "fallback-uv-started\n" in log_file.read_text()
 
 
 def test_smoke_inline_launcher_falls_back_to_path_uv_for_tts_runtime(tmp_path):
