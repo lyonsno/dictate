@@ -763,8 +763,8 @@ class TranscriptionOverlay(NSObject):
         # On dark backgrounds use linear response so soft sounds register.
         # On light backgrounds use squared so the fill leads the glow.
         fill_drive = _lerp(scaled, scaled * scaled, t)
-        fill_min = _lerp(0.06, 0.42, t)   # 50% darker at rest
-        fill_max = _lerp(0.70, 0.99, t)   # 2x darker at saturation (dark: 0.50->0.70)
+        fill_min = _lerp(0.06, 0.84, t)   # light: 2x rest presence — much more material
+        fill_max = _lerp(0.70, 0.99, t)   # light: saturates
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
