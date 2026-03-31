@@ -764,7 +764,7 @@ class TranscriptionOverlay(NSObject):
         # On light backgrounds use squared so the fill leads the glow.
         fill_drive = _lerp(scaled, scaled * scaled, t)
         fill_min = _lerp(0.06, 0.84, t)   # light: 2x rest presence — much more material
-        fill_max = _lerp(0.70, 0.99, t)   # light: saturates
+        fill_max = _lerp(0.92, 0.99, t)   # saturates near-full on both backgrounds
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
@@ -875,7 +875,12 @@ class TranscriptionOverlay(NSObject):
             scale = getattr(self, '_fill_scale', 2.0)
             # Stretched-exponential fill: knife-edge cusp, heavy tails.
             # Width 2.5 = very aggressive initial drop from peak.
-            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=2.5 * scale)
+            # Interior floor varies with brightness: low on dark backgrounds
+            # (more contrast between peak and interior), high on light
+            # backgrounds (more uniform/material).
+            t = getattr(self, '_brightness', 0.0)
+            floor = _lerp(0.55, 0.775, t)
+            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=2.5 * scale, interior_floor=floor)
 
             t = getattr(self, '_brightness', 0.0)
             bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
