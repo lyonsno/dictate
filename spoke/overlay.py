@@ -231,17 +231,18 @@ def _interior_fill_alpha(signed_distance, edge_softness: float):
 
 
 def _glow_fill_alpha(signed_distance, width: float):
-    """Lorentzian fill profile — sharp peak at boundary, long gradual tails.
+    """Stretched-exponential fill profile — sharp cusp at boundary, heavy tails.
 
-    Cross-section is 1 / (1 + (d/width)^2): steep near the peak, always
-    curving, never flattening.  The slope is always changing — steep at
-    first, then gently bending toward zero without ever going flat.
-    Same shape on both sides (inward and outward glow bleed).
+    exp(-sqrt(|d|/width)) gives a pointed peak (infinite slope at d=0),
+    aggressive initial falloff, and heavy tails that stay more opaque
+    deep inside than a Gaussian or Lorentzian would.  The sqrt stretches
+    the exponential so it drops fast near the peak but slows down far
+    from it — exactly the "aggressive at first, bottoms out higher" shape.
     """
     import numpy as np
 
     d = np.abs(signed_distance)
-    return (1.0 / (1.0 + np.square(d / max(width, 1e-6)))).astype(np.float32)
+    return np.exp(-np.sqrt(d / max(width, 1e-6))).astype(np.float32)
 
 
 def _fill_field_to_image(alpha, r: int, g: int, b: int):
