@@ -890,7 +890,7 @@ wheels = [
 
 [[package]]
 name = "mlx-audio"
-version = "0.4.1"
+version = "0.4.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "huggingface-hub" },
@@ -906,9 +906,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/06/0f/5a6c43517d5c7a7200674c993df13c80d9b10311d83a2f83b45f028b3fff/mlx_audio-0.4.1.tar.gz", hash = "sha256:e16260255324feb603d70925584d48421c7581943ec9a71f36d149cdbab302d8", size = 869186, upload-time = "2026-03-14T14:12:24.412Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9d/76/a74893a84caf7f36e401bedd5ccc5342299849a21a6fdf5ef68805d330bd/mlx_audio-0.4.2.tar.gz", hash = "sha256:f728221c9664dbe33bd13560c710a2bdb2e6898af4a4682c6358f1128aab1086", size = 981967, upload-time = "2026-03-30T17:36:01.288Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7d/af/ad48f698d8c1cca1922418bb0f4167c84d9e8d3554e8d148904138dbb9c9/mlx_audio-0.4.1-py3-none-any.whl", hash = "sha256:d881b7235e2d9f9b46aaf349b3e1829c7aface1de80c43e466762a8ca69194c1", size = 1050683, upload-time = "2026-03-14T14:12:23.092Z" },
+    { url = "https://files.pythonhosted.org/packages/df/02/bbbd9e99fe64a990a314d527f84c3d730bdb7bfe08dc96a3f5018d400ba8/mlx_audio-0.4.2-py3-none-any.whl", hash = "sha256:d9421a55f3c42778f16acaeffba73e19a4c7634cbf37af764220458b004de1d4", size = 1184699, upload-time = "2026-03-30T17:35:59.833Z" },
 ]
 
 [package.optional-dependencies]
@@ -919,6 +919,7 @@ tts = [
     { name = "phonemizer-fork" },
     { name = "sentencepiece" },
     { name = "spacy" },
+    { name = "tiktoken" },
 ]
 
 [[package]]
@@ -2385,7 +2386,7 @@ dev = [
 requires-dist = [
     { name = "httpx" },
     { name = "mistral-common", extras = ["audio"], marker = "extra == 'tts'" },
-    { name = "mlx-audio", extras = ["tts"], marker = "extra == 'tts'" },
+    { name = "mlx-audio", extras = ["tts"], marker = "extra == 'tts'", specifier = ">=0.4.2" },
     { name = "mlx-qwen3-asr", specifier = ">=0.3.2" },
     { name = "mlx-whisper", git = "https://github.com/lyonsno/mlx-whisper-patched.git?rev=eb06ea05a77037e971139d11195c675277836272" },
     { name = "numpy" },
