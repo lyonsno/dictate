@@ -389,9 +389,12 @@ class TTSClient:
                             top_p=self._top_p,
                         )
                         results = self._model.generate(**gen_kwargs)
+                        logger.info("TTS speak: generate() returned, iterating results")
 
+                    chunk_count = 0
                     while True:
                         if self._cancelled:
+                            logger.info("TTS speak: cancelled during playback (after %d chunks)", chunk_count)
                             return
                         with lock_ctx:
                             try:
@@ -402,7 +405,12 @@ class TTSClient:
                                 audio=np.asarray(result.audio, dtype=np.float32),
                                 sample_rate=int(result.sample_rate),
                             )
+                            chunk_count += 1
+                            if chunk_count == 1:
+                                logger.info("TTS speak: first audio chunk: %d samples @ %dHz",
+                                           len(materialized.audio), materialized.sample_rate)
                         self._play_result(materialized, amplitude_callback=amplitude_callback)
+                    logger.info("TTS speak: finished sentence (%d chunks played)", chunk_count)
             finally:
                 with self._audio_fade_lock:
                     self._playback_active = False
@@ -430,4 +438,6 @@ class TTSClient:
         and exits cleanly. Does not call stream.abort() — avoids racing with
         the fade-out write on the playback thread.
         """
+        import traceback
+        logger.info("TTS cancel() called from:\n%s", "".join(traceback.format_stack()[-4:-1]))
         self._cancelled = True
