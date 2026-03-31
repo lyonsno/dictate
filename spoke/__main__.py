@@ -602,6 +602,7 @@ class SpokeAppDelegate(NSObject):
             tts.cancel()
         # Clear Enter suppression — new hold replaces/dismisses the overlay.
         self._detector.command_overlay_active = False
+        self._detector._command_overlay_just_dismissed = False
         logger.info("command_overlay_active -> False (hold start)")
         # Note: if command overlay is visible but finished, leave it up.
         # It will be dismissed if the user says nothing (empty recording)
@@ -931,6 +932,7 @@ class SpokeAppDelegate(NSObject):
                 # Enter + empty recording = toggle last assistant response.
                 # Use command_overlay_active (our flag) not _visible (animation state)
                 # to avoid re-dismissing during the dismiss animation.
+                self._detector._command_overlay_just_dismissed = False
                 if self._detector.command_overlay_active:
                     # Already showing — dismiss it
                     logger.info("Enter+empty — dismissing command overlay")
@@ -980,8 +982,9 @@ class SpokeAppDelegate(NSObject):
                         self._command_overlay.cancel_dismiss()
                         self._detector.command_overlay_active = False
                         logger.info("command_overlay_active -> False (empty dismiss)")
-                elif self._command_client is not None:
-                    # Overlay not visible — recall last response on empty tap
+                elif self._command_client is not None and not self._detector._command_overlay_just_dismissed:
+                    # Overlay not visible — recall last response on empty tap.
+                    # Skip if this tap already dismissed the overlay (avoid dismiss→recall stutter).
                     history = self._command_client.history
                     if history:
                         last_utterance, last_response = history[-1]
