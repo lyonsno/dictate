@@ -703,12 +703,17 @@ class TranscriptionOverlay(NSObject):
         if self._text_view is None or not self._visible:
             return
 
-        # Heavy smoothing — rise slow, decay slow. Text should breathe,
-        # not flicker. Rise 0.15, decay 0.92 gives ~1s response time.
+        # Smoothing — rise same as before, decay uses ease-in (slow start,
+        # fast finish) so the fill lingers before dropping away.
         if amplitude > self._text_amplitude:
             self._text_amplitude += (amplitude - self._text_amplitude) * _SMOOTH_RISE
         else:
-            self._text_amplitude *= _SMOOTH_DECAY
+            # Ease-in decay: the further we are from the target, the slower
+            # we move.  As we get close to zero, we accelerate.
+            # decay_rate starts at ~0.98 (slow) and drops to ~0.93 (fast)
+            gap = self._text_amplitude  # how far from zero
+            ease = 0.93 + 0.05 * min(gap / 0.5, 1.0)  # 0.98 when high, 0.93 near zero
+            self._text_amplitude *= ease
 
         # Chase brightness target over roughly half a second at the live update cadence.
         _BRIGHTNESS_CHASE = 0.08
@@ -724,18 +729,20 @@ class TranscriptionOverlay(NSObject):
         # Text: anchored near-opaque.  Dark on white backgrounds, white on
         # dark backgrounds.  Text does NOT breathe with amplitude — it stays
         # legible and stable.  The SDF fill breathes instead.
-        _TEXT_ANCHOR_ALPHA = 0.85
+        _TEXT_ANCHOR_ALPHA = 0.92
         text_t = t ** 1.3
         tr, tg, tb = _lerp_color(_TEXT_COLOR_DARK, _TEXT_COLOR_LIGHT, text_t)
         self._text_view.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, _TEXT_ANCHOR_ALPHA)
         )
 
-        # SDF fill breathes with amplitude — the distance field is the thing
-        # that responds to voice, not the text.  Low amplitude = subtle wash,
-        # speaking = fill comes alive.
-        fill_drive = scaled  # linear response for the fill
-        fill_opacity = _lerp(0.15, 0.85, fill_drive)
+        # SDF fill breathes with amplitude.  Brightness-adaptive ranges:
+        # Dark backgrounds: more transparent at rest (0.08), modest peak (0.55)
+        # Light backgrounds: the SDF peak should get close to full opacity
+        fill_drive = scaled
+        fill_min = _lerp(0.08, 0.20, t)   # dark: very transparent at rest
+        fill_max = _lerp(0.55, 0.92, t)   # light: peak nearly full opacity
+        fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
             # Rebuild the fill image when brightness changes enough to

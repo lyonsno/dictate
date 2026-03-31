@@ -28,8 +28,8 @@ class TestOverlayTiming:
             overlay.update_text_amplitude(10.0)
 
             _, _, _, applied_alpha = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args[0]
-            # Text is now anchored at a fixed high alpha, not driven by amplitude
-            assert applied_alpha == pytest.approx(0.85)
+            # Text is anchored at a fixed high alpha, not driven by amplitude
+            assert applied_alpha == pytest.approx(0.92)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
