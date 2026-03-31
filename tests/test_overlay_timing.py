@@ -285,10 +285,11 @@ class TestAdaptiveOverlayCompositing:
             text_r = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0][0]
             assert text_r < 0.1  # dark text
 
-            # Light background → dark fill → white text
+            # Light background → dark fill → white text (ease-out snap converges)
             overlay.set_brightness(1.0, immediate=True)
-            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
-            overlay.update_text_amplitude(10.0)
+            for _ in range(20):
+                mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+                overlay.update_text_amplitude(10.0)
             text_r = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0][0]
             assert text_r > 0.9  # white text
         finally:

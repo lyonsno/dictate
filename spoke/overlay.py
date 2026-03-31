@@ -230,7 +230,7 @@ def _interior_fill_alpha(signed_distance, edge_softness: float):
     return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
 
 
-def _glow_fill_alpha(signed_distance, width: float, interior_floor: float = 0.45):
+def _glow_fill_alpha(signed_distance, width: float, interior_floor: float = 0.55):
     """Asymmetric stretched-exponential fill profile.
 
     Inside (negative distance): sharp cusp at boundary, drops rapidly
@@ -731,18 +731,19 @@ class TranscriptionOverlay(NSObject):
         # legible and stable.  The SDF fill breathes instead.
         _TEXT_ANCHOR_ALPHA = 0.88
         # Text contrasts against the fill: light fill (dark bg) → dark text,
-        # dark fill (light bg) → white text.  The fill color lerps from
-        # _BG_COLOR_DARK (light/0.92) to _BG_COLOR_LIGHT (dark/0.10) with
-        # brightness.  Text goes the opposite direction.
-        # Use the same t directly — on dark bg (t~0) text is dark, on light
-        # bg (t~0.25+) text should be white.
+        # dark fill (light bg) → white text.
         bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
         bg_lum = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b
-        # If fill is light (lum > 0.5) → dark text; if fill is dark → white text
-        if bg_lum > 0.5:
-            tr, tg, tb = (0.0, 0.0, 0.0)
-        else:
-            tr, tg, tb = (1.0, 1.0, 1.0)
+        target_text_lum = 0.0 if bg_lum > 0.5 else 1.0
+
+        # Ease-out snap: chase the target with a fast-start, slow-finish curve.
+        # ~200ms at 60Hz = ~12 frames.  The ease-out makes the snap feel
+        # satisfying — it commits immediately then settles.
+        current_text_lum = getattr(self, '_text_lum', target_text_lum)
+        _TEXT_SNAP_SPEED = 0.35  # ease-out: big initial jump, then settles
+        current_text_lum += (target_text_lum - current_text_lum) * _TEXT_SNAP_SPEED
+        self._text_lum = current_text_lum
+        tr = tg = tb = current_text_lum
         self._text_view.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, _TEXT_ANCHOR_ALPHA)
         )
@@ -751,8 +752,8 @@ class TranscriptionOverlay(NSObject):
         # Dark backgrounds: very transparent at rest, moderate peak
         # Light backgrounds: the SDF peak should saturate near-full
         fill_drive = scaled
-        fill_min = _lerp(0.04, 0.20, t)   # dark: barely there at rest
-        fill_max = _lerp(0.50, 0.98, t)   # light: peak nearly full black
+        fill_min = _lerp(0.04, 0.45, t)   # light: visible even at rest
+        fill_max = _lerp(0.50, 0.98, t)   # light: peak saturates full black
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
