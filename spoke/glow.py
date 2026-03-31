@@ -51,10 +51,10 @@ _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 60.0  # broader bloom so a dimmer peak still reads as glow
 _GLOW_MAX_OPACITY = 1.0  # bright scenes can drive the glow all the way to full strength
 _GLOW_BASE_OPACITY = 0.0966  # 140% of the calmer baseline so the border keeps dancing at rest
-_GLOW_PEAK_TARGET = 0.1904
-_GLOW_BASE_OPACITY_DARK = 0.0826
+_GLOW_PEAK_TARGET = 0.60
+_GLOW_BASE_OPACITY_DARK = 0.25
 _GLOW_BASE_OPACITY_LIGHT = 0.2744
-_GLOW_PEAK_TARGET_DARK = 0.168
+_GLOW_PEAK_TARGET_DARK = 0.60
 _GLOW_PEAK_TARGET_LIGHT = _GLOW_MAX_OPACITY
 _EDGE_INNER_SATURATION_SCALE = 0.70
 _EDGE_OUTER_SATURATION_SCALE = 1.80
@@ -477,7 +477,7 @@ def _continuous_texture_pass_specs():
             "grid_scale": 0.115,
             "mask_falloff": 18.0,
             "mask_power": 3.25,
-            "additive_alpha": 0.15,
+            "additive_alpha": 0.45,
             "subtractive_alpha": 0.085,
             "subtractive_color_scale": 0.18,
             "style": "macro",
@@ -490,7 +490,7 @@ def _continuous_texture_pass_specs():
             "grid_scale": 0.14,
             "mask_falloff": 15.5,
             "mask_power": 2.9,
-            "additive_alpha": 0.11,
+            "additive_alpha": 0.33,
             "subtractive_alpha": 0.06,
             "subtractive_color_scale": 0.14,
             "style": "mist",
@@ -503,12 +503,25 @@ def _continuous_texture_pass_specs():
             "grid_scale": 0.128,
             "mask_falloff": 11.0,
             "mask_power": 3.55,
-            "additive_alpha": 0.125,
+            "additive_alpha": 0.375,
             "subtractive_alpha": 0.072,
             "subtractive_color_scale": 0.11,
             "style": "mesa",
             "phase_rates": (0.047, -0.031, 0.021),
             "freqs": ((1.72, 1.26), (-2.36, 1.74), (2.84, -1.12)),
+        },
+        {
+            "name": "micro_noise",
+            "fill_role": "middle",
+            "grid_scale": 0.6,
+            "mask_falloff": 14.0,
+            "mask_power": 3.2,
+            "additive_alpha": 0.05,
+            "subtractive_alpha": 0.35,
+            "subtractive_color_scale": 0.05,
+            "style": "micro",
+            "phase_rates": (0.015, -0.012, 0.009),
+            "freqs": ((7.1, 5.8), (-8.3, 6.2), (9.4, -5.7)),
         },
     ]
 
@@ -565,6 +578,26 @@ def _texture_alpha_field(width: int, height: int, spec: dict, phase: float):
     elif spec["style"] == "mist":
         softened = np.power(field, 1.55)
         alpha = np.power(np.clip((softened - 0.20) / 0.80, 0.0, 1.0), 2.15)
+    elif spec["style"] == "micro":
+        # Domain warping to break up sine-wave interference patterns (stripes)
+        # into localized, chaotic multi-scaled chips.
+        warp_x = np.sin((x * 23.0 + y * 17.0 + phase * 0.1) * math.tau) * 0.06
+        warp_y = np.cos((x * 19.0 - y * 29.0 - phase * 0.1) * math.tau) * 0.06
+        
+        wx = x + warp_x
+        wy = y + warp_y
+        
+        w1 = np.sin((wx * f1x + wy * f1y + phase * r1) * math.tau)
+        w2 = np.sin((wx * f2x + wy * f2y + phase * r2) * math.tau + 1.2)
+        w3 = np.cos((wx * f3x + wy * f3y + phase * r3) * math.tau - 0.65)
+        
+        # Add a very high-frequency crumble layer
+        w4 = np.sin((wx * 43.0 + wy * 37.0 - phase * 0.15) * math.tau)
+        
+        chaotic_field = (w1 * 0.35 + w2 * 0.25 + w3 * 0.25 + w4 * 0.15 + 1.0) * 0.5
+        
+        # Harder, sharper threshold to make distinct subtractive chips
+        alpha = np.clip((chaotic_field - 0.55) * 16.0, 0.0, 1.0)
     else:
         terraced = np.floor(field * 4.0) / 4.0
         alpha = np.power(np.clip((terraced - 0.30) / 0.70, 0.0, 1.0), 2.2)
