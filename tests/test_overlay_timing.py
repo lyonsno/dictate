@@ -89,9 +89,9 @@ class TestOverlayTiming:
                 overlay.update_glow_amplitude(0.1)
             ridge_opacity = overlay._ridge_layer.setOpacity_.call_args[0][0]
             bloom_opacity = overlay._ridge_bloom_layer.setOpacity_.call_args[0][0]
-            # Smoothed value converges near 0.1; ridge scales by 1.5, bloom by 0.6
-            assert ridge_opacity == pytest.approx(0.15, abs=0.02)
-            assert bloom_opacity == pytest.approx(0.06, abs=0.02)
+            # Smoothed value converges near 0.1; ridge scales by 0.15, bloom by 0.06
+            assert ridge_opacity == pytest.approx(0.015, abs=0.005)
+            assert bloom_opacity == pytest.approx(0.006, abs=0.003)
 
             overlay._ridge_layer.reset_mock()
             overlay._ridge_bloom_layer.reset_mock()
@@ -101,9 +101,9 @@ class TestOverlayTiming:
                 overlay.update_glow_amplitude(1.0)
             ridge_at_peak = overlay._ridge_layer.setOpacity_.call_args[0][0]
             bloom_at_peak = overlay._ridge_bloom_layer.setOpacity_.call_args[0][0]
-            # Ridge capped at 1.0, bloom at 0.6
-            assert ridge_at_peak <= 1.0
-            assert bloom_at_peak == pytest.approx(0.6, abs=0.05)
+            # Ridge capped at 0.20, bloom at 0.08
+            assert ridge_at_peak <= 0.20
+            assert bloom_at_peak <= 0.08
         finally:
             sys.modules.pop("spoke.overlay", None)
 

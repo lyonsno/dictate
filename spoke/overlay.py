@@ -166,10 +166,10 @@ def _max_overlay_height(screen_height: float) -> float:
 # intensity rising toward the boundary, peaking there, then falling off
 # outside.
 
-_RIDGE_FALLOFF = 5.0      # px — half-width of the exponential peak
+_RIDGE_FALLOFF = 2.5      # px — very tight peak, reads as a crisp edge
 _RIDGE_POWER = 12.0       # exponent — high value eliminates the plateau
-_RIDGE_BLOOM_FALLOFF = 18.0
-_RIDGE_BLOOM_POWER = 2.5
+_RIDGE_BLOOM_FALLOFF = 8.0   # px — gentle ambient halo
+_RIDGE_BLOOM_POWER = 3.0
 
 # Crossover opacity bump — Gaussian centered at brightness 0.5
 _CROSSOVER_CENTER = 0.35
@@ -676,11 +676,13 @@ class TranscriptionOverlay(NSObject):
             cap_floor = 0.25
             scale = cap_floor + (1.0 - cap_floor) * cap_factor
             opacity *= scale
-        # Drive ridge layers instead of the old CA shadow layers
+        # Drive ridge layers — very low opacity so the ridge reads as a
+        # subtle glow, not an opaque plasma.  At typical RMS (~0.3) the ridge
+        # should be around 2-4% opacity; at full amplitude it can reach ~15%.
         if hasattr(self, '_ridge_layer') and self._ridge_layer is not None:
-            self._ridge_layer.setOpacity_(min(opacity * 1.5, 1.0))
+            self._ridge_layer.setOpacity_(min(opacity * 0.15, 0.20))
         if hasattr(self, '_ridge_bloom_layer') and self._ridge_bloom_layer is not None:
-            self._ridge_bloom_layer.setOpacity_(min(opacity * 0.6, 1.0))
+            self._ridge_bloom_layer.setOpacity_(min(opacity * 0.06, 0.08))
 
     # ── layout helpers ───────────────────────────────────────
 
