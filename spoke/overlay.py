@@ -231,6 +231,49 @@ def _interior_fill_alpha(signed_distance, edge_softness: float):
     return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
 
 
+def _fill_field_to_image(alpha, r: int, g: int, b: int):
+    """Convert a float alpha field into a colored CGImage with per-pixel alpha.
+
+    Unlike _alpha_field_to_image (which produces a white+alpha mask),
+    this produces a colored image with the fill color baked in and
+    premultiplied alpha.  Suitable for setting directly as a CALayer's
+    contents without needing a separate mask layer.
+    """
+    import numpy as np
+    from Quartz import (
+        CGColorSpaceCreateDeviceRGB,
+        CGDataProviderCreateWithCFData,
+        CGImageCreate,
+        kCGImageAlphaPremultipliedLast,
+        kCGRenderingIntentDefault,
+    )
+    from Foundation import NSData
+
+    mask_alpha = np.clip(alpha * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba = np.empty(mask_alpha.shape + (4,), dtype=np.uint8)
+    # Premultiply: channel = channel_value * alpha / 255
+    rgba[..., 0] = np.clip(r * alpha, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 1] = np.clip(g * alpha, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 2] = np.clip(b * alpha, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 3] = mask_alpha
+    payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+    provider = CGDataProviderCreateWithCFData(payload)
+    image = CGImageCreate(
+        alpha.shape[1],
+        alpha.shape[0],
+        8,
+        32,
+        alpha.shape[1] * 4,
+        CGColorSpaceCreateDeviceRGB(),
+        kCGImageAlphaPremultipliedLast,
+        provider,
+        None,
+        False,
+        kCGRenderingIntentDefault,
+    )
+    return image, payload
+
+
 def _build_ridge_image(field_width: float, field_height: float,
                        rect_width: float, rect_height: float,
                        corner_radius: float, scale: float,
@@ -348,14 +391,13 @@ class TranscriptionOverlay(NSObject):
         # Determine backing scale for SDF resolution
         self._ridge_scale = self._screen.backingScaleFactor() if hasattr(self._screen, 'backingScaleFactor') else 2.0
 
-        # Fill layer — SDF-masked interior fill that fades at the boundary.
-        # Sits behind the text, covers the full window so the fade extends
-        # smoothly into the feather zone.
+        # Fill layer — the interior fill is baked into a colored CGImage with
+        # per-pixel alpha from the SDF smoothstep.  No mask layer needed —
+        # the alpha falloff is in the image itself.  The fill color is updated
+        # by rebuilding the image in update_text_amplitude.
         self._fill_layer = CALayer.alloc().init()
         self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
-        self._fill_layer.setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, _BG_ALPHA_MIN).CGColor()
-        )
+        self._fill_layer.setContentsGravity_("resize")
 
         # Ridge layer — sharp exponential peak at the boundary
         self._ridge_layer = CALayer.alloc().init()
@@ -419,16 +461,10 @@ class TranscriptionOverlay(NSObject):
             if self._scroll_view is not None:
                 self._scroll_view.setHidden_(False)
             self._window.setIgnoresMouseEvents_(True)
-            # Content view stays transparent; reset the fill layer
+            # Content view stays transparent; reset the fill layer opacity
             self._content_view.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
             if hasattr(self, '_fill_layer') and self._fill_layer is not None:
-                t = getattr(self, "_brightness", 0.0)
-                br, bg, bb = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
-                self._fill_layer.setBackgroundColor_(
-                    NSColor.colorWithSRGBRed_green_blue_alpha_(
-                        br, bg, bb, _BG_ALPHA_MIN
-                    ).CGColor()
-                )
+                self._fill_layer.setOpacity_(_BG_ALPHA_MIN)
         self._cancel_fade()
         self._cancel_typewriter()
         self._visible = True
@@ -661,11 +697,8 @@ class TranscriptionOverlay(NSObject):
         )
         bg_alpha = _lerp(bg_alpha_dark, bg_alpha_light, t) + crossover_bump
         bg_alpha = min(bg_alpha, 0.96)
-        bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
-            self._fill_layer.setBackgroundColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(bg_r, bg_g, bg_b, bg_alpha).CGColor()
-            )
+            self._fill_layer.setOpacity_(min(bg_alpha, 0.96))
 
     def update_glow_amplitude(self, opacity: float, cap_factor: float = 1.0) -> None:
         """Update inner and outer glow opacity to match the screen glow.
@@ -750,12 +783,10 @@ class TranscriptionOverlay(NSObject):
             ridge_alpha = _ridge_alpha(sdf, _RIDGE_FALLOFF * scale, _RIDGE_POWER)
             ridge_image, self._ridge_payload = _alpha_field_to_image(ridge_alpha)
 
-            # Interior fill mask — smoothstep fade at the boundary.
-            # Uses the same full-window SDF since the fill layer covers the
-            # full window (including feather margin).
+            # Interior fill — colored image with alpha from the SDF smoothstep.
             _FILL_EDGE_SOFTNESS = 6.0  # px of fade before the boundary
-            fill_alpha = _interior_fill_alpha(sdf, _FILL_EDGE_SOFTNESS * scale)
-            fill_image, self._fill_payload = _alpha_field_to_image(fill_alpha)
+            self._fill_sdf = sdf  # stash for color updates
+            self._fill_scale = scale
         except (ImportError, Exception):
             return  # numpy or Quartz not available (test environment)
 
@@ -768,14 +799,31 @@ class TranscriptionOverlay(NSObject):
             self._ridge_layer.setMask_(ridge_mask)
             self._ridge_layer.setFrame_(((0, 0), (total_w, total_h)))
 
-        # Apply fill mask to the fill layer
-        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
-            fill_mask = CALayer.alloc().init()
-            fill_mask.setFrame_(((0, 0), (total_w, total_h)))
-            fill_mask.setContents_(fill_image)
-            fill_mask.setContentsGravity_("resize")
-            self._fill_layer.setMask_(fill_mask)
+        # Build and apply the colored fill image
+        self._update_fill_image(total_w, total_h)
+
+    def _update_fill_image(self, total_w: float, total_h: float) -> None:
+        """Rebuild the colored fill image from the stashed SDF and current fill color."""
+        if not hasattr(self, '_fill_sdf') or self._fill_sdf is None:
+            return
+        if not hasattr(self, '_fill_layer') or self._fill_layer is None:
+            return
+        try:
+            _FILL_EDGE_SOFTNESS = 6.0
+            scale = getattr(self, '_fill_scale', 2.0)
+            fill_alpha = _interior_fill_alpha(self._fill_sdf, _FILL_EDGE_SOFTNESS * scale)
+
+            t = getattr(self, '_brightness', 0.0)
+            bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
+            # Scale color to 0-255
+            fill_image, self._fill_payload = _fill_field_to_image(
+                fill_alpha,
+                int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
+            )
+            self._fill_layer.setContents_(fill_image)
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
+        except (ImportError, Exception):
+            pass
 
     def _reset_overlay_chrome_geometry(self, visible_height: float) -> None:
         """Keep height-dependent overlay layers in sync with the current overlay size."""

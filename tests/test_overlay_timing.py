@@ -178,7 +178,7 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_dark_background_uses_dark_bg_light_text(self, mock_pyobjc):
+    def test_dark_background_uses_light_text_and_sets_fill_opacity(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -188,17 +188,17 @@ class TestAdaptiveOverlayCompositing:
             mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
             overlay.update_text_amplitude(10.0)
 
+            # Text should be light
             color_calls = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
             text_color_args = None
-            bg_color_args = None
             for call in color_calls:
                 r, g, b, _ = call[0]
                 if r == pytest.approx(1.0) and g == pytest.approx(1.0) and b == pytest.approx(1.0):
                     text_color_args = call[0]
-                if r < 0.2 and g < 0.2 and b < 0.2:
-                    bg_color_args = call[0]
             assert text_color_args is not None
-            assert bg_color_args is not None
+
+            # Fill layer opacity should be set
+            assert overlay._fill_layer.setOpacity_.called
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -221,23 +221,19 @@ class TestAdaptiveOverlayCompositing:
             sys.modules.pop("spoke.overlay", None)
 
     def test_light_background_fill_is_opaque(self, mock_pyobjc):
-        """On bright backgrounds, the dark fill becomes near-opaque to support the cutout."""
+        """On bright backgrounds, the fill layer becomes near-opaque to support the cutout."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
             overlay = self._make_overlay(mod)
             overlay.set_brightness(1.0, immediate=True)
 
-            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+            overlay._fill_layer.reset_mock()
             overlay.update_text_amplitude(10.0)
 
-            # The fill stays dark in both modes — find the bg color call
-            # (dark color with high alpha on light backgrounds)
-            calls = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
-            # Second call is the background (first is text)
-            bg_r, bg_g, bg_b, bg_alpha = calls[-1][0]
-            assert bg_r < 0.3  # fill stays dark on light backgrounds
-            assert bg_alpha > 0.8  # near-opaque fill
+            # Fill layer opacity should be high on light backgrounds
+            fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
+            assert fill_opacity > 0.8  # near-opaque fill
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -265,17 +261,17 @@ class TestAdaptiveOverlayCompositing:
         try:
             overlay = self._make_overlay(mod)
 
-            # Measure fill alpha at brightness 0 (dark, no crossover)
+            # Measure fill opacity at brightness 0 (dark, no crossover)
             overlay.set_brightness(0.0, immediate=True)
-            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+            overlay._fill_layer.reset_mock()
             overlay.update_text_amplitude(10.0)
-            _, _, _, alpha_dark = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[-1][0]
+            alpha_dark = overlay._fill_layer.setOpacity_.call_args[0][0]
 
-            # Measure fill alpha at brightness 0.35 (crossover center)
+            # Measure fill opacity at brightness 0.35 (crossover center)
             overlay.set_brightness(0.35, immediate=True)
-            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+            overlay._fill_layer.reset_mock()
             overlay.update_text_amplitude(10.0)
-            _, _, _, alpha_crossover = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[-1][0]
+            alpha_crossover = overlay._fill_layer.setOpacity_.call_args[0][0]
 
             # Crossover should be more opaque than dark due to the bump
             assert alpha_crossover > alpha_dark + 0.1
