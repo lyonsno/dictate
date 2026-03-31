@@ -225,6 +225,7 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_shift_tap_idle = self._on_audio_shift_tap
         self._detector._on_enter_pressed = self._on_tray_enter_pressed
         self._detector._on_tray_delete = self._on_tray_delete_gesture
+        self._detector._on_command_overlay_dismiss = self._dismiss_command_overlay
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
@@ -1334,6 +1335,23 @@ class SpokeAppDelegate(NSObject):
             logger.info("Shift tap during tray — dismiss")
             self._acknowledge_tray_entry(self._tray_index)
             self._dismiss_tray()
+
+    def _dismiss_command_overlay(self) -> None:
+        """Instant-dismiss the command overlay (called from event tap thread)."""
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "dismissCommandOverlay:", None, False,
+        )
+
+    def dismissCommandOverlay_(self, _) -> None:
+        """Main thread: dismiss the command overlay and cancel TTS."""
+        tts = getattr(self, "_tts_client", None)
+        if tts is not None:
+            tts.cancel()
+        if self._command_overlay is not None and getattr(self._command_overlay, '_visible', False):
+            logger.info("Instant dismiss — command overlay")
+            self._command_overlay.cancel_dismiss()
+        if self._menubar is not None:
+            self._menubar.set_status_text("Ready — hold spacebar")
 
     def _on_audio_shift_tap(self) -> None:
         """Shift tap while idle toggles current TTS audibility."""
