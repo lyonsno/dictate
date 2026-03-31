@@ -50,3 +50,25 @@ Before launching that branch:
 - relaunch from the target worktree's launcher script
 
 Do not silently fall back to the stable Automator or `main` launcher when the user explicitly asked for the branch variant.
+
+## Local hotkey policy
+
+When changing or resetting local smoke hotkeys:
+
+- treat the live WezTerm mapping and the launcher target files as one contract
+- keep the meaning legible: `Space` for pinned `main`, `K` for the current smoke target, and any optional extra smoke binding clearly named and logged
+- prefer retargeting `~/.config/spoke/*-target` files over editing launcher scripts when only the destination worktree changes
+- if a hotkey fails, check the corresponding `~/Library/Logs/spoke-*-launch.log` first to distinguish dead binding from launcher/runtime failure
+- if a launcher needs a known-good interpreter because a fresh worktree venv crashes, set `SPOKE_VENV_PYTHON` in that worktree's `.spoke-smoke-env` instead of hardcoding a machine path into the shared launcher
+- record any durable remap or reset rule in repo docs and `spoke` Epistaxis rather than leaving it only in thread history
+
+## Launch target registry policy
+
+When the launch-target menu feature is in play:
+
+- treat `~/.config/spoke/launch_targets.json` as the curated source for menu-visible launch targets
+- agents may add, remove, or retarget entries there when preparing or retiring local smoke surfaces
+- prefer stable ids and short human labels; the entry should identify a purposeful surface, not a temporary hunk of local reasoning
+- when `⌃⌥⌘K` and the menu should refer to the same smoke surface, keep `~/.config/spoke/smoke-target` and the registry entry with id `smoke` aligned
+- do not silently assume the selected target also carries the launch-target affordance; if the target branch lacks the feature, say so when preparing the surface
+- record durable registry conventions or machine-local target changes in `spoke` Epistaxis when another session would need them to resume coherently
