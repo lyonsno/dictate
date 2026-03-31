@@ -439,25 +439,25 @@ def _continuous_vignette_pass_specs():
         {
             "name": "core",
             "path_kind": "distance_field",
-            "falloff": 2.5,     # tighter — steeper edge
-            "power": 3.2,       # sharper falloff
-            "alpha": 0.88,      # 2x
+            "falloff": 0.8,     # 4x sharper — knife edge
+            "power": 4.0,       # very steep
+            "alpha": 0.88,
             "color_scale": 0.08,
         },
         {
             "name": "mid",
             "path_kind": "distance_field",
-            "falloff": 7.0,
-            "power": 3.1,
-            "alpha": 0.52,      # 2.5x
+            "falloff": 2.0,     # 4x sharper
+            "power": 4.0,
+            "alpha": 0.52,
             "color_scale": 0.10,
         },
         {
             "name": "tail",
             "path_kind": "distance_field",
-            "falloff": 14.0,
-            "power": 3.55,
-            "alpha": 0.45,      # 2.4x
+            "falloff": 4.0,     # 4x sharper
+            "power": 4.5,
+            "alpha": 0.45,
             "color_scale": 0.12,
         },
     ]
