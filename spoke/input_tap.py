@@ -123,8 +123,10 @@ class SpacebarHoldDetector(NSObject):
         # tray navigation callbacks.
         self.tray_active = False
         # Command overlay suppression — set by the delegate when the
-        # command overlay is visible.  When True, Enter is suppressed.
+        # command overlay is visible.  When True, Enter is suppressed
+        # and spacebar keyDown instantly dismisses the overlay.
         self.command_overlay_active = False
+        self._on_command_overlay_dismiss: Callable[[], None] | None = None
         self._on_shift_tap: Callable[[], None] | None = None
         self._on_shift_tap_during_hold: Callable[[], None] | None = None
         self._on_shift_tap_idle: Callable[[], None] | None = None
@@ -539,6 +541,16 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         if keycode == SPACEBAR_KEYCODE:
             logger.info("keyDown space: flags=%#x shift=%s state=%s",
                         flags, bool(flags & kCGEventFlagMaskShift), det._state)
+            # Instant dismiss: if the command overlay is visible, dismiss it
+            # on the first spacebar press instead of waiting for a hold.
+            if (
+                getattr(det, 'command_overlay_active', False)
+                and det._state == _State.IDLE
+            ):
+                dismiss = getattr(det, '_on_command_overlay_dismiss', None)
+                if dismiss is not None:
+                    det.command_overlay_active = False
+                    dismiss()
             # Mark space between shift down/up for tray shift-tap discrimination
             if getattr(det, 'tray_active', False) and getattr(det, '_tray_shift_down', False):
                 det._tray_space_between = True
