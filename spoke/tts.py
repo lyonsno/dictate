@@ -121,6 +121,25 @@ def _split_sentences(text: str) -> list[str]:
 
 def tts_load(model_id: str):
     """Load an mlx_audio TTS model.  Separated for easy patching in tests."""
+    # Pre-import model backends so mlx_audio.tts.load() can find them.
+    # The Voxtral backend lives in a PYTHONPATH fork that isn't auto-discovered.
+    if "voxtral" in model_id.lower():
+        try:
+            importlib.import_module("mlx_audio.tts.models.voxtral_tts")
+        except ImportError:
+            mlx_audio_path = "<unresolved>"
+            try:
+                import mlx_audio
+                mlx_audio_path = getattr(mlx_audio, "__file__", "<unresolved>")
+            except ImportError:
+                pass
+            py_path = os.environ.get("PYTHONPATH", "")
+            raise RuntimeError(
+                "Voxtral TTS backend is unavailable in the active mlx_audio runtime. "
+                f"Resolved mlx_audio from {mlx_audio_path}. "
+                f"PYTHONPATH={py_path or '<unset>'}. "
+                "Ensure .spoke-smoke-env sets PYTHONPATH to the mlx-audio fork with Voxtral support."
+            )
     from mlx_audio.tts import load
     return load(model_id)
 
