@@ -554,9 +554,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             ):
                 dismiss = getattr(det, '_on_command_overlay_dismiss', None)
                 if dismiss is not None:
-                    logger.info("Instant dismiss — command_overlay_active -> False")
-                    det.command_overlay_active = False
-                    det._command_overlay_just_dismissed = True
+                    logger.info("Instant dismiss — marshaling to main thread")
                     dismiss()
             # Mark space between shift down/up for tray shift-tap discrimination
             if getattr(det, 'tray_active', False) and getattr(det, '_tray_shift_down', False):
