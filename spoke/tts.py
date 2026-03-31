@@ -361,6 +361,7 @@ class TTSClient:
 
         logger.info("TTS speak: %d sentences, %d chars, model=%s, cancelled=%s",
                      len(sentences), len(text), self._model_id, self._cancelled)
+        self._cancelled = False
         lock_ctx = self._gpu_lock if self._gpu_lock is not None else nullcontext()
         with self._speak_lock:
             if self._cancelled:
