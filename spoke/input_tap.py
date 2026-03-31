@@ -546,6 +546,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             if (
                 getattr(det, 'command_overlay_active', False)
                 and det._state == _State.IDLE
+                and not getattr(det, 'tray_active', False)
             ):
                 dismiss = getattr(det, '_on_command_overlay_dismiss', None)
                 if dismiss is not None:
