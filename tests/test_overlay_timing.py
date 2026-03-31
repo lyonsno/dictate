@@ -142,6 +142,7 @@ class TestAdaptiveOverlayCompositing:
         overlay._text_view = MagicMock()
         overlay._text_amplitude = 0.0
         overlay._content_view = MagicMock()
+        overlay._fill_layer = MagicMock()
         overlay._ridge_layer = MagicMock()
         overlay._brightness = 0.0
         overlay._brightness_target = 0.0

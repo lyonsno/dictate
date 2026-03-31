@@ -338,18 +338,24 @@ class TranscriptionOverlay(NSObject):
         # to the center of the content frame to compensate.
         content.layer().setAnchorPoint_((0.5, 0.5))
         content.layer().setPosition_((f + _OVERLAY_WIDTH / 2, f + _OVERLAY_HEIGHT / 2))
-        content.layer().setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, _BG_ALPHA_MIN).CGColor()
-        )
+        # Content view is transparent — the fill comes from a separate
+        # SDF-masked layer so there is no hard rectangular edge.
+        content.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
 
-        # Distance-field ridge layers — replace the old inner shadow + outer
-        # glow CA-shadow approach with SDF-driven exponential ridges that peak
-        # at the bubble boundary and fall off both inward and outward.
         w, h = _OVERLAY_WIDTH, _OVERLAY_HEIGHT
         _, middle_rgb, _ = _overlay_layer_colors(_GLOW_COLOR)
 
         # Determine backing scale for SDF resolution
         self._ridge_scale = self._screen.backingScaleFactor() if hasattr(self._screen, 'backingScaleFactor') else 2.0
+
+        # Fill layer — SDF-masked interior fill that fades at the boundary.
+        # Sits behind the text, covers the full window so the fade extends
+        # smoothly into the feather zone.
+        self._fill_layer = CALayer.alloc().init()
+        self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
+        self._fill_layer.setBackgroundColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(0.1, 0.1, 0.12, _BG_ALPHA_MIN).CGColor()
+        )
 
         # Ridge layer — sharp exponential peak at the boundary
         self._ridge_layer = CALayer.alloc().init()
@@ -365,7 +371,8 @@ class TranscriptionOverlay(NSObject):
         # Build initial SDF masks
         self._apply_ridge_masks(w, h)
 
-        wrapper.layer().insertSublayer_below_(self._ridge_layer, content.layer())
+        wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
+        wrapper.layer().insertSublayer_below_(self._ridge_layer, self._fill_layer)
 
         wrapper.addSubview_(content)
         self._content_view = content
@@ -412,13 +419,16 @@ class TranscriptionOverlay(NSObject):
             if self._scroll_view is not None:
                 self._scroll_view.setHidden_(False)
             self._window.setIgnoresMouseEvents_(True)
-            t = getattr(self, "_brightness", 0.0)
-            br, bg, bb = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
-            self._content_view.layer().setBackgroundColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(
-                    br, bg, bb, _BG_ALPHA_MIN
-                ).CGColor()
-            )
+            # Content view stays transparent; reset the fill layer
+            self._content_view.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
+            if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+                t = getattr(self, "_brightness", 0.0)
+                br, bg, bb = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
+                self._fill_layer.setBackgroundColor_(
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(
+                        br, bg, bb, _BG_ALPHA_MIN
+                    ).CGColor()
+                )
         self._cancel_fade()
         self._cancel_typewriter()
         self._visible = True
@@ -652,8 +662,8 @@ class TranscriptionOverlay(NSObject):
         bg_alpha = _lerp(bg_alpha_dark, bg_alpha_light, t) + crossover_bump
         bg_alpha = min(bg_alpha, 0.96)
         bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
-        if hasattr(self, '_content_view') and self._content_view is not None:
-            self._content_view.layer().setBackgroundColor_(
+        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+            self._fill_layer.setBackgroundColor_(
                 NSColor.colorWithSRGBRed_green_blue_alpha_(bg_r, bg_g, bg_b, bg_alpha).CGColor()
             )
 
@@ -740,16 +750,11 @@ class TranscriptionOverlay(NSObject):
             ridge_alpha = _ridge_alpha(sdf, _RIDGE_FALLOFF * scale, _RIDGE_POWER)
             ridge_image, self._ridge_payload = _alpha_field_to_image(ridge_alpha)
 
-            # Interior fill mask — smoothstep fade at the boundary so the
-            # content view's fill doesn't create a hard rectangular edge.
-            # This SDF covers just the content rect (not the full window)
-            # since the fill mask applies to the content view's local coords.
+            # Interior fill mask — smoothstep fade at the boundary.
+            # Uses the same full-window SDF since the fill layer covers the
+            # full window (including feather margin).
             _FILL_EDGE_SOFTNESS = 6.0  # px of fade before the boundary
-            content_sdf = _overlay_rounded_rect_sdf(
-                width, height, width, height,
-                _OVERLAY_CORNER_RADIUS, scale,
-            )
-            fill_alpha = _interior_fill_alpha(content_sdf, _FILL_EDGE_SOFTNESS * scale)
+            fill_alpha = _interior_fill_alpha(sdf, _FILL_EDGE_SOFTNESS * scale)
             fill_image, self._fill_payload = _alpha_field_to_image(fill_alpha)
         except (ImportError, Exception):
             return  # numpy or Quartz not available (test environment)
@@ -763,14 +768,14 @@ class TranscriptionOverlay(NSObject):
             self._ridge_layer.setMask_(ridge_mask)
             self._ridge_layer.setFrame_(((0, 0), (total_w, total_h)))
 
-        # Apply fill mask to content view — the fill fades to zero at the
-        # boundary instead of ending with a hard rectangular edge.
-        if hasattr(self, '_content_view') and self._content_view is not None:
+        # Apply fill mask to the fill layer
+        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             fill_mask = CALayer.alloc().init()
-            fill_mask.setFrame_(((0, 0), (width, height)))
+            fill_mask.setFrame_(((0, 0), (total_w, total_h)))
             fill_mask.setContents_(fill_image)
             fill_mask.setContentsGravity_("resize")
-            self._content_view.layer().setMask_(fill_mask)
+            self._fill_layer.setMask_(fill_mask)
+            self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
 
     def _reset_overlay_chrome_geometry(self, visible_height: float) -> None:
         """Keep height-dependent overlay layers in sync with the current overlay size."""
