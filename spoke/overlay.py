@@ -468,45 +468,6 @@ class TranscriptionOverlay(NSObject):
 
         self._window.setAlphaValue_(0.0)
 
-        # Debug: dump full view+layer tree
-        def _dump_view(view, indent=0):
-            prefix = "  " * indent
-            layer = view.layer() if hasattr(view, 'layer') and view.layer() else None
-            if layer:
-                frame = layer.frame()
-                bg = layer.backgroundColor()
-                cr = layer.cornerRadius()
-                clips = layer.masksToBounds()
-                opaque = layer.isOpaque() if hasattr(layer, 'isOpaque') else '?'
-                logger.info(
-                    "%s%s layer: frame=(%d,%d,%d,%d) cr=%.1f clips=%s opaque=%s hasBG=%s",
-                    prefix, type(view).__name__,
-                    frame.origin.x, frame.origin.y, frame.size.width, frame.size.height,
-                    cr, clips, opaque, bg is not None,
-                )
-            subviews = view.subviews() if hasattr(view, 'subviews') else []
-            if subviews:
-                for sv in subviews:
-                    _dump_view(sv, indent + 1)
-        try:
-            _dump_view(wrapper)
-            # Dump ALL sublayers of the wrapper layer (includes programmatic CALayers)
-            sublayers = wrapper.layer().sublayers()
-            if sublayers:
-                for i, sl in enumerate(sublayers):
-                    f2 = sl.frame()
-                    bg2 = sl.backgroundColor()
-                    contents = sl.contents()
-                    mask = sl.mask()
-                    opacity = sl.opacity()
-                    logger.info(
-                        "  wrapper sublayer[%d] %s: frame=(%d,%d,%d,%d) opacity=%.2f hasBG=%s hasContents=%s hasMask=%s",
-                        i, type(sl).__name__,
-                        f2.origin.x, f2.origin.y, f2.size.width, f2.size.height,
-                        opacity, bg2 is not None, contents is not None, mask is not None,
-                    )
-        except Exception:
-            logger.exception("View dump failed")
         logger.info("Transcription overlay created")
 
     def show(self) -> None:
