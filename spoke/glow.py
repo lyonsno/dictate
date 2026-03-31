@@ -865,10 +865,9 @@ class GlowOverlay(NSObject):
         # Cross-fade additive glow and subtractive vignette
         additive_mix = getattr(self, "_additive_mix", 1.0)
         subtractive_mix = getattr(self, "_subtractive_mix", 0.0)
-        # DEBUG: glow and vignette disabled to isolate the overlay fill
-        self._glow_layer.setOpacity_(0.0)
+        self._glow_layer.setOpacity_(opacity * additive_mix)
         if hasattr(self, "_vignette_layer") and self._vignette_layer is not None:
-            self._vignette_layer.setOpacity_(0.0)
+            self._vignette_layer.setOpacity_(opacity * subtractive_mix * _VIGNETTE_OPACITY_SCALE)
 
         # Log first few updates and then periodically to verify pipeline
         if self._update_count <= 3 or self._update_count % 50 == 0:
