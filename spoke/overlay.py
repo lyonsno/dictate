@@ -315,8 +315,9 @@ class TranscriptionOverlay(NSObject):
         content_frame = NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         content = NSView.alloc().initWithFrame_(content_frame)
         content.setWantsLayer_(True)
-        content.layer().setCornerRadius_(_OVERLAY_CORNER_RADIUS)
-        content.layer().setMasksToBounds_(True)
+        # No corner radius on the content view — the distance-field ridge
+        # defines the visual boundary.  Text is inset enough not to bleed.
+        content.layer().setMasksToBounds_(False)
         # Anchor point at center so scale animations expand symmetrically.
         # Setting anchorPoint shifts the layer visually, so also set position
         # to the center of the content frame to compensate.
