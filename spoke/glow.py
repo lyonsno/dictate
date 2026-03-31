@@ -409,10 +409,10 @@ def _continuous_glow_pass_specs():
         {
             "name": "core",
             "path_kind": "distance_field",
-            "falloff": 3.2,
-            "power": 2.7,
+            "falloff": 2.5,     # tighter — steeper edge
+            "power": 3.5,       # sharper falloff
             "fill_role": "inner",
-            "fill_alpha": 0.28,
+            "fill_alpha": 0.72,  # 3x darker
         },
         {
             "name": "tight_bloom",
@@ -420,7 +420,7 @@ def _continuous_glow_pass_specs():
             "falloff": 7.2,
             "power": 3.2,
             "fill_role": "middle",
-            "fill_alpha": 0.18,
+            "fill_alpha": 0.48,  # 3x
         },
         {
             "name": "wide_bloom",
@@ -428,7 +428,7 @@ def _continuous_glow_pass_specs():
             "falloff": 15.0,
             "power": 3.7,
             "fill_role": "outer",
-            "fill_alpha": 0.12,
+            "fill_alpha": 0.30,  # 3x
         },
     ]
 
@@ -865,10 +865,9 @@ class GlowOverlay(NSObject):
         # Cross-fade additive glow and subtractive vignette
         additive_mix = getattr(self, "_additive_mix", 1.0)
         subtractive_mix = getattr(self, "_subtractive_mix", 0.0)
-        # DEBUG: glow and vignette disabled to isolate preview fill on light bg
-        self._glow_layer.setOpacity_(0.0)
+        self._glow_layer.setOpacity_(opacity * additive_mix)
         if hasattr(self, "_vignette_layer") and self._vignette_layer is not None:
-            self._vignette_layer.setOpacity_(0.0)
+            self._vignette_layer.setOpacity_(opacity * subtractive_mix * _VIGNETTE_OPACITY_SCALE)
 
         # Log first few updates and then periodically to verify pipeline
         if self._update_count <= 3 or self._update_count % 50 == 0:
