@@ -490,8 +490,7 @@ class TestShiftReleaseRouting:
         return det, on_start, on_end
 
     def test_shift_held_at_release_passes_flag(self, input_tap_module):
-        """When shift is held during recording release, on_hold_end should
-        receive shift_held=True (once the routing is wired)."""
+        """Shift-held release should carry the flag through the decision timer."""
         mod = input_tap_module
         det, on_start, on_end = self._make_detector(input_tap_module)
 
@@ -504,6 +503,10 @@ class TestShiftReleaseRouting:
         shift_flag = mod.kCGEventFlagMaskShift
         det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=shift_flag)
         assert det._state == mod._State.IDLE
+        assert det._pending_release_active is True
+
+        det.releaseDecisionTimerFired_(None)
+
         on_end.assert_called_once_with(shift_held=True, enter_held=False)
 
     def test_normal_release_passes_no_shift(self, input_tap_module):
