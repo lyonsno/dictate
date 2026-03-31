@@ -1742,6 +1742,21 @@ class SpokeAppDelegate(NSObject):
         tts = getattr(self, "_tts_client", None)
         tool_used_tts = getattr(self, "_command_tool_used_tts", False)
         self._command_tool_used_tts = False
+        logger.info(
+            "TTS autoplay decision: response=%d chars, tts_client=%s, tool_used_tts=%s, model=%s",
+            len(response) if response else 0,
+            tts is not None,
+            tool_used_tts,
+            getattr(tts, "_model_id", "?") if tts else "none",
+        )
+        if not response:
+            logger.info("TTS autoplay: skipped — no response text")
+        elif tts is None:
+            logger.info("TTS autoplay: skipped — no TTS client")
+            if self._menubar is not None:
+                self._menubar.set_status_text("TTS: not configured")
+        elif tool_used_tts:
+            logger.info("TTS autoplay: skipped — tool already used TTS")
         if response and tts is not None and not tool_used_tts:
             if self._glow is not None:
                 self._glow.hide()
@@ -1751,6 +1766,7 @@ class SpokeAppDelegate(NSObject):
                 except Exception:
                     logger.exception("Command overlay TTS start failed")
             try:
+                logger.info("TTS autoplay: calling speak_async with %d chars", len(response))
                 tts.speak_async(
                     response,
                     amplitude_callback=self._on_tts_amplitude,
@@ -1758,6 +1774,7 @@ class SpokeAppDelegate(NSObject):
                         "ttsFinished:", None, False
                     ),
                 )
+                logger.info("TTS autoplay: speak_async returned (queued)")
             except Exception:
                 logger.exception("Command autoplay failed to start")
                 if overlay is not None:

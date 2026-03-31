@@ -192,16 +192,23 @@ def _execute_read_aloud(
 
     # Speak via TTS if available
     if tts_client is not None:
+        logger.info("read_aloud: tts_client present, model=%s, text=%d chars",
+                     getattr(tts_client, "_model_id", "?"), len(text))
         try:
             speak_async = getattr(tts_client, "speak_async", None)
             if callable(speak_async):
+                logger.info("read_aloud: calling speak_async")
                 speak_async(text)
+                logger.info("read_aloud: speak_async returned")
                 return f"Speaking: {text}"
+            logger.info("read_aloud: calling speak (sync)")
             tts_client.speak(text)
             return f"Speaking: {text}"
         except Exception:
             logger.warning("TTS playback failed", exc_info=True)
             return "Error speaking text: TTS playback failed"
+    else:
+        logger.warning("read_aloud: no tts_client available")
 
     return f"Spoke: {text}"
 

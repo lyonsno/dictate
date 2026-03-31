@@ -349,17 +349,22 @@ class TTSClient:
         microphone amplitude callback used by the glow overlay).
         """
         if not text:
+            logger.info("TTS speak: empty text, skipping")
             return
 
         from contextlib import nullcontext
 
         sentences = _split_sentences(text)
         if not sentences:
+            logger.info("TTS speak: no sentences after split, skipping")
             return
 
+        logger.info("TTS speak: %d sentences, %d chars, model=%s, cancelled=%s",
+                     len(sentences), len(text), self._model_id, self._cancelled)
         lock_ctx = self._gpu_lock if self._gpu_lock is not None else nullcontext()
         with self._speak_lock:
             if self._cancelled:
+                logger.info("TTS speak: cancelled before start")
                 return
             with self._audio_fade_lock:
                 self._playback_active = True
@@ -369,8 +374,11 @@ class TTSClient:
                         return
 
                     with lock_ctx:
+                        logger.info("TTS speak: ensuring model loaded (sentence %d/%d)",
+                                     sentences.index(sentence) + 1, len(sentences))
                         self._ensure_model()
                         if self._cancelled:
+                            logger.info("TTS speak: cancelled after model load")
                             return
                         gen_kwargs = _generate_kwargs(
                             self._model,
