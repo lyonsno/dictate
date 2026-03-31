@@ -230,7 +230,7 @@ def _interior_fill_alpha(signed_distance, edge_softness: float):
     return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
 
 
-def _glow_fill_alpha(signed_distance, width: float, interior_floor: float = 0.70):
+def _glow_fill_alpha(signed_distance, width: float, interior_floor: float = 0.45):
     """Asymmetric stretched-exponential fill profile.
 
     Inside (negative distance): sharp cusp at boundary, drops rapidly
@@ -730,7 +730,10 @@ class TranscriptionOverlay(NSObject):
         # dark backgrounds.  Text does NOT breathe with amplitude — it stays
         # legible and stable.  The SDF fill breathes instead.
         _TEXT_ANCHOR_ALPHA = 0.92
-        text_t = t ** 1.3
+        # The brightness sampler reports ~0.25 even on white backgrounds
+        # (because the screen dimmer darkens the scene).  Use a steep
+        # sigmoid so the text color flips near the actual switchover point.
+        text_t = min(t / 0.20, 1.0)  # saturates at brightness 0.20
         tr, tg, tb = _lerp_color(_TEXT_COLOR_DARK, _TEXT_COLOR_LIGHT, text_t)
         self._text_view.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, _TEXT_ANCHOR_ALPHA)
