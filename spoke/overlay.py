@@ -381,9 +381,10 @@ class TranscriptionOverlay(NSObject):
         # to the center of the content frame to compensate.
         content.layer().setAnchorPoint_((0.5, 0.5))
         content.layer().setPosition_((f + _OVERLAY_WIDTH / 2, f + _OVERLAY_HEIGHT / 2))
-        # Content view is transparent — the fill comes from a separate
-        # SDF-masked layer so there is no hard rectangular edge.
-        content.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
+        # Content view has NO background — the fill comes from a separate
+        # SDF-masked layer.  Setting to None rather than clearColor ensures
+        # no compositing boundary exists at the view's frame edge.
+        content.layer().setBackgroundColor_(None)
 
         w, h = _OVERLAY_WIDTH, _OVERLAY_HEIGHT
         _, middle_rgb, _ = _overlay_layer_colors(_GLOW_COLOR)
@@ -470,6 +471,13 @@ class TranscriptionOverlay(NSObject):
                     _dump_view(sv, indent + 1)
         try:
             _dump_view(wrapper)
+            # Also dump the content view's subviews explicitly
+            for sv in content.subviews():
+                _dump_view(sv, indent=2)
+                for ssv in sv.subviews() if hasattr(sv, 'subviews') else []:
+                    _dump_view(ssv, indent=3)
+                    for sssv in ssv.subviews() if hasattr(ssv, 'subviews') else []:
+                        _dump_view(sssv, indent=4)
         except Exception:
             logger.exception("View dump failed")
         logger.info("Transcription overlay created")
@@ -486,7 +494,7 @@ class TranscriptionOverlay(NSObject):
                 self._scroll_view.setHidden_(False)
             self._window.setIgnoresMouseEvents_(True)
             # Content view stays transparent; reset the fill layer opacity
-            self._content_view.layer().setBackgroundColor_(NSColor.clearColor().CGColor())
+            self._content_view.layer().setBackgroundColor_(None)
             if hasattr(self, '_fill_layer') and self._fill_layer is not None:
                 self._fill_layer.setOpacity_(_BG_ALPHA_MIN)
         self._cancel_fade()
