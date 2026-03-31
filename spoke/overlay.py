@@ -93,7 +93,7 @@ _GLOW_COLOR = _scale_color_saturation(
 )  # ~10% of original saturation — subtle tint, not a neon outline
 _INNER_GLOW_WIDTH = 3.0  # proportional to overlay vs screen size
 _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
-_OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
+_OUTER_FEATHER = 80.0  # glow bleed past overlay edge — wide enough for the stretched-exp tails
 _INNER_GLOW_PEAK_TARGET = 0.50
 _OUTER_GLOW_PEAK_TARGET = 0.35
 _WIDE_OUTER_GLOW_SCALE = 0.56
@@ -838,10 +838,9 @@ class TranscriptionOverlay(NSObject):
             return
         try:
             scale = getattr(self, '_fill_scale', 2.0)
-            # Lorentzian fill profile: sharp peak at boundary, long gradual
-            # tails that never flatten.  Width controls how quickly it drops
-            # from the peak — smaller = sharper spike, larger = broader bell.
-            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=4.0 * scale)
+            # Stretched-exponential fill: sharp cusp, heavy tails.
+            # Larger width = tails stay higher, interior more opaque.
+            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=8.0 * scale)
 
             t = getattr(self, '_brightness', 0.0)
             bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)

@@ -253,7 +253,10 @@ def test_show_positions_preview_much_closer_to_screen_bottom(mock_pyobjc, monkey
 
     overlay.show()
 
-    assert overlay._window.frame().origin.y == pytest.approx(40.0)
+    # Window y = _OVERLAY_BOTTOM_MARGIN - _OUTER_FEATHER
+    assert overlay._window.frame().origin.y == pytest.approx(
+        overlay_module._OVERLAY_BOTTOM_MARGIN - overlay_module._OUTER_FEATHER
+    )
 
 
 def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, monkeypatch):
