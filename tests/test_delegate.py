@@ -19,6 +19,8 @@ def _make_delegate(main_module, monkeypatch):
     delegate._capture = MagicMock()
     delegate._client = MagicMock(supports_streaming=False)
     delegate._detector = MagicMock()
+    delegate._detector.command_overlay_active = False
+    delegate._detector._command_overlay_just_dismissed = False
     delegate._menubar = MagicMock()
     delegate._glow = MagicMock()
     delegate._overlay = MagicMock()
@@ -2543,12 +2545,121 @@ class TestShortShiftHold:
         d._command_client = MagicMock()
         d._command_client.history = [("hello", "world")]
         d._command_overlay = MagicMock(_visible=True)
+        d._detector.command_overlay_active = True
 
         d._on_hold_end(shift_held=True, enter_held=True)
 
         assert d._tray_active is False
         d._command_overlay.cancel_dismiss.assert_called_once()
+        assert d._detector.command_overlay_active is False
         d._overlay.show_tray.assert_not_called()
+
+
+class TestCommandOverlayDismissRecallCycle:
+    """Test the dismiss → recall → dismiss cycle using command_overlay_active flag."""
+
+    def test_enter_empty_recalls_when_overlay_not_active(self, main_module, monkeypatch):
+        """Enter+empty recording should recall when command_overlay_active is False."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=False)
+        d._detector.command_overlay_active = False
+
+        d._on_hold_end(shift_held=False, enter_held=True)
+
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.finish.assert_called_once()
+        assert d._detector.command_overlay_active is True
+
+    def test_enter_empty_dismisses_when_overlay_active(self, main_module, monkeypatch):
+        """Enter+empty recording should dismiss when command_overlay_active is True."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=True)
+        d._detector.command_overlay_active = True
+
+        d._on_hold_end(shift_held=False, enter_held=True)
+
+        d._command_overlay.cancel_dismiss.assert_called_once()
+        assert d._detector.command_overlay_active is False
+
+    def test_enter_empty_recall_after_dismiss_cycle(self, main_module, monkeypatch):
+        """Full cycle: dismiss then recall should both work using the flag."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=True)
+        d._detector.command_overlay_active = True
+
+        # Step 1: dismiss
+        d._on_hold_end(shift_held=False, enter_held=True)
+        assert d._detector.command_overlay_active is False
+        d._command_overlay.cancel_dismiss.assert_called_once()
+
+        # Step 2: recall (flag is False now, _visible may still be True from animation)
+        d._command_overlay.reset_mock()
+        # _visible is still True (animation running) but flag is False — should recall
+        d._on_hold_end(shift_held=False, enter_held=True)
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.finish.assert_called_once()
+        assert d._detector.command_overlay_active is True
+
+    def test_empty_tap_recall_blocked_after_instant_dismiss(self, main_module, monkeypatch):
+        """Plain empty tap should NOT recall if instant dismiss just fired on the same tap."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=False)
+        d._detector.command_overlay_active = False
+        d._detector._command_overlay_just_dismissed = True  # instant dismiss just fired
+
+        d._on_hold_end(shift_held=False, enter_held=False)
+
+        d._command_overlay.show.assert_not_called()
+
+    def test_empty_tap_recall_works_on_fresh_tap(self, main_module, monkeypatch):
+        """Plain empty tap should recall when _just_dismissed is False."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=False)
+        d._detector.command_overlay_active = False
+        d._detector._command_overlay_just_dismissed = False
+
+        d._on_hold_end(shift_held=False, enter_held=False)
+
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.finish.assert_called_once()
+        assert d._detector.command_overlay_active is True
+
+    def test_hold_start_clears_just_dismissed_flag(self, main_module, monkeypatch):
+        """_on_hold_start should clear _command_overlay_just_dismissed for the next tap."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._detector.command_overlay_active = True
+        d._detector._command_overlay_just_dismissed = True
+
+        d._on_hold_start()
+
+        assert d._detector.command_overlay_active is False
+        assert d._detector._command_overlay_just_dismissed is False
+
+    def test_command_utterance_ready_sets_overlay_active(self, main_module, monkeypatch):
+        """commandUtteranceReady_ should set command_overlay_active = True."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._detector.command_overlay_active = False
+        d._transcription_token = 1
+
+        d.commandUtteranceReady_({"token": 1, "utterance": "test"})
+
+        assert d._detector.command_overlay_active is True
 
 
 class TestCoerceSettings:
