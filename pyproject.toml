@@ -19,7 +19,7 @@ spoke = "spoke.__main__:main"
 
 [project.optional-dependencies]
 tts = [
-    "mlx-audio[tts]",
+    "mlx-audio[tts]>=0.4.2",
 ]
 
 [dependency-groups]
