@@ -78,9 +78,14 @@ _SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.10)
 _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 
 # Adaptive compositing endpoints.
+# On dark backgrounds: dark fill, light text (additive/luminous language).
+# On light backgrounds: dark fill too (but more opaque), text becomes
+# transparent cutout.  The fill stays dark in both modes — on light
+# backgrounds the opaque dark fill creates the contrast surface for the
+# transparent text cutouts.
 _BG_COLOR_DARK = (0.1, 0.1, 0.12)
 _TEXT_COLOR_DARK = (1.0, 1.0, 1.0)
-_BG_COLOR_LIGHT = (0.92, 0.92, 0.90)
+_BG_COLOR_LIGHT = (0.12, 0.12, 0.14)
 _TEXT_COLOR_LIGHT = (0.0, 0.0, 0.0)
 
 # Inner glow — matches screen border glow, scaled to overlay size
@@ -167,8 +172,8 @@ _RIDGE_BLOOM_FALLOFF = 18.0
 _RIDGE_BLOOM_POWER = 2.5
 
 # Crossover opacity bump — Gaussian centered at brightness 0.5
-_CROSSOVER_CENTER = 0.5
-_CROSSOVER_WIDTH = 0.15
+_CROSSOVER_CENTER = 0.35
+_CROSSOVER_WIDTH = 0.12
 _CROSSOVER_AMPLITUDE = 0.25
 
 # Light-mode fill
@@ -613,9 +618,11 @@ class TranscriptionOverlay(NSObject):
         # through which the bright background shows).
         text_alpha_max = _lerp(_TEXT_ALPHA_MAX, _TEXT_ALPHA_MAX_LIGHT, t)
         text_alpha = _TEXT_ALPHA_MIN + scaled * (text_alpha_max - _TEXT_ALPHA_MIN)
-        if t > 0.7:
-            # Ramp text alpha toward 0 as brightness approaches 1.0
-            cutout_t = (t - 0.7) / 0.3
+        if t > 0.35:
+            # Ramp text alpha toward 0 as brightness increases — the cutout
+            # effect starts early because the brightness sampler reports lower
+            # values than the local background around the overlay.
+            cutout_t = min((t - 0.35) / 0.45, 1.0)
             text_alpha = _lerp(text_alpha, 0.0, cutout_t)
         text_t = t ** 1.3
         tr, tg, tb = _lerp_color(_TEXT_COLOR_DARK, _TEXT_COLOR_LIGHT, text_t)

@@ -226,7 +226,7 @@ class TestAdaptiveOverlayCompositing:
             sys.modules.pop("spoke.overlay", None)
 
     def test_light_background_fill_is_opaque(self, mock_pyobjc):
-        """On bright backgrounds, the fill becomes near-opaque to support the cutout."""
+        """On bright backgrounds, the dark fill becomes near-opaque to support the cutout."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -236,14 +236,12 @@ class TestAdaptiveOverlayCompositing:
             mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
             overlay.update_text_amplitude(10.0)
 
-            # Find the background color call (light bg colors)
-            bg_color_args = None
-            for call in mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list:
-                r, g, b, a = call[0]
-                if r > 0.7 and g > 0.7 and b > 0.7:
-                    bg_color_args = call[0]
-            assert bg_color_args is not None
-            _, _, _, bg_alpha = bg_color_args
+            # The fill stays dark in both modes — find the bg color call
+            # (dark color with high alpha on light backgrounds)
+            calls = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
+            # Second call is the background (first is text)
+            bg_r, bg_g, bg_b, bg_alpha = calls[-1][0]
+            assert bg_r < 0.3  # fill stays dark on light backgrounds
             assert bg_alpha > 0.8  # near-opaque fill
         finally:
             sys.modules.pop("spoke.overlay", None)
@@ -265,25 +263,27 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_mid_brightness_has_contrast_gap(self, mock_pyobjc):
+    def test_mid_brightness_crossover_bump_increases_fill_opacity(self, mock_pyobjc):
+        """At the crossover point, the fill gets more opaque to maintain contrast."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
             overlay = self._make_overlay(mod)
-            overlay.set_brightness(0.5, immediate=True)
 
+            # Measure fill alpha at brightness 0 (dark, no crossover)
+            overlay.set_brightness(0.0, immediate=True)
             mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
             overlay.update_text_amplitude(10.0)
+            _, _, _, alpha_dark = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[-1][0]
 
-            color_calls = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
-            text_r, text_g, text_b, _ = color_calls[0][0]
-            bg_r, bg_g, bg_b, _ = color_calls[1][0]
+            # Measure fill alpha at brightness 0.35 (crossover center)
+            overlay.set_brightness(0.35, immediate=True)
+            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+            overlay.update_text_amplitude(10.0)
+            _, _, _, alpha_crossover = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[-1][0]
 
-            text_lum = 0.299 * text_r + 0.587 * text_g + 0.114 * text_b
-            bg_lum = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b
-
-            assert text_lum > bg_lum + 0.08
-            assert 0.3 < bg_lum < 0.7
+            # Crossover should be more opaque than dark due to the bump
+            assert alpha_crossover > alpha_dark + 0.1
         finally:
             sys.modules.pop("spoke.overlay", None)
 
