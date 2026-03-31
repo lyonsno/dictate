@@ -258,6 +258,8 @@ class CommandOverlay(NSObject):
         )
         self._text_view.setFont_(NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0))
         self._text_view.setString_("")
+        if getattr(self, '_tool_label', None) is not None:
+            self._tool_label.setHidden_(True)
         self._text_view.textContainer().setWidthTracksTextView_(True)
         self._text_view.setHorizontallyResizable_(False)
         self._text_view.setVerticallyResizable_(True)
@@ -290,6 +292,31 @@ class CommandOverlay(NSObject):
         self._thinking_label.setHidden_(True)
         content.addSubview_(self._thinking_label)
 
+                # Ghostly tool call label popping out of the top
+        tool_label_h = 30.0
+        tool_label_w = _OVERLAY_WIDTH
+        tool_label_y = f + _OVERLAY_HEIGHT + 8  # sits just above the main box
+        
+        from AppKit import NSTextField, NSTextAlignmentCenter, NSShadow
+        self._tool_label = NSTextField.alloc().initWithFrame_(NSMakeRect(f, tool_label_y, tool_label_w, tool_label_h))
+        self._tool_label.setEditable_(False)
+        self._tool_label.setSelectable_(False)
+        self._tool_label.setBezeled_(False)
+        self._tool_label.setDrawsBackground_(False)
+        self._tool_label.setAlignment_(NSTextAlignmentCenter)
+        self._tool_label.setFont_(NSFont.systemFontOfSize_weight_(15.0, 0.0))
+        self._tool_label.setTextColor_(NSColor.colorWithWhite_alpha_(1.0, 0.35))
+        self._tool_label.setStringValue_("")
+        self._tool_label.setHidden_(True)
+        
+        shadow = NSShadow.alloc().init()
+        shadow.setShadowColor_(NSColor.colorWithWhite_alpha_(1.0, 0.3))
+        shadow.setShadowBlurRadius_(6.0)
+        shadow.setShadowOffset_((0, 0))
+        self._tool_label.setShadow_(shadow)
+        
+        wrapper.addSubview_(self._tool_label)
+        
         self._window.setContentView_(wrapper)
         self._window.setAlphaValue_(0.0)
         self._apply_surface_theme()
@@ -312,6 +339,8 @@ class CommandOverlay(NSObject):
         self._tts_blend = 0.0
         self._tts_amplitude = 0.0
         self._text_view.setString_("")
+        if getattr(self, '_tool_label', None) is not None:
+            self._tool_label.setHidden_(True)
         self._window.setAlphaValue_(0.0)
 
         # Reset geometry
@@ -594,7 +623,7 @@ class CommandOverlay(NSObject):
         )
         return frag
 
-    def set_tool_active(self, active: bool) -> None:
+    def set_tool_active(self, active: bool, tool_name: str | None = None, tool_arguments: str | None = None) -> None:
         """Show or hide the tool execution indicator."""
         self._tool_mode = active
         if active and self._visible:
@@ -603,6 +632,22 @@ class CommandOverlay(NSObject):
                 self._thinking_label.setStringValue_("tool…")
             if self._thinking_timer is None:
                 self._start_thinking_timer()
+            
+            if tool_name and getattr(self, '_tool_label', None) is not None:
+                import json
+                try:
+                    args = json.loads(tool_arguments) if tool_arguments else {}
+                    arg_str = ", ".join(f'{k}="{v}"' if isinstance(v, str) else f'{k}={v}' for k, v in args.items())
+                    if len(arg_str) > 70:
+                        arg_str = arg_str[:67] + "..."
+                    display_text = f"{tool_name}({arg_str})"
+                except Exception:
+                    display_text = f"{tool_name}(...)"
+                self._tool_label.setStringValue_(display_text)
+                self._tool_label.setHidden_(False)
+        else:
+            if getattr(self, '_tool_label', None) is not None:
+                self._tool_label.setHidden_(True)
 
     def finish(self) -> None:
         """Called when the response stream is complete.
@@ -987,6 +1032,9 @@ class CommandOverlay(NSObject):
                 self._scroll_view.setFrame_(
                     NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16)
                 )
+                if getattr(self, '_tool_label', None) is not None:
+                    self._tool_label.setFrame_(NSMakeRect(f, f + new_height + 8, _OVERLAY_WIDTH, 30.0))
+
 
             end = (self._text_view.string().length()
                    if hasattr(self._text_view.string(), 'length')

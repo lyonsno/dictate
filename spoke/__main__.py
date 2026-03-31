@@ -1618,7 +1618,11 @@ class SpokeAppDelegate(NSObject):
                         )
                         if event.kind == "tool_call":
                             self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                                "commandToolStart:", {"token": token}, False
+                                "commandToolStart:", {
+                                    "token": token,
+                                    "tool_name": getattr(event, "tool_name", None),
+                                    "tool_arguments": getattr(event, "tool_arguments", None)
+                                }, False
                             )
                         else:
                             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1799,7 +1803,7 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return
         if self._command_overlay is not None:
-            self._command_overlay.set_tool_active(True)
+            self._command_overlay.set_tool_active(True, payload.get("tool_name"), payload.get("tool_arguments"))
 
     def commandToolEnd_(self, payload: dict) -> None:
         """Main thread: tool execution finished."""

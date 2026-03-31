@@ -174,8 +174,8 @@ class CommandClient:
         messages = self._build_messages(utterance)
         full_response = ""
 
-        # Allow up to 5 tool call round-trips to prevent infinite loops
-        max_tool_rounds = 5
+        # Allow up to 30 tool call round-trips to prevent infinite loops while supporting autonomous agent workflows
+        max_tool_rounds = 30
 
         for _round in range(max_tool_rounds + 1):
             if _round > 0:
