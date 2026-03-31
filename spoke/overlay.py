@@ -703,16 +703,16 @@ class TranscriptionOverlay(NSObject):
         if self._text_view is None or not self._visible:
             return
 
-        # Smoothing — rise same as before, decay uses ease-in (slow start,
-        # fast finish) so the fill lingers before dropping away.
+        # Smoothing — rise same as before, decay holds longer then accelerates.
+        # The fill lingers after you stop speaking, then drops away cleanly.
         if amplitude > self._text_amplitude:
             self._text_amplitude += (amplitude - self._text_amplitude) * _SMOOTH_RISE
         else:
-            # Ease-in decay: the further we are from the target, the slower
-            # we move.  As we get close to zero, we accelerate.
-            # decay_rate starts at ~0.98 (slow) and drops to ~0.93 (fast)
-            gap = self._text_amplitude  # how far from zero
-            ease = 0.93 + 0.05 * min(gap / 0.5, 1.0)  # 0.98 when high, 0.93 near zero
+            # Ease-in decay with extended hold: very slow at first (0.992),
+            # accelerates as it drops (0.94 near zero).  The high initial
+            # rate means it takes many frames before visible motion starts.
+            gap = self._text_amplitude
+            ease = 0.94 + 0.052 * min(gap / 0.4, 1.0)  # 0.992 when high, 0.94 near zero
             self._text_amplitude *= ease
 
         # Chase brightness target over roughly half a second at the live update cadence.
@@ -729,7 +729,12 @@ class TranscriptionOverlay(NSObject):
         # Text: anchored near-opaque.  Dark on white backgrounds, white on
         # dark backgrounds.  Text does NOT breathe with amplitude — it stays
         # legible and stable.  The SDF fill breathes instead.
-        _TEXT_ANCHOR_ALPHA = 0.88
+        # Text alpha: on dark backgrounds, anchored at 0.88 (no RMS link).
+        # On light backgrounds, slight RMS waiver: floor 0.80, ceiling 1.0.
+        if t > 0.15:
+            _TEXT_ANCHOR_ALPHA = _lerp(0.80, 1.0, scaled)
+        else:
+            _TEXT_ANCHOR_ALPHA = 0.88
         # Text contrasts against the fill: light fill (dark bg) → dark text,
         # dark fill (light bg) → white text.
         bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
@@ -752,8 +757,8 @@ class TranscriptionOverlay(NSObject):
         # Dark backgrounds: very transparent at rest, moderate peak
         # Light backgrounds: the SDF peak should saturate near-full
         fill_drive = scaled
-        fill_min = _lerp(0.04, 0.45, t)   # light: visible even at rest
-        fill_max = _lerp(0.50, 0.98, t)   # light: peak saturates full black
+        fill_min = _lerp(0.04, 0.55, t)   # light: visible even at rest
+        fill_max = _lerp(0.50, 0.99, t)   # light: peak saturates full black
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
