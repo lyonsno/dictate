@@ -319,6 +319,9 @@ class SpacebarHoldDetector(NSObject):
             elif enter_held:
                 # Enter + quick tap = route through hold_end for recall/dismiss
                 self._on_hold_end(shift_held=False, enter_held=True)
+            elif getattr(self, '_command_overlay_just_dismissed', False):
+                # This tap was an overlay dismiss — suppress the space character.
+                pass
             else:
                 # Normal quick tap = forward a space
                 self._forward_space()
@@ -387,6 +390,10 @@ class SpacebarHoldDetector(NSObject):
         """Called when spacebar has been held past the threshold."""
         self._hold_timer = None
         if self._state != _State.WAITING:
+            return
+        # If the spacebar keyDown already triggered an overlay dismiss,
+        # skip the hold start — the user is toggling visibility, not dictating.
+        if getattr(self, '_command_overlay_just_dismissed', False):
             return
         self._state = _State.RECORDING
         self._start_safety_timer()
