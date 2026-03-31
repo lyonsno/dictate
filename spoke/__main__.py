@@ -976,6 +976,22 @@ class SpokeAppDelegate(NSObject):
                         logger.info("Empty recording — dismissing command overlay")
                         self._command_overlay.cancel_dismiss()
                         self._detector.command_overlay_active = False
+                elif self._command_client is not None:
+                    # Overlay not visible — recall last response on empty tap
+                    history = self._command_client.history
+                    if history:
+                        last_utterance, last_response = history[-1]
+                        logger.info("Empty tap — recalling last response")
+                        if self._command_overlay is not None:
+                            try:
+                                self._sync_command_overlay_brightness(immediate=True)
+                                self._command_overlay.show()
+                                self._command_overlay.set_utterance(last_utterance)
+                                self._command_overlay.append_token(last_response)
+                                self._command_overlay.finish()
+                                self._detector.command_overlay_active = True
+                            except Exception:
+                                logger.exception("Recall overlay failed")
 
             if self._menubar is not None:
                 self._menubar.set_status_text("Ready — hold spacebar")
