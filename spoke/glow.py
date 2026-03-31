@@ -69,7 +69,7 @@ _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
 _DIM_OPACITY_DARK = 0.28  # dim on dark backgrounds
 _DIM_OPACITY_LIGHT = 0.424  # bright scenes move 20% closer to fully opaque
 # Amplitude smoothing: rise fast, decay slow
-_RISE_FACTOR = 0.90  # near-instant response to voice
+_RISE_FACTOR = 0.95  # faster attack — vignette snaps to voice
 _DECAY_FACTOR = 0.50  # very quick falloff between words
 
 # Fade timing

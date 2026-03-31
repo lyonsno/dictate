@@ -82,7 +82,8 @@ _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 # bright ghostly bubble that reads as additive glow.
 # On light backgrounds: dark fill, text becomes transparent cutout —
 # the overlay is a dark bubble with letter-shaped holes.
-_BG_COLOR_DARK = (0.92, 0.92, 0.90)   # light fill on dark backgrounds
+# Match the edge glow color on dark backgrounds — desaturated blue-white
+_BG_COLOR_DARK = _scale_color_saturation((0.50, 0.59, 0.84), 0.40)
 _TEXT_COLOR_DARK = (0.0, 0.0, 0.0)     # dark text on light fill
 _BG_COLOR_LIGHT = (0.10, 0.10, 0.12)   # dark fill on light backgrounds
 _TEXT_COLOR_LIGHT = (1.0, 1.0, 1.0)     # white text on dark fill (light backgrounds)
@@ -708,11 +709,11 @@ class TranscriptionOverlay(NSObject):
         if amplitude > self._text_amplitude:
             self._text_amplitude += (amplitude - self._text_amplitude) * _SMOOTH_RISE
         else:
-            # Ease-in decay with extended hold: very slow at first (0.992),
-            # accelerates as it drops (0.94 near zero).  The high initial
-            # rate means it takes many frames before visible motion starts.
+            # Very slow decay — the fill lingers for a long time after speaking,
+            # then drops away. Rate 0.996 when high (~250 frames to halve),
+            # accelerates to 0.95 near zero for a clean finish.
             gap = self._text_amplitude
-            ease = 0.94 + 0.052 * min(gap / 0.4, 1.0)  # 0.992 when high, 0.94 near zero
+            ease = 0.95 + 0.046 * min(gap / 0.3, 1.0)  # 0.996 when high, 0.95 near zero
             self._text_amplitude *= ease
 
         # Chase brightness target over roughly half a second at the live update cadence.
@@ -760,8 +761,8 @@ class TranscriptionOverlay(NSObject):
         # the glow — visible before the glow builds up, and at low RMS the
         # fill is already present against the undimmed background.
         fill_drive = scaled * scaled  # squared — leads the glow's log curve
-        fill_min = _lerp(0.04, 0.28, t)   # dark: barely there; light: subtle at rest
-        fill_max = _lerp(0.50, 0.99, t)   # dark: modest; light: saturates
+        fill_min = _lerp(0.06, 0.42, t)   # 50% darker at rest
+        fill_max = _lerp(0.70, 0.99, t)   # 2x darker at saturation (dark: 0.50->0.70)
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
