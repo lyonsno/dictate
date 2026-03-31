@@ -107,16 +107,17 @@ class TestOverlayTiming:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_overlay_glow_color_gets_much_bluer_than_the_edge_glow_base(self, mock_pyobjc):
-        """The overlay can run bluer than the bezel glow so it still reads against the keyboard."""
+    def test_overlay_glow_color_is_desaturated_tint(self, mock_pyobjc):
+        """The overlay glow should be a subtle tint, not a saturated neon outline."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
-            previous_overlay_sat = colorsys.rgb_to_hsv(0.38, 0.52, 1.0)[1]
+            base_sat = colorsys.rgb_to_hsv(0.38, 0.52, 1.0)[1]
             overlay_sat = colorsys.rgb_to_hsv(*mod._GLOW_COLOR)[1]
 
-            assert overlay_sat == pytest.approx(min(previous_overlay_sat * 1.28, 1.0), rel=0.02)
-            assert overlay_sat > previous_overlay_sat
+            # ~10% of the base saturation
+            assert overlay_sat == pytest.approx(base_sat * 0.13, rel=0.05)
+            assert overlay_sat < 0.15
         finally:
             sys.modules.pop("spoke.overlay", None)
 

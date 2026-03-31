@@ -90,8 +90,8 @@ _TEXT_COLOR_LIGHT = (0.0, 0.0, 0.0)
 
 # Inner glow — matches screen border glow, scaled to overlay size
 _GLOW_COLOR = _scale_color_saturation(
-    (0.38, 0.52, 1.0), 1.28
-)  # still bluer than the bezel glow, but 20% calmer than the last pass
+    (0.38, 0.52, 1.0), 0.13
+)  # ~10% of original saturation — subtle tint, not a neon outline
 _INNER_GLOW_WIDTH = 3.0  # proportional to overlay vs screen size
 _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
 _OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
@@ -166,8 +166,8 @@ def _max_overlay_height(screen_height: float) -> float:
 # intensity rising toward the boundary, peaking there, then falling off
 # outside.
 
-_RIDGE_FALLOFF = 8.0      # px — half-width of the exponential peak
-_RIDGE_POWER = 5.0        # exponent — higher = sharper ridge
+_RIDGE_FALLOFF = 5.0      # px — half-width of the exponential peak
+_RIDGE_POWER = 12.0       # exponent — high value eliminates the plateau
 _RIDGE_BLOOM_FALLOFF = 18.0
 _RIDGE_BLOOM_POWER = 2.5
 
