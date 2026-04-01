@@ -342,14 +342,15 @@ def _display_signed_distance_field(geometry: dict):
 
 def _distance_field_opacity(distance: float, falloff: float, power: float) -> float:
     normalized = max(distance, 0.0) / max(falloff, 1e-6)
-    return math.exp(-(normalized ** power))
+    return 1.0 / (1.0 + normalized ** power)
 
 
 def _distance_field_alpha(signed_distance, falloff: float, power: float):
     import numpy as np
 
     distance = np.clip(-signed_distance, 0.0, None)
-    alpha = np.exp(-np.power(distance / max(falloff, 1e-6), power, dtype=np.float32))
+    normalized = np.power(distance / max(falloff, 1e-6), power, dtype=np.float32)
+    alpha = 1.0 / (1.0 + normalized)
     return np.where(signed_distance < 0.0, alpha, 0.0).astype(np.float32, copy=False)
 
 
