@@ -50,11 +50,11 @@ _GLOW_CAP_COLOR = (1.0, 0.45, 0.15)  # angry sunset for cap countdown
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 60.0  # broader bloom so a dimmer peak still reads as glow
 _GLOW_MAX_OPACITY = 1.0  # bright scenes can drive the glow all the way to full strength
-_GLOW_BASE_OPACITY = 0.0966  # 140% of the calmer baseline so the border keeps dancing at rest
-_GLOW_PEAK_TARGET = 0.60
-_GLOW_BASE_OPACITY_DARK = 0.25
-_GLOW_BASE_OPACITY_LIGHT = 0.2744
-_GLOW_PEAK_TARGET_DARK = 0.60
+_GLOW_BASE_OPACITY = 0.1449  # 140% of the calmer baseline so the border keeps dancing at rest
+_GLOW_PEAK_TARGET = 0.90
+_GLOW_BASE_OPACITY_DARK = 0.375
+_GLOW_BASE_OPACITY_LIGHT = 0.4116
+_GLOW_PEAK_TARGET_DARK = 0.90
 _GLOW_PEAK_TARGET_LIGHT = _GLOW_MAX_OPACITY
 _EDGE_INNER_SATURATION_SCALE = 0.70
 _EDGE_OUTER_SATURATION_SCALE = 1.80
@@ -66,8 +66,18 @@ _CORNER_RADIUS_BOTTOM = 6.0  # slightly tighter than physical ~10pt
 
 _GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "21.4"))
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
-_DIM_OPACITY_DARK = 0.28  # dim on dark backgrounds
-_DIM_OPACITY_LIGHT = 0.424  # bright scenes move 20% closer to fully opaque
+_DIM_OPACITY_DARK = 0.42  # dim on dark backgrounds
+_DIM_OPACITY_LIGHT = 0.636  # pumped 50%
+
+def _dim_target_for_brightness(brightness: float) -> float:
+    # Spike to 0.80 at mid-gray
+    if brightness <= 0.5:
+        t = brightness / 0.5
+        return _DIM_OPACITY_DARK + t * (0.80 - _DIM_OPACITY_DARK)
+    else:
+        t = (brightness - 0.5) / 0.5
+        return 0.80 + t * (_DIM_OPACITY_LIGHT - 0.80)
+
 # Amplitude smoothing: rise fast, decay slow
 _RISE_FACTOR = 0.99  # 3x faster (was 0.90)
 _DECAY_FACTOR = 0.16 # 3x faster (was 0.50)
@@ -89,7 +99,7 @@ _DISTANCE_FIELD_SCALE_DEFAULT = 2.0
 _NOTCH_BOTTOM_RADIUS = 8.0
 _NOTCH_SHOULDER_SMOOTHING = 9.5
 _LIGHT_BACKGROUND_EDGE_BOOST = 0.664
-_VIGNETTE_OPACITY_SCALE = 3.05  # back to original
+_VIGNETTE_OPACITY_SCALE = 4.575  # back to original
 _TEXTURE_ANIMATION_INTERVAL = 0.08
 _TEXTURE_MIN_GRID_WIDTH = 96
 _TEXTURE_MIN_GRID_HEIGHT = 64
@@ -298,7 +308,13 @@ def _asymmetric_rounded_rect_sdf(
     qx = np.abs(x) - (half_width - radii)
     qy = np.abs(y) - (half_height - radii)
     outside = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0))
-    inside = np.minimum(np.maximum(qx, qy), 0.0)
+    
+    # Smooth the inner corner ridge where the negative distances meet
+    corner_smoothing = 24.0
+    seam = np.maximum(corner_smoothing - np.abs(qx - qy), 0.0)
+    smoothed_max = np.maximum(qx, qy) + (seam * seam) * (0.25 / corner_smoothing)
+    
+    inside = np.minimum(smoothed_max, 0.0)
     return outside + inside - radii
 
 
@@ -527,8 +543,8 @@ def _continuous_texture_pass_specs():
             "grid_scale": 0.115,
             "mask_falloff": 18.0,
             "mask_power": 3.25,
-            "additive_alpha": 0.45,
-            "subtractive_alpha": 0.085,
+            "additive_alpha": 0.675,
+            "subtractive_alpha": 0.128,
             "subtractive_color_scale": 0.18,
             "style": "macro",
             "phase_rates": (0.055, -0.038, 0.024),
@@ -540,8 +556,8 @@ def _continuous_texture_pass_specs():
             "grid_scale": 0.14,
             "mask_falloff": 15.5,
             "mask_power": 2.9,
-            "additive_alpha": 0.33,
-            "subtractive_alpha": 0.06,
+            "additive_alpha": 0.495,
+            "subtractive_alpha": 0.090,
             "subtractive_color_scale": 0.14,
             "style": "mist",
             "phase_rates": (0.078, 0.052, -0.034),
@@ -553,8 +569,8 @@ def _continuous_texture_pass_specs():
             "grid_scale": 0.128,
             "mask_falloff": 11.0,
             "mask_power": 3.55,
-            "additive_alpha": 0.375,
-            "subtractive_alpha": 0.072,
+            "additive_alpha": 0.562,
+            "subtractive_alpha": 0.108,
             "subtractive_color_scale": 0.11,
             "style": "mesa",
             "phase_rates": (0.047, -0.031, 0.021),
@@ -566,8 +582,8 @@ def _continuous_texture_pass_specs():
             "grid_scale": 0.6,
             "mask_falloff": 14.0,
             "mask_power": 3.2,
-            "additive_alpha": 0.05,
-            "subtractive_alpha": 0.35,
+            "additive_alpha": 0.075,
+            "subtractive_alpha": 0.525,
             "subtractive_color_scale": 0.05,
             "style": "micro",
             "phase_rates": (0.015, -0.012, 0.009),
@@ -953,7 +969,7 @@ class GlowOverlay(NSObject):
         # Fade in screen dim — adaptive opacity based on screen brightness.
         # Sample once per recording, not per-frame.
         if self._dim_layer is not None:
-            dim_target = _DIM_OPACITY_DARK + brightness * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
+            dim_target = _dim_target_for_brightness(brightness)
             logger.info("Screen brightness=%.2f → dim opacity=%.2f", brightness, dim_target)
 
             pres = self._dim_layer.presentationLayer()
@@ -1013,7 +1029,7 @@ class GlowOverlay(NSObject):
 
         # Smoothly adjust dim opacity
         if self._dim_layer is not None:
-            dim_target = _DIM_OPACITY_DARK + new_brightness * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
+            dim_target = _dim_target_for_brightness(new_brightness)
             from Quartz import CABasicAnimation, CAMediaTimingFunction
             pres = self._dim_layer.presentationLayer()
             current = pres.opacity() if pres is not None else self._dim_layer.opacity()
