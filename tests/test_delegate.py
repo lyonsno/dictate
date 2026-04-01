@@ -103,6 +103,24 @@ class TestHoldCallbacks:
         assert d._transcribing is False
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
 
+    def test_hold_end_operator_toggle_recalls_overlay_without_transcribing(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"fake-wav"
+        d._command_client = MagicMock(history=[("open file", "done")])
+        d._command_overlay = MagicMock(_visible=False)
+
+        with patch.object(main_module.threading, "Thread") as MockThread:
+            d._on_hold_end(operator_action="toggle_assistant_overlay")
+
+        MockThread.assert_not_called()
+        assert d._transcribing is False
+        d._command_overlay.show.assert_called_once_with()
+        d._command_overlay.set_utterance.assert_called_once_with("open file")
+        d._command_overlay.append_token.assert_called_once_with("done")
+        d._command_overlay.finish.assert_called_once_with()
+
 
 class TestTranscriptionToken:
     """Test generation-based stale result rejection."""

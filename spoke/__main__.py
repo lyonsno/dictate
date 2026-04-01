@@ -863,7 +863,43 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             self._overlay.set_text(text)
 
-    def _on_hold_end(self, shift_held: bool = False, enter_held: bool = False) -> None:
+    def _toggle_assistant_overlay(self) -> None:
+        """Toggle the assistant overlay using the last command response, if any."""
+        if self._command_client is None:
+            logger.info("Assistant toggle ignored — no command client")
+            return
+
+        command_visible = (
+            self._command_overlay is not None
+            and getattr(self._command_overlay, '_visible', False)
+        )
+        if command_visible:
+            logger.info("Assistant toggle — dismissing command overlay")
+            self._command_overlay.cancel_dismiss()
+            return
+
+        history = self._command_client.history
+        if not history:
+            logger.info("Assistant toggle — no history to recall")
+            return
+
+        last_utterance, last_response = history[-1]
+        logger.info("Assistant toggle — recalling last response")
+        if self._command_overlay is not None:
+            try:
+                self._command_overlay.show()
+                self._command_overlay.set_utterance(last_utterance)
+                self._command_overlay.append_token(last_response)
+                self._command_overlay.finish()
+            except Exception:
+                logger.exception("Recall overlay failed")
+
+    def _on_hold_end(
+        self,
+        shift_held: bool = False,
+        enter_held: bool = False,
+        operator_action: str | None = None,
+    ) -> None:
         if getattr(self, "_hold_rejected_during_warmup", False):
             self._hold_rejected_during_warmup = False
             logger.info(
@@ -894,10 +930,25 @@ class SpokeAppDelegate(NSObject):
             return
 
         # ── Normal recording end ──
-        logger.info("Hold ended — shift=%s enter=%s", shift_held, enter_held)
+        logger.info(
+            "Hold ended — shift=%s enter=%s operator_action=%s",
+            shift_held,
+            enter_held,
+            operator_action,
+        )
         self._preview_active = False
         self._preview_cancelled_on_release = True
         wav_bytes = self._capture.stop()
+
+        if operator_action == "toggle_assistant_overlay":
+            if self._overlay is not None:
+                self._overlay.hide()
+            if self._glow is not None:
+                self._glow.hide()
+            self._toggle_assistant_overlay()
+            if self._menubar is not None:
+                self._menubar.set_status_text("Ready — hold spacebar")
+            return
 
         # Short shift-hold (under 800ms of recording) = recall into tray
         elapsed = time.monotonic() - self._record_start_time if self._record_start_time else 0
@@ -932,30 +983,7 @@ class SpokeAppDelegate(NSObject):
                     logger.info("Shift+empty — no tray entries to recall")
             elif enter_held and self._command_client is not None:
                 # Enter + empty recording = recall last assistant response
-                command_visible = (
-                    self._command_overlay is not None
-                    and getattr(self._command_overlay, '_visible', False)
-                )
-                if command_visible:
-                    # Already showing — dismiss it
-                    logger.info("Enter+empty — dismissing command overlay")
-                    self._command_overlay.cancel_dismiss()
-                else:
-                    # Not showing — recall last response
-                    history = self._command_client.history
-                    if history:
-                        last_utterance, last_response = history[-1]
-                        logger.info("Enter+empty — recalling last response")
-                        if self._command_overlay is not None:
-                            try:
-                                self._command_overlay.show()
-                                self._command_overlay.set_utterance(last_utterance)
-                                self._command_overlay.append_token(last_response)
-                                self._command_overlay.finish()
-                            except Exception:
-                                logger.exception("Recall overlay failed")
-                    else:
-                        logger.info("Enter+empty — no history to recall")
+                self._toggle_assistant_overlay()
             else:
                 command_visible = (
                     self._command_overlay is not None

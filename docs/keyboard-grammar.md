@@ -35,7 +35,8 @@ Each key has a consistent identity across the entire grammar:
 | Spacebar tap (< 400ms, no shift) | Normal space character (forwarded to app) |
 | Spacebar hold (≥ 400ms), clean release | **Text pathway** — record, transcribe, paste at cursor |
 | Spacebar hold, shift held at release | **Enter tray** — record, transcribe, stage for review |
-| Spacebar hold, enter held at release | **Send to assistant** — record, transcribe, stream to assistant |
+| Spacebar hold, `Enter down` then `Space up` while `Enter` is still down | **Toggle assistant overlay** — consume the gesture as operator control rather than dictation completion |
+| Spacebar hold, `Enter down` then `Enter up` then `Space up` within ~300ms | **Send to assistant** — record, transcribe, stream to assistant |
 | Short spacebar hold (< 800ms), shift at release | **Recall** — enter tray with last tray entry (no recording) |
 
 The hold threshold defaults to 400ms (configurable via `SPOKE_HOLD_MS`, which
@@ -49,12 +50,15 @@ capture ends you decide what the utterance becomes:
 
 - **Clean release** → text insertion (dictation)
 - **Shift held at release** → tray (review before committing)
-- **Enter held at release** → assistant (confident send)
+- **Enter still held when spacebar comes up** → toggle the assistant overlay
+- **Enter already released, then spacebar released within ~300ms** → assistant send
+- **Enter already released, but spacebar not released before the window expires** → disarm the send chord and keep recording as ordinary spacebar behavior
 
-Shift and enter can be pressed at any point during the hold — shift is latched
-via `kCGEventFlagsChanged`, so pressing shift after you start speaking still
-routes to the tray. For the ordinary path, what matters is what's held when
-spacebar comes up.
+Shift can still be pressed at any point during the hold — shift is latched via
+`kCGEventFlagsChanged`, so pressing shift after you start speaking still routes
+to the tray. Enter now uses release order rather than a hidden armed state:
+space-up-first toggles overlay, enter-up-first plus a short trailing space-up
+sends to the assistant.
 
 ## Modifier blocking
 
@@ -93,15 +97,17 @@ case the forwarded events are lost.
 3. Text is injected at the cursor via paste.
 4. If no focused text field is detected → enters **tray** automatically.
 
-## Command pathway (enter held at release)
+## Command pathway (release-order send chord)
 
 1. Audio capture stops.
 2. Audio is transcribed to text (the "utterance").
 3. Utterance is streamed through the command client (assistant).
 4. Command overlay shows the utterance and the streamed response.
 
-This is the fast path for confident sends — you know before you finish
-speaking that this is a command. Hold enter, release spacebar, done.
+This is the explicit send chord: press Enter during the hold, release Enter,
+then release spacebar within the short window. If you release spacebar first
+while Enter is still down, that same chord family becomes assistant-overlay
+toggle instead of send.
 
 ## Latched recording extension (planned)
 

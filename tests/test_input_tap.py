@@ -814,8 +814,8 @@ class TestTrayAwareness:
         on_enter.assert_not_called()
         assert det._enter_held is True
 
-    def test_enter_held_passed_on_recording_release(self, input_tap_module):
-        """Enter held during recording should pass enter_held=True to on_hold_end."""
+    def test_enter_held_at_space_release_toggles_overlay(self, input_tap_module):
+        """Space-up while Enter is still held should route as the overlay-toggle chord."""
         mod = input_tap_module
         det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
         det._enter_held = True
@@ -824,10 +824,14 @@ class TestTrayAwareness:
         det.holdTimerFired_(None)
         det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
 
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        on_end.assert_called_once_with(
+            shift_held=False,
+            enter_held=False,
+            operator_action="toggle_assistant_overlay",
+        )
 
-    def test_enter_tap_before_recording_release_stays_latched(self, input_tap_module):
-        """A brief Enter tap during recording should still route the release as command."""
+    def test_enter_tap_before_space_release_arms_send_chord(self, input_tap_module):
+        """Enter-up before space-up should arm the short send window, not decide immediately."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
@@ -843,9 +847,45 @@ class TestTrayAwareness:
         mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
         mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
 
+        on_end.assert_not_called()
+        assert det._pending_release_active is True
+
         det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
 
         on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        assert det._pending_release_active is False
+
+    def test_enter_tap_without_space_release_disarms_back_to_text(
+        self, input_tap_module
+    ):
+        """If space-up misses the short window after Enter-up, assistant send disarms."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        mod._active_detector = det
+        event = MagicMock()
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+
+        assert det._pending_release_active is True
+        on_end.assert_not_called()
+
+        det.releaseDecisionTimerFired_(None)
+
+        assert det._state == mod._State.RECORDING
+        assert det._pending_release_active is False
+        on_end.assert_not_called()
+
+        det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
+
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
 
     def test_shift_release_then_enter_within_grace_routes_as_command(
         self, input_tap_module
