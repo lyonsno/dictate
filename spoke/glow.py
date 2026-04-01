@@ -61,8 +61,15 @@ _EDGE_OUTER_SATURATION_SCALE = 1.80
 # MacBook Pro 14"/16" (2021+) has asymmetric display corners.
 # We use slightly tighter radii than the physical bezel so the glow
 # source stays close to the corners — the bezel hides the overshoot.
-_CORNER_RADIUS_TOP = 10.0  # slightly tighter than physical ~18pt to fill corners
-_CORNER_RADIUS_BOTTOM = 6.0  # slightly tighter than physical ~10pt
+# Keyed by (native_pixel_width, native_pixel_height).
+_DISPLAY_CORNER_RADII: dict[tuple[int, int], tuple[float, float]] = {
+    # 16" MacBook Pro (2021+): 3456×2234 native
+    (3456, 2234): (10.0, 6.0),
+    # 14" MacBook Pro (2021+): 3024×1964 native
+    (3024, 1964): (10.0, 6.0),  # start from 16" values, tune visually
+}
+_CORNER_RADIUS_TOP_DEFAULT = 10.0
+_CORNER_RADIUS_BOTTOM_DEFAULT = 6.0
 
 _GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "21.4"))
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
@@ -245,11 +252,17 @@ def _screen_backing_scale(screen) -> float:
 
 def _display_shape_geometry(screen, width_pt: float, height_pt: float, scale: float) -> dict:
     """Resolve the live display silhouette used by the distance-field renderer."""
+    pixel_width = max(int(round(width_pt * scale)), 1)
+    pixel_height = max(int(round(height_pt * scale)), 1)
+    top_r, bot_r = _DISPLAY_CORNER_RADII.get(
+        (pixel_width, pixel_height),
+        (_CORNER_RADIUS_TOP_DEFAULT, _CORNER_RADIUS_BOTTOM_DEFAULT),
+    )
     geometry = {
-        "pixel_width": max(int(round(width_pt * scale)), 1),
-        "pixel_height": max(int(round(height_pt * scale)), 1),
-        "top_radius": _CORNER_RADIUS_TOP * scale,
-        "bottom_radius": _CORNER_RADIUS_BOTTOM * scale,
+        "pixel_width": pixel_width,
+        "pixel_height": pixel_height,
+        "top_radius": top_r * scale,
+        "bottom_radius": bot_r * scale,
         "notch": None,
     }
 
