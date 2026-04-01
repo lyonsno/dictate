@@ -650,7 +650,7 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             if self._glow is not None:
                 self._overlay.set_brightness(
-                    getattr(self._glow, "_brightness", 0.0),
+                    getattr(self._glow, "_brightness_field", getattr(self._glow, "_brightness", 0.0)),
                     immediate=True,
                 )
             self._overlay.show()
@@ -717,8 +717,8 @@ class SpokeAppDelegate(NSObject):
         if self._glow is not None:
             self._glow.update_amplitude(rms)
         if self._overlay is not None and self._glow is not None:
-            glow_brightness = getattr(self._glow, "_brightness", 0.0)
-            if glow_brightness != getattr(self._overlay, "_brightness", 0.0):
+            glow_brightness = getattr(self._glow, "_brightness_field", getattr(self._glow, "_brightness", 0.0))
+            if glow_brightness != getattr(self._overlay, "_brightness_field", getattr(self._overlay, "_brightness", 0.0)):
                 self._overlay.set_brightness(glow_brightness)
             self._sync_command_overlay_brightness()
             # Text breathing: glow's smoothed amplitude, scaled independently
@@ -1172,7 +1172,7 @@ class SpokeAppDelegate(NSObject):
         if self._command_overlay is None or self._glow is None:
             return
         self._command_overlay.set_brightness(
-            getattr(self._glow, "_brightness", 0.0),
+            getattr(self._glow, "_brightness_field", getattr(self._glow, "_brightness", 0.0)),
             immediate=immediate,
         )
 

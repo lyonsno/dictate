@@ -231,7 +231,7 @@ def _interior_fill_alpha(signed_distance, edge_softness: float):
     return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
 
 
-def _glow_fill_alpha(signed_distance, width: float, interior_floor: float = 0.775):
+def _glow_fill_alpha(signed_distance, width: float, interior_floor: float | "np.ndarray" = 0.775):
     """Asymmetric stretched-exponential fill profile.
 
     Inside (negative distance): sharp cusp at boundary, drops rapidly
@@ -456,6 +456,7 @@ class TranscriptionOverlay(NSObject):
         # Adaptive compositing defaults dark until we get a brightness sample.
         self._brightness = 0.0
         self._brightness_target = 0.0
+        self._brightness_field = None
 
         # Recovery mode state
         self._recovery_mode = False
@@ -665,9 +666,15 @@ class TranscriptionOverlay(NSObject):
         )
         logger.info("Overlay show")
 
-    def set_brightness(self, brightness: float, immediate: bool = False) -> None:
-        """Set screen brightness (0.0 dark – 1.0 bright) for adaptive compositing."""
-        self._brightness_target = min(max(brightness, 0.0), 1.0)
+    def set_brightness(self, brightness: float | "BrightnessField", immediate: bool = False) -> None:
+        """Set screen brightness for adaptive compositing."""
+        if hasattr(brightness, "sample_at"):
+            self._brightness_field = brightness
+            self._brightness_target = brightness.average
+        else:
+            self._brightness_target = min(max(brightness, 0.0), 1.0)
+            self._brightness_field = None
+
         if immediate:
             self._brightness = self._brightness_target
 
@@ -960,6 +967,38 @@ class TranscriptionOverlay(NSObject):
             if hasattr(self._scroll_view, "reflectScrolledClipView_"):
                 self._scroll_view.reflectScrolledClipView_(clip_view)
 
+    def _get_local_brightness_field(self, width: int, height: int) -> "np.ndarray":
+        """Compute a per-pixel brightness field for the overlay's current screen position."""
+        import numpy as np
+        from scipy.ndimage import zoom
+
+        if not getattr(self, "_brightness_field", None):
+            return np.full((height, width), getattr(self, "_brightness", 0.0), dtype=np.float32)
+
+        try:
+            win_frame = self._window.frame()
+            screen_frame = self._screen.frame()
+
+            # Screen fractions for the overlay window (which includes feather margin)
+            # NSWindow coordinates are bottom-up, same as our sampling grid
+            x0 = (win_frame.origin.x - screen_frame.origin.x) / screen_frame.size.width
+            x1 = (win_frame.origin.x + win_frame.size.width - screen_frame.origin.x) / screen_frame.size.width
+            y0 = (win_frame.origin.y - screen_frame.origin.y) / screen_frame.size.height
+            y1 = (win_frame.origin.y + win_frame.size.height - screen_frame.origin.y) / screen_frame.size.height
+
+            # Sample a 4x4 grid across the overlay itself for interpolation
+            overlay_samples = np.zeros((4, 4), dtype=np.float32)
+            for j in range(4):
+                fy = y0 + (y1 - y0) * (j + 0.5) / 4.0
+                for i in range(4):
+                    fx = x0 + (x1 - x0) * (i + 0.5) / 4.0
+                    overlay_samples[j, i] = self._brightness_field.sample_at(fx, fy)
+
+            # Bilinear upsample to the full pixel dimensions of the SDF
+            return zoom(overlay_samples, (height / 4.0, width / 4.0), order=1).astype(np.float32)
+        except Exception:
+            return np.full((height, width), getattr(self, "_brightness", 0.0), dtype=np.float32)
+
     def _apply_ridge_masks(self, width: float, height: float) -> None:
         """Compute SDF and apply ridge + bloom masks for the given overlay size.
 
@@ -994,18 +1033,26 @@ class TranscriptionOverlay(NSObject):
         if not hasattr(self, '_fill_layer') or self._fill_layer is None:
             return
         try:
+            import numpy as np
             scale = getattr(self, '_fill_scale', 2.0)
+            
+            # Local brightness field for per-pixel modulation
+            ph, pw = self._fill_sdf.shape
+            t_field = self._get_local_brightness_field(pw, ph)
+            
+            # Interior floor varies with local brightness: low on dark backgrounds
+            # (more contrast), high on light backgrounds (more material).
+            floor_field = 0.55 + (0.775 - 0.55) * t_field
+            
             # Stretched-exponential fill: knife-edge cusp, heavy tails.
-            # Width 2.5 = very aggressive initial drop from peak.
-            # Interior floor varies with brightness: low on dark backgrounds
-            # (more contrast between peak and interior), high on light
-            # backgrounds (more uniform/material).
-            t = getattr(self, '_brightness', 0.0)
-            floor = _lerp(0.55, 0.775, t)
-            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=2.5 * scale, interior_floor=floor)
+            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=2.5 * scale, interior_floor=floor_field)
 
-            t = getattr(self, '_brightness', 0.0)
-            bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
+            # Base fill color still uses the average brightness for now to keep 
+            # the tinted image single-colored (CGImage doesn't support easy multi-color baking 
+            # without more complex pixel logic).
+            t_avg = getattr(self, '_brightness', 0.0)
+            bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t_avg)
+            
             # Scale color to 0-255
             fill_image, self._fill_payload = _fill_field_to_image(
                 fill_alpha,

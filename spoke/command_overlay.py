@@ -496,9 +496,13 @@ class CommandOverlay(NSObject):
         # Start thinking timer (glowing number mode)
         self._start_thinking_timer()
 
-    def set_brightness(self, brightness: float, immediate: bool = False) -> None:
-        """Set screen brightness (0.0 dark – 1.0 bright) for adaptive compositing."""
-        self._brightness_target = _clamp01(brightness)
+    def set_brightness(self, brightness: float | "BrightnessField", immediate: bool = False) -> None:
+        """Set screen brightness for adaptive compositing."""
+        if hasattr(brightness, "sample_at"):
+            self._brightness_target = brightness.average
+        else:
+            self._brightness_target = _clamp01(brightness)
+
         if immediate:
             self._brightness = self._brightness_target
             self._apply_surface_theme()
