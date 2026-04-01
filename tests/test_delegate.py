@@ -4,6 +4,7 @@ Tests the wiring between layers: hold callbacks, transcription lifecycle,
 generation-based stale result rejection, and env var validation.
 """
 
+import logging
 import os
 import json
 import time
@@ -982,11 +983,13 @@ class TestDualModelConfiguration:
     def test_discover_command_models_merges_server_and_local_inventory(
         self, main_module, monkeypatch, tmp_path
     ):
-        """Assistant discovery should include local LM Studio models alongside /v1/models."""
+        """Assistant discovery should keep only curated installed local MLX models."""
         model_root = tmp_path / "models"
-        (model_root / "lmstudio-community" / "Qwen3-4B-Instruct-2507-MLX-6bit").mkdir(
-            parents=True
-        )
+        curated = model_root / "lmstudio-community" / "Qwen3-4B-Instruct-2507-MLX-6bit"
+        curated.mkdir(parents=True)
+        (curated / "config.json").write_text("{}")
+        (curated / "tokenizer.json").write_text("{}")
+        (curated / "model.safetensors.index.json").write_text("{}")
         (model_root / "unsloth" / "Qwen3-4B-Instruct-2507-GGUF").mkdir(parents=True)
         monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
 
@@ -997,26 +1000,23 @@ class TestDualModelConfiguration:
         options = d._discover_command_models("qwen3p5-35B-A3B")
 
         assert options == [
-            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
-            ("qwen3-14b", "qwen3-14b", True),
             (
                 "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
                 "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
-                True,
-            ),
-            (
-                "unsloth/Qwen3-4B-Instruct-2507-GGUF",
-                "unsloth/Qwen3-4B-Instruct-2507-GGUF",
-                True,
+                False,
             ),
         ]
 
-    def test_discover_command_models_keeps_selected_model_when_server_is_unavailable(
+    def test_discover_command_models_drops_stale_selected_model_when_server_is_unavailable(
         self, main_module, monkeypatch, tmp_path
     ):
-        """Selected assistant model should stay visible even if only local inventory is available."""
+        """A stale selected assistant model should disappear when it is not actually available."""
         model_root = tmp_path / "models"
-        (model_root / "mlx-community" / "Qwen3-0.6B-8bit").mkdir(parents=True)
+        curated = model_root / "lmstudio-community" / "Qwen2.5-Coder-3B-Instruct-MLX-8bit"
+        curated.mkdir(parents=True)
+        (curated / "config.json").write_text("{}")
+        (curated / "tokenizer.json").write_text("{}")
+        (curated / "model.safetensors").write_text("weights")
         monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
 
         d = _make_delegate(main_module, monkeypatch)
@@ -1026,8 +1026,35 @@ class TestDualModelConfiguration:
         options = d._discover_command_models("qwen3p5-35B-A3B")
 
         assert options == [
-            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
-            ("mlx-community/Qwen3-0.6B-8bit", "mlx-community/Qwen3-0.6B-8bit", True),
+            (
+                "lmstudio-community/Qwen2.5-Coder-3B-Instruct-MLX-8bit",
+                "lmstudio-community/Qwen2.5-Coder-3B-Instruct-MLX-8bit",
+                False,
+            ),
+        ]
+
+    def test_seed_command_model_options_prefers_curated_local_inventory(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Initial Assistant menu should seed from the local curated shortlist without /v1/models."""
+        model_root = tmp_path / "models"
+        curated = model_root / "alexgusevski" / "LFM2.5-1.2B-Nova-Function-Calling-mlx"
+        curated.mkdir(parents=True)
+        (curated / "config.json").write_text("{}")
+        (curated / "tokenizer.json").write_text("{}")
+        (curated / "model.safetensors.index.json").write_text("{}")
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
+
+        d = _make_delegate(main_module, monkeypatch)
+
+        options = d._seed_command_model_options("qwen3p5-35B-A3B")
+
+        assert options == [
+            (
+                "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx",
+                "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx",
+                False,
+            ),
         ]
 
     def test_reselecting_current_assistant_model_repairs_stale_preference_without_relaunch(
@@ -1196,22 +1223,27 @@ class TestDualModelConfiguration:
             lambda self: "qwen3-14b",
             raising=False,
         )
-        monkeypatch.setattr(
-            main_module.SpokeAppDelegate,
-            "_discover_command_models",
-            lambda self, selected_model: [("qwen3-14b", "qwen3-14b", True)],
-            raising=False,
-        )
-
         with patch.object(main_module, "CommandClient") as MockCommand:
             MockCommand.return_value = MagicMock()
-            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
-            result = d.init()
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[("lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit", "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit", False)],
+            ) as mock_seed:
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
 
         assert result is not None
         MockCommand.assert_called_once_with(model="qwen3-14b")
         assert d._command_model_id == "qwen3-14b"
-        assert d._command_model_options == [("qwen3-14b", "qwen3-14b", True)]
+        mock_seed.assert_called_once_with("qwen3-14b")
+        assert d._command_model_options == [
+            (
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                False,
+            )
+        ]
 
     def test_init_seeds_command_model_options_without_sync_discovery(
         self, main_module, monkeypatch
@@ -1229,13 +1261,25 @@ class TestDualModelConfiguration:
         with patch.object(main_module, "CommandClient") as MockCommand:
             command_client = MagicMock()
             MockCommand.return_value = command_client
-            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
-            result = d.init()
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[("lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit", "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit", False)],
+            ) as mock_seed:
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
 
         assert result is not None
         MockCommand.assert_called_once_with(model="qwen3-14b")
         command_client.list_models.assert_not_called()
-        assert d._command_model_options == [("qwen3-14b", "qwen3-14b", True)]
+        mock_seed.assert_called_once_with("qwen3-14b")
+        assert d._command_model_options == [
+            (
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                False,
+            )
+        ]
 
     def test_handle_model_menu_none_sanitizes_unsupported_selected_model(
         self, main_module, monkeypatch
@@ -1628,6 +1672,36 @@ class TestWarmupContract:
         assert d._command_model_options == [
             ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
             ("qwen3-14b", "qwen3-14b", True),
+        ]
+        d._menubar.refresh_menu.assert_called_once_with()
+
+    def test_command_models_discovered_does_not_reinsert_missing_current_model(
+        self, main_module, monkeypatch
+    ):
+        """Async completion should not put a stale saved assistant model back into the menu."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_model_id = "qwen3p5-35B-A3B"
+        d._command_models_refresh_in_flight = True
+
+        d.commandModelsDiscovered_(
+            {
+                "options": [
+                    (
+                        "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                        "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                        False,
+                    ),
+                ]
+            }
+        )
+
+        assert d._command_models_refresh_in_flight is False
+        assert d._command_model_options == [
+            (
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                False,
+            ),
         ]
         d._menubar.refresh_menu.assert_called_once_with()
 
@@ -2110,6 +2184,100 @@ class TestCommandCallbacks:
         d._command_overlay.show.assert_called()
         d._command_overlay.append_token.assert_called()
         d._command_overlay.finish.assert_called()
+
+    def test_command_token_invert_failure_still_appends_token(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay.invert_thinking_timer.side_effect = RuntimeError("flip")
+        d._transcription_token = 1
+        d._command_first_token = True
+
+        with caplog.at_level(logging.ERROR):
+            d.commandToken_({"token": 1, "text": "first"})
+
+        d._command_overlay.append_token.assert_called_with("first")
+        assert d._command_first_token is False
+        assert "Command overlay failed to invert thinking timer" in caplog.text
+
+    def test_command_complete_finish_failure_still_starts_autoplay(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay.finish.side_effect = RuntimeError("finish")
+        d._transcription_token = 1
+        d._transcribing = True
+        d._tts_client = MagicMock()
+
+        with caplog.at_level(logging.ERROR):
+            d.commandComplete_({"token": 1, "response": "Hello there"})
+
+        assert d._transcribing is False
+        d._tts_client.speak_async.assert_called_once()
+        d._command_overlay.tts_start.assert_called_once()
+        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+        assert "Command overlay finish failed" in caplog.text
+
+    def test_command_complete_autoplay_failure_is_suppressed(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+        d._transcribing = True
+        d._tts_client = MagicMock()
+        d._tts_client.speak_async.side_effect = RuntimeError("tts launch")
+
+        with caplog.at_level(logging.ERROR):
+            d.commandComplete_({"token": 1, "response": "Hello there"})
+
+        assert d._transcribing is False
+        d._command_overlay.tts_stop.assert_called_once()
+        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+        assert "Command autoplay failed to start" in caplog.text
+
+    def test_tts_amplitude_update_failure_is_suppressed(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay.update_tts_amplitude.side_effect = RuntimeError("amp")
+
+        with caplog.at_level(logging.ERROR):
+            d.ttsAmplitudeUpdate_(0.5)
+
+        assert "Command overlay amplitude update failed" in caplog.text
+
+    def test_tts_finished_failure_is_suppressed(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay.tts_stop.side_effect = RuntimeError("stop")
+
+        with caplog.at_level(logging.ERROR):
+            d.ttsFinished_(None)
+
+        assert "Command overlay TTS stop failed" in caplog.text
+
+    def test_command_failed_overlay_failure_is_suppressed(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay._visible = False
+        d._command_overlay.append_token.side_effect = RuntimeError("append")
+        d._transcription_token = 1
+        d._transcribing = True
+
+        with caplog.at_level(logging.ERROR):
+            d.commandFailed_({"token": 1, "error": "OMLX down"})
+
+        assert d._transcribing is False
+        d._command_overlay.show.assert_called()
+        assert "Command overlay append failed during error presentation" in caplog.text
 
     def test_recall_last_response_shows_history(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
