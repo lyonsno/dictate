@@ -650,7 +650,7 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             if self._glow is not None:
                 self._overlay.set_brightness(
-                    getattr(self._glow, "_brightness", 0.0),
+                    getattr(self._glow, "_brightness_field", getattr(self._glow, "_brightness", 0.0)),
                     immediate=True,
                 )
             self._overlay.show()
@@ -744,8 +744,8 @@ class SpokeAppDelegate(NSObject):
         if self._glow is not None:
             self._glow.update_amplitude(rms)
         if self._overlay is not None and self._glow is not None:
-            glow_brightness = getattr(self._glow, "_brightness", 0.0)
-            if glow_brightness != getattr(self._overlay, "_brightness", 0.0):
+            glow_brightness = getattr(self._glow, "_brightness_field", getattr(self._glow, "_brightness", 0.0))
+            if glow_brightness != getattr(self._overlay, "_brightness_field", getattr(self._overlay, "_brightness", 0.0)):
                 self._overlay.set_brightness(glow_brightness)
             self._sync_command_overlay_brightness()
             # Text breathing: glow's smoothed amplitude, scaled independently
@@ -1220,7 +1220,7 @@ class SpokeAppDelegate(NSObject):
         if self._command_overlay is None or self._glow is None:
             return
         self._command_overlay.set_brightness(
-            getattr(self._glow, "_brightness", 0.0),
+            getattr(self._glow, "_brightness_field", getattr(self._glow, "_brightness", 0.0)),
             immediate=immediate,
         )
 
@@ -1661,12 +1661,20 @@ class SpokeAppDelegate(NSObject):
                     if event.kind == "assistant_delta":
                         full_response += event.text
                         self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                            "commandToken:",
-                            {"token": token, "text": event.text},
-                            False,
+                            "commandToken:", {"token": token, "text": event.text}, False
                         )
+                    elif event.kind == "tool_call":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToken:", {"token": token, "text": "", "tool_call": event.tool_call}, False
+                        )
+                                "commandToolStart:", {"token": token}, False
+                            )
+                        else:
+                            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                                "commandToolEnd:", {"token": token}, False
+                            )
                     elif event.kind == "assistant_final":
-                        full_response = event.text
+                        full_response += event.text
             except Exception:
                 logger.exception("Command stream failed")
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1791,14 +1799,20 @@ class SpokeAppDelegate(NSObject):
             ):
                 if token != self._transcription_token:
                     break  # stale
-                if event.kind == "assistant_delta":
+                if event.kind == "assistant_delta" or event.kind == "tool_call":
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                        "commandToken:",
-                        {"token": token, "text": event.text},
-                        False,
+                        "commandToken:", {"token": token, "text": event.text}, False
                     )
+                    if event.kind == "tool_call":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToolStart:", {"token": token}, False
+                        )
+                    else:
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToolEnd:", {"token": token}, False
+                        )
                 elif event.kind == "assistant_final":
-                    full_response = event.text
+                    full_response += event.text
         except Exception:
             logger.exception("Command stream failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1829,6 +1843,20 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text("Thinking…")
 
+    def commandToolStart_(self, payload: dict) -> None:
+        """Main thread: tool execution started."""
+        if payload["token"] != self._transcription_token:
+            return
+        if self._command_overlay is not None:
+            self._command_overlay.set_tool_active(True)
+
+    def commandToolEnd_(self, payload: dict) -> None:
+        """Main thread: tool execution finished."""
+        if payload["token"] != self._transcription_token:
+            return
+        if self._command_overlay is not None:
+            self._command_overlay.set_tool_active(False)
+
     def commandToken_(self, payload: dict) -> None:
         """Main thread: append a streamed token to the command overlay."""
         if payload["token"] != self._transcription_token:
@@ -1856,6 +1884,8 @@ class SpokeAppDelegate(NSObject):
             return
         self._transcribing = False
         overlay = self._command_overlay
+        if overlay is not None: 
+            overlay.set_tool_active(False) 
         response = payload.get("response", "")
         if overlay is not None and response:
             try:
