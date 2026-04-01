@@ -30,6 +30,7 @@ class TestGlowTuning:
         glow._glow_peak_target = mod._GLOW_PEAK_TARGET
         glow._dim_layer = MagicMock()
         glow._dim_layer.opacity.return_value = 0.0
+        glow._texture_timer = None
         return glow
 
     def test_screen_dim_fade_durations_are_shortened_for_dev_patch(self):
@@ -81,6 +82,36 @@ class TestGlowTuning:
         assert edge == pytest.approx(1.0)
         assert edge > mid > wide > tail
         assert steeper < softer
+
+    def test_texture_alpha_field_moves_and_keeps_mesa_more_selective(self, mock_pyobjc):
+        """The first-pass texture field should animate over time and keep mesa tighter than the mist."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            macro, mist, mesa = mod._continuous_texture_pass_specs()
+
+            macro_start = mod._texture_alpha_field(48, 32, macro, 0.0)
+            macro_later = mod._texture_alpha_field(48, 32, macro, 6.0)
+            mist_alpha = mod._texture_alpha_field(48, 32, mist, 1.5)
+            mesa_alpha = mod._texture_alpha_field(48, 32, mesa, 1.5)
+
+            assert float(macro_start.min()) >= 0.0
+            assert float(macro_start.max()) <= 1.0
+            assert not (macro_start == macro_later).all()
+            assert float(mesa_alpha.mean()) < float(mist_alpha.mean())
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_smoke_preview_drive_lifts_idle_visibility_without_clipping_peak(self, mock_pyobjc):
+        """The branch-local smoke remap should make idle texture visible while leaving the top end intact."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            assert mod._smoke_preview_drive(0.0) == pytest.approx(0.5)
+            assert mod._smoke_preview_drive(0.5) == pytest.approx(0.75)
+            assert mod._smoke_preview_drive(1.0) == pytest.approx(1.0)
+        finally:
+            sys.modules.pop("spoke.glow", None)
 
     def test_edge_mix_gives_light_backgrounds_extra_subtractive_presence(self, mock_pyobjc):
         """Bright scenes should get a modest subtractive boost so the edge treatment stays visible."""
@@ -171,16 +202,51 @@ class TestGlowTuning:
 
         glow.hide()
 
-        call = mock_timer_class.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
-        assert call.args[0] == pytest.approx(0.816)
-        assert call.args[1] is glow
-        assert call.args[2] == "hideWindowAfterFade:"
-        assert call.args[3] == 1
-        assert call.args[4] is False
-        assert glow._hide_timer is timer
-        assert glow._hide_generation == 1
+call = mock_timer_class.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
+assert call.args[0] == pytest.approx(0.816)
+assert call.args[1] is glow
+assert call.args[2] == "hideWindowAfterFade:"
+assert call.args[3] == 1
+assert call.args[4] is False
+assert glow._hide_timer is timer
+assert glow._hide_generation == 1
 
-    def test_hide_uses_presentation_opacity_for_glow_fade_out(self, mock_pyobjc, monkeypatch):
+def test_hide_invalidates_texture_timer(self, mock_pyobjc, monkeypatch):
+"""Texture animation should stop as part of the normal glow teardown path."""
+import spoke.glow as mod
+glow = self._make_glow(mod)
+texture_timer = MagicMock()
+glow._texture_timer = texture_timer
+
+glow.hide()
+
+texture_timer.invalidate.assert_called_once_with()
+
+def test_hide_uses_presentation_opacity_for_glow_fade_out(self, mock_pyobjc, monkeypatch):
+
+
+    def test_update_amplitude_keeps_idle_glow_above_base_for_smoke(self, mock_pyobjc, monkeypatch):
+        """Zero signal should still render above the cached base opacity during the smoke pass."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            glow = self._make_glow(mod)
+            glow._visible = True
+            glow._brightness = 0.5
+            glow._additive_mix = 1.0
+            glow._subtractive_mix = 0.0
+            glow._vignette_layer = MagicMock()
+            monkeypatch.setattr(mod.time, "monotonic", lambda: 100.0)
+
+            glow.update_amplitude(0.0)
+
+            idle_opacity = glow._glow_layer.setOpacity_.call_args[0][0]
+            assert idle_opacity > glow._glow_base_opacity
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_hide_uses_presentation_opacity_for_glow_fade_out(self, mock_pyobjc):
+>>>>>>> c860ec7
         """Hide should fade from the live on-screen glow opacity, not stale model state."""
         mock_anim_class = MagicMock()
         monkeypatch.setattr(mod, "CABasicAnimation", mock_anim_class)

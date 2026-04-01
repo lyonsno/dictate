@@ -50,12 +50,18 @@ _GLOW_CAP_COLOR = (1.0, 0.45, 0.15)  # angry sunset for cap countdown
 _GLOW_WIDTH = 10.0  # thinner source — less intrusion into screen
 _GLOW_SHADOW_RADIUS = 60.0  # broader bloom so a dimmer peak still reads as glow
 _GLOW_MAX_OPACITY = 1.0  # bright scenes can drive the glow all the way to full strength
-_GLOW_BASE_OPACITY = 0.2898  # 3x (was 0.0966)
-_GLOW_PEAK_TARGET = 0.5712   # 3x (was 0.1904)
-_GLOW_BASE_OPACITY_DARK = 0.1487  # 1.8x (was 0.0826)
-_GLOW_BASE_OPACITY_LIGHT = 0.2744
-_GLOW_PEAK_TARGET_DARK = 0.3024    # 1.8x (was 0.168)
+_GLOW_BASE_OPACITY = 0.8075  # REMOVE_AFTER_TUNING: 15% below peak (0.95)
+_GLOW_PEAK_TARGET = 0.95   # REMOVE_AFTER_TUNING
+_GLOW_BASE_OPACITY_DARK = 0.7225  # REMOVE_AFTER_TUNING: 15% below peak (0.85)
+_GLOW_BASE_OPACITY_LIGHT = 0.8500 # REMOVE_AFTER_TUNING: 15% below peak (1.0)
+_GLOW_PEAK_TARGET_DARK = 0.85    # REMOVE_AFTER_TUNING
 _GLOW_PEAK_TARGET_LIGHT = _GLOW_MAX_OPACITY
+
+# Debug Colors
+_COLOR_NOISE_MED = (0.0, 1.0, 0.4)   # Toxic Green
+_COLOR_NOISE_FINE = (1.0, 0.0, 0.8)  # Hot Pink
+_DEBUG_NOISE = os.environ.get("SPOKE_DEBUG_NOISE", "1") == "1"
+
 _EDGE_INNER_SATURATION_SCALE = 0.70
 _EDGE_OUTER_SATURATION_SCALE = 1.80
 # MacBook Pro 14"/16" (2021+) has asymmetric display corners.
@@ -66,8 +72,18 @@ _CORNER_RADIUS_BOTTOM = 6.0  # slightly tighter than physical ~10pt
 
 _GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "21.4"))
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
-_DIM_OPACITY_DARK = 0.28  # dim on dark backgrounds
-_DIM_OPACITY_LIGHT = 0.424  # bright scenes move 20% closer to fully opaque
+_DIM_OPACITY_DARK = 0.42  # dim on dark backgrounds
+_DIM_OPACITY_LIGHT = 0.636  # pumped 50%
+
+def _dim_target_for_brightness(brightness: float) -> float:
+    # Spike to 0.80 at mid-gray
+    if brightness <= 0.5:
+        t = brightness / 0.5
+        return _DIM_OPACITY_DARK + t * (0.80 - _DIM_OPACITY_DARK)
+    else:
+        t = (brightness - 0.5) / 0.5
+        return 0.80 + t * (_DIM_OPACITY_LIGHT - 0.80)
+
 # Amplitude smoothing: rise fast, decay slow
 _RISE_FACTOR = 0.99  # 3x faster (was 0.90)
 _DECAY_FACTOR = 0.16 # 3x faster (was 0.50)
@@ -91,6 +107,11 @@ _NOTCH_BOTTOM_RADIUS = 8.0
 _NOTCH_SHOULDER_SMOOTHING = 9.5
 _LIGHT_BACKGROUND_EDGE_BOOST = 0.664
 _VIGNETTE_OPACITY_SCALE = 7.625  # 2.5x (was 3.05)
+_TEXTURE_ANIMATION_INTERVAL = 0.08
+_TEXTURE_MIN_GRID_WIDTH = 96
+_TEXTURE_MIN_GRID_HEIGHT = 64
+_TEXTURE_SMOKE_PREVIEW_FLOOR = 0.5
+_TEXTURE_SMOKE_PREVIEW_CEILING = 1.0
 
 
 class BrightnessField:
@@ -338,7 +359,13 @@ def _asymmetric_rounded_rect_sdf(
     qx = np.abs(x) - (half_width - radii)
     qy = np.abs(y) - (half_height - radii)
     outside = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0))
-    inside = np.minimum(np.maximum(qx, qy), 0.0)
+    
+    # Smooth the inner corner ridge where the negative distances meet
+    corner_smoothing = 24.0
+    seam = np.maximum(corner_smoothing - np.abs(qx - qy), 0.0)
+    smoothed_max = np.maximum(qx, qy) + (seam * seam) * (0.25 / corner_smoothing)
+    
+    inside = np.minimum(smoothed_max, 0.0)
     return outside + inside - radii
 
 
@@ -431,21 +458,27 @@ def _generate_brownian_mist(width: int, height: int, scale: float) -> "np.ndarra
         noise = (noise - n_min) / (n_max - n_min)
     return noise
 
-def _distance_field_alpha(signed_distance, falloff: float, power: float, noise_field: "np.ndarray" | None = None):
+def _distance_field_alpha(signed_distance, falloff: float, power: float, noise_field: "np.ndarray" | None = None, debug_regime: str | None = None):
     import numpy as np
 
     distance = np.clip(-signed_distance, 0.0, None)
     # Option B: Rational falloff (inverse-square family)
-    # Gives a visible shoulder near the edge and a long, slow tail.
+    # 1 / (1 + (d/falloff)^power)
     denom = 1.0 + np.power(distance / max(falloff, 1e-6), power, dtype=np.float32)
     alpha = 1.0 / denom
 
     if noise_field is not None:
         noise_strength = alpha 
-        # User Directive: "increase the magnitude of the subtraction ... punch some sharper holes"
-        # 2.3x deeper bite (0.30 -> 0.70) for sharper, more legible structural patterns
-        structured_noise = np.power(noise_field, 4.0)
-        alpha = alpha * (1.0 - structured_noise * noise_strength * 0.70)
+        
+        if debug_regime == "med":
+            # Show only the medium-scale shifts
+            alpha = np.where(noise_field > 0.55, noise_strength, 0.0)
+        elif debug_regime == "fine":
+            # Show only the high-frequency tendrils
+            alpha = np.power(noise_field, 12.0) * noise_strength
+        else:
+            # Normal 'punch-through' mode
+            alpha = alpha * (1.0 - noise_field * noise_strength * 0.90)
 
     return np.where(signed_distance < 0.0, alpha, 0.0).astype(np.float32, copy=False)
 
@@ -485,7 +518,7 @@ def _alpha_field_to_image(alpha):
     return image, payload
 
 
-def _distance_field_masks_for_specs(geometry: dict, specs: list[dict], noise_field: "np.ndarray" | None = None) -> list[dict]:
+def _distance_field_masks_for_specs(geometry: dict, specs: list[dict], noise_field: "np.ndarray" | None = None, debug_regime: str | None = None) -> list[dict]:
     import numpy as np
     signed_distance = _display_signed_distance_field(geometry)
     scale = geometry["scale"]
@@ -497,6 +530,7 @@ def _distance_field_masks_for_specs(geometry: dict, specs: list[dict], noise_fie
             spec["falloff"] * scale,
             spec["power"],
             noise_field=noise_field,
+            debug_regime=debug_regime,
         )
         image, payload = _alpha_field_to_image(alpha)
         masks.append({"image": image, "payload": payload, "spec": spec})
@@ -563,6 +597,64 @@ def _continuous_vignette_pass_specs():
     ]
 
 
+def _continuous_texture_pass_specs():
+    """First texture slice: unmistakable macro drift, soft mist, and restrained meso breakup."""
+    return [
+        {
+            "name": "macro_drift",
+            "fill_role": "outer",
+            "grid_scale": 0.115,
+            "mask_falloff": 18.0,
+            "mask_power": 3.25,
+            "additive_alpha": 0.675,
+            "subtractive_alpha": 0.128,
+            "subtractive_color_scale": 0.18,
+            "style": "macro",
+            "phase_rates": (0.055, -0.038, 0.024),
+            "freqs": ((1.08, 0.82), (1.62, -1.12), (-0.76, 1.44)),
+        },
+        {
+            "name": "ionized_mist",
+            "fill_role": "middle",
+            "grid_scale": 0.14,
+            "mask_falloff": 15.5,
+            "mask_power": 2.9,
+            "additive_alpha": 0.495,
+            "subtractive_alpha": 0.090,
+            "subtractive_color_scale": 0.14,
+            "style": "mist",
+            "phase_rates": (0.078, 0.052, -0.034),
+            "freqs": ((1.46, 1.18), (-1.94, 1.36), (2.22, -0.72)),
+        },
+        {
+            "name": "mesa_breakup",
+            "fill_role": "inner",
+            "grid_scale": 0.128,
+            "mask_falloff": 11.0,
+            "mask_power": 3.55,
+            "additive_alpha": 0.562,
+            "subtractive_alpha": 0.108,
+            "subtractive_color_scale": 0.11,
+            "style": "mesa",
+            "phase_rates": (0.047, -0.031, 0.021),
+            "freqs": ((1.72, 1.26), (-2.36, 1.74), (2.84, -1.12)),
+        },
+        {
+            "name": "micro_noise",
+            "fill_role": "middle",
+            "grid_scale": 0.6,
+            "mask_falloff": 14.0,
+            "mask_power": 3.2,
+            "additive_alpha": 0.075,
+            "subtractive_alpha": 0.525,
+            "subtractive_color_scale": 0.05,
+            "style": "micro",
+            "phase_rates": (0.015, -0.012, 0.009),
+            "freqs": ((7.1, 5.8), (-8.3, 6.2), (9.4, -5.7)),
+        },
+    ]
+
+
 def _glow_role_colors(base_color: tuple[float, float, float]) -> dict[str, NSColor]:
     """Build additive glow colors keyed by intensity role."""
     inner_rgb, middle_rgb, outer_rgb = _edge_band_colors(base_color)
@@ -591,6 +683,117 @@ def _vignette_pass_color(base_color: tuple[float, float, float], spec: dict) -> 
     )
 
 
+def _texture_grid_size(width_pt: float, height_pt: float, scale: float) -> tuple[int, int]:
+    grid_width = max(int(round(width_pt * scale)), _TEXTURE_MIN_GRID_WIDTH)
+    grid_height = max(int(round(height_pt * scale)), _TEXTURE_MIN_GRID_HEIGHT)
+    return grid_width, grid_height
+
+
+def _texture_alpha_field(width: int, height: int, spec: dict, phase: float):
+    import numpy as np
+
+    x = np.linspace(0.0, 1.0, width, dtype=np.float32)[None, :]
+    y = np.linspace(0.0, 1.0, height, dtype=np.float32)[:, None]
+    (f1x, f1y), (f2x, f2y), (f3x, f3y) = spec["freqs"]
+    r1, r2, r3 = spec["phase_rates"]
+    wave_1 = np.sin((x * f1x + y * f1y + phase * r1) * math.tau)
+    wave_2 = np.sin((x * f2x + y * f2y + phase * r2) * math.tau + 1.2)
+    wave_3 = np.cos((x * f3x + y * f3y + phase * r3) * math.tau - 0.65)
+    field = (wave_1 * 0.54 + wave_2 * 0.29 + wave_3 * 0.17 + 1.0) * 0.5
+    field = np.clip(field, 0.0, 1.0)
+
+    if spec["style"] == "macro":
+        alpha = np.power(np.clip((field - 0.28) / 0.72, 0.0, 1.0), 1.35)
+    elif spec["style"] == "mist":
+        softened = np.power(field, 1.55)
+        alpha = np.power(np.clip((softened - 0.20) / 0.80, 0.0, 1.0), 2.15)
+    elif spec["style"] == "micro":
+        # Domain warping to break up sine-wave interference patterns (stripes)
+        # into localized, chaotic multi-scaled chips.
+        warp_x = np.sin((x * 23.0 + y * 17.0 + phase * 0.1) * math.tau) * 0.06
+        warp_y = np.cos((x * 19.0 - y * 29.0 - phase * 0.1) * math.tau) * 0.06
+        
+        wx = x + warp_x
+        wy = y + warp_y
+        
+        w1 = np.sin((wx * f1x + wy * f1y + phase * r1) * math.tau)
+        w2 = np.sin((wx * f2x + wy * f2y + phase * r2) * math.tau + 1.2)
+        w3 = np.cos((wx * f3x + wy * f3y + phase * r3) * math.tau - 0.65)
+        
+        # Add a very high-frequency crumble layer
+        w4 = np.sin((wx * 43.0 + wy * 37.0 - phase * 0.15) * math.tau)
+        
+        chaotic_field = (w1 * 0.35 + w2 * 0.25 + w3 * 0.25 + w4 * 0.15 + 1.0) * 0.5
+        
+        # Harder, sharper threshold to make distinct subtractive chips
+        alpha = np.clip((chaotic_field - 0.55) * 16.0, 0.0, 1.0)
+    else:
+        terraced = np.floor(field * 4.0) / 4.0
+        alpha = np.power(np.clip((terraced - 0.30) / 0.70, 0.0, 1.0), 2.2)
+
+    return alpha.astype(np.float32, copy=False)
+
+
+def _color_alpha_field_to_image(alpha, color: tuple[float, float, float]):
+    """Convert a low-res tinted alpha field into a CGImage for a CALayer."""
+    import numpy as np
+
+    from Quartz import (
+        CGColorSpaceCreateDeviceRGB,
+        CGDataProviderCreateWithCFData,
+        CGImageCreate,
+        kCGImageAlphaPremultipliedLast,
+        kCGRenderingIntentDefault,
+    )
+
+    alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32, copy=False)
+    rgba = np.empty(alpha.shape + (4,), dtype=np.uint8)
+    rgba[..., 3] = np.clip(alpha * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 0] = np.clip(color[0] * alpha * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 1] = np.clip(color[1] * alpha * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 2] = np.clip(color[2] * alpha * 255.0, 0.0, 255.0).astype(np.uint8)
+    payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+    provider = CGDataProviderCreateWithCFData(payload)
+    image = CGImageCreate(
+        alpha.shape[1],
+        alpha.shape[0],
+        8,
+        32,
+        alpha.shape[1] * 4,
+        CGColorSpaceCreateDeviceRGB(),
+        kCGImageAlphaPremultipliedLast,
+        provider,
+        None,
+        False,
+        kCGRenderingIntentDefault,
+    )
+    return image, payload
+
+
+def _texture_additive_color(base_color: tuple[float, float, float], spec: dict) -> tuple[float, float, float]:
+    inner_rgb, middle_rgb, outer_rgb = _edge_band_colors(base_color)
+    role_colors = {
+        "inner": inner_rgb,
+        "middle": middle_rgb,
+        "outer": outer_rgb,
+    }
+    return role_colors[spec["fill_role"]]
+
+
+def _texture_subtractive_color(base_color: tuple[float, float, float], spec: dict) -> tuple[float, float, float]:
+    rgb = _texture_additive_color(base_color, spec)
+    scale = spec["subtractive_color_scale"]
+    return (rgb[0] * scale, rgb[1] * scale, rgb[2] * scale)
+
+
+def _smoke_preview_drive(normalized_opacity: float) -> float:
+    """Temporarily lift the branch-local smoke floor without flattening the speaking peak."""
+    normalized = min(max(normalized_opacity, 0.0), 1.0)
+    floor = min(max(_TEXTURE_SMOKE_PREVIEW_FLOOR, 0.0), 1.0)
+    ceiling = min(max(_TEXTURE_SMOKE_PREVIEW_CEILING, floor), 1.0)
+    return floor + normalized * (ceiling - floor)
+
+
 class GlowOverlay(NSObject):
     """Manages a screen-border glow window driven by audio amplitude."""
 
@@ -617,6 +820,10 @@ class GlowOverlay(NSObject):
         self._brightness_timer = None
         self._brightness = 0.5
         self._brightness_field: BrightnessField | None = None
+        self._texture_timer = None
+        self._texture_phase = 0.0
+        self._texture_epoch = 0.0
+        self._texture_frame_payloads = []
         return self
 
     def _cancel_pending_hide(self) -> None:
@@ -671,6 +878,34 @@ class GlowOverlay(NSObject):
         self._glow_layer.setFrame_(((0, 0), (w, h)))
         self._glow_layer.setOpacity_(0.0)
 
+        # DEBUG: Separate layers for colorized noise play
+        if _DEBUG_NOISE:
+            # Medium noise layer (Green)
+            med_mask = _distance_field_masks_for_specs(geometry, [{"falloff": 15.0, "power": 3.0}], noise_field=noise_field, debug_regime="med")[0]
+            med_layer = CALayer.alloc().init()
+            med_layer.setFrame_(((0, 0), (w, h)))
+            med_layer.setBackgroundColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(*_COLOR_NOISE_MED, 0.95).CGColor()) # REMOVE_AFTER_TUNING
+            med_mask_layer = CALayer.alloc().init()
+            med_mask_layer.setFrame_(((0, 0), (w, h)))
+            med_mask_layer.setContents_(med_mask["image"])
+            med_mask_layer.setContentsScale_(mask_scale)
+            med_layer.setMask_(med_mask_layer)
+            self._glow_layer.addSublayer_(med_layer)
+            self._mask_payloads.append(med_mask["payload"])
+            
+            # Fine noise layer (Pink)
+            fine_mask = _distance_field_masks_for_specs(geometry, [{"falloff": 10.0, "power": 3.5}], noise_field=noise_field, debug_regime="fine")[0]
+            fine_layer = CALayer.alloc().init()
+            fine_layer.setFrame_(((0, 0), (w, h)))
+            fine_layer.setBackgroundColor_(NSColor.colorWithSRGBRed_green_blue_alpha_(*_COLOR_NOISE_FINE, 0.95).CGColor()) # REMOVE_AFTER_TUNING
+            fine_mask_layer = CALayer.alloc().init()
+            fine_mask_layer.setFrame_(((0, 0), (w, h)))
+            fine_mask_layer.setContents_(fine_mask["image"])
+            fine_mask_layer.setContentsScale_(mask_scale)
+            fine_layer.setMask_(fine_mask_layer)
+            self._glow_layer.addSublayer_(fine_layer)
+            self._mask_payloads.append(fine_mask["payload"])
+
         # Additive glow passes
         glow_pass_layers = []
         self._mask_payloads = []
@@ -709,13 +944,78 @@ class GlowOverlay(NSObject):
             vignette_pass_layers.append({"layer": layer, "spec": spec})
 
         self._vignette_pass_layers = vignette_pass_layers
+        texture_entries = []
+        texture_specs = _continuous_texture_pass_specs()
+        texture_mask_specs = [
+            {
+                "name": spec["name"],
+                "falloff": spec["mask_falloff"],
+                "power": spec["mask_power"],
+            }
+            for spec in texture_specs
+        ]
+        for spec, entry in zip(texture_specs, _distance_field_masks_for_specs(geometry, texture_mask_specs)):
+            additive_layer = CALayer.alloc().init()
+            additive_layer.setFrame_(((0, 0), (w, h)))
+            additive_mask = CALayer.alloc().init()
+            additive_mask.setFrame_(((0, 0), (w, h)))
+            additive_mask.setContents_(entry["image"])
+            additive_mask.setContentsScale_(mask_scale)
+            additive_layer.setMask_(additive_mask)
+            self._glow_layer.addSublayer_(additive_layer)
+
+            subtractive_layer = CALayer.alloc().init()
+            subtractive_layer.setFrame_(((0, 0), (w, h)))
+            subtractive_mask = CALayer.alloc().init()
+            subtractive_mask.setFrame_(((0, 0), (w, h)))
+            subtractive_mask.setContents_(entry["image"])
+            subtractive_mask.setContentsScale_(mask_scale)
+            subtractive_layer.setMask_(subtractive_mask)
+            self._vignette_layer.addSublayer_(subtractive_layer)
+
+            grid_width, grid_height = _texture_grid_size(w, h, spec["grid_scale"])
+            texture_entries.append(
+                {
+                    "spec": spec,
+                    "additive_layer": additive_layer,
+                    "subtractive_layer": subtractive_layer,
+                    "grid_width": grid_width,
+                    "grid_height": grid_height,
+                }
+            )
+            self._mask_payloads.append(entry["payload"])
+
+        self._texture_entries = texture_entries
         self._apply_glow_color(_GLOW_COLOR)
         content.layer().addSublayer_(self._glow_layer)
         content.layer().addSublayer_(self._vignette_layer)
         logger.info("Glow overlay created (%.0fx%.0f, border=%.0f, shadow=%.0f)",
                      w, h, _GLOW_WIDTH, _GLOW_SHADOW_RADIUS)
 
-    def _apply_glow_color(self, base_color: tuple[float, float, float]) -> None:
+    def _refresh_texture_layers(self, base_color: tuple[float, float, float]) -> None:
+        if not getattr(self, "_texture_entries", None):
+            return
+        payloads = []
+        phase = getattr(self, "_texture_phase", 0.0)
+        for entry in self._texture_entries:
+            spec = entry["spec"]
+            alpha = _texture_alpha_field(entry["grid_width"], entry["grid_height"], spec, phase)
+            add_image, add_payload = _color_alpha_field_to_image(
+                alpha * spec["additive_alpha"],
+                _texture_additive_color(base_color, spec),
+            )
+            sub_image, sub_payload = _color_alpha_field_to_image(
+                alpha * spec["subtractive_alpha"],
+                _texture_subtractive_color(base_color, spec),
+            )
+            entry["additive_layer"].setContents_(add_image)
+            entry["additive_layer"].setContentsScale_(1.0)
+            entry["subtractive_layer"].setContents_(sub_image)
+            entry["subtractive_layer"].setContentsScale_(1.0)
+            payloads.extend([add_payload, sub_payload])
+        self._texture_frame_payloads = payloads
+
+    def _apply_glow_color(self, base_color: tuple[float, float, float], refresh_texture: bool = True) -> None:
         """Push the current glow color through the procedural glow/vignette passes."""
         glow_colors = _glow_role_colors(base_color)
         if hasattr(self, "_glow_pass_layers"):
@@ -732,6 +1032,8 @@ class GlowOverlay(NSObject):
                 layer = entry["layer"]
                 spec = entry["spec"]
                 layer.setBackgroundColor_(_vignette_pass_color(base_color, spec).CGColor())
+        if refresh_texture:
+            self._refresh_texture_layers(base_color)
 
     def show(self) -> None:
         """Fade the glow window in to base opacity."""
@@ -750,6 +1052,8 @@ class GlowOverlay(NSObject):
         brightness = self._brightness_field.average
         
         self._glow_color, self._glow_base_opacity, self._glow_peak_target = _glow_style_for_brightness(brightness)
+        self._texture_phase = 0.0
+        self._texture_epoch = time.monotonic()
         self._apply_glow_color(self._glow_color)
         self._brightness = brightness
         # Cross-fade: additive glow fades out, subtractive vignette fades in
@@ -775,7 +1079,7 @@ class GlowOverlay(NSObject):
         # Fade in screen dim — adaptive opacity based on screen brightness.
         # Sample once per recording, not per-frame.
         if self._dim_layer is not None:
-            dim_target = _DIM_OPACITY_DARK + brightness * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
+            dim_target = _dim_target_for_brightness(brightness)
             logger.info("Screen brightness=%.2f → dim opacity=%.2f", brightness, dim_target)
 
             pres = self._dim_layer.presentationLayer()
@@ -795,12 +1099,26 @@ class GlowOverlay(NSObject):
         old_timer = getattr(self, "_brightness_timer", None)
         if old_timer is not None:
             old_timer.invalidate()
+        old_texture_timer = getattr(self, "_texture_timer", None)
+        if old_texture_timer is not None:
+            old_texture_timer.invalidate()
         from Foundation import NSTimer
         self._brightness_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             _BRIGHTNESS_SAMPLE_INTERVAL, self, "brightnessResample:", None, True
         )
+        if getattr(self, "_texture_entries", None):
+            self._texture_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                _TEXTURE_ANIMATION_INTERVAL, self, "textureTick:", None, True
+            )
 
         logger.info("Glow show")
+
+    def textureTick_(self, timer) -> None:
+        """Animate the low-frequency texture fields so the edge treatment keeps moving at rest."""
+        if not self._visible:
+            return
+        self._texture_phase = time.monotonic() - getattr(self, "_texture_epoch", time.monotonic())
+        self._refresh_texture_layers(getattr(self, "_glow_color", _GLOW_COLOR))
 
     def brightnessResample_(self, timer) -> None:
         """Recurring timer: re-sample screen brightness and adapt glow/dim."""
@@ -825,7 +1143,7 @@ class GlowOverlay(NSObject):
 
         # Smoothly adjust dim opacity
         if self._dim_layer is not None:
-            dim_target = _DIM_OPACITY_DARK + new_brightness * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
+            dim_target = _dim_target_for_brightness(new_brightness)
             from Quartz import CABasicAnimation, CAMediaTimingFunction
             pres = self._dim_layer.presentationLayer()
             current = pres.opacity() if pres is not None else self._dim_layer.opacity()
@@ -847,6 +1165,10 @@ class GlowOverlay(NSObject):
         if bt is not None:
             bt.invalidate()
             self._brightness_timer = None
+        tt = getattr(self, "_texture_timer", None)
+        if tt is not None:
+            tt.invalidate()
+            self._texture_timer = None
         self._visible = False
         self._hide_generation += 1
         hide_generation = self._hide_generation
@@ -955,6 +1277,7 @@ class GlowOverlay(NSObject):
         # All smoothing math above stays linear; this is the last step
         # before "rendering" — the display gamma, essentially.
         amplitude_opacity = math.log1p(amplitude_linear * 20.0) / math.log1p(20.0)
+        amplitude_opacity = _smoke_preview_drive(amplitude_opacity)
         opacity = self._glow_base_opacity + amplitude_opacity * (_GLOW_MAX_OPACITY - self._glow_base_opacity)
         opacity = min(opacity, self._glow_peak_target)
 
@@ -968,7 +1291,7 @@ class GlowOverlay(NSObject):
             r = self._glow_color[0] + t * (_GLOW_CAP_COLOR[0] - self._glow_color[0])
             g = self._glow_color[1] + t * (_GLOW_CAP_COLOR[1] - self._glow_color[1])
             b = self._glow_color[2] + t * (_GLOW_CAP_COLOR[2] - self._glow_color[2])
-            self._apply_glow_color((r, g, b))
+            self._apply_glow_color((r, g, b), refresh_texture=False)
 
         # Cross-fade additive glow and subtractive vignette
         additive_mix = getattr(self, "_additive_mix", 1.0)
