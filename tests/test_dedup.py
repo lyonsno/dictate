@@ -149,9 +149,21 @@ class TestRepairOntologyTerms:
         )
 
     def test_repairs_safe_nonword_followup_regressions(self):
-        text = "Probally chorigma ooxisis epispokosis and probaly should all normalize."
+        text = "Probally chorigma ooxisis epispokosis and proboly should all normalize."
         assert repair_ontology_terms(text) == (
             "Probolé kérygma aúxesis epispókisis and probolé should all normalize."
+        )
+
+    def test_repairs_latest_smoke_nonword_regressions(self):
+        text = "Epinoethosis chirigma epispokesis epispoiesis episcopoiesis and oxysis."
+        assert repair_ontology_terms(text) == (
+            "Epanórthosis kérygma epispókisis epispókisis epispókisis and aúxesis."
+        )
+
+    def test_repairs_segmented_autopoiesis_and_topoid(self):
+        text = "Autopoises can split into auto poises, and Topoid should still mean topoi."
+        assert repair_ontology_terms(text) == (
+            "Autopoíesis can split into autopoíesis, and Tópoi should still mean tópoi."
         )
 
     def test_logs_when_repair_fires(self, caplog):

@@ -235,12 +235,40 @@ class TestLocalTranscriptionClient:
         from spoke.transcribe_local import LocalTranscriptionClient
 
         mock_mlx_whisper.transcribe.return_value = {
-            "text": "Probally chorigma ooxisis epispokosis and probaly should all normalize."
+            "text": "Probally chorigma ooxisis epispokosis and proboly should all normalize."
         }
         client = LocalTranscriptionClient()
 
         assert client.transcribe(_make_wav_bytes()) == (
             "Probolé kérygma aúxesis epispókisis and probolé should all normalize."
+        )
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_repairs_latest_smoke_nonword_regressions(self, mock_mlx_whisper):
+        """Latest smoke non-words should normalize without touching real-word neighbors."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {
+            "text": "Epinoethosis chirigma epispokesis epispoiesis episcopoiesis and oxysis."
+        }
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == (
+            "Epanórthosis kérygma epispókisis epispókisis epispókisis and aúxesis."
+        )
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_repairs_segmented_autopoiesis_and_topoid(self, mock_mlx_whisper):
+        """Segmented autopoiesis and topoid should still normalize on the local Whisper path."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {
+            "text": "Autopoises can split into auto poises, and Topoid should still mean topoi."
+        }
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == (
+            "Autopoíesis can split into autopoíesis, and Tópoi should still mean tópoi."
         )
 
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
