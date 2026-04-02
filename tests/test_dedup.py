@@ -2,7 +2,12 @@
 
 import logging
 
-from spoke.dedup import truncate_repetition, is_hallucination, repair_ontology_terms
+from spoke.dedup import (
+    is_hallucination,
+    ontology_term_spans,
+    repair_ontology_terms,
+    truncate_repetition,
+)
 
 
 class TestTruncateRepetition:
@@ -93,15 +98,15 @@ class TestRepairOntologyTerms:
 
     def test_repairs_observed_epistaxis_variants(self):
         text = "Leave a review ticket for it in Epistaxes and read Nepistaxis."
-        assert repair_ontology_terms(text) == "Leave a review ticket for it in Epistaxis and read Epistaxis."
+        assert repair_ontology_terms(text) == "Leave a review ticket for it in Epístaxis and read Epístaxis."
 
     def test_repairs_concatenated_epistaxis_topos(self):
         text = "Are we including that in our Epistaxistopos?"
-        assert repair_ontology_terms(text) == "Are we including that in our Epistaxis topos?"
+        assert repair_ontology_terms(text) == "Are we including that in our Epístaxis tópos?"
 
     def test_repairs_observed_topoi_and_anaphora_variants(self):
         text = "Epistexis Topoie and an Afro are both wrong."
-        assert repair_ontology_terms(text) == "Epistaxis topoi and anaphora are both wrong."
+        assert repair_ontology_terms(text) == "Epístaxis Tópoi and anaphorá are both wrong."
 
     def test_repairs_recent_high_frequency_variants(self):
         text = (
@@ -109,35 +114,57 @@ class TestRepairOntologyTerms:
             "document, and compile our tipos into a Syllogy."
         )
         assert repair_ontology_terms(text) == (
-            "Read spoke Epistaxis, chase the Metadosis, check the Auxesis "
-            "document, and compile our topos into a sylloge."
+            "Read spoke Epístaxis, chase the Metádosis, check the Aúxesis "
+            "document, and compile our tópos into a Syllogé."
         )
 
     def test_repairs_recent_sylloge_and_new_ontology_variants(self):
         text = "Check the sueji, the kerigma badge, and epinorthosis."
         assert repair_ontology_terms(text) == (
-            "Check the sylloge, the kerygma badge, and epanorthosis."
+            "Check the syllogé, the kérygma badge, and epanórthosis."
         )
 
     def test_repairs_aposkepsis_semiosis_and_katastasis_variants(self):
         text = "The appless kept says naming and semi-hostess concept are close to Catastasis."
         assert repair_ontology_terms(text) == (
-            "The Aposkepsis naming and semiosis are close to katastasis."
+            "The aposképsis naming and sēmeiōsis are close to Katástasis."
         )
 
     def test_repairs_in_his_taxes_phrase(self):
         text = "When you see in his taxes in the logs, that should be Epistaxis."
         assert repair_ontology_terms(text) == (
-            "When you see Epistaxis in the logs, that should be Epistaxis."
+            "When you see Epístaxis in the logs, that should be Epístaxis."
+        )
+
+    def test_repairs_recent_smoke_sentence_to_accented_canonical_forms(self):
+        text = (
+            "Nice work. Thank you. I'm gonna test now epistaxis Epinorthosis lysis, "
+            "Syllogy Episcapsis probly anaphora Charygma otopoiesis auxesus "
+            "Epistaxis Epinorthosis Semian Charygma Semian"
+        )
+        assert repair_ontology_terms(text) == (
+            "Nice work. Thank you. I'm gonna test now Epístaxis Epanórthosis lýsis, "
+            "Syllogé Aposképsis probolé anaphorá Kérygma autopoíesis aúxesis "
+            "Epístaxis Epanórthosis Sēmeion Kérygma Sēmeion"
         )
 
     def test_logs_when_repair_fires(self, caplog):
         with caplog.at_level(logging.INFO, logger="spoke.dedup"):
             repaired = repair_ontology_terms("And then read Epistaxes.")
 
-        assert repaired == "And then read Epistaxis."
+        assert repaired == "And then read Epístaxis."
         assert "Repaired ontology vocabulary" in caplog.text
 
     def test_leaves_unrelated_text_unchanged(self):
         text = "This is ordinary dictation with no Greek ontology vocabulary."
         assert repair_ontology_terms(text) == text
+
+    def test_reports_ranges_for_plain_and_accented_ontology_forms(self):
+        text = "Epístaxis and sēmeion beside plain Epistaxis."
+        spans = ontology_term_spans(text)
+
+        assert [text[start:end] for start, end in spans] == [
+            "Epístaxis",
+            "sēmeion",
+            "Epistaxis",
+        ]
