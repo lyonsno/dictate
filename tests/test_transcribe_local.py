@@ -184,6 +184,20 @@ class TestLocalTranscriptionClient:
         assert client.transcribe(_make_wav_bytes()) == "Read Epistaxis topos and anaphora."
 
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_repairs_recent_ontology_failures(self, mock_mlx_whisper):
+        """Recent log-backed ontology failures should normalize on the local Whisper path."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {
+            "text": "The appless kept says flow should compile our tipos into a Syllogy."
+        }
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == (
+            "The Aposkepsis flow should compile our topos into a sylloge."
+        )
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_transcribe_missing_text_key(self, mock_mlx_whisper):
         """Missing 'text' key should return empty string."""
         from spoke.transcribe_local import LocalTranscriptionClient

@@ -119,9 +119,17 @@ Epistaxis ontology terms that have already shown up incorrectly in real launch
 logs. Current observed failure examples include:
 
 - `Epistaxes`, `Nepistaxis`, `Epistexis` -> `Epistaxis`
+- `epistaxists`, `in his taxes`, `spoke-up as taxes` -> `Epistaxis`
 - `Epistaxistopos` -> `Epistaxis topos`
 - `Topoie`, `topoit` -> `topoi`
+- `tipos` -> `topos`
 - `an Afro`, `Afra` -> `anaphora`
+- `Metadose`, `Metadose II` -> `Metadosis`
+- `Uxis`, `of seizes` -> `Auxesis`
+- `Syllogy` -> `sylloge`
+- `appless kept says`, `upper skepticism` -> `Aposkepsis`
+- `semi-hostess`, `semi-oce's` -> `semiosis`
+- `Catastasis` -> `katastasis`
 
 Whenever one of these repairs fires, the launch logs keep both the raw and
 repaired text so the vocabulary list can expand from observed failures instead
