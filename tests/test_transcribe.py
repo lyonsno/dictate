@@ -272,6 +272,21 @@ class TestTranscriptionFiltering:
             "Epanórthosis kérygma epispókisis epispókisis epispókisis and aúxesis."
         )
 
+    def test_segmented_autopoiesis_and_topoid_are_repaired(self):
+        """Segmented autopoiesis and topoid should still normalize on the Whisper path."""
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "text": "Autopoises can split into auto poises, and Topoid should still mean topoi."
+        }
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == (
+            "Autopoíesis can split into autopoíesis, and Tópoi should still mean tópoi."
+        )
+
     def test_whitespace_only_is_hallucination(self):
         """Whitespace-only result should be treated as hallucination."""
         client = TranscriptionClient(base_url="http://x")

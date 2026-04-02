@@ -160,6 +160,12 @@ class TestRepairOntologyTerms:
             "Epanórthosis kérygma epispókisis epispókisis epispókisis and aúxesis."
         )
 
+    def test_repairs_segmented_autopoiesis_and_topoid(self):
+        text = "Autopoises can split into auto poises, and Topoid should still mean topoi."
+        assert repair_ontology_terms(text) == (
+            "Autopoíesis can split into autopoíesis, and Tópoi should still mean tópoi."
+        )
+
     def test_logs_when_repair_fires(self, caplog):
         with caplog.at_level(logging.INFO, logger="spoke.dedup"):
             repaired = repair_ontology_terms("And then read Epistaxes.")
