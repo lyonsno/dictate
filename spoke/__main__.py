@@ -35,7 +35,7 @@ from Foundation import NSObject
 
 from .capture import AudioCapture
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
-from .focus_check import has_focused_text_input
+from .focus_check import has_focused_text_input, focused_text_contains
 from .scene_capture import SceneCaptureCache
 from .tool_dispatch import execute_tool, get_tool_schemas
 from .glow import GlowOverlay
@@ -1345,14 +1345,23 @@ class SpokeAppDelegate(NSObject):
         *,
         owner: str = "user",
         activate: bool = True,
+        position: str = "top",
     ) -> TrayEntry:
         entry = TrayEntry(
             text=text,
             owner=owner,
             acknowledged=(owner != "assistant"),
         )
-        self._tray_stack.append(entry)
-        self._tray_index = len(self._tray_stack) - 1
+        if position == "bottom":
+            had_entries = bool(self._tray_stack)
+            self._tray_stack.insert(0, entry)
+            if activate or not had_entries:
+                self._tray_index = 0
+            elif self._tray_active:
+                self._tray_index += 1
+        else:
+            self._tray_stack.append(entry)
+            self._tray_index = len(self._tray_stack) - 1
 
         if activate:
             self._tray_active = True
@@ -1373,6 +1382,26 @@ class SpokeAppDelegate(NSObject):
             self._show_tray_current()
 
         return entry
+
+    def _stash_failed_paste_to_tray(self, text: str, *, status: str) -> None:
+        """Preserve an unverified paste without surfacing the tray UI."""
+        entry = self._add_tray_entry(
+            text,
+            owner="user",
+            activate=False,
+            position="bottom",
+        )
+        if self._overlay is not None:
+            flash = getattr(self._overlay, "flash_tray_capture", None)
+            if callable(flash):
+                flash(text, owner=entry.display_owner)
+        if self._menubar is not None:
+            self._menubar.set_status_text("Saved to tray")
+        logger.info(
+            "Stashed unverified paste at bottom of tray (status=%s entries=%d)",
+            status,
+            len(self._tray_stack),
+        )
 
     def _show_tray_current(self, *, acknowledge: bool = False) -> None:
         """Update the tray overlay to display the current stack entry."""
@@ -2013,12 +2042,31 @@ class SpokeAppDelegate(NSObject):
         # Run OCR in background thread to avoid blocking the main thread
         import threading
         def _verify():
-            from .paste_verify import capture_screen_text, text_appears_on_screen
+            focused_match = focused_text_contains(text)
+            if focused_match is True:
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "verifyPasteResult:",
+                    {
+                        "found": True,
+                        "status": "confirmed_ax",
+                        "text": text,
+                        "attempt": attempt,
+                    },
+                    False,
+                )
+                return
+            from .paste_verify import capture_screen_text, classify_paste_result
             screen_text = capture_screen_text()
-            found = text_appears_on_screen(text, screen_text)
+            status = classify_paste_result(text, screen_text)
+            found = status == "confirmed"
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "verifyPasteResult:",
-                {"found": found, "text": text, "attempt": attempt},
+                {
+                    "found": found,
+                    "status": status,
+                    "text": text,
+                    "attempt": attempt,
+                },
                 False,
             )
         threading.Thread(target=_verify, daemon=True).start()
@@ -2026,6 +2074,7 @@ class SpokeAppDelegate(NSObject):
     def verifyPasteResult_(self, payload) -> None:
         """Main thread: handle OCR verification result."""
         found = payload["found"]
+        status = payload.get("status", "confirmed" if found else "missing")
         text = payload["text"]
         attempt = payload["attempt"]
 
@@ -2065,12 +2114,13 @@ class SpokeAppDelegate(NSObject):
             self._recovery_retry_pending = False
             self._enter_recovery_mode(text)
         else:
-            # Normal paste failed — enter recovery for the first time
+            # Normal paste failed verification — preserve it without surfacing tray UI.
             logger.warning(
-                "Paste not verified by OCR after %d attempts — entering recovery",
+                "Paste not verified by OCR after %d attempts (%s) — stashing silently to tray",
                 attempt + 1,
+                status,
             )
-            self._enter_recovery_mode(text)
+            self._stash_failed_paste_to_tray(text, status=status)
 
     # ── helpers ─────────────────────────────────────────────
 
