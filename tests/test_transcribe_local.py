@@ -258,6 +258,20 @@ class TestLocalTranscriptionClient:
         )
 
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_repairs_segmented_autopoiesis_and_topoid(self, mock_mlx_whisper):
+        """Segmented autopoiesis and topoid should still normalize on the local Whisper path."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {
+            "text": "Autopoises can split into auto poises, and Topoid should still mean topoi."
+        }
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == (
+            "Autopoíesis can split into autopoíesis, and Tópoi should still mean tópoi."
+        )
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_transcribe_missing_text_key(self, mock_mlx_whisper):
         """Missing 'text' key should return empty string."""
         from spoke.transcribe_local import LocalTranscriptionClient

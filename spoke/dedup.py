@@ -31,7 +31,7 @@ _ONTOLOGY_REPAIRS = (
     (r"\b(?:uxis|of seizes|auxesis|oxygesis|oxesis|oxysis|buxies|auxesus)\b", "aúxesis", True),
     (r"\b(?:sylloge|syllogy|silagee|sueji|silegy|sylergy)\b", "syllogé", True),
     (r"\b(?:tipos|topos)\b", "tópos", True),
-    (r"\b(?:topoie|topoit|topoi)\b", "tópoi", True),
+    (r"\b(?:topoie|topoit|topoid|topoi)\b", "tópoi", True),
     (r"\b(?:catastasis|katastasis)\b", "katástasis", True),
     (
         r"\b(?:aposkepsis|aposcepsis|episcipsis|episcapsis|episcopes|episcus|upper skepticism|appless kept says|appless kepts)\b",
@@ -58,7 +58,7 @@ _ONTOLOGY_REPAIRS = (
     (r"\b(?:semi-hostess(?: concepts?)?|semi-oce's|semiosis|semeiosis|sēmeiōsis)\b", "sēmeiōsis", True),
     (r"\b(?:semion|semian|semeion|sēmeion)\b", "sēmeion", True),
     (r"\b(?:probolia|proboli|probly|probaly|probally|proboly|probole)\b", "probolé", True),
-    (r"\b(?:autopoiesis|autopoises|autopuise|otopoiesis)\b", "autopoíesis", True),
+    (r"\b(?:autopoiesis|autopoises|autopuise|otopoiesis|auto\s+poises)\b", "autopoíesis", True),
     (r"\b(?:ooxisis|oxisis)\b", "aúxesis", True),
     (r"\blysis\b", "lýsis", True),
 )
