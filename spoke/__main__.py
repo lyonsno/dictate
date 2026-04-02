@@ -2445,25 +2445,30 @@ class SpokeAppDelegate(NSObject):
                     ],
                 }
             tts = getattr(self, "_tts_client", None)
-            if tts is not None:
-                current_tts_model = tts._model_id
-                tts_backend = getattr(self, "_tts_backend", "local")
+            tts_backend = getattr(self, "_tts_backend", "local")
+            tts_voice_pref = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE", "")
+            show_tts_menus = tts is not None or tts_backend == "sidecar" or tts_voice_pref
+            if show_tts_menus:
+                current_tts_model = getattr(tts, "_model_id", "") if tts else ""
                 if tts_backend == "sidecar":
                     sidecar_models = self._discover_tts_sidecar_models()
                     if sidecar_models:
                         tts_models = sidecar_models
-                    else:
+                    elif current_tts_model:
                         tts_models = [(current_tts_model, current_tts_model, True)]
+                    else:
+                        tts_models = []
                 else:
                     tts_models = [
                         (model_id, label, model_id == current_tts_model)
                         for model_id, label in _TTS_MODELS
                     ]
-                state["tts"] = {
-                    "selected": current_tts_model,
-                    "models": tts_models,
-                }
-                current_voice = getattr(tts, "_voice", "")
+                if tts_models:
+                    state["tts"] = {
+                        "selected": current_tts_model,
+                        "models": tts_models,
+                    }
+                current_voice = getattr(tts, "_voice", "") if tts else tts_voice_pref
                 state["tts_voice"] = {
                     "title": f"TTS Voice: {current_voice or '(not set)'}",
                     "items": [
