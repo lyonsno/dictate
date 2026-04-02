@@ -17,12 +17,25 @@ logger = logging.getLogger(__name__)
 
 
 _ONTOLOGY_REPAIRS = (
+    (r"\bspoke-up as taxes\b", "spoke Epistaxis"),
+    (r"\bup as taxes\b", "Epistaxis"),
+    (r"\bin his taxes\b", "Epistaxis"),
     (r"\bepistaxism\b", "Epistaxis main"),
     (r"\bepistaxistopos\b", "Epistaxis topos"),
-    (r"\b(?:epistaxes|epistax|nepistaxis|epistexis|epistek|epistaxity)\b", "Epistaxis"),
+    (
+        r"\b(?:epistaxes|epistax|epistaxists|nepistaxis|epistexis|epistek|epistaxity)\b",
+        "Epistaxis",
+    ),
+    (r"\b(?:metadose(?:\s+(?:ii|so))?)\b", "Metadosis"),
+    (r"\b(?:uxis|of seizes)\b", "Auxesis"),
+    (r"\bsyllogy\b", "sylloge"),
+    (r"\btipos\b", "topos"),
     (r"\b(?:topoie|topoit)\b", "topoi"),
+    (r"\bcatastasis\b", "katastasis"),
+    (r"\b(?:upper skepticism|appless kept says|appless kepts)\b", "Aposkepsis"),
     (r"\ban (?:afro|afra)\b", "anaphora"),
     (r"\bafra\b", "anaphora"),
+    (r"\b(?:semi-hostess(?: concepts?)?|semi-oce's)\b", "semiosis"),
 )
 
 

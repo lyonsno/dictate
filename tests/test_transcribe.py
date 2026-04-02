@@ -193,6 +193,21 @@ class TestTranscriptionFiltering:
 
         assert client.transcribe(b"wav") == "Read Epistaxis and update the topoi."
 
+    def test_recent_ontology_failures_are_repaired(self):
+        """Recent launch-log variants should normalize on the Whisper path."""
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "text": "Check the Uxis document, the Metadose II, and the Syllogy."
+        }
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == (
+            "Check the Auxesis document, the Metadosis, and the sylloge."
+        )
+
     def test_whitespace_only_is_hallucination(self):
         """Whitespace-only result should be treated as hallucination."""
         client = TranscriptionClient(base_url="http://x")

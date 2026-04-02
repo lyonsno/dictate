@@ -103,6 +103,28 @@ class TestRepairOntologyTerms:
         text = "Epistexis Topoie and an Afro are both wrong."
         assert repair_ontology_terms(text) == "Epistaxis topoi and anaphora are both wrong."
 
+    def test_repairs_recent_high_frequency_variants(self):
+        text = (
+            "Read spoke-up as taxes, chase the Metadose II, check the Uxis "
+            "document, and compile our tipos into a Syllogy."
+        )
+        assert repair_ontology_terms(text) == (
+            "Read spoke Epistaxis, chase the Metadosis, check the Auxesis "
+            "document, and compile our topos into a sylloge."
+        )
+
+    def test_repairs_aposkepsis_semiosis_and_katastasis_variants(self):
+        text = "The appless kept says naming and semi-hostess concept are close to Catastasis."
+        assert repair_ontology_terms(text) == (
+            "The Aposkepsis naming and semiosis are close to katastasis."
+        )
+
+    def test_repairs_in_his_taxes_phrase(self):
+        text = "When you see in his taxes in the logs, that should be Epistaxis."
+        assert repair_ontology_terms(text) == (
+            "When you see Epistaxis in the logs, that should be Epistaxis."
+        )
+
     def test_logs_when_repair_fires(self, caplog):
         with caplog.at_level(logging.INFO, logger="spoke.dedup"):
             repaired = repair_ontology_terms("And then read Epistaxes.")
