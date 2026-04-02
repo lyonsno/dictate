@@ -100,22 +100,25 @@ SPOKE_COMMAND_URL=http://localhost:8001 uv run spoke
 
 Spoke applies a bounded post-transcription repair pass for recurring
 Epistaxis ontology terms that have already shown up incorrectly in real launch
-logs. Current observed failure examples include:
+logs. The repair pass now normalizes those hits to accented canonical forms,
+and the visible overlay/tray tints those ontology words in the same glow-blue
+family as the rest of the UI. Current observed failure examples include:
 
-- `Epistaxes`, `Nepistaxis`, `Epistexis` -> `Epistaxis`
-- `epistaxists`, `in his taxes`, `spoke-up as taxes` -> `Epistaxis`
-- `Epistaxistopos` -> `Epistaxis topos`
-- `Topoie`, `topoit` -> `topoi`
-- `tipos` -> `topos`
-- `an Afro`, `Afra` -> `anaphora`
-- `Metadose`, `Metadose II` -> `Metadosis`
-- `Uxis`, `of seizes` -> `Auxesis`
-- `Syllogy`, `silagee`, `sueji` -> `sylloge`
-- `appless kept says`, `upper skepticism` -> `Aposkepsis`
-- `kerigma`, `kergma`, `carrygma`, `carigma` -> `kerygma`
-- `epinorthosis` -> `epanorthosis`
-- `semi-hostess`, `semi-oce's` -> `semiosis`
-- `Catastasis` -> `katastasis`
+- `Epistaxes`, `Nepistaxis`, `Epistexis`, `in his taxes` -> `Epístaxis`
+- `Epistaxistopos` -> `Epístaxis tópos`
+- `Topoie`, `topoit`, `tipos` -> `tópoi`, `tópos`
+- `an Afro`, `Afra`, `Aphro` -> `anaphorá`
+- `Metadose`, `Metadose II` -> `metádosis`
+- `Uxis`, `of seizes`, `Oxygesis`, `Oxesis`, `auxesus` -> `aúxesis`
+- `Syllogy`, `silagee`, `sueji`, `Silegy` -> `syllogé`
+- `appless kept says`, `upper skepticism`, `Aposcepsis`, `Episcapsis` -> `aposképsis`
+- `kerigma`, `kergma`, `Curigma`, `Karigma`, `Charygma` -> `kérygma`
+- `epinorthosis`, `Epin orthosis`, `Evanorthosis` -> `epanórthosis`
+- `semi-hostess`, `semi-oce's`, `Semion`, `Semian` -> `sēmeiōsis`, `sēmeion`
+- `Probolia`, `Proboli`, `probly` -> `probolé`
+- `Autopuise`, `Autopoises`, `Otopoiesis` -> `autopoíesis`
+- `Catastasis` -> `katástasis`
+- `Lysis` -> `lýsis`
 
 Whenever one of these repairs fires, the launch logs keep both the raw and
 repaired text so the vocabulary list can expand from observed failures instead

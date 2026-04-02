@@ -17,28 +17,111 @@ logger = logging.getLogger(__name__)
 
 
 _ONTOLOGY_REPAIRS = (
-    (r"\bspoke-up as taxes\b", "spoke Epistaxis"),
-    (r"\bup as taxes\b", "Epistaxis"),
-    (r"\bin his taxes\b", "Epistaxis"),
-    (r"\bepistaxism\b", "Epistaxis main"),
-    (r"\bepistaxistopos\b", "Epistaxis topos"),
+    (r"\bspoke-up as taxes\b", "spoke Epístaxis", False),
+    (r"\bup as taxes\b", "Epístaxis", False),
+    (r"\bin his taxes\b", "Epístaxis", False),
+    (r"\bepistaxism\b", "Epístaxis main", False),
+    (r"\bepistaxistopos\b", "Epístaxis tópos", False),
     (
-        r"\b(?:epistaxes|epistax|epistaxists|nepistaxis|epistexis|epistek|epistaxity)\b",
-        "Epistaxis",
+        r"\b(?:epistaxis|epistaxes|epistax|epistaxists|nepistaxis|epistexis|epistek|epistaxity)\b",
+        "Epístaxis",
+        False,
     ),
-    (r"\b(?:metadose(?:\s+(?:ii|so))?)\b", "Metadosis"),
-    (r"\b(?:uxis|of seizes)\b", "Auxesis"),
-    (r"\b(?:syllogy|silagee|sueji)\b", "sylloge"),
-    (r"\btipos\b", "topos"),
-    (r"\b(?:topoie|topoit)\b", "topoi"),
-    (r"\bcatastasis\b", "katastasis"),
-    (r"\b(?:upper skepticism|appless kept says|appless kepts)\b", "Aposkepsis"),
-    (r"\b(?:kerigma|kergma|carrygma|carigma)\b", "kerygma"),
-    (r"\ban (?:afro|afra)\b", "anaphora"),
-    (r"\bafra\b", "anaphora"),
-    (r"\bepinorthosis\b", "epanorthosis"),
-    (r"\b(?:semi-hostess(?: concepts?)?|semi-oce's)\b", "semiosis"),
+    (r"\b(?:metadose(?:\s+(?:ii|so))?|metadosis)\b", "metádosis", True),
+    (r"\b(?:uxis|of seizes|auxesis|oxygesis|oxesis|buxies|auxesus)\b", "aúxesis", True),
+    (r"\b(?:sylloge|syllogy|silagee|sueji|silegy|sylergy)\b", "syllogé", True),
+    (r"\b(?:tipos|topos)\b", "tópos", True),
+    (r"\b(?:topoie|topoit|topoi)\b", "tópoi", True),
+    (r"\b(?:catastasis|katastasis)\b", "katástasis", True),
+    (
+        r"\b(?:aposkepsis|aposcepsis|episcipsis|episcapsis|episcopes|episcus|upper skepticism|appless kept says|appless kepts)\b",
+        "aposképsis",
+        True,
+    ),
+    (r"\b(?:kerygma|kerigma|kergma|carrygma|carigma|curigma|karigma|charygma)\b", "kérygma", True),
+    (r"\ban (?:afro|afra)\b", "anaphorá", True),
+    (r"\b(?:anaphora|afra|aphro)\b", "anaphorá", True),
+    (r"\b(?:epin\s+orthosis|epinorthosis|epanorthosis|evanorthosis)\b", "epanórthosis", True),
+    (r"\b(?:semi-hostess(?: concepts?)?|semi-oce's|semiosis|semeiosis|sēmeiōsis)\b", "sēmeiōsis", True),
+    (r"\b(?:semion|semian|semeion|sēmeion)\b", "sēmeion", True),
+    (r"\b(?:probolia|proboli|probly|probole)\b", "probolé", True),
+    (r"\b(?:autopoiesis|autopoises|autopuise|otopoiesis)\b", "autopoíesis", True),
+    (r"\blysis\b", "lýsis", True),
 )
+
+_ONTOLOGY_DISPLAY_FORMS = tuple(
+    sorted(
+        {
+            "Epístaxis",
+            "tópos",
+            "tópoi",
+            "metádosis",
+            "aúxesis",
+            "syllogé",
+            "katástasis",
+            "aposképsis",
+            "kérygma",
+            "anaphorá",
+            "epanórthosis",
+            "sēmeiōsis",
+            "sēmeion",
+            "probolé",
+            "autopoíesis",
+            "lýsis",
+            "Epistaxis",
+            "topos",
+            "topoi",
+            "metadosis",
+            "auxesis",
+            "sylloge",
+            "katastasis",
+            "aposkepsis",
+            "kerygma",
+            "anaphora",
+            "epanorthosis",
+            "semiosis",
+            "semeion",
+            "probole",
+            "autopoiesis",
+            "lysis",
+        },
+        key=len,
+        reverse=True,
+    )
+)
+_ONTOLOGY_DISPLAY_PATTERNS = tuple(
+    re.compile(rf"(?<!\w){re.escape(term)}(?!\w)", flags=re.IGNORECASE)
+    for term in _ONTOLOGY_DISPLAY_FORMS
+)
+
+
+def _match_initial_case(replacement: str, observed: str) -> str:
+    if observed.isupper():
+        return replacement.upper()
+    if observed[:1].isupper():
+        return replacement[:1].upper() + replacement[1:]
+    return replacement
+
+
+def ontology_term_spans(text: str) -> list[tuple[int, int]]:
+    """Return non-overlapping ranges for visible ontology terms in text."""
+    spans: list[tuple[int, int]] = []
+    for pattern in _ONTOLOGY_DISPLAY_PATTERNS:
+        for match in pattern.finditer(text):
+            spans.append((match.start(), match.end()))
+
+    if not spans:
+        return []
+
+    spans.sort()
+    merged = [spans[0]]
+    for start, end in spans[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end:
+            merged[-1] = (last_start, max(last_end, end))
+            continue
+        merged.append((start, end))
+    return merged
 
 
 def truncate_repetition(text: str, min_phrase_len: int = 3, min_repeats: int = 3) -> str:
@@ -128,7 +211,15 @@ def repair_ontology_terms(text: str) -> str:
     launch logs are repaired here.
     """
     repaired = text
-    for pattern, replacement in _ONTOLOGY_REPAIRS:
+    for pattern, replacement, match_case in _ONTOLOGY_REPAIRS:
+        if match_case:
+            repaired = re.sub(
+                pattern,
+                lambda match, repl=replacement: _match_initial_case(repl, match.group(0)),
+                repaired,
+                flags=re.IGNORECASE,
+            )
+            continue
         repaired = re.sub(pattern, replacement, repaired, flags=re.IGNORECASE)
 
     if repaired != text:

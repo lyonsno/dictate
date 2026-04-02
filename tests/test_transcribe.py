@@ -191,7 +191,7 @@ class TestTranscriptionFiltering:
         mock_client.post.return_value = mock_resp
         client._client = mock_client
 
-        assert client.transcribe(b"wav") == "Read Epistaxis and update the topoi."
+        assert client.transcribe(b"wav") == "Read Epístaxis and update the Tópoi."
 
     def test_recent_ontology_failures_are_repaired(self):
         """Recent launch-log variants should normalize on the Whisper path."""
@@ -205,7 +205,7 @@ class TestTranscriptionFiltering:
         client._client = mock_client
 
         assert client.transcribe(b"wav") == (
-            "Check the Auxesis document, the Metadosis, and the sylloge."
+            "Check the Aúxesis document, the Metádosis, and the Syllogé."
         )
 
     def test_additional_ontology_failures_are_repaired(self):
@@ -220,7 +220,26 @@ class TestTranscriptionFiltering:
         client._client = mock_client
 
         assert client.transcribe(b"wav") == (
-            "Check the sylloge, the kerygma badge, and epanorthosis."
+            "Check the syllogé, the kérygma badge, and epanórthosis."
+        )
+
+    def test_smoke_sentence_reaches_accented_canonical_forms(self):
+        """Recent smoke regressions should normalize to accented ontology output."""
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "text": (
+                "Nice work. Thank you. I'm gonna test now epistaxis Epinorthosis lysis, "
+                "Syllogy Episcapsis probly anaphora Charygma otopoiesis auxesus"
+            )
+        }
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == (
+            "Nice work. Thank you. I'm gonna test now Epístaxis Epanórthosis lýsis, "
+            "Syllogé Aposképsis probolé anaphorá Kérygma autopoíesis aúxesis"
         )
 
     def test_whitespace_only_is_hallucination(self):
