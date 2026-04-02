@@ -40,6 +40,19 @@ When updating `spoke` Epistaxis state:
 
 Unless the user explicitly says otherwise, push commits after creating them.
 
+## Integration Tip
+
+For `spoke`, the canonical integration tip is remote `origin/main-next`, not
+whichever older local `main-next` carry or smoke worktree happens to exist.
+
+When a dedicated local trunk surface is in use, refer to it by its visible
+launcher label, `Main Next Trunk`, but only treat it as the current integration
+tip after it has been refreshed or recreated from current `origin/main-next`.
+
+Do not present an older local `main-next` worktree as "the current tip" just
+because it is named like a trunk surface or was the last place a smoke run
+happened.
+
 ## Smoke-test branch launches
 
 When the user asks to spin up a separate fun or smoke-test branch, treat that as a request to launch the dedicated worktree for that branch rather than the stable default launcher path.
