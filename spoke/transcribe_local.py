@@ -15,7 +15,7 @@ import wave
 
 import numpy as np
 
-from .dedup import truncate_repetition, is_hallucination
+from .dedup import truncate_repetition, is_hallucination, repair_ontology_terms
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +164,7 @@ class LocalTranscriptionClient:
 
         text = result.get("text", "").strip()
         text = truncate_repetition(text)
+        text = repair_ontology_terms(text)
         if is_hallucination(text):
             logger.info("Discarding hallucination: %r", text)
             return ""

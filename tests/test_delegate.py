@@ -994,15 +994,13 @@ class TestDualModelConfiguration:
     def test_selecting_launch_target_persists_choice_and_invokes_helper(
         self, main_module, monkeypatch
     ):
-        """Choosing a new launch target should save it and hand off to the launcher helper."""
+        """Choosing a new launch target should flow through the launch-target selector."""
         d = _make_delegate(main_module, monkeypatch)
-        d._persist_launch_target_selection = MagicMock(return_value=True)
-        d._invoke_launch_target_helper = MagicMock(return_value=True)
+        d._apply_launch_target_selection = MagicMock()
 
         d._handle_model_menu_action(("launch_target", "smoke"))
 
-        d._persist_launch_target_selection.assert_called_once_with("smoke")
-        d._invoke_launch_target_helper.assert_called_once_with("smoke")
+        d._apply_launch_target_selection.assert_called_once_with("smoke")
     def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
         self, main_module, monkeypatch
     ):
@@ -1246,7 +1244,9 @@ class TestDualModelConfiguration:
         d = _make_delegate(main_module, monkeypatch)
         d._command_backend = "sidecar"
 
-        options = d._seed_command_model_options("alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx")
+        options = d._seed_command_model_options(
+            "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx"
+        )
 
         assert options == [
             (
@@ -1279,11 +1279,11 @@ class TestDualModelConfiguration:
         assert d._command_model_id == "qwen3p5-35B-A3B"
         assert d._command_client._model == "qwen3p5-35B-A3B"
         d._save_command_model_preference.assert_called_once_with("qwen3p5-35B-A3B")
-        d._menubar.refresh_menu.assert_called_once_with()
         assert d._command_model_options == [
             ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
             ("qwen3-14b", "qwen3-14b", False),
         ]
+        d._menubar.refresh_menu.assert_called_once_with()
 
     def test_reselecting_current_assistant_model_repairs_stale_preference_without_relaunch(
         self, main_module, monkeypatch, tmp_path

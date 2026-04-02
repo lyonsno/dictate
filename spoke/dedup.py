@@ -4,7 +4,8 @@ Whisper has two known failure modes:
 1. Decoder loop: repeats the last word/phrase indefinitely
 2. Silence hallucination: outputs "Thank you." or similar on silent input
 
-This module detects both and cleans the output.
+This module also carries bounded post-transcription repairs for observed
+Epistaxis ontology vocabulary failures.
 """
 
 from __future__ import annotations
@@ -13,6 +14,130 @@ import re
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+_ONTOLOGY_REPAIRS = (
+    (r"\bspoke-up as taxes\b", "spoke Epístaxis", False),
+    (r"\bup as taxes\b", "Epístaxis", False),
+    (r"\bin his taxes\b", "Epístaxis", False),
+    (r"\bepistaxism\b", "Epístaxis main", False),
+    (r"\bepistaxistopos\b", "Epístaxis tópos", False),
+    (
+        r"\b(?:epistaxis|epistaxes|epistax|epistaxists|nepistaxis|epistexis|epistek|epistaxity)\b",
+        "Epístaxis",
+        False,
+    ),
+    (r"\b(?:metadose(?:\s+(?:ii|so))?|metadosis)\b", "metádosis", True),
+    (r"\b(?:uxis|of seizes|auxesis|oxygesis|oxesis|oxysis|buxies|auxesus)\b", "aúxesis", True),
+    (r"\b(?:sylloge|syllogy|silagee|sueji|silegy|sylergy)\b", "syllogé", True),
+    (r"\b(?:tipos|topos)\b", "tópos", True),
+    (r"\b(?:topoie|topoit|topoid|topoi)\b", "tópoi", True),
+    (r"\b(?:catastasis|katastasis)\b", "katástasis", True),
+    (
+        r"\b(?:aposkepsis|aposcepsis|episcipsis|episcapsis|episcopes|episcus|upper skepticism|appless kept says|appless kepts)\b",
+        "aposképsis",
+        True,
+    ),
+    (
+        r"\b(?:kerygma|kerigma|kergma|carrygma|carigma|curigma|karigma|charygma|chorigma|chirigma)\b",
+        "kérygma",
+        True,
+    ),
+    (r"\ban (?:afro|afra)\b", "anaphorá", True),
+    (r"\b(?:anaphora|afra|aphro)\b", "anaphorá", True),
+    (
+        r"\b(?:epin\s+orthosis|epinorthosis|epanorthosis|evanorthosis|epinoethosis|epineuthosis)\b",
+        "epanórthosis",
+        True,
+    ),
+    (
+        r"\b(?:epispokisis|epispokosis|epispokesis|epispocasis|epispoiesis|episcopoiesis)\b",
+        "epispókisis",
+        True,
+    ),
+    (r"\b(?:semi-hostess(?: concepts?)?|semi-oce's|semiosis|semeiosis|sēmeiōsis)\b", "sēmeiōsis", True),
+    (r"\b(?:semion|semian|semeion|sēmeion)\b", "sēmeion", True),
+    (r"\b(?:probolia|proboli|probly|probaly|probally|proboly|probole)\b", "probolé", True),
+    (r"\b(?:autopoiesis|autopoises|autopuise|otopoiesis|auto\s+poises)\b", "autopoíesis", True),
+    (r"\b(?:ooxisis|oxisis)\b", "aúxesis", True),
+    (r"\blysis\b", "lýsis", True),
+)
+
+_ONTOLOGY_DISPLAY_FORMS = tuple(
+    sorted(
+        {
+            "Epístaxis",
+            "tópos",
+            "tópoi",
+            "metádosis",
+            "aúxesis",
+            "syllogé",
+            "katástasis",
+            "aposképsis",
+            "kérygma",
+            "anaphorá",
+            "epanórthosis",
+            "epispókisis",
+            "sēmeiōsis",
+            "sēmeion",
+            "probolé",
+            "autopoíesis",
+            "lýsis",
+            "Epistaxis",
+            "topos",
+            "topoi",
+            "metadosis",
+            "auxesis",
+            "sylloge",
+            "katastasis",
+            "aposkepsis",
+            "kerygma",
+            "anaphora",
+            "epanorthosis",
+            "epispokisis",
+            "semiosis",
+            "semeion",
+            "probole",
+            "autopoiesis",
+            "lysis",
+        },
+        key=len,
+        reverse=True,
+    )
+)
+_ONTOLOGY_DISPLAY_PATTERNS = tuple(
+    re.compile(rf"(?<!\w){re.escape(term)}(?!\w)", flags=re.IGNORECASE)
+    for term in _ONTOLOGY_DISPLAY_FORMS
+)
+
+
+def _match_initial_case(replacement: str, observed: str) -> str:
+    if observed.isupper():
+        return replacement.upper()
+    if observed[:1].isupper():
+        return replacement[:1].upper() + replacement[1:]
+    return replacement
+
+
+def ontology_term_spans(text: str) -> list[tuple[int, int]]:
+    """Return non-overlapping ranges for visible ontology terms in text."""
+    spans: list[tuple[int, int]] = []
+    for pattern in _ONTOLOGY_DISPLAY_PATTERNS:
+        for match in pattern.finditer(text):
+            spans.append((match.start(), match.end()))
+
+    if not spans:
+        return []
+
+    spans.sort()
+    merged = [spans[0]]
+    for start, end in spans[1:]:
+        last_start, last_end = merged[-1]
+        if start <= last_end:
+            merged[-1] = (last_start, max(last_end, end))
+            continue
+        merged.append((start, end))
+    return merged
 
 
 def truncate_repetition(text: str, min_phrase_len: int = 3, min_repeats: int = 3) -> str:
@@ -93,3 +218,26 @@ _SILENCE_HALLUCINATIONS = {
 def is_hallucination(text: str) -> bool:
     """Return True if the text is a known Whisper silence hallucination."""
     return text.strip().lower() in _SILENCE_HALLUCINATIONS
+
+
+def repair_ontology_terms(text: str) -> str:
+    """Repair observed Epistaxis ontology vocabulary failures.
+
+    This is intentionally log-backed and bounded. Only variants seen in
+    launch logs are repaired here.
+    """
+    repaired = text
+    for pattern, replacement, match_case in _ONTOLOGY_REPAIRS:
+        if match_case:
+            repaired = re.sub(
+                pattern,
+                lambda match, repl=replacement: _match_initial_case(repl, match.group(0)),
+                repaired,
+                flags=re.IGNORECASE,
+            )
+            continue
+        repaired = re.sub(pattern, replacement, repaired, flags=re.IGNORECASE)
+
+    if repaired != text:
+        logger.info("Repaired ontology vocabulary: %r -> %r", text, repaired)
+    return repaired

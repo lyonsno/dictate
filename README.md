@@ -28,6 +28,7 @@ Quick taps still produce a normal space. Longer holds trigger recording, show th
 - Voice command pathway via Shift+Space — sends utterances to a local LLM with streaming response overlay
 - OCR-verified paste with automatic recovery overlay on failure
 - Decoder-loop and silence-hallucination deduplication
+- Bounded Whisper ontology-vocabulary repair for recurring Epistaxis terms
 - Single-instance app behavior
 - Menubar-only UI with no Dock icon
 
@@ -80,12 +81,28 @@ Point `spoke` at any OpenAI-compatible transcription server:
 SPOKE_WHISPER_URL=http://<host>:8000 uv run spoke
 ```
 
-Example sidecar options on Apple Silicon:
+Example sidecar on Apple Silicon (TTS + STT):
 
 ```sh
-uv tool install "mlx-audio[server]"
-mlx-audio-server --host 0.0.0.0 --port 8000
+./scripts/setup-mlx-audio-server.sh --start --port 9001
 ```
+
+This installs `mlx-audio` as a uv tool with all runtime deps patched (the
+published extras are missing several transitive dependencies — see the script
+for details). Once running, load models dynamically:
+
+```sh
+curl -X POST "http://localhost:9001/v1/models?model_name=mlx-community/Voxtral-4B-TTS-2603-mlx-6bit"
+curl -X POST "http://localhost:9001/v1/models?model_name=mlx-community/Kokoro-82M-bf16"
+```
+
+Or start the server manually after install:
+
+```sh
+mlx_audio.server --host 0.0.0.0 --port 9001 --workers 1
+```
+
+> **Note:** The binary is `mlx_audio.server` (dots), not `mlx-audio-server` (dashes).
 
 ### Voice commands
 
@@ -94,6 +111,36 @@ When `SPOKE_COMMAND_URL` is set, Shift+Space activates the command pathway inste
 ```sh
 SPOKE_COMMAND_URL=http://localhost:8001 uv run spoke
 ```
+
+### Whisper ontology vocabulary repair
+
+Spoke applies a bounded post-transcription repair pass for recurring
+Epistaxis ontology terms that have already shown up incorrectly in real launch
+logs. The repair pass now normalizes those hits to accented canonical forms,
+and the visible overlay/tray tints those ontology words in the same glow-blue
+family as the rest of the UI. Current observed failure examples include:
+
+- `Epistaxes`, `Nepistaxis`, `Epistexis`, `in his taxes` -> `Epístaxis`
+- `Epistaxistopos` -> `Epístaxis tópos`
+- `Topoie`, `topoit`, `tipos` -> `tópoi`, `tópos`
+- `an Afro`, `Afra`, `Aphro` -> `anaphorá`
+- `Metadose`, `Metadose II` -> `metádosis`
+- `Uxis`, `of seizes`, `Oxygesis`, `Oxesis`, `auxesus` -> `aúxesis`
+- `Syllogy`, `silagee`, `sueji`, `Silegy` -> `syllogé`
+- `appless kept says`, `upper skepticism`, `Aposcepsis`, `Episcapsis` -> `aposképsis`
+- `kerigma`, `kergma`, `Curigma`, `Karigma`, `Charygma`, `chorigma` -> `kérygma`
+- `epinorthosis`, `Epin orthosis`, `Evanorthosis` -> `epanórthosis`
+- `epispokisis`, `epispokosis` -> `epispókisis`
+- `semi-hostess`, `semi-oce's`, `Semion`, `Semian` -> `sēmeiōsis`, `sēmeion`
+- `Probolia`, `Proboli`, `probly`, `probaly`, `probally` -> `probolé`
+- `Autopuise`, `Autopoises`, `Otopoiesis` -> `autopoíesis`
+- `ooxisis` -> `aúxesis`
+- `Catastasis` -> `katástasis`
+- `Lysis` -> `lýsis`
+
+Whenever one of these repairs fires, the launch logs keep both the raw and
+repaired text so the vocabulary list can expand from observed failures instead
+of invented cases.
 
 ## Permissions
 
