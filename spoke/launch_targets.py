@@ -75,15 +75,13 @@ def current_launch_target_id(
     path: Path | None = None,
 ) -> str | None:
     current_checkout = current_checkout.resolve()
-    payload = load_launch_target_registry(path)
     for target in iter_launch_targets(path):
         try:
             if target["path"].resolve() == current_checkout:
                 return target["id"]
         except FileNotFoundError:
             continue
-    selected = payload.get("selected")
-    return str(selected) if selected else None
+    return None
 
 
 def save_selected_launch_target(target_id: str, path: Path | None = None) -> bool:
