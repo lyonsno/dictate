@@ -36,6 +36,7 @@ NOISE_FLOOR_WINDOW = 50    # ~3.2s of history for noise floor
 THRESHOLD_MULTIPLIER = 2.5
 MIN_THRESHOLD = 0.001
 MAX_SEGMENT_CHUNKS = 468   # ~30s maximum segment duration
+VAD_GRACE_PERIOD_SECS = 5.0
 
 
 class AudioCapture:
@@ -63,6 +64,7 @@ class AudioCapture:
         self._noise_floor_history: deque[float] = deque(maxlen=NOISE_FLOOR_WINDOW)
         self._current_segment_chunks: list[np.ndarray] = []
         self._ring_buffer: deque[np.ndarray] = deque(maxlen=PRE_SPEECH_MARGIN)
+        self._grace_chunks_remaining: int = 0
         
         # Async encoding state
         self._encode_queue: queue.Queue | None = None
@@ -138,6 +140,7 @@ class AudioCapture:
         self._current_segment_chunks = []
         self._speech_chunks = []
         self._ring_buffer.clear()
+        self._grace_chunks_remaining = int(VAD_GRACE_PERIOD_SECS * SAMPLE_RATE / BLOCKSIZE)
         
         if self._segment_cb is not None:
             self._encode_queue = queue.Queue()
@@ -216,6 +219,7 @@ class AudioCapture:
             self._encode_thread = None
             self._current_segment_chunks = []
             self._ring_buffer.clear()
+            self._grace_chunks_remaining = 0
             self._noise_floor_history.clear()
 
             self._amplitude_cb = None
@@ -310,6 +314,14 @@ class AudioCapture:
             self._amplitude_cb(rms)
             
         if self._segment_cb is not None or hasattr(self, '_vad_cb'):
+            # VAD grace period management
+            if self._grace_chunks_remaining > 0:
+                self._grace_chunks_remaining -= 1
+                if not self._is_speech:
+                    self._is_speech = True
+                    if self._vad_cb is not None:
+                        self._vad_cb(True)
+
             # Ensure it runs if either callback is present!
             self._noise_floor_history.append(rms)
             noise_floor = min(self._noise_floor_history) if self._noise_floor_history else 0.0
@@ -337,13 +349,13 @@ class AudioCapture:
                     self._speech_trigger_count = 0
             else:
                 self._current_segment_chunks.append(chunk)
-                if getattr(self, '_speech_chunks', None) is None:
+                if not hasattr(self, '_speech_chunks'):
                     self._speech_chunks = []
                 self._speech_chunks.append(chunk)
                 
                 force_slice = len(self._current_segment_chunks) >= MAX_SEGMENT_CHUNKS
                 
-                if force_slice or rms <= threshold:
+                if self._grace_chunks_remaining <= 0 and (force_slice or rms <= threshold):
                     if rms <= threshold:
                         self._silence_trigger_count += 1
                     else:

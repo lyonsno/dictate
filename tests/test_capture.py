@@ -254,6 +254,7 @@ class TestStartStop:
 class TestVADSlicing:
     """Test the VAD state machine and silence slicing logic."""
 
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
     @patch("spoke.capture.sd")
     def test_vad_no_slice_on_continuous_speech(self, mock_sd):
         """Continuous speech without sufficient silence should not trigger slicing."""
@@ -273,6 +274,7 @@ class TestVADSlicing:
         cap._segment_cb.assert_not_called()
         assert cap._is_speech
 
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
     @patch("spoke.capture.sd")
     def test_vad_slices_after_silence(self, mock_sd):
         """Speech followed by silence should emit a bounded segment."""
@@ -305,6 +307,7 @@ class TestVADSlicing:
         assert isinstance(wav_bytes, bytes)
         assert len(wav_bytes) > 44
 
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
     @patch("spoke.capture.sd")
     def test_vad_stop_emits_final_segment(self, mock_sd):
         """Stopping capture while in speech should emit the final segment."""
@@ -327,6 +330,7 @@ class TestVADSlicing:
         cap.stop()
         mock_segment_cb.assert_called_once()
 
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
     @patch("spoke.capture.sd")
     def test_vad_strips_silence_from_final_wav(self, mock_sd):
         """stop() should return only the concatenated speech chunks, stripping leading and trailing silence."""

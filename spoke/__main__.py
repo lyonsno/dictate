@@ -672,8 +672,9 @@ class SpokeAppDelegate(NSObject):
         try:
             def on_vad_state(is_speech: bool):
                 if self._menubar is not None:
+                    from Foundation import NSNumber
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                        "updateVadState:", is_speech, False
+                        "updateVadState:", NSNumber.numberWithBool_(is_speech), False
                     )
             self._capture.start(amplitude_callback=self._on_amplitude, vad_state_callback=on_vad_state)
         except Exception:
@@ -691,6 +692,8 @@ class SpokeAppDelegate(NSObject):
         self._last_preview_text = ""
         self._preview_cancelled_on_release = False
         self._preview_session_token = getattr(self, "_preview_session_token", 0) + 1
+        self._is_speech = True # Start true for grace period
+        self._force_preview_update = False
         self._is_speech = False
         self._force_preview_update = False
         if getattr(self, "_preview_done", None) is not None:
@@ -712,7 +715,8 @@ class SpokeAppDelegate(NSObject):
         )
 
     def updateVadState_(self, is_speech_number) -> None:
-        is_speech = bool(is_speech_number)
+        # PyObjC sends an NSNumber, convert to python bool
+        is_speech = bool(is_speech_number.boolValue())
 
         # If transitioning from speech to silence, force one last preview update
         if getattr(self, "_is_speech", False) and not is_speech:

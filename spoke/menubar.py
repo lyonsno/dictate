@@ -152,7 +152,12 @@ class MenuBarIcon(NSObject):
         if base_img is None:
             return
             
-        color = NSColor.greenColor() if is_speech else NSColor.redColor()
+        # Cornflower blue matching distance field ridge: RGB(0.392, 0.584, 0.929)
+        # Silence: 50% brightness of that color: RGB(0.196, 0.292, 0.4645)
+        if is_speech:
+            color = NSColor.colorWithRed_green_blue_alpha_(0.392, 0.584, 0.929, 1.0)
+        else:
+            color = NSColor.colorWithRed_green_blue_alpha_(0.196, 0.292, 0.4645, 1.0)
         
         # Create a new tinted image
         tinted = base_img.copy()
