@@ -2447,13 +2447,28 @@ class SpokeAppDelegate(NSObject):
             tts = getattr(self, "_tts_client", None)
             if tts is not None:
                 current_tts_model = tts._model_id
-                tts_models = [
-                    (model_id, label, True)
-                    for model_id, label in _TTS_MODELS
-                ]
+                tts_backend = getattr(self, "_tts_backend", "local")
+                if tts_backend == "sidecar":
+                    sidecar_models = self._discover_tts_sidecar_models()
+                    if sidecar_models:
+                        tts_models = sidecar_models
+                    else:
+                        tts_models = [(current_tts_model, current_tts_model, True)]
+                else:
+                    tts_models = [
+                        (model_id, label, model_id == current_tts_model)
+                        for model_id, label in _TTS_MODELS
+                    ]
                 state["tts"] = {
                     "selected": current_tts_model,
                     "models": tts_models,
+                }
+                current_voice = getattr(tts, "_voice", "")
+                state["tts_voice"] = {
+                    "title": f"TTS Voice: {current_voice or '(not set)'}",
+                    "items": [
+                        ("configure_voice", "Set TTS Voice\u2026", False, True),
+                    ],
                 }
             return state
         if not isinstance(selection, tuple) or len(selection) != 2:
@@ -2471,6 +2486,10 @@ class SpokeAppDelegate(NSObject):
             return
         if role == "tts_backend":
             self._apply_tts_backend_selection(model_id)
+            return
+        if role == "tts_voice":
+            self._apply_tts_voice_selection(model_id)
+            return
         if role == "tts":
             self._apply_tts_model_selection(model_id)
             return
@@ -2870,17 +2889,47 @@ class SpokeAppDelegate(NSObject):
 
     def _build_tts_client(self):
         """Build a TTS client based on backend preference and env vars."""
-        voice = os.environ.get("SPOKE_TTS_VOICE")
+        voice = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE")
         if not voice:
             return None
         if self._tts_backend == "sidecar" and self._tts_sidecar_url:
-            model_id = os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
+            model_id = (
+                self._load_preference("tts_sidecar_model")
+                or os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
+            )
             return RemoteTTSClient(
                 base_url=self._tts_sidecar_url,
                 model_id=model_id,
                 voice=voice,
             )
         return TTSClient.from_env(gpu_lock=self._local_inference_lock)
+
+    def _discover_tts_sidecar_models(self) -> list[tuple[str, str, bool]]:
+        """Fetch available models from the TTS sidecar's /v1/models endpoint."""
+        url = getattr(self, "_tts_sidecar_url", "")
+        if not url:
+            return []
+        import urllib.request
+        import urllib.error
+        models_url = f"{url.rstrip('/')}/v1/models"
+        try:
+            req = urllib.request.Request(models_url, method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = _json.loads(resp.read().decode())
+        except Exception:
+            logger.warning("Failed to fetch TTS sidecar models from %s", models_url, exc_info=True)
+            return []
+        current_model = ""
+        tts = getattr(self, "_tts_client", None)
+        if tts is not None:
+            current_model = getattr(tts, "_model_id", "")
+        entries = data.get("data", []) if isinstance(data, dict) else []
+        options = []
+        for entry in entries:
+            model_id = entry.get("id", "") if isinstance(entry, dict) else str(entry)
+            if model_id:
+                options.append((model_id, model_id, model_id == current_model))
+        return options
 
     def _apply_tts_backend_selection(self, backend: str) -> None:
         """Switch TTS backend between 'local' and 'sidecar', then relaunch."""
@@ -3238,7 +3287,11 @@ class SpokeAppDelegate(NSObject):
             model_id,
         )
         payload = self._load_preferences()
-        payload["tts_model"] = model_id
+        tts_backend = getattr(self, "_tts_backend", "local")
+        if tts_backend == "sidecar":
+            payload["tts_sidecar_model"] = model_id
+        else:
+            payload["tts_model"] = model_id
         if not self._save_preferences(payload):
             logger.warning(
                 "Skipping relaunch because the TTS model selection could not be persisted"
@@ -3246,6 +3299,41 @@ class SpokeAppDelegate(NSObject):
             if self._menubar is not None:
                 self._menubar.set_status_text("Couldn't save TTS model selection")
             return
+        self._relaunch()
+
+    def _apply_tts_voice_selection(self, selection: str) -> None:
+        """Handle TTS voice menu selections."""
+        if selection == "configure_voice":
+            self._configure_tts_voice()
+            return
+
+    def _configure_tts_voice(self) -> None:
+        """Show a dialog to set the TTS voice name."""
+        tts = getattr(self, "_tts_client", None)
+        current_voice = getattr(tts, "_voice", "") if tts else ""
+        if not current_voice:
+            current_voice = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE", "")
+        alert = NSAlert.new()
+        alert.setMessageText_("TTS Voice")
+        alert.setInformativeText_(
+            "Enter the voice name to use for TTS synthesis."
+        )
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
+        field.setStringValue_(current_voice)
+        alert.setAccessoryView_(field)
+        alert.addButtonWithTitle_("Save")
+        alert.addButtonWithTitle_("Cancel")
+        response = alert.runModal()
+        if response != 1000:
+            return
+        value = field.stringValue()
+        if not isinstance(value, str):
+            return
+        value = value.strip()
+        if not value:
+            return
+        self._save_preference("tts_voice", value)
+        logger.info("TTS voice saved: %s", value)
         self._relaunch()
 
     def _prepare_clients(self) -> None:

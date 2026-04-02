@@ -591,6 +591,7 @@ class RemoteTTSClient:
             return
 
         import urllib.request
+        import urllib.error
         payload = {
             "model": self._model_id,
             "voice": self._voice,
@@ -604,8 +605,26 @@ class RemoteTTSClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-            wav_bytes = resp.read()
+        logger.info(
+            "TTS sidecar request: url=%s model=%s voice=%s text=%d chars",
+            self._url, self._model_id, self._voice, len(text),
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                wav_bytes = resp.read()
+        except urllib.error.HTTPError as exc:
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"TTS sidecar HTTP {exc.code}: {body or exc.reason}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"TTS sidecar unreachable ({self._base_url}): {exc.reason}"
+            ) from exc
 
         if self._cancelled:
             return
@@ -622,9 +641,13 @@ class RemoteTTSClient:
         self._cancelled = False
 
         def _run():
-            self.speak(text, amplitude_callback=amplitude_callback)
-            if done_callback is not None:
-                done_callback()
+            try:
+                self.speak(text, amplitude_callback=amplitude_callback)
+            except Exception:
+                logger.exception("TTS sidecar speak failed")
+            finally:
+                if done_callback is not None:
+                    done_callback()
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()

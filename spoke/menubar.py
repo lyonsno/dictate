@@ -269,6 +269,16 @@ class MenuBarIcon(NSObject):
                         )
                     )
                     added_menu_section = True
+                tts_voice = model_state.get("tts_voice")
+                if tts_voice:
+                    menu.addItem_(
+                        self._build_toggle_submenu_item(
+                            tts_voice["title"],
+                            "tts_voice",
+                            tts_voice["items"],
+                        )
+                    )
+                    added_menu_section = True
                 tts_endpoint = model_state.get("tts_endpoint")
                 if tts_endpoint:
                     menu.addItem_(self._build_info_item(tts_endpoint["title"]))
