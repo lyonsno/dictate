@@ -273,18 +273,22 @@ class CommandClient:
                                 text=token,
                             )
 
-                        # Tool call deltas — accumulate
+                        # Tool call deltas — yield name indicators and accumulate
                         tool_calls_delta = delta.get("tool_calls")
                         if tool_calls_delta:
                             for tc_delta in tool_calls_delta:
                                 tool_call_acc.feed(tc_delta)
                                 idx = tc_delta.get("index")
-                                if idx is None or idx in emitted_tool_call_indices:
-                                    continue
                                 function_delta = tc_delta.get("function") or {}
                                 tool_name = function_delta.get("name")
-                                if not tool_name:
+                                if not tool_name or idx is None or idx in emitted_tool_call_indices:
                                     continue
+                                indicator = f"\n[calling {tool_name}…]\n"
+                                round_content += indicator
+                                yield CommandStreamEvent(
+                                    kind="assistant_delta",
+                                    text=indicator,
+                                )
                                 emitted_tool_call_indices.add(idx)
                                 yield CommandStreamEvent(
                                     kind="tool_call",

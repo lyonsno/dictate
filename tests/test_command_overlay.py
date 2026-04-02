@@ -25,6 +25,8 @@ def _make_overlay(mock_pyobjc):
     overlay = mod.CommandOverlay.__new__(mod.CommandOverlay)
     overlay._window = MagicMock()
     overlay._window.alphaValue.return_value = 1.0
+    overlay._wrapper_view = MagicMock()
+    overlay._wrapper_view.layer.return_value = MagicMock()
     overlay._content_view = MagicMock()
     overlay._content_view.layer.return_value = MagicMock()
     overlay._scroll_view = MagicMock()
@@ -58,6 +60,7 @@ def _make_overlay(mock_pyobjc):
     overlay._tts_amplitude = 0.0
     overlay._tts_active = False
     overlay._tts_blend = 0.0
+    overlay._tool_mode = False
     overlay._brightness = 0.0
     overlay._brightness_target = 0.0
     overlay._fill_layer = MagicMock()
@@ -124,51 +127,69 @@ class TestThinkingTimer:
 
 
 class TestDismissAnimation:
-    """Test the cancel_dismiss two-phase animation state machine."""
+    """Test the pop-then-shrink dismiss animation state machine."""
 
-    def test_cancel_dismiss_initializes_hold_phase(self, mock_pyobjc):
+    def test_cancel_dismiss_initializes_grow_phase(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._visible = True
 
         overlay.cancel_dismiss()
 
-        assert overlay._cancel_step == 0
-        assert overlay._cancel_phase == "hold"
+        assert overlay._cancel_elapsed == pytest.approx(0.0)
+        assert overlay._cancel_phase == "grow"
         assert overlay._streaming is False
         overlay._window.setAlphaValue_.assert_called_with(1.0)
 
-    def test_hold_phase_transitions_to_fade_after_8_steps(self, mock_pyobjc):
+    def test_grow_phase_expands_overlay_for_first_60ms(self, mock_pyobjc):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay.cancel_dismiss()
+
+        phase, scale, alpha, done = mod._dismiss_animation_state(0.05)
+
+        assert phase == "grow"
+        assert scale > 1.0
+        assert alpha == pytest.approx(1.0)
+        assert done is False
+
+    def test_shrink_phase_starts_after_60ms(self, mock_pyobjc):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay.cancel_dismiss()
+
+        phase, scale, alpha, done = mod._dismiss_animation_state(0.12)
+
+        assert phase == "shrink"
+        assert scale < mod._DISMISS_GROW_SCALE
+        assert alpha < 1.0
+        assert done is False
+
+    def test_animation_completes_after_200ms(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._visible = True
         overlay.cancel_dismiss()
 
-        # Simulate 8 animation steps (hold phase)
-        for _ in range(8):
-            overlay._cancelAnimStep_(None)
-
-        assert overlay._cancel_phase == "fade"
-        assert overlay._cancel_step == 0  # reset for fade
-
-    def test_fade_phase_completes_and_hides_window(self, mock_pyobjc):
-        overlay, _ = _make_overlay(mock_pyobjc)
-        overlay._visible = True
-        overlay.cancel_dismiss()
-
-        # Advance through hold phase
-        for _ in range(8):
-            overlay._cancelAnimStep_(None)
-
-        # Advance through fade phase until completion
-        for _ in range(8):
+        for _ in range(12):
             overlay._cancelAnimStep_(None)
 
         assert overlay._visible is False
         overlay._window.orderOut_.assert_called()
+        overlay._wrapper_view.layer.return_value.setValue_forKeyPath_.assert_called_with(
+            1.0, "transform.scale"
+        )
 
     def test_cancel_dismiss_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._window = None
         overlay.cancel_dismiss()  # should not raise
+
+    def test_cancel_all_timers_clears_dismiss_timer(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay.cancel_dismiss()
+
+        overlay._cancel_all_timers()
+
+        assert overlay._cancel_timer_anim is None
 
 
 class TestShowFinishHide:
@@ -236,8 +257,27 @@ class TestShowFinishHide:
         overlay.set_response_text("Done.")
 
         assert overlay._response_text == "Done."
-        overlay._text_view.setString_.assert_called_once_with("")
+        # New path uses setAttributedString_ to rebuild in one shot, not setString_("")
+        overlay._text_view.textStorage().setAttributedString_.assert_called_once()
         overlay.append_token.assert_called_once_with("Done.")
+
+    def test_set_response_text_with_utterance_calls_layout_once(self, mock_pyobjc):
+        """set_response_text must not trigger an intermediate layout with only the
+        utterance text — that shrinks the window before growing it, causing visible flicker."""
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._utterance_text = "What is the capital of France?"
+        overlay._response_text = "Paris."
+
+        layout_calls = []
+        overlay._update_layout = MagicMock(side_effect=lambda: layout_calls.append(1))
+
+        overlay.set_response_text("Paris is the capital of France.")
+
+        assert len(layout_calls) == 1, (
+            f"set_response_text called _update_layout {len(layout_calls)} time(s); "
+            "expected exactly 1 — intermediate calls shrink the window causing flicker"
+        )
 
     def test_hide_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
@@ -374,3 +414,37 @@ class TestGeometryCaps:
         expected_height = 640.0
         assert frame.size.height == pytest.approx(expected_height + 2 * mod._OUTER_FEATHER)
         assert overlay._content_view.setFrame_.call_args[0][0].size.height == pytest.approx(expected_height)
+
+
+class TestToolState:
+    """Test the tool execution visual state machine."""
+
+    def test_set_tool_active_shows_label(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._thinking_label.setHidden_.reset_mock()
+        
+        overlay.set_tool_active(True)
+        
+        assert overlay._tool_mode is True
+        overlay._thinking_label.setHidden_.assert_called_with(False)
+        overlay._thinking_label.setStringValue_.assert_called_with("tool…")
+
+    def test_thinking_tick_shows_tool_in_tool_mode(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay.set_tool_active(True)
+        overlay._thinking_label.setStringValue_.reset_mock()
+        
+        overlay.thinkingTick_(None)
+        
+        overlay._thinking_label.setStringValue_.assert_called_with("tool…")
+
+    def test_set_tool_active_false_preserves_mode_until_tick(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay.set_tool_active(True)
+        overlay.set_tool_active(False)
+        
+        assert overlay._tool_mode is False
+        overlay.thinkingTick_(None)
+        # Now it should show seconds again
+        assert "s" in overlay._thinking_label.setStringValue_.call_args[0][0]

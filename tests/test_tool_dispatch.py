@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import io
+import unittest.mock
 import json
 import sys
 import time
@@ -69,6 +70,48 @@ class TestToolSchemas:
         ra_schema = next(s for s in schemas if s["function"]["name"] == "read_aloud")
         params = ra_schema["function"]["parameters"]
         assert "source_ref" in params.get("properties", {})
+
+
+    def test_list_directory_schema(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        assert "list_directory" in names
+
+        schema = next(s for s in schemas if s["function"]["name"] == "list_directory")
+        params = schema["function"]["parameters"]
+        assert "dir_path" in params.get("properties", {})
+
+    def test_read_file_schema(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        assert "read_file" in names
+
+        schema = next(s for s in schemas if s["function"]["name"] == "read_file")
+        params = schema["function"]["parameters"]
+        assert "file_path" in params.get("properties", {})
+
+    def test_write_file_schema(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        assert "write_file" in names
+
+        schema = next(s for s in schemas if s["function"]["name"] == "write_file")
+        params = schema["function"]["parameters"]
+        assert "file_path" in params.get("properties", {})
+        assert "content" in params.get("properties", {})
+
+    def test_search_file_schema(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        assert "search_file" in names
+
+        schema = next(s for s in schemas if s["function"]["name"] == "search_file")
+        params = schema["function"]["parameters"]
+        assert "pattern" in params.get("properties", {})
 
     def test_add_to_tray_schema(self):
         mod = _import_tools()
@@ -265,6 +308,55 @@ class TestExecuteTool:
         parsed = json.loads(result)
         assert "error" in parsed
 
+
+    def test_execute_list_directory(self):
+        mod = _import_tools()
+        with patch("os.listdir", return_value=["file1.txt", "dir1"]):
+            with patch("os.path.isdir", return_value=True):
+                result = mod.execute_tool(
+                    name="list_directory",
+                    arguments={"dir_path": "/tmp/testdir"}
+                )
+        parsed = json.loads(result)
+        assert "file1.txt" in parsed.get("contents", [])
+        assert "dir1" in parsed.get("contents", [])
+
+    def test_execute_read_file(self):
+        mod = _import_tools()
+        fake_content = "file content here"
+        with patch("builtins.open", unittest.mock.mock_open(read_data=fake_content)):
+            with patch("os.path.isfile", return_value=True):
+                result = mod.execute_tool(
+                    name="read_file",
+                    arguments={"file_path": "/tmp/test.txt"}
+                )
+        parsed = json.loads(result)
+        assert parsed.get("content") == fake_content
+
+    def test_execute_write_file(self):
+        mod = _import_tools()
+        m = unittest.mock.mock_open()
+        with patch("builtins.open", m):
+            result = mod.execute_tool(
+                name="write_file",
+                arguments={"file_path": "/tmp/test.txt", "content": "new content"}
+            )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        m.assert_called_once_with("/tmp/test.txt", "w", encoding="utf-8")
+        m().write.assert_called_once_with("new content")
+
+    def test_execute_search_file(self):
+        mod = _import_tools()
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="match1\nmatch2", returncode=0)
+            result = mod.execute_tool(
+                name="search_file",
+                arguments={"pattern": "match", "dir_path": "/tmp"}
+            )
+        parsed = json.loads(result)
+        assert "match1" in parsed.get("matches", "")
+
     def test_execute_unknown_tool(self):
         mod = _import_tools()
         result = mod.execute_tool(name="nonexistent", arguments={})
@@ -367,3 +459,100 @@ class TestCommandClientToolIntegration:
             ))
 
         assert tokens == ["Hello", " there"]
+
+
+
+class TestExecuteToolIntegration:
+    def test_execute_list_directory_real(self, tmp_path):
+        mod = _import_tools()
+        d = tmp_path / "mydir"
+        d.mkdir()
+        (d / "file.txt").write_text("hello")
+        
+        result = mod.execute_tool("list_directory", {"dir_path": str(d)})
+        parsed = json.loads(result)
+        assert "file.txt" in parsed.get("contents", [])
+
+    def test_execute_read_file_real(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "hello.txt"
+        f.write_text("world", encoding="utf-8")
+        
+        result = mod.execute_tool("read_file", {"file_path": str(f)})
+        parsed = json.loads(result)
+        assert parsed.get("content") == "world"
+
+    def test_execute_write_file_real(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "nested" / "new.txt"
+        
+        result = mod.execute_tool("write_file", {"file_path": str(f), "content": "hello there"})
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert f.read_text(encoding="utf-8") == "hello there"
+
+    def test_execute_search_file_real(self, tmp_path):
+        mod = _import_tools()
+        d = tmp_path / "src"
+        d.mkdir()
+        (d / "code.py").write_text("def find_me(): pass")
+        
+        result = mod.execute_tool("search_file", {"pattern": "find_me", "dir_path": str(d)})
+        parsed = json.loads(result)
+        assert "find_me" in parsed.get("matches", "")
+
+
+    def test_execute_read_file_edge_cases(self, tmp_path):
+        mod = _import_tools()
+        # Null file_path
+        res1 = json.loads(mod.execute_tool("read_file", {"file_path": None}))
+        assert "error" in res1
+        
+        # Hallucinated end_line=0
+        f = tmp_path / "zero.txt"
+        f.write_text("line1\nline2")
+        res2 = json.loads(mod.execute_tool("read_file", {"file_path": str(f), "end_line": 0}))
+        assert "error" in res2
+        assert "end_line must be >= 1" in res2["error"]
+
+    def test_execute_write_file_sandbox(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        
+        # Null file_path
+        res1 = json.loads(mod.execute_tool("write_file", {"file_path": None}))
+        assert "error" in res1
+        
+        import os
+        # Set a predictable home dir for test
+        monkeypatch.setattr(os.path, "expanduser", lambda path: str(tmp_path) if path == "~" else path)
+        
+        # Writing to home dir is allowed
+        res2 = json.loads(mod.execute_tool("write_file", {"file_path": str(tmp_path / "ok.txt"), "content": "ok"}))
+        assert res2.get("status") == "success"
+        
+        # Writing to sensitive .ssh is denied
+        res3 = json.loads(mod.execute_tool("write_file", {"file_path": str(tmp_path / ".ssh" / "id_rsa"), "content": "bad"}))
+        assert "error" in res3
+        assert "Write access denied" in res3["error"]
+        
+        # Writing to system root is denied
+        res4 = json.loads(mod.execute_tool("write_file", {"file_path": "/etc/passwd", "content": "bad"}))
+        assert "error" in res4
+        assert "Write access denied outside" in res4["error"]
+
+    def test_execute_search_file_edge_cases(self):
+        mod = _import_tools()
+        # Null pattern
+        res1 = json.loads(mod.execute_tool("search_file", {"pattern": None}))
+        assert "error" in res1
+        
+        # Timeout simulated via monkeypatch
+        import subprocess
+        class TimeoutMock:
+            def __init__(self, *args, **kwargs):
+                raise subprocess.TimeoutExpired(cmd="grep", timeout=10)
+        
+        with unittest.mock.patch("subprocess.run", new=TimeoutMock):
+            res2 = json.loads(mod.execute_tool("search_file", {"pattern": "slow", "dir_path": "."}))
+            assert "error" in res2
+            assert "timed out" in res2["error"]
