@@ -2134,6 +2134,9 @@ class SpokeAppDelegate(NSObject):
                     done_callback=lambda: self.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "ttsFinished:", None, False
                     ),
+                    error_callback=lambda msg: self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "ttsError:", msg, False
+                    ),
                 )
                 logger.info("TTS autoplay: speak_async returned (queued)")
             except Exception:
@@ -2169,6 +2172,15 @@ class SpokeAppDelegate(NSObject):
                 self._command_overlay.tts_stop()
             except Exception:
                 logger.exception("Command overlay TTS stop failed")
+
+    def ttsError_(self, message) -> None:
+        """Main thread: TTS playback failed — show error in menubar."""
+        msg = str(message) if message else "TTS playback failed"
+        logger.error("TTS autoplay error surfaced: %s", msg)
+        if self._menubar is not None:
+            # Truncate for menubar but keep it useful
+            short = msg if len(msg) <= 80 else msg[:77] + "..."
+            self._menubar.set_status_text(f"TTS error: {short}")
 
     def commandFailed_(self, payload: dict) -> None:
         """Main thread: show error in the command overlay, then fade."""

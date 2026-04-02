@@ -447,13 +447,20 @@ class TTSClient:
         text: str,
         amplitude_callback: Callable[[float], None] | None = None,
         done_callback: Callable[[], None] | None = None,
+        error_callback: Callable[[str], None] | None = None,
     ) -> threading.Thread:
         """Generate and play speech on a background daemon thread."""
         self.cancel()
         def _run():
-            self.speak(text, amplitude_callback=amplitude_callback)
-            if done_callback is not None:
-                done_callback()
+            try:
+                self.speak(text, amplitude_callback=amplitude_callback)
+            except Exception as exc:
+                logger.exception("TTS local speak failed")
+                if error_callback is not None:
+                    error_callback(str(exc))
+            finally:
+                if done_callback is not None:
+                    done_callback()
         t = threading.Thread(target=_run, daemon=True)
         t.start()
         return t
@@ -665,6 +672,7 @@ class RemoteTTSClient:
         text: str,
         amplitude_callback: Callable[[float], None] | None = None,
         done_callback: Callable[[], None] | None = None,
+        error_callback: Callable[[str], None] | None = None,
     ) -> threading.Thread:
         """Generate and play speech on a background daemon thread."""
         self._cancelled = False
@@ -672,8 +680,10 @@ class RemoteTTSClient:
         def _run():
             try:
                 self.speak(text, amplitude_callback=amplitude_callback)
-            except Exception:
+            except Exception as exc:
                 logger.exception("TTS sidecar speak failed")
+                if error_callback is not None:
+                    error_callback(str(exc))
             finally:
                 if done_callback is not None:
                     done_callback()
