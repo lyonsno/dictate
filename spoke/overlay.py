@@ -18,6 +18,9 @@ from AppKit import (
     NSBackingStoreBuffered,
     NSColor,
     NSFont,
+    NSFontAttributeName,
+    NSForegroundColorAttributeName,
+    NSMutableAttributedString,
     NSPanel,
     NSScreen,
     NSScrollView,
@@ -31,6 +34,8 @@ from AppKit import (
 )
 from Foundation import NSMakeRect, NSObject, NSTimer
 from Quartz import CAGradientLayer, CALayer, CAShapeLayer, CGPathCreateWithRoundedRect, CGAffineTransformIdentity
+
+from .dedup import ontology_term_spans
 
 logger = logging.getLogger(__name__)
 
@@ -320,6 +325,13 @@ def _window_origin_y(visible_height: float) -> float:
     return base_y - (visible_height - _OVERLAY_HEIGHT)
 
 
+def _ontology_text_rgb(text_lum: float) -> tuple[float, float, float]:
+    """Return a glow-blue text tint that stays legible against both fill modes."""
+    if text_lum >= 0.5:
+        return (0.93, 0.96, 1.0)
+    return (0.07, 0.10, 0.19)
+
+
 class TranscriptionOverlay(NSObject):
     """Manages a frosted overlay window for live transcription preview."""
 
@@ -456,9 +468,14 @@ class TranscriptionOverlay(NSObject):
         self._text_view.setEditable_(False)
         self._text_view.setSelectable_(False)
         self._text_view.setDrawsBackground_(False)
-        self._text_view.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, _TEXT_ALPHA_MIN)
+        self._current_text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            1.0, 1.0, 1.0, _TEXT_ALPHA_MIN
         )
+        ontology_r, ontology_g, ontology_b = _ontology_text_rgb(1.0)
+        self._current_ontology_text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            ontology_r, ontology_g, ontology_b, _TEXT_ALPHA_MIN
+        )
+        self._text_view.setTextColor_(self._current_text_color)
         self._text_view.setFont_(NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0))
         self._text_view.setString_("")
         self._text_view.textContainer().setWidthTracksTextView_(True)
@@ -495,7 +512,7 @@ class TranscriptionOverlay(NSObject):
         self._typewriter_target = ""
         self._typewriter_displayed = ""
         self._typewriter_hwm = 0  # furthest position typewriter has reached
-        self._text_view.setString_("")
+        self._set_text_view_content("")
         self._window.setAlphaValue_(0.0)
 
         # Reset to default size (window includes feather margin)
@@ -603,6 +620,60 @@ class TranscriptionOverlay(NSObject):
             self._fade_timer.invalidate()
             self._fade_timer = None
 
+    def _set_text_view_content(
+        self,
+        text: str,
+        *,
+        base_color: NSColor | None = None,
+        ontology_color: NSColor | None = None,
+    ) -> None:
+        """Render text with ontology terms tinted in the glow-blue family."""
+        if self._text_view is None:
+            return
+
+        if base_color is not None:
+            self._current_text_color = base_color
+        elif not hasattr(self, "_current_text_color"):
+            self._current_text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+                1.0, 1.0, 1.0, _TEXT_ALPHA_MIN
+            )
+        if ontology_color is not None:
+            self._current_ontology_text_color = ontology_color
+        elif not hasattr(self, "_current_ontology_text_color"):
+            ontology_r, ontology_g, ontology_b = _ontology_text_rgb(1.0)
+            self._current_ontology_text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+                ontology_r, ontology_g, ontology_b, _TEXT_ALPHA_MIN
+            )
+
+        if not text:
+            self._text_view.setString_("")
+            return
+
+        text_storage = self._text_view.textStorage() if hasattr(self._text_view, "textStorage") else None
+        if text_storage is None:
+            self._text_view.setString_(text)
+            self._text_view.setTextColor_(self._current_text_color)
+            return
+
+        attr_str = NSMutableAttributedString.alloc().initWithString_(text)
+        attr_str.addAttribute_value_range_(
+            NSForegroundColorAttributeName,
+            self._current_text_color,
+            (0, len(text)),
+        )
+        attr_str.addAttribute_value_range_(
+            NSFontAttributeName,
+            NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
+            (0, len(text)),
+        )
+        for start, end in ontology_term_spans(text):
+            attr_str.addAttribute_value_range_(
+                NSForegroundColorAttributeName,
+                self._current_ontology_text_color,
+                (start, end - start),
+            )
+        text_storage.setAttributedString_(attr_str)
+
     # ── typewriter effect ────────────────────────────────────
 
     def set_text(self, text: str) -> None:
@@ -633,12 +704,12 @@ class TranscriptionOverlay(NSObject):
                 self._cancel_typewriter()
                 self._typewriter_displayed = text
                 self._typewriter_hwm = len(text)
-                self._text_view.setString_(text)
+                self._set_text_view_content(text)
                 self._update_layout()
                 return
             else:
                 self._typewriter_displayed = text[:common]
-                self._text_view.setString_(self._typewriter_displayed)
+                self._set_text_view_content(self._typewriter_displayed)
 
         # Start typing if not already
         if self._typewriter_timer is None and len(self._typewriter_displayed) < len(self._typewriter_target):
@@ -651,7 +722,7 @@ class TranscriptionOverlay(NSObject):
         if len(self._typewriter_displayed) < len(self._typewriter_target):
             self._typewriter_displayed = self._typewriter_target[:len(self._typewriter_displayed) + 1]
             self._typewriter_hwm = max(self._typewriter_hwm, len(self._typewriter_displayed))
-            self._text_view.setString_(self._typewriter_displayed)
+            self._set_text_view_content(self._typewriter_displayed)
             self._update_layout()
         else:
             self._cancel_typewriter()
@@ -718,8 +789,18 @@ class TranscriptionOverlay(NSObject):
         current_text_lum += (target_text_lum - current_text_lum) * _TEXT_SNAP_SPEED
         self._text_lum = current_text_lum
         tr = tg = tb = current_text_lum
-        self._text_view.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, _TEXT_ANCHOR_ALPHA)
+        base_color = NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, _TEXT_ANCHOR_ALPHA)
+        ontology_r, ontology_g, ontology_b = _ontology_text_rgb(current_text_lum)
+        ontology_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            ontology_r,
+            ontology_g,
+            ontology_b,
+            _TEXT_ANCHOR_ALPHA,
+        )
+        self._set_text_view_content(
+            getattr(self, "_typewriter_displayed", ""),
+            base_color=base_color,
+            ontology_color=ontology_color,
         )
 
         # SDF fill breathes with amplitude.  On light backgrounds the fill
@@ -963,9 +1044,21 @@ class TranscriptionOverlay(NSObject):
         self._typewriter_target = text
         self._typewriter_displayed = text
         self._typewriter_hwm = len(text)
+        ontology_r, ontology_g, ontology_b = _ontology_text_rgb(1.0)
+        if owner == "assistant":
+            ontology_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+                0.78, 0.84, 1.0, _RECOVERY_TEXT_ALPHA
+            )
+        else:
+            ontology_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+                ontology_r, ontology_g, ontology_b, _RECOVERY_TEXT_ALPHA
+            )
         if self._text_view is not None:
-            self._text_view.setString_(text)
-            self._text_view.setTextColor_(text_color)
+            self._set_text_view_content(
+                text,
+                base_color=text_color,
+                ontology_color=ontology_color,
+            )
         self._update_layout()
 
         # Show overlay

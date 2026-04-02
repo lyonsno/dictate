@@ -182,6 +182,81 @@ class TestTranscriptionFiltering:
 
         assert client.transcribe(b"wav") == "The quick brown fox jumps over the lazy dog."
 
+    def test_observed_ontology_failures_are_repaired(self):
+        """Observed launch-log ontology failures should normalize on the Whisper path."""
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"text": "Read Nepistaxis and update the Topoie."}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == "Read Epístaxis and update the Tópoi."
+
+    def test_recent_ontology_failures_are_repaired(self):
+        """Recent launch-log variants should normalize on the Whisper path."""
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "text": "Check the Uxis document, the Metadose II, and the Syllogy."
+        }
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == (
+            "Check the Aúxesis document, the Metádosis, and the Syllogé."
+        )
+
+    def test_additional_ontology_failures_are_repaired(self):
+        """Additional ontology variants should normalize on the Whisper path."""
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "text": "Check the sueji, the kerigma badge, and epinorthosis."
+        }
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == (
+            "Check the syllogé, the kérygma badge, and epanórthosis."
+        )
+
+    def test_smoke_sentence_reaches_accented_canonical_forms(self):
+        """Recent smoke regressions should normalize to accented ontology output."""
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "text": (
+                "Nice work. Thank you. I'm gonna test now epistaxis Epinorthosis lysis, "
+                "Syllogy Episcapsis probly anaphora Charygma otopoiesis auxesus"
+            )
+        }
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == (
+            "Nice work. Thank you. I'm gonna test now Epístaxis Epanórthosis lýsis, "
+            "Syllogé Aposképsis probolé anaphorá Kérygma autopoíesis aúxesis"
+        )
+
+    def test_safe_nonword_followup_regressions_are_repaired(self):
+        """Safe non-word ontology misses should normalize without broadening to real words."""
+        client = TranscriptionClient(base_url="http://x")
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "text": "Probally chorigma ooxisis epispokosis and probaly should all normalize."
+        }
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_resp
+        client._client = mock_client
+
+        assert client.transcribe(b"wav") == (
+            "Probolé kérygma aúxesis epispókisis and probolé should all normalize."
+        )
+
     def test_whitespace_only_is_hallucination(self):
         """Whitespace-only result should be treated as hallucination."""
         client = TranscriptionClient(base_url="http://x")

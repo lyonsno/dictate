@@ -174,6 +174,76 @@ class TestLocalTranscriptionClient:
         assert client.transcribe(buf.getvalue()) == "hello"
 
     @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_repairs_observed_ontology_failures(self, mock_mlx_whisper):
+        """Observed launch-log ontology failures should normalize on the local Whisper path."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {"text": "Read Epistaxistopos and an Afro."}
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == "Read Epístaxis tópos and anaphorá."
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_repairs_recent_ontology_failures(self, mock_mlx_whisper):
+        """Recent log-backed ontology failures should normalize on the local Whisper path."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {
+            "text": "The appless kept says flow should compile our tipos into a Syllogy."
+        }
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == (
+            "The aposképsis flow should compile our tópos into a Syllogé."
+        )
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_repairs_additional_ontology_failures(self, mock_mlx_whisper):
+        """Additional ontology variants should normalize on the local Whisper path."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {
+            "text": "Check the sueji, the kerigma badge, and epinorthosis."
+        }
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == (
+            "Check the syllogé, the kérygma badge, and epanórthosis."
+        )
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_repairs_smoke_sentence_to_accented_forms(self, mock_mlx_whisper):
+        """Recent smoke regressions should normalize to accented ontology output."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {
+            "text": (
+                "Nice work. Thank you. I'm gonna test now epistaxis Epinorthosis lysis, "
+                "Syllogy Episcapsis probly anaphora Charygma otopoiesis auxesus"
+            )
+        }
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == (
+            "Nice work. Thank you. I'm gonna test now Epístaxis Epanórthosis lýsis, "
+            "Syllogé Aposképsis probolé anaphorá Kérygma autopoíesis aúxesis"
+        )
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
+    def test_transcribe_repairs_safe_nonword_followup_regressions(self, mock_mlx_whisper):
+        """Safe non-word ontology misses should normalize without broadening to real words."""
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_mlx_whisper.transcribe.return_value = {
+            "text": "Probally chorigma ooxisis epispokosis and probaly should all normalize."
+        }
+        client = LocalTranscriptionClient()
+
+        assert client.transcribe(_make_wav_bytes()) == (
+            "Probolé kérygma aúxesis epispókisis and probolé should all normalize."
+        )
+
+    @patch("spoke.transcribe_local.mlx_whisper", create=True)
     def test_transcribe_missing_text_key(self, mock_mlx_whisper):
         """Missing 'text' key should return empty string."""
         from spoke.transcribe_local import LocalTranscriptionClient
