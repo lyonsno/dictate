@@ -40,7 +40,8 @@ Each key has a consistent identity across the entire grammar:
 | Short spacebar hold (< 800ms), shift at release | **Recall** — enter tray with last tray entry (no recording) |
 
 The hold threshold defaults to 400ms (configurable via `SPOKE_HOLD_MS`, which
-sets the threshold in the `SpacebarHoldDetector`).
+sets the threshold in the `SpacebarHoldDetector`). Once already in
+**LATCHED**, the plain-space commit hold is shorter: 250ms by default.
 
 ## Disposition at release
 
@@ -90,6 +91,8 @@ Latched recording adds one more state on top of the base hold detector:
 - **Shift tap during RECORDING** enters **LATCHED**.
 - **Enter** exits **LATCHED** to the assistant pathway.
 - **Shift + spacebar release** exits **LATCHED** to the tray.
+- **Plain spacebar tap** in **LATCHED** toggles preview overlay visibility.
+- **Plain spacebar short hold** in **LATCHED** exits to text insertion.
 
 Synthetic space forwarding on early release uses a 100ms auto-clear timeout in
 case the forwarded events are lost.
@@ -134,10 +137,14 @@ recording even after spacebar comes up."
 |---|---|
 | Enter | Stop capture, transcribe, send to assistant |
 | Hold shift + press spacebar, then release spacebar | Stop capture, transcribe, enter tray |
+| Tap spacebar | Toggle preview overlay visibility, keep recording |
+| Hold spacebar for ~250ms, then release | Stop capture, transcribe, insert at cursor |
 
-Latched recording is intentionally not a second direct-text pathway. Clean
-release text insertion remains the ordinary pre-latch route. Once a recording
-has been latched, it exits through tray or assistant.
+Latched recording keeps the tray and assistant exits, but it also preserves a
+direct text path. The difference is intentional: after a recording is already
+latched, plain space is no longer a single immediate commit. A quick tap means
+"show or hide the preview without changing recording state," while a slightly
+longer hold means "commit this to the cursor now."
 
 ### Relationship to the tray
 

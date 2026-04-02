@@ -108,6 +108,32 @@ class TestHoldCallbacks:
         assert d._transcribing is False
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
 
+    def test_latched_overlay_toggle_hides_preview_without_stopping_recording(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._overlay._visible = True
+
+        d._toggle_latched_preview_overlay()
+
+        d._overlay.hide.assert_called_once_with()
+        d._overlay.show.assert_not_called()
+        d._capture.stop.assert_not_called()
+
+    def test_latched_overlay_toggle_reshows_preview_with_current_text(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._overlay._visible = False
+        d._last_preview_text = "current preview"
+        d._glow._brightness = 0.42
+
+        d._toggle_latched_preview_overlay()
+
+        d._overlay.set_brightness.assert_called_once_with(0.42, immediate=True)
+        d._overlay.show.assert_called_once_with()
+        d._overlay.set_text.assert_called_once_with("current preview")
+
 
 class TestTranscriptionToken:
     """Test generation-based stale result rejection."""

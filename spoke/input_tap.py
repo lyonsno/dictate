@@ -11,6 +11,8 @@ State machine:
     RECORDING ──[shift tap]──> LATCHED  (capture continues hands-free)
     LATCHED ──[enter]──> IDLE  (call on_hold_end with enter_held=True)
     LATCHED ──[shift+space keyUp]──> IDLE  (call on_hold_end with shift_held=True)
+    LATCHED ──[space tap]──> LATCHED  (toggle preview visibility)
+    LATCHED ──[space short hold]──> IDLE  (call on_hold_end for text commit)
 """
 
 from __future__ import annotations
@@ -61,6 +63,7 @@ _MODIFIER_MASK = (
     | kCGEventFlagMaskAlternate
 )
 _DEFAULT_HOLD_MS = 400
+_DEFAULT_LATCHED_HOLD_MS = 250
 _SAFETY_TIMEOUT_S = 300.0  # 5 minutes — covers long dictations, only for truly stuck keyUp
 _FORWARDING_TIMEOUT_S = 0.1  # auto-clear _forwarding if events never arrive
 _ENTER_RELEASE_GRACE_S = 0.15  # small post-release grace so Enter can land a beat late
@@ -98,6 +101,7 @@ class SpacebarHoldDetector(NSObject):
         self._on_hold_start = on_hold_start
         self._on_hold_end = on_hold_end
         self._hold_s = hold_ms / 1000.0
+        self._latched_hold_s = _DEFAULT_LATCHED_HOLD_MS / 1000.0
 
         self._state = _State.IDLE
         self._shift_at_press = False
@@ -105,6 +109,7 @@ class SpacebarHoldDetector(NSObject):
         self._enter_held = False  # True if enter is currently held (for command fast path)
         self._enter_latched = False  # True if enter was tapped during WAITING/RECORDING
         self._hold_timer: NSTimer | None = None
+        self._latched_hold_timer: NSTimer | None = None
         self._safety_timer: NSTimer | None = None
         self._forwarding = False
         self._forwarding_timer: NSTimer | None = None
@@ -114,6 +119,7 @@ class SpacebarHoldDetector(NSObject):
         self._awaiting_space_release = False
         self._latched_space_down = False
         self._latched_space_released = False
+        self._latched_commit_armed = False
         self._pending_release_active = False
         self._pending_release_shift_held = False
 
@@ -128,6 +134,7 @@ class SpacebarHoldDetector(NSObject):
         self.command_overlay_active = False
         self._command_overlay_just_dismissed = False
         self._on_command_overlay_dismiss: Callable[[], None] | None = None
+        self._on_latched_overlay_toggle: Callable[[], None] | None = None
         self._on_shift_tap: Callable[[], None] | None = None
         self._on_shift_tap_during_hold: Callable[[], None] | None = None
         self._on_shift_tap_idle: Callable[[], None] | None = None
@@ -200,6 +207,7 @@ class SpacebarHoldDetector(NSObject):
             self._tap = None
             self._tap_source = None
         self._cancel_hold_timer()
+        self._cancel_latched_hold_timer()
         self._cancel_safety_timer()
         self._cancel_forwarding_timer()
         self._cancel_release_decision_timer()
@@ -208,6 +216,7 @@ class SpacebarHoldDetector(NSObject):
         self._enter_latched = False
         self._awaiting_space_release = False
         self._latched_space_down = False
+        self._latched_commit_armed = False
         self._pending_release_active = False
         self._pending_release_shift_held = False
         self.tray_active = False
@@ -254,6 +263,9 @@ class SpacebarHoldDetector(NSObject):
             # arrive as keyDown events but should not arm the exit path.
             if getattr(self, '_latched_space_released', False):
                 self._latched_space_down = True
+                self._latched_commit_armed = False
+                if not self._shift_at_press:
+                    self._start_latched_hold_timer()
             return True
 
         # Already WAITING or RECORDING — suppress key repeats
@@ -362,18 +374,30 @@ class SpacebarHoldDetector(NSObject):
 
             if getattr(self, '_latched_space_down', False):
                 self._latched_space_down = False
-                self._cancel_safety_timer()
-                self._state = _State.IDLE
                 if shift_held:
+                    self._cancel_latched_hold_timer()
+                    self._latched_commit_armed = False
+                    self._cancel_safety_timer()
+                    self._state = _State.IDLE
                     self._on_hold_end(shift_held=True, enter_held=enter_held)
-                else:
-                    # Spacebar tap without shift = insert text at cursor
+                elif getattr(self, '_latched_commit_armed', False):
+                    self._cancel_latched_hold_timer()
+                    self._latched_commit_armed = False
+                    self._cancel_safety_timer()
+                    self._state = _State.IDLE
                     self._on_hold_end(shift_held=False, enter_held=False)
+                else:
+                    self._cancel_latched_hold_timer()
+                    toggle = getattr(self, '_on_latched_overlay_toggle', None)
+                    if toggle is not None:
+                        toggle()
                 return True
 
             # Swallow the original release that let the user go hands-free,
             # and mark that the spacebar is now fully released so a fresh
             # press+release cycle can arm the exit path.
+            self._cancel_latched_hold_timer()
+            self._latched_commit_armed = False
             self._latched_space_released = True
             return True
 
@@ -403,6 +427,26 @@ class SpacebarHoldDetector(NSObject):
         if self._hold_timer is not None:
             self._hold_timer.invalidate()
             self._hold_timer = None
+
+    def _start_latched_hold_timer(self) -> None:
+        self._cancel_latched_hold_timer()
+        self._latched_hold_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                self._latched_hold_s, self, "latchedHoldTimerFired:", None, False
+            )
+        )
+
+    def latchedHoldTimerFired_(self, timer: NSTimer) -> None:
+        self._latched_hold_timer = None
+        if self._state != _State.LATCHED or not getattr(self, "_latched_space_down", False):
+            return
+        self._latched_commit_armed = True
+
+    def _cancel_latched_hold_timer(self) -> None:
+        timer = getattr(self, "_latched_hold_timer", None)
+        if timer is not None:
+            timer.invalidate()
+            self._latched_hold_timer = None
 
     def _start_safety_timer(self) -> None:
         """Auto-stop recording after 30s in case keyUp is missed."""

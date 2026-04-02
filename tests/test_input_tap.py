@@ -408,13 +408,18 @@ class TestShiftLateLatching:
         mod = input_tap_module
         on_start = MagicMock()
         on_end = MagicMock()
+        on_toggle = MagicMock()
         det = mod.SpacebarHoldDetector.__new__(mod.SpacebarHoldDetector)
         det._on_hold_start = on_start
         det._on_hold_end = on_end
+        det._on_latched_overlay_toggle = on_toggle
         det._hold_s = hold_ms / 1000.0
+        det._latched_hold_s = 0.25
         det._state = mod._State.IDLE
         det._hold_timer = None
         det._safety_timer = None
+        det._latched_hold_timer = None
+        det._latched_commit_armed = False
         det._forwarding = False
         det._forwarding_timer = None
         det._tap = None
@@ -526,13 +531,18 @@ class TestLatchedRecording:
         mod = input_tap_module
         on_start = MagicMock()
         on_end = MagicMock()
+        on_toggle = MagicMock()
         det = mod.SpacebarHoldDetector.__new__(mod.SpacebarHoldDetector)
         det._on_hold_start = on_start
         det._on_hold_end = on_end
+        det._on_latched_overlay_toggle = on_toggle
         det._hold_s = hold_ms / 1000.0
+        det._latched_hold_s = 0.25
         det._state = mod._State.IDLE
         det._hold_timer = None
+        det._latched_hold_timer = None
         det._safety_timer = None
+        det._latched_commit_armed = False
         det._forwarding = False
         det._forwarding_timer = None
         det._tap = None
@@ -546,14 +556,14 @@ class TestLatchedRecording:
         det._shift_down_during_hold = False
         det._tray_gesture_consumed = False
         det._tray_last_shift_space_up = 0.0
-        return det, on_start, on_end
+        return det, on_start, on_end, on_toggle
 
     def test_shift_tap_during_recording_enters_latched_state(self, input_tap_module):
         """Shift tap during active recording should switch to latched recording."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
-        det, _, _ = self._make_detector(input_tap_module)
+        det, _, _, _ = self._make_detector(input_tap_module)
         mod._active_detector = det
 
         det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
@@ -573,7 +583,7 @@ class TestLatchedRecording:
     def test_spacebar_release_after_latching_does_not_end_recording(self, input_tap_module):
         """Once latched, releasing spacebar should keep recording alive."""
         mod = input_tap_module
-        det, _, on_end = self._make_detector(input_tap_module)
+        det, _, on_end, _ = self._make_detector(input_tap_module)
         det._state = mod._State.LATCHED
 
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
@@ -585,7 +595,7 @@ class TestLatchedRecording:
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
-        det, _, on_end = self._make_detector(input_tap_module)
+        det, _, on_end, _ = self._make_detector(input_tap_module)
         det._state = mod._State.LATCHED
         mod._active_detector = det
 
@@ -605,7 +615,7 @@ class TestLatchedRecording:
         """The first spacebar release after entering LATCHED should be swallowed
         (the user is going hands-free), not trigger text insertion."""
         mod = input_tap_module
-        det, _, on_end = self._make_detector(input_tap_module)
+        det, _, on_end, _ = self._make_detector(input_tap_module)
         det._state = mod._State.LATCHED
 
         # Key-repeat from the original hold, then release
@@ -615,13 +625,12 @@ class TestLatchedRecording:
         on_end.assert_not_called()
         assert det._state == mod._State.LATCHED
 
-    def test_spacebar_tap_in_latched_inserts_at_cursor(
+    def test_spacebar_tap_in_latched_toggles_preview_overlay(
         self, input_tap_module
     ):
-        """A fresh spacebar tap (after the initial release) in LATCHED should
-        insert text at cursor."""
+        """A fresh plain spacebar tap in LATCHED should only toggle preview visibility."""
         mod = input_tap_module
-        det, _, on_end = self._make_detector(input_tap_module)
+        det, _, on_end, on_toggle = self._make_detector(input_tap_module)
         det._state = mod._State.LATCHED
 
         # Simulate the initial release (go hands-free)
@@ -629,19 +638,20 @@ class TestLatchedRecording:
         on_end.assert_not_called()
         assert det._state == mod._State.LATCHED
 
-        # Now a fresh press+release = insert at cursor
+        # Now a fresh press+release = toggle overlay, stay latched
         assert det.handle_key_down(mod.SPACEBAR_KEYCODE, 0) is True
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
 
-        on_end.assert_called_once_with(shift_held=False, enter_held=False)
-        assert det._state == mod._State.IDLE
+        on_end.assert_not_called()
+        on_toggle.assert_called_once_with()
+        assert det._state == mod._State.LATCHED
 
     def test_shift_space_release_from_latched_recording_routes_to_tray(
         self, input_tap_module
     ):
         """Shift+spacebar from latched recording should end into the tray."""
         mod = input_tap_module
-        det, _, on_end = self._make_detector(input_tap_module)
+        det, _, on_end, on_toggle = self._make_detector(input_tap_module)
         det._state = mod._State.LATCHED
 
         # Simulate the initial release (go hands-free)
@@ -654,23 +664,26 @@ class TestLatchedRecording:
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=shift_flag) is True
 
         on_end.assert_called_once_with(shift_held=True, enter_held=False)
+        on_toggle.assert_not_called()
         assert det._state == mod._State.IDLE
 
-    def test_spacebar_tap_during_latched_recording_inserts_text(self, input_tap_module):
-        """Quick spacebar tap in LATCHED mode should end recording and insert at cursor."""
+    def test_spacebar_short_hold_in_latched_commits_text(self, input_tap_module):
+        """Holding fresh space in LATCHED past the shorter threshold should commit text."""
         mod = input_tap_module
-        det, _, on_end = self._make_detector(input_tap_module)
+        det, _, on_end, on_toggle = self._make_detector(input_tap_module)
         det._state = mod._State.LATCHED
 
         # Simulate the initial release (go hands-free)
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
         on_end.assert_not_called()
 
-        # Fresh tap: key-down then key-up without shift
+        # Fresh hold: key-down, shorter latched-only timer, then key-up
         assert det.handle_key_down(mod.SPACEBAR_KEYCODE, 0) is True
+        det.latchedHoldTimerFired_(None)
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
 
         on_end.assert_called_once_with(shift_held=False, enter_held=False)
+        on_toggle.assert_not_called()
         assert det._state == mod._State.IDLE
 
 

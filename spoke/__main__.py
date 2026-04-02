@@ -226,6 +226,7 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_enter_pressed = self._on_tray_enter_pressed
         self._detector._on_tray_delete = self._on_tray_delete_gesture
         self._detector._on_command_overlay_dismiss = self._dismiss_command_overlay
+        self._detector._on_latched_overlay_toggle = self._toggle_latched_preview_overlay
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
@@ -920,6 +921,22 @@ class SpokeAppDelegate(NSObject):
         self._last_preview_text = text
         if self._overlay is not None:
             self._overlay.set_text(text)
+
+    def _toggle_latched_preview_overlay(self) -> None:
+        """Toggle preview visibility during latched recording without ending capture."""
+        if self._overlay is None:
+            return
+        if getattr(self._overlay, "_visible", False):
+            self._overlay.hide()
+            return
+        if self._glow is not None:
+            self._overlay.set_brightness(
+                getattr(self._glow, "_brightness", 0.0),
+                immediate=True,
+            )
+        self._overlay.show()
+        if self._last_preview_text:
+            self._overlay.set_text(self._last_preview_text)
 
     def _on_hold_end(self, shift_held: bool = False, enter_held: bool = False) -> None:
         if getattr(self, "_hold_rejected_during_warmup", False):
