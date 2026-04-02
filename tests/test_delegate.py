@@ -752,6 +752,7 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch
     ):
         """Role-specific env vars should create distinct clients when models differ."""
+        monkeypatch.setattr(main_module, "_RAM_GB", 32.0)
         monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
         monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
         monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
@@ -1386,6 +1387,7 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch
     ):
         """Persisted selections should be used when role-specific env vars are unset."""
+        monkeypatch.setattr(main_module, "_RAM_GB", 32.0)
         monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
         monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
         monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
@@ -1833,7 +1835,6 @@ class TestWarmupContract:
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
         mock_phase.assert_called_with("app.ready")
 
-
 class TestRuntimePhaseLogging:
     """Test runtime phase snapshot behavior under repeated writes."""
 
@@ -1877,6 +1878,33 @@ class TestRuntimePhaseLogging:
 
         payload = json.loads((tmp_path / "spoke-last-phase.json").read_text())
         assert payload["phase"] in {"phase-0", "phase-1"}
+
+    def test_record_runtime_phase_includes_visible_launch_target(self, main_module, monkeypatch, tmp_path):
+        """Crash breadcrumbs should name the visible Launch Target."""
+        phase_path = tmp_path / "spoke-last-phase.json"
+        monkeypatch.setenv("SPOKE_RUNTIME_PHASE_PATH", str(phase_path))
+        monkeypatch.setattr(
+            main_module,
+            "current_launch_target",
+            lambda _cwd: {
+                "id": "airstrike",
+                "label": "Assistant Backend on Main Next Airstrike",
+                "path": tmp_path,
+                "enabled": True,
+            },
+        )
+
+        with patch.object(main_module.logger, "info") as mock_info:
+            main_module._record_runtime_phase("process.start", detail="value")
+
+        payload = json.loads(phase_path.read_text())
+        assert payload["launch_target_id"] == "airstrike"
+        assert payload["launch_target_label"] == "Assistant Backend on Main Next Airstrike"
+        assert mock_info.call_args[0][0] == "Runtime phase: %s (%s)"
+        assert mock_info.call_args[0][1] == "process.start"
+        log_detail_text = mock_info.call_args[0][2]
+        assert "launch_target_id='airstrike'" in log_detail_text
+        assert "launch_target_label='Assistant Backend on Main Next Airstrike'" in log_detail_text
 
     def test_warmup_failure_updates_startup_indicator(
         self, main_module, monkeypatch
