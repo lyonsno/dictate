@@ -202,7 +202,6 @@ class MenuBarIcon(NSObject):
         menu.addItem_(branch_item)
 
         menu.addItem_(NSMenuItem.separatorItem())
-
         added_menu_section = False
         if getattr(self, '_on_select_model', None) is not None:
             model_state = self._on_select_model(None)

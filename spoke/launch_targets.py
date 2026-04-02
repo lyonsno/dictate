@@ -19,13 +19,11 @@ def launch_targets_path() -> Path:
         return Path(override).expanduser()
     return _DEFAULT_LAUNCH_TARGETS_PATH
 
-
 def main_target_path() -> Path:
     override = os.environ.get("SPOKE_MAIN_TARGET_PATH")
     if override:
         return Path(override).expanduser()
     return _DEFAULT_MAIN_TARGET_PATH
-
 
 def load_launch_target_registry(path: Path | None = None) -> dict:
     registry_path = path or launch_targets_path()
