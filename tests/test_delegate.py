@@ -906,6 +906,55 @@ class TestDualModelConfiguration:
             ],
         }
 
+    def test_handle_model_menu_none_surfaces_command_backend_endpoint_and_env_override(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_model_id = "qwen3p5-35B-A3B"
+        d._command_model_options = [("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True)]
+        d._command_backend = "local"
+        d._command_sidecar_url = ""
+        d._command_url = "http://localhost:8001"
+        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["command_backend"] == {
+            "title": "Assistant Backend (stored): Local",
+            "items": [
+                ("local", "Local (localhost:8001)", True, False),
+                ("sidecar", "Sidecar (not configured)", False, False),
+            ],
+        }
+        assert model_state["command_endpoint"] == {
+            "title": "Assistant Endpoint: localhost:8001",
+            "note": "Routing forced by env: SPOKE_COMMAND_URL",
+        }
+
+    def test_handle_model_menu_none_surfaces_tts_backend_and_endpoint(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = MagicMock()
+        d._tts_backend = "local"
+        d._tts_sidecar_url = ""
+        monkeypatch.setenv("SPOKE_TTS_VOICE", "casual_female")
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["tts_backend"] == {
+            "title": "TTS Backend: Local",
+            "items": [
+                ("local", "Local (Voxtral MLX)", True),
+                ("sidecar", "Sidecar (not configured)", False, False),
+            ],
+        }
+        assert model_state["tts_endpoint"] == {
+            "title": "TTS Endpoint: local MLX",
+            "note": "Routing source: local MLX",
+        }
+
     def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
         self, main_module, monkeypatch
     ):

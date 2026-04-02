@@ -213,7 +213,7 @@ class MenuBarIcon(NSObject):
                 if assistant:
                     menu.addItem_(
                         self._build_model_submenu_item(
-                            "Assistant",
+                            "Assistant Model",
                             "assistant",
                             assistant["selected"],
                             assistant["models"],
@@ -228,6 +228,12 @@ class MenuBarIcon(NSObject):
                             command_backend["items"],
                         )
                     )
+                command_endpoint = model_state.get("command_endpoint")
+                if command_endpoint:
+                    menu.addItem_(self._build_info_item(command_endpoint["title"]))
+                    note = command_endpoint.get("note")
+                    if note:
+                        menu.addItem_(self._build_info_item(note))
                 if transcription:
                     menu.addItem_(
                         self._build_model_submenu_item(
@@ -255,6 +261,12 @@ class MenuBarIcon(NSObject):
                             tts_backend["items"],
                         )
                     )
+                tts_endpoint = model_state.get("tts_endpoint")
+                if tts_endpoint:
+                    menu.addItem_(self._build_info_item(tts_endpoint["title"]))
+                    note = tts_endpoint.get("note")
+                    if note:
+                        menu.addItem_(self._build_info_item(note))
                 local_whisper = model_state.get("local_whisper")
                 if local_whisper:
                     menu.addItem_(
@@ -329,6 +341,13 @@ class MenuBarIcon(NSObject):
             submenu.addItem_(item)
         submenu_item.setSubmenu_(submenu)
         return submenu_item
+
+    def _build_info_item(self, title: str):
+        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            title, None, ""
+        )
+        item.setEnabled_(False)
+        return item
 
     def selectModel_(self, sender) -> None:
         selection = sender.representedObject()

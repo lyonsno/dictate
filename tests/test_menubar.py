@@ -267,6 +267,43 @@ class TestMenuBarIcon:
         icon.setup()
 
         calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
-        assert any(call.args == ("Assistant", None, "") for call in calls)
+        assert any(call.args == ("Assistant Model", None, "") for call in calls)
         assert any(call.args == ("qwen3p5-35B-A3B", "selectModel:", "") for call in calls)
         assert any(call.args == ("qwen3-14b", "selectModel:", "") for call in calls)
+
+    def test_build_menu_shows_backend_and_endpoint_info(self, menubar_module):
+        AppKit = __import__("AppKit")
+
+        status_item_menu_holder = MagicMock(name="status_item_holder")
+        status_item_menu_holder.button.return_value = MagicMock()
+        AppKit.NSStatusBar.systemStatusBar.return_value.statusItemWithLength_.return_value = (
+            status_item_menu_holder
+        )
+
+        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
+        icon._on_quit = MagicMock()
+        icon._on_select_model = MagicMock(
+            return_value={
+                "command_backend": {
+                    "title": "Assistant Backend (stored): Local",
+                    "items": [
+                        ("local", "Local (localhost:8001)", True, False),
+                        ("sidecar", "Sidecar (not configured)", False, False),
+                    ],
+                },
+                "command_endpoint": {
+                    "title": "Assistant Endpoint: localhost:8001",
+                    "note": "Routing forced by env: SPOKE_COMMAND_URL",
+                },
+            }
+        )
+        icon._status_item = None
+        icon._idle_image = None
+        icon._recording_image = None
+
+        icon.setup()
+
+        calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
+        assert any(call.args == ("Assistant Backend (stored): Local", None, "") for call in calls)
+        assert any(call.args == ("Assistant Endpoint: localhost:8001", None, "") for call in calls)
+        assert any(call.args == ("Routing forced by env: SPOKE_COMMAND_URL", None, "") for call in calls)

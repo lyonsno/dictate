@@ -1854,21 +1854,44 @@ class SpokeAppDelegate(NSObject):
                     "selected": self._command_model_id,
                     "models": self._command_model_options,
                 }
+                env_command_url = os.environ.get("SPOKE_COMMAND_URL")
                 cmd_url = getattr(self, "_command_url", "") or ""
                 cmd_sidecar_url = getattr(self, "_command_sidecar_url", "")
                 cmd_backend = getattr(self, "_command_backend", "local")
                 has_sidecar_url = bool(cmd_sidecar_url)
                 cmd_host = _url_host(cmd_url) if cmd_url else "localhost:8001"
+                cmd_backend_title = f"Assistant Backend: {'Sidecar' if cmd_backend == 'sidecar' else 'Local'}"
+                if env_command_url:
+                    cmd_backend_title = (
+                        f"Assistant Backend (stored): {'Sidecar' if cmd_backend == 'sidecar' else 'Local'}"
+                    )
                 state["command_backend"] = {
-                    "title": f"Assistant: {cmd_host}",
+                    "title": cmd_backend_title,
                     "items": [
-                        ("local", f"Local ({_url_host(_DEFAULT_COMMAND_URL)})", cmd_backend == "local"),
+                        (
+                            "local",
+                            f"Local ({_url_host(_DEFAULT_COMMAND_URL)})",
+                            cmd_backend == "local",
+                            not env_command_url,
+                        ),
                         ("sidecar", (
                             f"Sidecar ({_url_host(cmd_sidecar_url)})"
                             if has_sidecar_url
                             else "Sidecar (not configured)"
-                        ), cmd_backend == "sidecar", has_sidecar_url),
+                        ), cmd_backend == "sidecar", has_sidecar_url and not env_command_url),
                     ],
+                }
+                state["command_endpoint"] = {
+                    "title": f"Assistant Endpoint: {cmd_host}",
+                    "note": (
+                        "Routing forced by env: SPOKE_COMMAND_URL"
+                        if env_command_url
+                        else (
+                            "Routing source: saved sidecar URL"
+                            if cmd_backend == "sidecar" and has_sidecar_url
+                            else "Routing source: local default"
+                        )
+                    ),
                 }
             tts_client = getattr(self, "_tts_client", None)
             if tts_client is not None or os.environ.get("SPOKE_TTS_VOICE"):
@@ -1882,7 +1905,7 @@ class SpokeAppDelegate(NSObject):
                     else:
                         tts_target = "local MLX"
                 state["tts_backend"] = {
-                    "title": f"TTS: {tts_target}",
+                    "title": f"TTS Backend: {'Sidecar' if tts_backend == 'sidecar' else 'Local'}",
                     "items": [
                         ("local", "Local (Voxtral MLX)", tts_backend == "local"),
                         ("sidecar", (
@@ -1891,6 +1914,14 @@ class SpokeAppDelegate(NSObject):
                             else "Sidecar (not configured)"
                         ), tts_backend == "sidecar", has_tts_sidecar_url),
                     ],
+                }
+                state["tts_endpoint"] = {
+                    "title": f"TTS Endpoint: {tts_target}",
+                    "note": (
+                        "Routing source: saved sidecar URL"
+                        if tts_backend == "sidecar" and has_tts_sidecar_url
+                        else "Routing source: local MLX"
+                    ),
                 }
             if self._local_whisper_controls_available():
                 eager_eval_available = self._local_whisper_eager_eval_available()
