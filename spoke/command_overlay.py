@@ -1026,6 +1026,7 @@ class CommandOverlay(NSObject):
                 self._scroll_view.setFrame_(
                     NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16)
                 )
+                self._apply_ridge_masks(_OVERLAY_WIDTH, new_height)
 
             end = (self._text_view.string().length()
                    if hasattr(self._text_view.string(), 'length')

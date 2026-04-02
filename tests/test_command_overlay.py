@@ -425,6 +425,26 @@ class TestGeometryCaps:
         assert frame.size.height == pytest.approx(expected_height + 2 * mod._OUTER_FEATHER)
         assert overlay._content_view.setFrame_.call_args[0][0].size.height == pytest.approx(expected_height)
 
+    def test_update_layout_rebuilds_fill_geometry_when_assistant_overlay_grows(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(280.0)
+        overlay._text_view.textContainer.return_value = object()
+        string_obj = MagicMock()
+        string_obj.length.return_value = 0
+        overlay._text_view.string.return_value = string_obj
+        overlay._apply_ridge_masks = MagicMock()
+
+        overlay._update_layout()
+
+        overlay._apply_ridge_masks.assert_called_once_with(
+            mod._OVERLAY_WIDTH,
+            pytest.approx(304.0),
+        )
+
 
 class TestToolState:
     """Test the tool execution visual state machine."""
