@@ -608,8 +608,8 @@ class TestLatchedRecording:
         assert det._state == mod._State.LATCHED
         on_end.assert_not_called()
 
-    def test_enter_during_latched_recording_ends_with_command_route(self, input_tap_module):
-        """Enter during latched recording should stop capture and route to assistant."""
+    def test_enter_during_latched_recording_passes_through(self, input_tap_module):
+        """Enter during latched recording should not stop capture or route to assistant."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
@@ -623,9 +623,16 @@ class TestLatchedRecording:
 
         result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
 
-        assert result is None
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
-        assert det._state == mod._State.IDLE
+        assert result is event
+        on_end.assert_not_called()
+        assert det._state == mod._State.LATCHED
+
+        result = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+
+        assert result is event
+        on_end.assert_not_called()
+        assert det._enter_held is False
+        assert det._state == mod._State.LATCHED
 
     def test_initial_spacebar_release_in_latched_is_swallowed(
         self, input_tap_module
@@ -1078,10 +1085,10 @@ class TestTrayAwareness:
         det._forward_space.assert_called_once_with()
         on_end.assert_not_called()
 
-    def test_shift_release_then_enter_within_grace_routes_as_command(
+    def test_shift_release_then_enter_within_grace_stays_shift_only(
         self, input_tap_module
     ):
-        """A slightly late Enter press after release should still win over shift."""
+        """A late Enter after space-up should not win once the chord has ended."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
@@ -1100,8 +1107,8 @@ class TestTrayAwareness:
         Quartz.CGEventGetFlags.return_value = 0
         result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
 
-        assert result is None
-        on_end.assert_called_once_with(shift_held=True, enter_held=True)
+        assert result is event
+        on_end.assert_called_once_with(shift_held=True, enter_held=False)
         assert det._pending_release_active is False
 
     def test_recording_release_falls_back_when_enter_does_not_arrive(

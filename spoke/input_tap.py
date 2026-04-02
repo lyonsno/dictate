@@ -9,7 +9,7 @@ State machine:
     WAITING ──[timer fires]──> RECORDING  (call on_hold_start)
     RECORDING ──[space keyUp]──> IDLE  (call on_hold_end)
     RECORDING ──[shift tap]──> LATCHED  (capture continues hands-free)
-    LATCHED ──[enter]──> IDLE  (call on_hold_end with enter_held=True)
+    LATCHED ──[enter]──> LATCHED  (passes through; no assistant send)
     LATCHED ──[shift+space keyUp]──> IDLE  (call on_hold_end with shift_held=True)
 
 Within WAITING/RECORDING, Enter now uses release order:
@@ -554,16 +554,9 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         if keycode == ENTER_KEYCODE:
             det._enter_held = True
             if getattr(det, "_pending_release_active", False):
-                if getattr(det, "_pending_release_mode", None) == "shift_release":
-                    det._finish_pending_release(enter_held=True)
-                    return None
                 det._finish_pending_release(enter_held=False)
             if det._state == _State.LATCHED:
-                det._cancel_safety_timer()
-                det._state = _State.IDLE
-                det._suppress_enter_keyup = True
-                det._on_hold_end(shift_held=False, enter_held=True)
-                return None
+                return event
             if getattr(det, 'tray_active', False):
                 on_enter = getattr(det, '_on_enter_pressed', None)
                 if on_enter is not None:
