@@ -149,7 +149,7 @@ class TestRepairOntologyTerms:
         )
 
     def test_repairs_safe_nonword_followup_regressions(self):
-        text = "Probally chorigma ooxisis epispokosis and probaly should all normalize."
+        text = "Probally chorigma ooxisis epispokosis and proboly should all normalize."
         assert repair_ontology_terms(text) == (
             "Probolé kérygma aúxesis epispókisis and probolé should all normalize."
         )

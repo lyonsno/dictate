@@ -57,7 +57,7 @@ _ONTOLOGY_REPAIRS = (
     ),
     (r"\b(?:semi-hostess(?: concepts?)?|semi-oce's|semiosis|semeiosis|sēmeiōsis)\b", "sēmeiōsis", True),
     (r"\b(?:semion|semian|semeion|sēmeion)\b", "sēmeion", True),
-    (r"\b(?:probolia|proboli|probly|probaly|probally|probole)\b", "probolé", True),
+    (r"\b(?:probolia|proboli|probly|probaly|probally|proboly|probole)\b", "probolé", True),
     (r"\b(?:autopoiesis|autopoises|autopuise|otopoiesis)\b", "autopoíesis", True),
     (r"\b(?:ooxisis|oxisis)\b", "aúxesis", True),
     (r"\blysis\b", "lýsis", True),

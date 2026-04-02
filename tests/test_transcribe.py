@@ -247,7 +247,7 @@ class TestTranscriptionFiltering:
         client = TranscriptionClient(base_url="http://x")
         mock_resp = MagicMock()
         mock_resp.json.return_value = {
-            "text": "Probally chorigma ooxisis epispokosis and probaly should all normalize."
+            "text": "Probally chorigma ooxisis epispokosis and proboly should all normalize."
         }
         mock_client = MagicMock()
         mock_client.post.return_value = mock_resp

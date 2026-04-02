@@ -235,7 +235,7 @@ class TestLocalTranscriptionClient:
         from spoke.transcribe_local import LocalTranscriptionClient
 
         mock_mlx_whisper.transcribe.return_value = {
-            "text": "Probally chorigma ooxisis epispokosis and probaly should all normalize."
+            "text": "Probally chorigma ooxisis epispokosis and proboly should all normalize."
         }
         client = LocalTranscriptionClient()
 
