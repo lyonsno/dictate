@@ -1,8 +1,8 @@
-"""Command dispatch to a local OMLX server.
+"""Command dispatch via the OpenAI-compatible chat completions API.
 
-Sends voice command utterances to a local model via the OpenAI-compatible
-chat completions API, streams the response, and maintains a ring buffer
-of recent exchanges for conversational context.
+Sends voice command utterances to an LLM server (local OMLX, Gemini,
+or any OpenAI-compatible endpoint), streams the response, and maintains
+a ring buffer of recent exchanges for conversational context.
 """
 
 from __future__ import annotations
@@ -59,6 +59,13 @@ _SYSTEM_PROMPT = (
 )
 
 
+def _is_local_url(url: str) -> bool:
+    """Return True if *url* points to localhost or a private-network address."""
+    from urllib.parse import urlparse
+    host = urlparse(url).hostname or ""
+    return host in ("localhost", "127.0.0.1", "::1") or host.startswith("192.168.") or host.startswith("10.")
+
+
 @dataclass(frozen=True)
 class CommandStreamEvent:
     """Semantic event emitted while streaming a command response."""
@@ -70,7 +77,7 @@ class CommandStreamEvent:
 
 
 class CommandClient:
-    """Streaming chat client for voice commands via OMLX."""
+    """Streaming chat client for voice commands via an OpenAI-compatible endpoint."""
 
     def __init__(
         self,
@@ -99,6 +106,8 @@ class CommandClient:
         )
         # Thinking: enabled by default, disable with SPOKE_COMMAND_THINKING=0
         self._enable_thinking = os.environ.get("SPOKE_COMMAND_THINKING", "1") != "0"
+        # Local (OMLX) backends accept chat_template_kwargs; cloud backends don't.
+        self._is_local = _is_local_url(self._base_url)
         # Ring buffer: list of (user_utterance, assistant_response) pairs
         self._history: list[tuple[str, str]] = []
 
@@ -106,8 +115,13 @@ class CommandClient:
     def history(self) -> list[tuple[str, str]]:
         return list(self._history)
 
+    @property
+    def is_local(self) -> bool:
+        """True when the backend is a local/OMLX server."""
+        return self._is_local
+
     def list_models(self) -> list[str]:
-        """Return model ids exposed by the OMLX OpenAI-compatible endpoint."""
+        """Return model ids exposed by the OpenAI-compatible endpoint."""
         headers = {}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
@@ -198,7 +212,7 @@ class CommandClient:
                 "messages": messages,
                 "stream": True,
             }
-            if not self._enable_thinking:
+            if not self._enable_thinking and self._is_local:
                 body["chat_template_kwargs"] = {"enable_thinking": False}
             if tools:
                 body["tools"] = tools

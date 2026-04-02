@@ -722,6 +722,55 @@ class TestShiftReleaseRouting:
         assert det._state == mod._State.WAITING
 
 
+class TestIsLocal:
+    """Test local vs cloud backend detection."""
+
+    def test_localhost_is_local(self):
+        from spoke.command import CommandClient
+        client = CommandClient(base_url="http://localhost:8001", model="m", api_key="k")
+        assert client.is_local is True
+
+    def test_127_is_local(self):
+        from spoke.command import CommandClient
+        client = CommandClient(base_url="http://127.0.0.1:8001", model="m", api_key="k")
+        assert client.is_local is True
+
+    def test_ipv6_loopback_is_local(self):
+        from spoke.command import CommandClient
+        client = CommandClient(base_url="http://[::1]:8001", model="m", api_key="k")
+        assert client.is_local is True
+
+    def test_private_192_168_is_local(self):
+        from spoke.command import CommandClient
+        client = CommandClient(base_url="http://192.168.1.100:8001", model="m", api_key="k")
+        assert client.is_local is True
+
+    def test_private_10_is_local(self):
+        from spoke.command import CommandClient
+        client = CommandClient(base_url="http://10.0.0.5:8001", model="m", api_key="k")
+        assert client.is_local is True
+
+    def test_gemini_url_is_not_local(self):
+        from spoke.command import CommandClient
+        client = CommandClient(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            model="gemini-2.5-flash", api_key="k",
+        )
+        assert client.is_local is False
+
+    def test_openai_url_is_not_local(self):
+        from spoke.command import CommandClient
+        client = CommandClient(
+            base_url="https://api.openai.com", model="gpt-4o", api_key="k",
+        )
+        assert client.is_local is False
+
+    def test_default_url_is_local(self):
+        from spoke.command import CommandClient
+        client = CommandClient(model="m", api_key="k")
+        assert client.is_local is True
+
+
 class TestCommandThinking:
     """Test SPOKE_COMMAND_THINKING toggle."""
 
@@ -799,4 +848,38 @@ class TestCommandThinking:
                 pass
 
         assert "data" in captured_body, "urlopen was never called — request body not captured"
+        assert "chat_template_kwargs" not in captured_body["data"]
+
+    def test_thinking_disabled_cloud_backend_omits_template_kwargs(self, monkeypatch):
+        """Cloud backends should never get chat_template_kwargs, even when
+        thinking is disabled."""
+        monkeypatch.setenv("SPOKE_COMMAND_THINKING", "0")
+        from spoke.command import CommandClient
+        client = CommandClient(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            model="gemini-2.5-flash",
+            api_key="test-key",
+            max_history=5,
+        )
+        assert client._enable_thinking is False
+        assert client.is_local is False
+
+        import urllib.request
+        captured_body = {}
+
+        def fake_urlopen(req, timeout=None):
+            captured_body["data"] = json.loads(req.data)
+            return MagicMock(
+                __enter__=lambda s: MagicMock(
+                    __iter__=lambda s: iter([]),
+                    read=lambda: b"",
+                ),
+                __exit__=lambda s, *a: None,
+            )
+
+        with patch.object(urllib.request, "urlopen", fake_urlopen):
+            for _ in client.stream_command("test"):
+                pass
+
+        assert "data" in captured_body
         assert "chat_template_kwargs" not in captured_body["data"]

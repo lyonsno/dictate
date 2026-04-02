@@ -2777,7 +2777,7 @@ class SpokeAppDelegate(NSObject):
             try:
                 server_model_ids = self._command_client.list_models()
             except Exception:
-                logger.warning("Failed to fetch assistant models from OMLX", exc_info=True)
+                logger.warning("Failed to fetch assistant models from server", exc_info=True)
         if command_backend == "sidecar":
             model_ids = server_model_ids or ([selected_model] if selected_model else [])
         else:
