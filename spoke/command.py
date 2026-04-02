@@ -63,7 +63,18 @@ def _is_local_url(url: str) -> bool:
     """Return True if *url* points to localhost or a private-network address."""
     from urllib.parse import urlparse
     host = urlparse(url).hostname or ""
-    return host in ("localhost", "127.0.0.1", "::1") or host.startswith("192.168.") or host.startswith("10.")
+    if host in ("localhost", "127.0.0.1", "::1", "0.0.0.0"):
+        return True
+    if host.startswith("192.168.") or host.startswith("10."):
+        return True
+    # 172.16.0.0/12 — 172.16.x.x through 172.31.x.x
+    if host.startswith("172."):
+        parts = host.split(".")
+        if len(parts) >= 2 and parts[1].isdigit():
+            second = int(parts[1])
+            if 16 <= second <= 31:
+                return True
+    return False
 
 
 @dataclass(frozen=True)

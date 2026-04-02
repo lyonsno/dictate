@@ -765,10 +765,54 @@ class TestIsLocal:
         )
         assert client.is_local is False
 
+    def test_private_172_16_is_local(self):
+        from spoke.command import CommandClient
+        client = CommandClient(base_url="http://172.16.0.5:8001", model="m", api_key="k")
+        assert client.is_local is True
+
+    def test_private_172_31_is_local(self):
+        from spoke.command import CommandClient
+        client = CommandClient(base_url="http://172.31.255.1:8001", model="m", api_key="k")
+        assert client.is_local is True
+
+    def test_172_32_is_not_local(self):
+        from spoke.command import CommandClient
+        client = CommandClient(base_url="http://172.32.0.1:8001", model="m", api_key="k")
+        assert client.is_local is False
+
+    def test_0_0_0_0_is_local(self):
+        from spoke.command import CommandClient
+        client = CommandClient(base_url="http://0.0.0.0:8001", model="m", api_key="k")
+        assert client.is_local is True
+
     def test_default_url_is_local(self):
         from spoke.command import CommandClient
         client = CommandClient(model="m", api_key="k")
         assert client.is_local is True
+
+
+class TestCloudBackendStreaming:
+    """Test that cloud-backend URLs stream correctly end-to-end."""
+
+    def test_cloud_url_streams_tokens_and_records_history(self):
+        """A cloud-backend URL should yield content tokens and record history
+        identically to a local URL."""
+        from spoke.command import CommandClient
+        client = CommandClient(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            model="gemini-2.5-flash",
+            api_key="test-key",
+        )
+        assert client.is_local is False
+        chunks = [
+            {"choices": [{"index": 0, "delta": {"content": "Hello"}}]},
+            {"choices": [{"index": 0, "delta": {"content": " from cloud"}}]},
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            tokens = list(client.stream_command("greet me"))
+        assert tokens == ["Hello", " from cloud"]
+        assert client._history == [("greet me", "Hello from cloud")]
 
 
 class TestCommandThinking:
