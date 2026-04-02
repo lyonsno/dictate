@@ -1022,7 +1022,7 @@ class TestDualModelConfiguration:
     def test_discover_command_models_merges_server_and_local_inventory(
         self, main_module, monkeypatch, tmp_path
     ):
-        """Assistant discovery should keep only curated installed local MLX models."""
+        """Assistant discovery should preserve server-visible models and add local curated ones."""
         model_root = tmp_path / "models"
         curated = model_root / "lmstudio-community" / "Qwen3-4B-Instruct-2507-MLX-6bit"
         curated.mkdir(parents=True)
@@ -1039,6 +1039,8 @@ class TestDualModelConfiguration:
         options = d._discover_command_models("qwen3p5-35B-A3B")
 
         assert options == [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("qwen3-14b", "qwen3-14b", False),
             (
                 "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
                 "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",

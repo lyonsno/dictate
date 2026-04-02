@@ -2281,18 +2281,10 @@ class SpokeAppDelegate(NSObject):
             os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
         ).expanduser()
         local_model_ids = _iter_local_command_model_ids(local_model_dir)
-        if local_model_ids:
-            local_model_set = set(local_model_ids)
-            model_ids = [
-                model_id
-                for model_id in server_model_ids
-                if model_id in local_model_set
-            ]
-            model_ids.extend(
-                model_id for model_id in local_model_ids if model_id not in model_ids
-            )
-        else:
-            model_ids = server_model_ids
+        model_ids = list(server_model_ids)
+        model_ids.extend(
+            model_id for model_id in local_model_ids if model_id not in model_ids
+        )
         seen: set[str] = set()
         options = []
         for model_id in model_ids:
