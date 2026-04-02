@@ -49,9 +49,19 @@ if ! "$VENV_PYTHON" -c "from misaki import en, espeak" 2>/dev/null; then
         "torch>=2.5,<2.7"
 fi
 
+# Kokoro's G2P pipeline (misaki -> spacy) needs the en_core_web_sm model at
+# runtime. spacy.load('en_core_web_sm') will fail with OSError E050 without it,
+# and the server returns a streaming 200 with 0 bytes instead of an error.
+if ! "$VENV_PYTHON" -c "import spacy; spacy.load('en_core_web_sm')" 2>/dev/null; then
+    echo "==> Installing spacy en_core_web_sm language model..."
+    uv pip install --python "$VENV_PYTHON" \
+        "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+fi
+
 echo "==> Verifying imports..."
 "$VENV_PYTHON" -c "
 from misaki import en, espeak
+import spacy; spacy.load('en_core_web_sm')
 import mlx_audio.server
 print('All imports OK')
 "
