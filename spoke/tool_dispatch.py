@@ -55,7 +55,8 @@ _READ_ALOUD_SCHEMA = {
         "description": (
             "Resolve a source ref to exact text and speak it aloud via TTS. "
             "Use scene_block or ax_hint refs from a previous capture_context "
-            "call, or use clipboard/selection/last_response/literal refs."
+            "call, or use clipboard/selection/last_response/literal refs. "
+            "Use a literal ref when the user wants an arbitrary phrase or sentence spoken."
         ),
         "parameters": {
             "type": "object",
@@ -67,7 +68,8 @@ _READ_ALOUD_SCHEMA = {
                         "capture_context directly (e.g., 'scene-abc:block-1'). "
                         "Other formats: 'clipboard:current', "
                         "'selection:frontmost', 'last_response:current', "
-                        "'literal:text to speak'."
+                        "'literal:text to speak'. Use literal when you need to "
+                        "speak exact text directly rather than reading it from another source."
                     ),
                 },
             },

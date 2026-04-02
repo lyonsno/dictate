@@ -70,6 +70,10 @@ class TestToolSchemas:
         ra_schema = next(s for s in schemas if s["function"]["name"] == "read_aloud")
         params = ra_schema["function"]["parameters"]
         assert "source_ref" in params.get("properties", {})
+        assert "arbitrary phrase or sentence" in ra_schema["function"]["description"]
+        assert "Use literal when you need to speak exact text directly" in (
+            params["properties"]["source_ref"]["description"]
+        )
 
 
     def test_list_directory_schema(self):
