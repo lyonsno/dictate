@@ -42,6 +42,7 @@ from .focus_check import has_focused_text_input
 from .glow import GlowOverlay
 from .inject import inject_text, save_pasteboard, restore_pasteboard, set_pasteboard_only
 from .input_tap import SpacebarHoldDetector
+from .launch_targets import current_launch_target
 from .menubar import MenuBarIcon
 from .overlay import TranscriptionOverlay
 from .transcribe import TranscriptionClient
@@ -88,6 +89,7 @@ def _flush_logging_handlers() -> None:
 
 
 def _record_runtime_phase(phase: str, **details) -> None:
+    cwd = os.getcwd()
     payload = {
         "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
         "phase": phase,
@@ -95,11 +97,16 @@ def _record_runtime_phase(phase: str, **details) -> None:
         "parent_launch_id": os.environ.get("SPOKE_PARENT_LAUNCH_ID"),
         "pid": os.getpid(),
         "ppid": os.getppid(),
-        "cwd": os.getcwd(),
+        "cwd": cwd,
         "python": sys.executable,
         "thread": threading.current_thread().name,
     }
-    payload.update({key: value for key, value in details.items() if value is not None})
+    phase_details = {key: value for key, value in details.items() if value is not None}
+    launch_target = current_launch_target(Path(cwd))
+    if launch_target is not None:
+        phase_details.setdefault("launch_target_id", launch_target["id"])
+        phase_details.setdefault("launch_target_label", launch_target["label"])
+    payload.update(phase_details)
 
     try:
         path = _runtime_phase_path()
@@ -110,9 +117,7 @@ def _record_runtime_phase(phase: str, **details) -> None:
     except Exception:
         logger.exception("Failed to write runtime phase snapshot")
 
-    detail_text = ", ".join(
-        f"{key}={value!r}" for key, value in details.items() if value is not None
-    )
+    detail_text = ", ".join(f"{key}={value!r}" for key, value in phase_details.items())
     if detail_text:
         logger.info("Runtime phase: %s (%s)", phase, detail_text)
     else:
