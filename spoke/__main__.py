@@ -69,7 +69,7 @@ _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 _DEFAULT_COMMAND_BACKEND = "local"
 _DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
 _DEFAULT_COMMAND_SIDECAR_URL = ""
-_DEFAULT_TTS_SIDECAR_URL = ""
+_DEFAULT_TTS_SIDECAR_URL = "http://MacBook-Pro-2.local:9001"
 
 
 def _url_host(url: str) -> str:
@@ -2397,6 +2397,7 @@ class SpokeAppDelegate(NSObject):
                             if has_tts_sidecar_url
                             else "Sidecar (not configured)"
                         ), tts_backend == "sidecar", has_tts_sidecar_url),
+                        ("configure_tts", "Set TTS Sidecar URL\u2026", False, True),
                     ],
                 }
                 state["tts_endpoint"] = {
@@ -2883,6 +2884,9 @@ class SpokeAppDelegate(NSObject):
 
     def _apply_tts_backend_selection(self, backend: str) -> None:
         """Switch TTS backend between 'local' and 'sidecar', then relaunch."""
+        if backend == "configure_tts":
+            self._configure_tts_sidecar_url()
+            return
         if backend == self._tts_backend:
             return
         if backend == "sidecar" and not self._tts_sidecar_url:
@@ -2894,6 +2898,37 @@ class SpokeAppDelegate(NSObject):
         self._save_preference("tts_backend", backend)
         self._tts_backend = backend
         self._relaunch()
+
+    def _configure_tts_sidecar_url(self) -> None:
+        """Show a dialog to set or change the TTS sidecar URL."""
+        current_url = getattr(self, "_tts_sidecar_url", "") or _DEFAULT_TTS_SIDECAR_URL
+        alert = NSAlert.new()
+        alert.setMessageText_("TTS Sidecar URL")
+        alert.setInformativeText_(
+            "Enter the base URL for the OpenAI-compatible /v1/audio/speech endpoint."
+        )
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
+        field.setStringValue_(current_url)
+        alert.setAccessoryView_(field)
+        alert.addButtonWithTitle_("Save")
+        alert.addButtonWithTitle_("Cancel")
+        response = alert.runModal()
+        if response != 1000:
+            return
+        value = field.stringValue()
+        if not isinstance(value, str):
+            return
+        value = value.strip().rstrip("/")
+        if not value:
+            return
+        self._save_preference("tts_sidecar_url", value)
+        self._tts_sidecar_url = value
+        logger.info("TTS sidecar URL saved: %s", value)
+        if self._tts_backend == "sidecar":
+            self._relaunch()
+            return
+        if self._menubar is not None:
+            self._menubar.set_status_text("TTS sidecar URL saved")
 
     def _get_client(self, whisper_url: str, model_id: str):
         cache_key = (whisper_url, model_id)

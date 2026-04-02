@@ -956,6 +956,7 @@ class TestDualModelConfiguration:
             "items": [
                 ("local", "Local (Voxtral MLX)", True),
                 ("sidecar", "Sidecar (not configured)", False, False),
+                ("configure_tts", "Set TTS Sidecar URL\u2026", False, True),
             ],
         }
         assert model_state["tts_endpoint"] == {
