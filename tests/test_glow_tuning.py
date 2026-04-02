@@ -62,7 +62,7 @@ class TestGlowTuning:
             assert light_peak == pytest.approx(mod._GLOW_MAX_OPACITY)
             assert dark_sat == pytest.approx(previous_dark_sat * 0.4, rel=0.08)
             assert light_sat == pytest.approx(previous_light_sat * 0.5, rel=0.02)
-            assert light_base == pytest.approx(0.14)
+            assert light_base == pytest.approx(0.2744)
             assert light_sat > dark_sat
         finally:
             sys.modules.pop("spoke.glow", None)
@@ -82,6 +82,60 @@ class TestGlowTuning:
             assert inner_sat == pytest.approx(light_sat * 0.7, rel=0.02)
             assert middle_sat == pytest.approx(light_sat, rel=0.02)
             assert outer_sat == pytest.approx(min(light_sat * 1.8, 1.0), rel=0.02)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_distance_field_opacity_drops_off_hard_inward(self, mock_pyobjc):
+        """The procedural falloff should stay hottest at the edge and get steeper as power increases."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            edge = mod._distance_field_opacity(0.0, 18.0, 1.9)
+            mid = mod._distance_field_opacity(9.0, 18.0, 1.9)
+            wide = mod._distance_field_opacity(18.0, 18.0, 1.9)
+            tail = mod._distance_field_opacity(36.0, 18.0, 1.9)
+            softer = mod._distance_field_opacity(27.0, 18.0, 1.1)
+            steeper = mod._distance_field_opacity(27.0, 18.0, 1.9)
+
+            assert edge == pytest.approx(1.0)
+            assert edge > mid > wide > tail
+            assert steeper < softer
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_edge_mix_gives_light_backgrounds_extra_subtractive_presence(self, mock_pyobjc):
+        """Bright scenes should get a modest subtractive boost so the edge treatment stays visible."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            dark_add, dark_sub = mod._edge_mix_for_brightness(0.1)
+            mid_add, mid_sub = mod._edge_mix_for_brightness(0.5)
+            light_add, light_sub = mod._edge_mix_for_brightness(1.0)
+
+            assert dark_add > dark_sub
+            assert mid_sub > 0.5
+            assert light_add == pytest.approx(0.0)
+            assert light_sub == pytest.approx(1.664)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_light_background_dimmer_moves_closer_to_opaque(self, mock_pyobjc):
+        """Bright scenes should darken more assertively behind the border treatment."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            assert mod._DIM_OPACITY_LIGHT == pytest.approx(0.424)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_light_background_vignette_tail_doubles_in_strength(self, mock_pyobjc):
+        """The widest bright-scene edge tail should read much more strongly on white backgrounds."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            specs = mod._continuous_vignette_pass_specs()
+            tail = next(spec for spec in specs if spec["name"] == "tail")
+            assert tail["alpha"] == pytest.approx(0.19)
         finally:
             sys.modules.pop("spoke.glow", None)
 

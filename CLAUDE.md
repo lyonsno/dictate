@@ -8,9 +8,45 @@ When writing or updating docs, reviews, Epistaxis notes, PR text, release notes,
 
 Treat the repo as renamed for documentation purposes and keep naming consistent with `spoke`.
 
-## After making changes
+## Testing
 
-When a change is ready for smoke testing, run the build and install pipeline:
+Always run `uv run pytest -q` after code changes and before committing. All tests must pass.
+
+## Smoke testing
+
+There are two Automator-bound launcher scripts:
+
+- `scripts/launch-dev.sh` — launches from `~/.config/spoke/dev-target` when that file exists; otherwise falls back to the checkout containing the script.
+- `scripts/launch-smoke.sh` — launches from whatever worktree path is written
+  in `~/.config/spoke/smoke-target`.
+
+When you want the stable dev hotkey to follow a fresh main/dev worktree, point
+the dev launcher at it:
+
+```sh
+echo '/path/to/worktree' > ~/.config/spoke/dev-target
+```
+
+When a change is ready for human smoke testing, point the smoke launcher at
+the active worktree and tell the user it's ready:
+
+```sh
+echo '/path/to/worktree' > ~/.config/spoke/smoke-target
+```
+
+The user triggers the smoke Automator hotkey themselves. Do not kill the
+running process or relaunch — `launch-smoke.sh` handles that.
+
+Per-worktree env overrides can go in `.spoke-smoke-env` at the worktree root
+(e.g. `SPOKE_COMMAND_URL`, `SPOKE_TTS_VOICE`).
+
+After pointing the smoke target, **ask the user if the spacebar is working**
+before doing anything else. There is no way to verify event tap functionality
+from logs or process state.
+
+## Building the .app bundle
+
+For .app distribution testing (not normal dev smoke testing):
 
 ```sh
 pkill -TERM -f "Spoke" 2>/dev/null
@@ -22,28 +58,12 @@ cp -r dist/Spoke.app ~/Applications/
 open ~/Applications/Spoke.app
 ```
 
-This kills any running instance, rebuilds incrementally, copies to Applications, and relaunches. The user will grant permissions if prompted.
-
-For full clean builds (after dependency changes, spec file changes, or when --fast builds behave unexpectedly):
+For full clean builds (after dependency changes, spec file changes, or when
+`--fast` builds behave unexpectedly):
 
 ```sh
 ./scripts/build.sh
 ```
-
-## Testing
-
-Always run `uv run pytest -q` after code changes and before committing. All tests must pass.
-
-## Smoke-test branch launches
-
-When the user asks to spin up a separate fun or smoke-test branch, treat that as a request to launch the dedicated worktree for that branch rather than the stable default launcher path.
-
-Before launching that branch:
-- pull or otherwise update the target branch/worktree
-- kill the currently running Spoke process
-- relaunch from the target worktree's launcher script
-
-Do not silently fall back to the stable Automator or `main` launcher when the user explicitly asked for the branch variant.
 
 ## Permissions
 
@@ -57,6 +77,21 @@ Do not silently fall back to the stable Automator or `main` launcher when the us
 - Do NOT change the bundle identifier to work around TCC — Sequoia won't prompt for Accessibility for unknown ad-hoc apps.
 - Use `pkill -TERM` (not `-9`) to kill the app so the SIGTERM handler can cleanly uninstall the CGEventTap.
 - After rebuilding and relaunching, **ask the user if the spacebar is working** before doing anything else. There is no way to verify event tap functionality from logs or process state.
+
+## Local assistant (command pathway)
+
+The assistant requires a local OpenAI-compatible model server. The app defaults
+to `http://localhost:8001` (OMLX) when `SPOKE_COMMAND_URL` is not set.
+
+Authentication: the app reads `SPOKE_COMMAND_API_KEY` first, then falls back to
+`OMLX_SERVER_API_KEY` from the environment. Both are typically set in the
+user's shell profile. If the assistant menu appears but is empty ("couldn't
+reach the model"), the most likely cause is the model server not running or the
+API key not reaching the app process.
+
+When preparing a new worktree or smoke surface, do not assume the assistant
+will work without checking. The command pathway is always enabled but the model
+server and API key must be reachable from the launched process.
 
 ## Epistaxis
 

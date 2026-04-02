@@ -4,10 +4,11 @@ Tests the wiring between layers: hold callbacks, transcription lifecycle,
 generation-based stale result rejection, and env var validation.
 """
 
+import logging
 import os
 import json
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 
 def _make_delegate(main_module, monkeypatch):
@@ -33,6 +34,10 @@ def _make_delegate(main_module, monkeypatch):
     delegate._last_preview_text = ""
     delegate._command_client = None
     delegate._command_overlay = None
+    # Tray state
+    delegate._tray_stack = []
+    delegate._tray_index = 0
+    delegate._tray_active = False
     # Recovery mode state
     delegate._pre_paste_clipboard = None
     delegate._verify_paste_text = None
@@ -41,6 +46,8 @@ def _make_delegate(main_module, monkeypatch):
     delegate._recovery_text = None
     delegate._recovery_clipboard_state = "idle"
     delegate._recovery_pending_insert = None
+    delegate._recovery_hold_active = False
+    delegate._recovery_retry_pending = False
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
@@ -55,6 +62,19 @@ class TestHoldCallbacks:
 
         d._capture.start.assert_called_once()
         d._menubar.set_recording.assert_called_with(True)
+
+    def test_hold_start_capture_failure_restores_idle_ui(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.start.side_effect = RuntimeError("audio dead")
+
+        d._on_hold_start()
+
+        d._glow.hide.assert_called_once_with()
+        d._overlay.hide.assert_called_once_with()
+        d._menubar.set_recording.assert_any_call(True)
+        d._menubar.set_recording.assert_any_call(False)
+        d._menubar.set_status_text.assert_called_with("Audio input error — try again")
+        assert d._preview_active is False
 
     def test_hold_end_stops_capture_and_spawns_thread(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
@@ -122,6 +142,8 @@ class TestTranscriptionToken:
 
         with patch.object(main_module, "inject_text") as mock_inject:
             d.transcriptionComplete_({"token": 5, "text": "hello world"})
+            # Fire the deferred inject timer callback
+            d.resultInjectDelayed_(None)
 
         mock_inject.assert_called_once()
         assert mock_inject.call_args[0][0] == "hello world"
@@ -243,6 +265,8 @@ class TestPreviewFinalizationContract:
 
         with patch.object(main_module, "inject_text") as mock_inject:
             d.transcriptionFailed_({"token": 7})
+            # Fire the deferred inject timer callback
+            d.resultInjectDelayed_(None)
 
         mock_inject.assert_called_once()
         assert mock_inject.call_args[0][0] == "usable preview text"
@@ -510,6 +534,24 @@ class TestModelPreferencePersistence:
         assert loaded["local_whisper_decode_timeout"] == 30.0
         assert loaded["local_whisper_eager_eval"] is True
 
+    def test_save_preserves_existing_command_model_preference(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Saving Whisper model prefs should not clobber the assistant model choice."""
+        prefs_file = tmp_path / "model_preferences.json"
+        prefs_file.write_text(json.dumps({
+            "command_model": "qwen3p5-35B-A3B",
+        }))
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+
+        d._save_model_preferences("model-a", "model-b")
+
+        loaded = json.loads(prefs_file.read_text())
+        assert loaded["preview_model"] == "model-a"
+        assert loaded["transcription_model"] == "model-b"
+        assert loaded["command_model"] == "qwen3p5-35B-A3B"
+
 
 class TestConcurrencyContract:
     """Test thread handoff and local-inference serialization."""
@@ -640,21 +682,26 @@ class TestHoldMsBounds:
 class TestModelPicker:
     """Test model selection menu and RAM guard."""
 
-    def test_model_allowed_blocks_large_on_low_ram(self, main_module, monkeypatch):
+    def test_model_allowed_blocks_large_below_16gb(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setattr(main_module, "_RAM_GB", 15.0)
+        assert d._model_allowed("mlx-community/whisper-large-v3-turbo") is False
+
+    def test_model_allowed_permits_large_at_16gb(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         monkeypatch.setattr(main_module, "_RAM_GB", 16.0)
         assert d._model_allowed("mlx-community/whisper-medium.en-mlx-8bit") is True
         assert d._model_allowed("Qwen/Qwen3-ASR-0.6B") is True
-        assert d._model_allowed("mlx-community/whisper-large-v3-turbo") is False
+        assert d._model_allowed("mlx-community/whisper-large-v3-turbo") is True
 
-    def test_model_allowed_permits_large_on_high_ram(self, main_module, monkeypatch):
+    def test_model_allowed_permits_large_at_32gb(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
-        monkeypatch.setattr(main_module, "_RAM_GB", 36.0)
+        monkeypatch.setattr(main_module, "_RAM_GB", 32.0)
         assert d._model_allowed("mlx-community/whisper-large-v3-turbo") is True
 
     def test_select_model_none_returns_list(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
-        monkeypatch.setattr(main_module, "_RAM_GB", 16.0)
+        monkeypatch.setattr(main_module, "_RAM_GB", 15.0)
         models = d._select_model(None)
         model_ids = [m[0] for m in models]
         assert "mlx-community/whisper-tiny.en-mlx" in model_ids
@@ -682,7 +729,7 @@ class TestModelPicker:
 
     def test_select_model_none_includes_large_on_high_ram(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
-        monkeypatch.setattr(main_module, "_RAM_GB", 36.0)
+        monkeypatch.setattr(main_module, "_RAM_GB", 16.0)
         models = d._select_model(None)
         labels_by_id = {model_id: label for model_id, label, _enabled in models}
         assert "mlx-community/whisper-large-v3-turbo" in labels_by_id
@@ -837,6 +884,28 @@ class TestDualModelConfiguration:
 
         assert "local_whisper" not in model_state
 
+    def test_handle_model_menu_none_exposes_assistant_models_when_command_enabled(
+        self, main_module, monkeypatch
+    ):
+        """Command mode should surface an Assistant submenu with the selected OMLX model."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_model_id = "qwen3p5-35B-A3B"
+        d._command_model_options = [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("qwen3-14b", "qwen3-14b", True),
+        ]
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["assistant"] == {
+            "selected": "qwen3p5-35B-A3B",
+            "models": [
+                ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+                ("qwen3-14b", "qwen3-14b", True),
+            ],
+        }
+
     def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
         self, main_module, monkeypatch
     ):
@@ -890,6 +959,139 @@ class TestDualModelConfiguration:
         assert os.environ["SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT"] == "off"
         assert os.environ["SPOKE_LOCAL_WHISPER_EAGER_EVAL"] == "0"
         mock_execv.assert_called_once()
+
+    def test_selecting_assistant_model_persists_and_relaunches(
+        self, main_module, monkeypatch
+    ):
+        """Choosing a different assistant model should persist it and relaunch."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_model_id = "qwen3p5-35B-A3B"
+        d._command_model_options = [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("qwen3-14b", "qwen3-14b", True),
+        ]
+        d._save_command_model_preference = MagicMock(return_value=True)
+
+        with patch.object(main_module.os, "execv") as mock_execv:
+            d._handle_model_menu_action(("assistant", "qwen3-14b"))
+
+        d._save_command_model_preference.assert_called_once_with("qwen3-14b")
+        assert os.environ["SPOKE_COMMAND_MODEL"] == "qwen3-14b"
+        mock_execv.assert_called_once()
+
+    def test_discover_command_models_merges_server_and_local_inventory(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Assistant discovery should keep only curated installed local MLX models."""
+        model_root = tmp_path / "models"
+        curated = model_root / "lmstudio-community" / "Qwen3-4B-Instruct-2507-MLX-6bit"
+        curated.mkdir(parents=True)
+        (curated / "config.json").write_text("{}")
+        (curated / "tokenizer.json").write_text("{}")
+        (curated / "model.safetensors.index.json").write_text("{}")
+        (model_root / "unsloth" / "Qwen3-4B-Instruct-2507-GGUF").mkdir(parents=True)
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.list_models.return_value = ["qwen3p5-35B-A3B", "qwen3-14b"]
+
+        options = d._discover_command_models("qwen3p5-35B-A3B")
+
+        assert options == [
+            (
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                False,
+            ),
+        ]
+
+    def test_discover_command_models_drops_stale_selected_model_when_server_is_unavailable(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """A stale selected assistant model should disappear when it is not actually available."""
+        model_root = tmp_path / "models"
+        curated = model_root / "lmstudio-community" / "Qwen2.5-Coder-3B-Instruct-MLX-8bit"
+        curated.mkdir(parents=True)
+        (curated / "config.json").write_text("{}")
+        (curated / "tokenizer.json").write_text("{}")
+        (curated / "model.safetensors").write_text("weights")
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
+
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.list_models.side_effect = RuntimeError("offline")
+
+        options = d._discover_command_models("qwen3p5-35B-A3B")
+
+        assert options == [
+            (
+                "lmstudio-community/Qwen2.5-Coder-3B-Instruct-MLX-8bit",
+                "lmstudio-community/Qwen2.5-Coder-3B-Instruct-MLX-8bit",
+                False,
+            ),
+        ]
+
+    def test_seed_command_model_options_prefers_curated_local_inventory(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Initial Assistant menu should seed from the local curated shortlist without /v1/models."""
+        model_root = tmp_path / "models"
+        curated = model_root / "alexgusevski" / "LFM2.5-1.2B-Nova-Function-Calling-mlx"
+        curated.mkdir(parents=True)
+        (curated / "config.json").write_text("{}")
+        (curated / "tokenizer.json").write_text("{}")
+        (curated / "model.safetensors.index.json").write_text("{}")
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL_DIR", str(model_root))
+
+        d = _make_delegate(main_module, monkeypatch)
+
+        options = d._seed_command_model_options("qwen3p5-35B-A3B")
+
+        assert options == [
+            (
+                "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx",
+                "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx",
+                False,
+            ),
+        ]
+
+    def test_reselecting_current_assistant_model_repairs_stale_preference_without_relaunch(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Re-selecting the running assistant model should heal stale prefs without relaunch."""
+        prefs_file = tmp_path / "model_preferences.json"
+        prefs_file.write_text(json.dumps({
+            "command_model": "qwen3-14b",
+        }))
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+        monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
+
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        d._command_model_id = "qwen3p5-35B-A3B"
+        d._load_preferences = main_module.SpokeAppDelegate._load_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._preferences_path = main_module.SpokeAppDelegate._preferences_path.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._save_preferences = main_module.SpokeAppDelegate._save_preferences.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._load_command_model_preference = main_module.SpokeAppDelegate._load_command_model_preference.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._save_command_model_preference = main_module.SpokeAppDelegate._save_command_model_preference.__get__(
+            d, main_module.SpokeAppDelegate
+        )
+        d._relaunch = MagicMock()
+
+        d._apply_command_model_selection("qwen3p5-35B-A3B")
+
+        loaded = json.loads(prefs_file.read_text())
+        assert loaded["command_model"] == "qwen3p5-35B-A3B"
+        d._relaunch.assert_not_called()
 
     def test_init_shares_client_when_preview_and_transcription_models_match(
         self, main_module, monkeypatch
@@ -972,6 +1174,127 @@ class TestDualModelConfiguration:
             MockLocal.call_args_list[1].kwargs["model"]
             == "mlx-community/whisper-medium.en-mlx-8bit"
         )
+
+    def test_init_falls_back_from_unsupported_persisted_transcription_model(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Unsupported saved transcription models should not abort startup."""
+        prefs_file = tmp_path / "model_preferences.json"
+        prefs_file.write_text(
+            '{\n'
+            '  "preview_model": "mlx-community/whisper-tiny.en-mlx",\n'
+            '  "transcription_model": "mlx-community/whisper-large-v3-turbo"\n'
+            '}\n'
+        )
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+        monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
+        monkeypatch.delenv("SPOKE_PREVIEW_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_TRANSCRIPTION_MODEL", raising=False)
+        monkeypatch.delenv("SPOKE_WHISPER_MODEL", raising=False)
+        monkeypatch.setattr(main_module, "_RAM_GB", 15.0)
+
+        with patch.object(main_module, "LocalTranscriptionClient") as MockLocal:
+            final_client = MagicMock(name="final_client")
+            preview_client = MagicMock(name="preview_client")
+            MockLocal.side_effect = [final_client, preview_client]
+
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = d.init()
+
+        assert result is not None
+        assert d._transcription_model_id == "mlx-community/whisper-medium.en-mlx-8bit"
+        assert d._preview_model_id == "mlx-community/whisper-tiny.en-mlx"
+        assert (
+            MockLocal.call_args_list[0].kwargs["model"]
+            == "mlx-community/whisper-medium.en-mlx-8bit"
+        )
+        loaded = json.loads(prefs_file.read_text())
+        assert loaded["transcription_model"] == "mlx-community/whisper-medium.en-mlx-8bit"
+
+    def test_init_loads_persisted_command_model_when_env_var_absent(
+        self, main_module, monkeypatch
+    ):
+        """Persisted assistant model should bootstrap the OMLX command client."""
+        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://omlx:8001")
+        monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_model_preference",
+            lambda self: "qwen3-14b",
+            raising=False,
+        )
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            MockCommand.return_value = MagicMock()
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[("lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit", "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit", False)],
+            ) as mock_seed:
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
+
+        assert result is not None
+        MockCommand.assert_called_once_with(model="qwen3-14b")
+        assert d._command_model_id == "qwen3-14b"
+        mock_seed.assert_called_once_with("qwen3-14b")
+        assert d._command_model_options == [
+            (
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                False,
+            )
+        ]
+
+    def test_init_seeds_command_model_options_without_sync_discovery(
+        self, main_module, monkeypatch
+    ):
+        """Startup should not block on /v1/models just to seed the Assistant menu."""
+        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://omlx:8001")
+        monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_model_preference",
+            lambda self: "qwen3-14b",
+            raising=False,
+        )
+
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            command_client = MagicMock()
+            MockCommand.return_value = command_client
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[("lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit", "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit", False)],
+            ) as mock_seed:
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
+
+        assert result is not None
+        MockCommand.assert_called_once_with(model="qwen3-14b")
+        command_client.list_models.assert_not_called()
+        mock_seed.assert_called_once_with("qwen3-14b")
+        assert d._command_model_options == [
+            (
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                False,
+            )
+        ]
+
+    def test_handle_model_menu_none_sanitizes_unsupported_selected_model(
+        self, main_module, monkeypatch
+    ):
+        """Menu state should not advertise an unsupported current selection."""
+        d = _make_delegate(main_module, monkeypatch)
+        monkeypatch.setattr(main_module, "_RAM_GB", 15.0)
+        d._preview_model_id = "mlx-community/whisper-tiny.en-mlx"
+        d._transcription_model_id = "mlx-community/whisper-large-v3-turbo"
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["transcription"]["selected"] == "mlx-community/whisper-medium.en-mlx-8bit"
+        transcription_ids = [model_id for model_id, _label, _enabled in model_state["transcription"]["models"]]
+        assert "mlx-community/whisper-large-v3-turbo" not in transcription_ids
 
     def test_switching_away_from_qwen_persists_models_across_relaunch(
         self, main_module, monkeypatch, tmp_path
@@ -1176,44 +1499,93 @@ class TestDualModelConfiguration:
 
 
 class TestWarmupContract:
-    """Test explicit warm-before-ready behavior."""
+    """Test non-blocking warmup behavior."""
 
-    def test_setup_event_tap_prepares_clients_before_ready(
+    def test_setup_event_tap_starts_background_warmup_before_ready(
         self, main_module, monkeypatch
     ):
-        """The app should warm selected clients before advertising readiness."""
+        """The app should not block the main thread on first-run model warmup."""
         d = _make_delegate(main_module, monkeypatch)
         d._detector.install.return_value = True
         d._prepare_clients = MagicMock()
+        d._warmup_in_flight = False
 
-        d._setup_event_tap()
+        with patch.object(main_module.threading, "Thread") as mock_thread_cls:
+            mock_thread = MagicMock()
+            mock_thread_cls.return_value = mock_thread
+            d._setup_event_tap()
 
-        d._prepare_clients.assert_called_once_with()
-        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+        d._prepare_clients.assert_not_called()
+        mock_thread_cls.assert_called_once()
+        mock_thread.start.assert_called_once_with()
+        d._menubar.set_status_text.assert_called_with("Loading models…")
+        d._overlay.show.assert_called_once_with()
+        d._overlay.set_text.assert_called_once_with(
+            "Loading models...\nFirst launch may download selected models."
+        )
 
-    def test_setup_event_tap_surfaces_prepare_failure(
+    def test_background_warmup_dispatches_success_to_main_thread(
         self, main_module, monkeypatch
     ):
-        """Warmup failures should block ready-state and surface a model error."""
+        """Warmup completion should be handed back to the main thread."""
         d = _make_delegate(main_module, monkeypatch)
-        d._detector.install.return_value = True
+        d._prepare_clients = MagicMock()
+
+        d._prepare_clients_in_background()
+
+        d.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_once_with(
+            "clientWarmupSucceeded:", None, False
+        )
+
+    def test_background_warmup_dispatches_failure_to_main_thread(
+        self, main_module, monkeypatch
+    ):
+        """Warmup failures should be surfaced back on the main thread."""
+        d = _make_delegate(main_module, monkeypatch)
         d._prepare_clients = MagicMock(side_effect=RuntimeError("warm failed"))
+
+        d._prepare_clients_in_background()
+
+        d.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_once_with(
+            "clientWarmupFailed:", None, False
+        )
+        assert isinstance(d._warm_error, RuntimeError)
+
+    def test_warmup_success_hides_startup_indicator(
+        self, main_module, monkeypatch
+    ):
+        """Successful warmup should remove the loading overlay."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = None
+        d.clientWarmupSucceeded_(None)
+
+        d._overlay.hide.assert_called_once_with()
+        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+
+    def test_warmup_failure_updates_startup_indicator(
+        self, main_module, monkeypatch
+    ):
+        """Failed warmup should keep a visible on-screen failure message."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._warm_error = RuntimeError("warm failed")
         d._show_model_load_alert = MagicMock()
 
-        d._setup_event_tap()
+        d.clientWarmupFailed_(None)
 
-        d._show_model_load_alert.assert_called_once()
+        d._overlay.show.assert_called_once_with()
+        d._overlay.set_text.assert_called_once_with(
+            "Model load failed.\nChoose another model from the menu."
+        )
         d._menubar.set_status_text.assert_called_with(
             "Model load failed — choose another model"
         )
 
-    def test_prepare_failure_still_allows_model_selection_recovery(
+    def test_warmup_failure_still_allows_model_selection_recovery(
         self, main_module, monkeypatch, tmp_path
     ):
         """A failed warmup should still leave model selection available for recovery."""
         d = _make_delegate(main_module, monkeypatch)
-        d._detector.install.return_value = True
-        d._prepare_clients = MagicMock(side_effect=RuntimeError("warm failed"))
+        d._warm_error = RuntimeError("warm failed")
         d._show_model_load_alert = MagicMock()
         monkeypatch.setenv(
             "SPOKE_MODEL_PREFERENCES_PATH", str(tmp_path / "model_preferences.json")
@@ -1221,12 +1593,201 @@ class TestWarmupContract:
         monkeypatch.setenv(
             "SPOKE_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo"
         )
-
         with patch.object(main_module.os, "execv") as mock_execv:
-            d._setup_event_tap()
+            d.clientWarmupFailed_(None)
             d._select_model("Qwen/Qwen3-ASR-0.6B")
 
         mock_execv.assert_called_once()
+
+    def test_application_launch_kicks_off_command_model_refresh_async(
+        self, main_module, monkeypatch
+    ):
+        """Assistant model discovery should start after launch, not inside init()."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._quit = MagicMock()
+        d._command_client = MagicMock()
+        d._refresh_command_model_options_async = MagicMock()
+        d._request_mic_permission = MagicMock()
+
+        menubar = MagicMock()
+        menubar.setup = MagicMock()
+        glow = MagicMock()
+        glow.setup = MagicMock()
+        overlay = MagicMock()
+        overlay.setup = MagicMock()
+        command_overlay = MagicMock()
+        command_overlay.setup = MagicMock()
+
+        with patch.object(main_module.MenuBarIcon, "alloc") as mock_menubar_alloc, \
+            patch.object(main_module.GlowOverlay, "alloc") as mock_glow_alloc, \
+            patch.object(main_module.TranscriptionOverlay, "alloc") as mock_overlay_alloc:
+            mock_menubar_alloc.return_value.initWithQuitCallback_selectModelCallback_.return_value = menubar
+            mock_glow_alloc.return_value.initWithScreen_.return_value = glow
+            mock_overlay_alloc.return_value.initWithScreen_.return_value = overlay
+            import sys
+            sys.modules["spoke.command_overlay"] = MagicMock()
+            sys.modules["spoke.command_overlay"].CommandOverlay.alloc.return_value.initWithScreen_.return_value = command_overlay
+
+            d.applicationDidFinishLaunching_(None)
+
+        d._refresh_command_model_options_async.assert_called_once_with()
+
+    def test_refresh_command_model_options_async_spawns_background_thread(
+        self, main_module, monkeypatch
+    ):
+        """Refreshing assistant model options should happen on a background thread."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_model_id = "qwen3p5-35B-A3B"
+        d._command_models_refresh_in_flight = False
+
+        with patch.object(main_module.threading, "Thread") as MockThread:
+            mock_thread = MagicMock()
+            MockThread.return_value = mock_thread
+
+            d._refresh_command_model_options_async()
+
+        MockThread.assert_called_once()
+        mock_thread.start.assert_called_once_with()
+        assert d._command_models_refresh_in_flight is True
+
+    def test_command_models_discovered_updates_options_and_refreshes_menu(
+        self, main_module, monkeypatch
+    ):
+        """Async completion should publish the discovered models and rebuild the menu."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_model_id = "qwen3p5-35B-A3B"
+        d._command_models_refresh_in_flight = True
+
+        d.commandModelsDiscovered_(
+            {
+                "options": [
+                    ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+                    ("qwen3-14b", "qwen3-14b", True),
+                ]
+            }
+        )
+
+        assert d._command_models_refresh_in_flight is False
+        assert d._command_model_options == [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("qwen3-14b", "qwen3-14b", True),
+        ]
+        d._menubar.refresh_menu.assert_called_once_with()
+
+    def test_command_models_discovered_does_not_reinsert_missing_current_model(
+        self, main_module, monkeypatch
+    ):
+        """Async completion should not put a stale saved assistant model back into the menu."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_model_id = "qwen3p5-35B-A3B"
+        d._command_models_refresh_in_flight = True
+
+        d.commandModelsDiscovered_(
+            {
+                "options": [
+                    (
+                        "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                        "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                        False,
+                    ),
+                ]
+            }
+        )
+
+        assert d._command_models_refresh_in_flight is False
+        assert d._command_model_options == [
+            (
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+                False,
+            ),
+        ]
+        d._menubar.refresh_menu.assert_called_once_with()
+
+
+class TestWarmupHoldGuard:
+    """Test that pre-ready holds cannot push the UI back to a false ready state."""
+
+    def test_hold_end_before_models_ready_keeps_loading_status(
+        self, main_module, monkeypatch
+    ):
+        """Warmup should stay authoritative until models are actually ready."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._models_ready = False
+        d._warm_error = None
+
+        d._on_hold_start()
+        d._on_hold_end()
+
+        d._capture.stop.assert_not_called()
+        d._overlay.hide.assert_not_called()
+        assert "Ready — hold spacebar" not in [
+            call.args[0] for call in d._menubar.set_status_text.call_args_list
+        ]
+        assert d._menubar.set_status_text.call_args_list[-1].args[0] == "Loading models…"
+        assert d._overlay.set_text.call_args_list[-1].args[0] == (
+            "Loading models...\nFirst launch may download selected models."
+        )
+
+    def test_hold_end_after_warmup_failure_keeps_failure_status(
+        self, main_module, monkeypatch
+    ):
+        """Model-load failure should remain visible even if the user taps hold/release."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._models_ready = False
+        d._warm_error = RuntimeError("warm failed")
+
+        d._on_hold_start()
+        d._on_hold_end()
+
+        d._capture.stop.assert_not_called()
+        d._overlay.hide.assert_not_called()
+        assert d._menubar.set_status_text.call_args_list[-1].args[0] == (
+            "Model load failed — choose another model"
+        )
+        assert d._overlay.set_text.call_args_list[-1].args[0] == (
+            "Model load failed.\nChoose another model from the menu."
+        )
+
+    def test_hold_end_after_warmup_success_still_ignores_rejected_hold(
+        self, main_module, monkeypatch
+    ):
+        """A hold that began during warmup stays invalid even if warmup finishes before release."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = None
+
+        d._models_ready = False
+        d._warm_error = None
+        d._on_hold_start()
+        d.clientWarmupSucceeded_(None)
+        d._on_hold_end()
+
+        d._capture.stop.assert_not_called()
+        d._menubar.set_recording.assert_not_called()
+        assert d._menubar.set_status_text.call_args_list[-1].args[0] == (
+            "Ready — hold spacebar"
+        )
+
+    def test_hold_end_after_warmup_failure_transition_still_ignores_rejected_hold(
+        self, main_module, monkeypatch
+    ):
+        """A rejected hold should not mutate UI state after warmup flips into failure."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._show_model_load_alert = MagicMock()
+
+        d._models_ready = False
+        d._warm_error = None
+        d._on_hold_start()
+        d._warm_error = RuntimeError("warm failed")
+        d.clientWarmupFailed_(None)
+        d._on_hold_end()
+
+        d._capture.stop.assert_not_called()
+        d._overlay.hide.assert_not_called()
+        assert d._menubar.set_status_text.call_args_list[-1].args[0] == (
+            "Model load failed — choose another model"
+        )
 
 
 class TestEnvValidation:
@@ -1290,6 +1851,12 @@ class TestEnvValidation:
 
 class TestRecordingCap:
     """Test the recording cap countdown and force_end trigger."""
+
+    def test_max_record_secs_uses_16gb_cutoff(self, main_module):
+        assert main_module._max_record_secs_for_ram(15.0) == 20.0
+        assert main_module._max_record_secs_for_ram(16.0) is None
+        assert main_module._max_record_secs_for_ram(31.0) is None
+        assert main_module._max_record_secs_for_ram(32.0) is None
 
     def test_cap_fires_after_max_seconds(self, main_module, monkeypatch):
         """When elapsed >= _MAX_RECORD_SECS, cap should fire and call force_end."""
@@ -1364,7 +1931,7 @@ class TestRecordingCap:
         assert d._cap_fired is False
 
     def test_cap_noop_when_max_record_secs_none(self, main_module, monkeypatch):
-        """On high-RAM machines (>=36GB), _MAX_RECORD_SECS is None — cap is disabled."""
+        """At 32GB+, _MAX_RECORD_SECS is None — cap is disabled."""
         d = _make_delegate(main_module, monkeypatch)
         d._local_mode = True
         d._cap_fired = False
@@ -1377,6 +1944,18 @@ class TestRecordingCap:
 
         d._detector.force_end.assert_not_called()
         assert d._cap_fired is False
+
+    def test_amplitude_update_syncs_command_overlay_brightness(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._glow._brightness = 0.61
+        self._setup_glow_mock(d)
+
+        d.amplitudeUpdate_(MagicMock(return_value=0.01))
+
+        d._command_overlay.set_brightness.assert_called_with(0.61, immediate=False)
 
 
 class TestCommandTranscribeWorker:
@@ -1534,6 +2113,22 @@ class TestCommandCallbacks:
         d._command_overlay.show.assert_called()
         d._command_overlay.set_utterance.assert_called_with("open file")
 
+    def test_command_utterance_ready_primes_command_overlay_brightness(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._glow._brightness = 0.73
+        d._transcription_token = 1
+
+        d.commandUtteranceReady_({"token": 1, "utterance": "open file"})
+
+        assert d._command_overlay.method_calls[:3] == [
+            call.set_brightness(0.73, immediate=True),
+            call.show(),
+            call.set_utterance("open file"),
+        ]
+
     def test_command_utterance_ready_stale_token_ignored(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._command_overlay = MagicMock()
@@ -1592,6 +2187,100 @@ class TestCommandCallbacks:
         d._command_overlay.append_token.assert_called()
         d._command_overlay.finish.assert_called()
 
+    def test_command_token_invert_failure_still_appends_token(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay.invert_thinking_timer.side_effect = RuntimeError("flip")
+        d._transcription_token = 1
+        d._command_first_token = True
+
+        with caplog.at_level(logging.ERROR):
+            d.commandToken_({"token": 1, "text": "first"})
+
+        d._command_overlay.append_token.assert_called_with("first")
+        assert d._command_first_token is False
+        assert "Command overlay failed to invert thinking timer" in caplog.text
+
+    def test_command_complete_finish_failure_still_starts_autoplay(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay.finish.side_effect = RuntimeError("finish")
+        d._transcription_token = 1
+        d._transcribing = True
+        d._tts_client = MagicMock()
+
+        with caplog.at_level(logging.ERROR):
+            d.commandComplete_({"token": 1, "response": "Hello there"})
+
+        assert d._transcribing is False
+        d._tts_client.speak_async.assert_called_once()
+        d._command_overlay.tts_start.assert_called_once()
+        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+        assert "Command overlay finish failed" in caplog.text
+
+    def test_command_complete_autoplay_failure_is_suppressed(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+        d._transcribing = True
+        d._tts_client = MagicMock()
+        d._tts_client.speak_async.side_effect = RuntimeError("tts launch")
+
+        with caplog.at_level(logging.ERROR):
+            d.commandComplete_({"token": 1, "response": "Hello there"})
+
+        assert d._transcribing is False
+        d._command_overlay.tts_stop.assert_called_once()
+        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+        assert "Command autoplay failed to start" in caplog.text
+
+    def test_tts_amplitude_update_failure_is_suppressed(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay.update_tts_amplitude.side_effect = RuntimeError("amp")
+
+        with caplog.at_level(logging.ERROR):
+            d.ttsAmplitudeUpdate_(0.5)
+
+        assert "Command overlay amplitude update failed" in caplog.text
+
+    def test_tts_finished_failure_is_suppressed(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay.tts_stop.side_effect = RuntimeError("stop")
+
+        with caplog.at_level(logging.ERROR):
+            d.ttsFinished_(None)
+
+        assert "Command overlay TTS stop failed" in caplog.text
+
+    def test_command_failed_overlay_failure_is_suppressed(
+        self, main_module, monkeypatch, caplog
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_overlay._visible = False
+        d._command_overlay.append_token.side_effect = RuntimeError("append")
+        d._transcription_token = 1
+        d._transcribing = True
+
+        with caplog.at_level(logging.ERROR):
+            d.commandFailed_({"token": 1, "error": "OMLX down"})
+
+        assert d._transcribing is False
+        d._command_overlay.show.assert_called()
+        assert "Command overlay append failed during error presentation" in caplog.text
+
     def test_recall_last_response_shows_history(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._command_client = MagicMock()
@@ -1623,11 +2312,10 @@ class TestCommandCallbacks:
 class TestResultInjection:
     """Test timing of the post-injection overlay cleanup."""
 
-    def test_inject_result_text_orders_out_overlay_before_focus_check(
+    def test_inject_result_text_orders_out_overlay_before_delayed_inject(
         self, main_module, monkeypatch
     ):
-        """Overlay should be ordered out (not faded) before the focus check
-        runs so the AX system sees the underlying text field, not the overlay."""
+        """Overlay should be ordered out before the delayed paste fires."""
         d = _make_delegate(main_module, monkeypatch)
 
         with patch.object(main_module, "inject_text"):
@@ -1699,20 +2387,22 @@ class TestShortShiftHold:
         MockThread.assert_called_once()
         mock_thread.start.assert_called_once()
 
-    def test_short_shift_hold_recalls_last_response(self, main_module, monkeypatch):
-        """Short shift-hold with history should recall last response."""
+    def test_short_shift_hold_recalls_tray(self, main_module, monkeypatch):
+        """Short shift-hold with tray entries should recall into tray."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b"audio"
         d._record_start_time = time.monotonic() - 0.1  # 100ms
+        d._tray_stack = ["previous text"]
         d._command_client = MagicMock()
         d._command_client.history = [("hello", "world")]
         d._command_overlay = MagicMock(_visible=False)
 
         d._on_hold_end(shift_held=True)
 
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.set_utterance.assert_called_once_with("hello")
-        d._command_overlay.finish.assert_called_once()
+        # Should enter tray, not command overlay
+        assert d._tray_active is True
+        assert d._tray_index == 0
+        d._overlay.show_tray.assert_called()
 
 
 class TestCoerceSettings:

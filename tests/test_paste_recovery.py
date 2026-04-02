@@ -34,9 +34,16 @@ def _make_delegate(main_module, monkeypatch):
     delegate._preview_done = MagicMock()
     delegate._preview_done.set = MagicMock()
     delegate._local_inference_lock = MagicMock()
+    # Tray state
+    delegate._tray_stack = []
+    delegate._tray_index = 0
+    delegate._tray_active = False
+    # Recovery state
     delegate._recovery_saved_clipboard = None
     delegate._recovery_text = None
     delegate._recovery_clipboard_state = "idle"
+    delegate._recovery_hold_active = False
+    delegate._recovery_retry_pending = False
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
 
@@ -45,39 +52,55 @@ class TestRecoveryFlowBranching:
     """_inject_result_text should branch on has_focused_text_input."""
 
     def test_normal_paste_when_text_field_focused(self, main_module, monkeypatch):
-        """When a text field is focused, use normal inject_text path."""
+        """When a text field is focused, stage the normal inject after order_out."""
+        Foundation = __import__("Foundation")
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
         d = _make_delegate(main_module, monkeypatch)
 
         with patch("spoke.__main__.has_focused_text_input", return_value=True), \
              patch("spoke.__main__.inject_text") as mock_inject:
             d._inject_result_text("hello world", "Pasted!")
 
-        mock_inject.assert_called_once()
+        mock_inject.assert_not_called()
+        assert d._result_pending_inject == ("hello world", "Pasted!")
+        call_args = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
+        assert call_args[0][0] == 0.05
+        assert call_args[0][2] == "resultInjectDelayed:"
         # Overlay should be ordered out before the focus check
         d._overlay.order_out.assert_called()
 
     def test_always_attempts_paste(self, main_module, monkeypatch):
-        """_inject_result_text should always attempt paste, regardless of focus."""
+        """Normal paste should wait briefly for focus to settle after order_out."""
+        Foundation = __import__("Foundation")
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
         d = _make_delegate(main_module, monkeypatch)
 
         with patch("spoke.__main__.inject_text") as mock_inject, \
              patch("spoke.__main__.save_pasteboard", return_value=None):
             d._inject_result_text("hello world", "Pasted!")
 
-        # Should always attempt paste
-        mock_inject.assert_called_once()
+        mock_inject.assert_not_called()
+        assert d._result_pending_inject == ("hello world", "Pasted!")
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called_once()
+        call_args = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
+        assert call_args[0][0] == 0.05
+        assert call_args[0][2] == "resultInjectDelayed:"
 
     def test_schedules_ocr_verification(self, main_module, monkeypatch):
-        """After paste, should schedule OCR verification timer."""
+        """Delayed normal paste should inject and then schedule OCR verification."""
         Foundation = __import__("Foundation")
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
         d = _make_delegate(main_module, monkeypatch)
+        d._result_pending_inject = ("hello world", "Pasted!")
 
-        with patch("spoke.__main__.inject_text"), \
-             patch("spoke.__main__.save_pasteboard", return_value=None):
-            d._inject_result_text("hello world", "Pasted!")
+        with patch("spoke.__main__.inject_text") as mock_inject:
+            d.resultInjectDelayed_(None)
 
-        # Verification timer should be scheduled
+        mock_inject.assert_called_once()
         Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called()
+        call_args = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
+        assert call_args[0][0] == 0.15
+        assert call_args[0][2] == "verifyPaste:"
         assert d._verify_paste_text == "hello world"
 
     def test_verify_result_enters_recovery_on_failure(self, main_module, monkeypatch):
@@ -86,11 +109,28 @@ class TestRecoveryFlowBranching:
         d._verify_paste_text = "hello world"
         d._pre_paste_clipboard = [("public.utf8-plain-text", b"original")]
 
-        with patch("spoke.__main__.set_pasteboard_only"), \
+        with patch("spoke.__main__.has_focused_text_input", return_value=False), \
+             patch("spoke.__main__.set_pasteboard_only"), \
              patch("spoke.__main__.save_pasteboard", return_value=None):
             d.verifyPasteResult_({"found": False, "text": "hello world", "attempt": 1})
 
-        d._overlay.show_recovery.assert_called_once()
+        d._overlay.show_tray.assert_called_once()
+
+    def test_verify_result_enters_recovery_when_text_field_still_focused(
+        self, main_module, monkeypatch
+    ):
+        """A second OCR miss should still recover to tray even if focus remains."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._verify_paste_text = "hello world"
+        d._pre_paste_clipboard = [("public.utf8-plain-text", b"original")]
+
+        with patch("spoke.__main__.has_focused_text_input", return_value=True), \
+             patch("spoke.__main__.set_pasteboard_only"), \
+             patch("spoke.__main__.save_pasteboard", return_value=None):
+            d.verifyPasteResult_({"found": False, "text": "hello world", "attempt": 1})
+
+        assert d._verify_paste_text is None
+        d._overlay.show_tray.assert_called_once()
 
     def test_verify_result_clears_state_on_success(self, main_module, monkeypatch):
         """verifyPasteResult_ should clear verify state when text is found."""
@@ -105,54 +145,62 @@ class TestRecoveryFlowBranching:
 class TestRecoveryDismiss:
     """Recovery overlay dismiss behavior."""
 
-    def test_spacebar_during_recovery_sets_hold_active(self, main_module, monkeypatch):
-        """Spacebar hold during recovery should set _recovery_hold_active, not record."""
+    def test_spacebar_hold_during_tray_starts_recording(self, main_module, monkeypatch):
+        """Plain spacebar hold during tray should dismiss tray and start recording."""
         d = _make_delegate(main_module, monkeypatch)
+        d._tray_active = True
+        d._tray_stack = ["some text"]
         d._recovery_text = "some text"
-        d._recovery_hold_active = False
+        d._detector._shift_at_press = False  # plain spacebar, no shift
+        d._detector._shift_latched = False
 
         d._on_hold_start()
 
-        # Should mark recovery hold active but not start recording
-        assert d._recovery_hold_active is True
-        d._capture.start.assert_not_called()
+        # Should dismiss tray and start recording
+        d._capture.start.assert_called_once()
+        assert d._tray_active is False
 
-    def test_shift_space_sends_to_command(self, main_module, monkeypatch):
-        """Shift+space during recovery should send text to command pathway."""
+    def test_shift_space_during_tray_navigates_down(self, main_module, monkeypatch):
+        """Shift+space during tray should navigate down (toward older entries)."""
         d = _make_delegate(main_module, monkeypatch)
-        d._recovery_text = "some text"
-        d._recovery_hold_active = True
-        d._command_client = MagicMock()
+        d._tray_active = True
+        d._tray_stack = ["old", "newest"]
+        d._tray_index = 1  # at the top (most recent)
+        d._recovery_text = "newest"
 
-        with patch("spoke.__main__.restore_pasteboard"), \
-             patch.object(d, "_send_text_as_command") as mock_send:
-            d._on_hold_end(shift_held=True)
+        d._on_hold_end(shift_held=True)
 
-        mock_send.assert_called_once_with("some text")
-        assert d._recovery_text is None  # recovery cleared
+        # Should navigate down to older entry
+        assert d._tray_index == 0
 
-    def test_shift_space_dismisses_when_no_command_client(self, main_module, monkeypatch):
-        """Shift+space without command client should just dismiss recovery."""
+    def test_shift_space_at_bottom_stays(self, main_module, monkeypatch):
+        """Shift+space at bottom of tray should stay (no wrap)."""
         d = _make_delegate(main_module, monkeypatch)
-        d._recovery_text = "some text"
-        d._recovery_hold_active = True
-        d._command_client = None
+        d._tray_active = True
+        d._tray_stack = ["only"]
+        d._tray_index = 0
+        d._recovery_text = "only"
 
-        with patch("spoke.__main__.restore_pasteboard"):
-            d._on_hold_end(shift_held=True)
+        d._on_hold_end(shift_held=True)
 
-        assert d._recovery_text is None
+        # Should stay at bottom — no wrap, no dismiss
+        assert d._tray_active is True
+        assert d._tray_index == 0
 
-    def test_space_release_retries_insert(self, main_module, monkeypatch):
-        """Spacebar release during recovery should retry Insert."""
+    def test_space_release_during_tray_inserts(self, main_module, monkeypatch):
+        """Spacebar release during tray should insert text at cursor."""
         d = _make_delegate(main_module, monkeypatch)
-        d._recovery_text = "some text"
-        d._recovery_hold_active = True
+        d._tray_active = True
+        d._tray_stack = ["insert this"]
+        d._tray_index = 0
+        d._recovery_text = "insert this"
+        d._recovery_hold_active = True  # simulates _on_hold_start tray intercept
 
-        with patch.object(d, "_recovery_retry_insert") as mock_retry:
+        with patch("spoke.__main__.has_focused_text_input", return_value=True), \
+             patch("spoke.__main__.inject_text"):
             d._on_hold_end(shift_held=False)
 
-        mock_retry.assert_called_once()
+        assert d._tray_active is False
 
     def test_dismiss_button_restores_clipboard(self, main_module, monkeypatch):
         """Dismiss callback should restore original clipboard and hide overlay."""
@@ -235,7 +283,7 @@ class TestRecoveryInsert:
             d.verifyPasteResult_({"found": False, "text": "transcribed text", "attempt": 1})
 
         assert d._recovery_retry_pending is False
-        d._overlay.show_recovery.assert_called_once()
+        d._overlay.show_tray.assert_called_once()
 
     def test_delayed_insert_reenters_recovery_when_no_text_field(self, main_module, monkeypatch):
         """doRecoveryInsert_ should re-enter recovery if target didn't refocus."""

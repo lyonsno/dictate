@@ -33,19 +33,30 @@ from Quartz import CAGradientLayer, CALayer, CAShapeLayer, CGPathCreateWithRound
 
 logger = logging.getLogger(__name__)
 
+def _env(name: str, default: float) -> float:
+    v = os.environ.get(name)
+    return float(v) if v is not None else default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v not in {"0", "false", "False", "no", "off"}
+
+
 _OVERLAY_WIDTH = 600.0
 _OVERLAY_HEIGHT = 80.0
-_OVERLAY_BOTTOM_MARGIN = 195.0  # distance from bottom of screen
+_OVERLAY_BOTTOM_MARGIN = _env("SPOKE_PREVIEW_OVERLAY_BOTTOM_MARGIN", 80.0)
 _OVERLAY_CORNER_RADIUS = 16.0
-_OVERLAY_MAX_HEIGHT = 300.0  # max before text scrolls
+_OVERLAY_MAX_HEIGHT = _env("SPOKE_PREVIEW_OVERLAY_MAX_HEIGHT", 300.0)
+_COMMAND_OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 300.0)
+_EXPAND_UPWARD = _env_bool("SPOKE_PREVIEW_EXPAND_UPWARD", True)
 _FONT_SIZE = 16.0
 _FADE_IN_S = 0.75  # slow ease-in — overlay materializes gradually
 _FADE_OUT_S = 0.315  # 75% longer fade keeps the preview legible through fast handoff
 _FADE_STEPS = 12  # number of steps for manual fade animation
 _TYPEWRITER_INTERVAL = 0.02  # seconds between characters (~50 chars/sec)
-def _env(name: str, default: float) -> float:
-    v = os.environ.get(name)
-    return float(v) if v is not None else default
 
 
 def _scale_color_saturation(
@@ -57,12 +68,19 @@ def _scale_color_saturation(
 
 _TEXT_ALPHA_MIN = _env("SPOKE_TEXT_ALPHA_MIN", 0.066)
 _TEXT_ALPHA_MAX = _env("SPOKE_TEXT_ALPHA_MAX", 0.75)
-_TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.10)
-_BG_ALPHA_MIN = _env("SPOKE_BG_ALPHA_MIN", 0.105)
+_TEXT_ALPHA_MAX_LIGHT = 0.90
+_TEXT_AMP_SATURATION = _env("SPOKE_TEXT_AMP_SATURATION", 0.06)
+_BG_ALPHA_MIN = _env("SPOKE_BG_ALPHA_MIN", 0.08)
 _BG_ALPHA_MAX = _env("SPOKE_BG_ALPHA_MAX", 0.96)
 _BG_AMP_SATURATION = _env("SPOKE_BG_AMP_SATURATION", 0.17)
-_SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.115)
-_SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.94)
+_SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.10)
+_SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
+
+# Adaptive compositing endpoints.
+_BG_COLOR_DARK = (0.1, 0.1, 0.12)
+_TEXT_COLOR_DARK = (1.0, 1.0, 1.0)
+_BG_COLOR_LIGHT = (0.92, 0.92, 0.90)
+_TEXT_COLOR_LIGHT = (0.0, 0.0, 0.0)
 
 # Inner glow — matches screen border glow, scaled to overlay size
 _GLOW_COLOR = _scale_color_saturation(
@@ -71,7 +89,9 @@ _GLOW_COLOR = _scale_color_saturation(
 _INNER_GLOW_WIDTH = 3.0  # proportional to overlay vs screen size
 _INNER_GLOW_DEPTH = 30.0  # gradient extends inward — diffuse
 _OUTER_FEATHER = 40.0  # glow bleed past overlay edge (must contain shadow radius)
+_INNER_GLOW_PEAK_TARGET = 0.50
 _OUTER_GLOW_PEAK_TARGET = 0.35
+_WIDE_OUTER_GLOW_SCALE = 0.56
 _OVERLAY_INNER_SATURATION_SCALE = 0.70
 _OVERLAY_OUTER_SATURATION_SCALE = 1.80
 
@@ -100,6 +120,18 @@ def _truncate_preview(text: str | None) -> str:
     return text
 
 
+def _lerp(start: float, end: float, t: float) -> float:
+    return start + (end - start) * t
+
+
+def _lerp_color(
+    start: tuple[float, float, float],
+    end: tuple[float, float, float],
+    t: float,
+) -> tuple[float, float, float]:
+    return tuple(_lerp(s, e, t) for s, e in zip(start, end))
+
+
 def _compress_outer_glow_peak(opacity: float) -> float:
     """Keep low-level glow response intact while capping the outer bloom."""
     return min(opacity, _OUTER_GLOW_PEAK_TARGET)
@@ -113,6 +145,19 @@ def _overlay_layer_colors(
     middle = base_color
     outer = _scale_color_saturation(base_color, _OVERLAY_OUTER_SATURATION_SCALE)
     return inner, middle, outer
+
+
+def _max_overlay_height(screen_height: float) -> float:
+    assistant_gap_cap = _COMMAND_OVERLAY_BOTTOM_MARGIN - _OVERLAY_BOTTOM_MARGIN
+    capped_height = min(_OVERLAY_MAX_HEIGHT, assistant_gap_cap)
+    return max(_OVERLAY_HEIGHT, capped_height)
+
+
+def _window_origin_y(visible_height: float) -> float:
+    base_y = _OVERLAY_BOTTOM_MARGIN - _OUTER_FEATHER
+    if _EXPAND_UPWARD:
+        return base_y
+    return base_y - (visible_height - _OVERLAY_HEIGHT)
 
 
 class TranscriptionOverlay(NSObject):
@@ -141,6 +186,10 @@ class TranscriptionOverlay(NSObject):
         # Text breathing — separate heavy smoothing so text doesn't flicker
         self._text_amplitude = 0.0
 
+        # Adaptive compositing defaults dark until we get a brightness sample.
+        self._brightness = 0.0
+        self._brightness_target = 0.0
+
         # Recovery mode state
         self._recovery_mode = False
         self._recovery_buttons: list[NSView] = []
@@ -161,7 +210,7 @@ class TranscriptionOverlay(NSObject):
         # Window is oversized by _OUTER_FEATHER on each side for the feather bleed
         f = _OUTER_FEATHER
         x = (sw - _OVERLAY_WIDTH) / 2 - f
-        y = _OVERLAY_BOTTOM_MARGIN - f
+        y = _window_origin_y(_OVERLAY_HEIGHT)
         win_w = _OVERLAY_WIDTH + 2 * f
         win_h = _OVERLAY_HEIGHT + 2 * f
         frame = NSMakeRect(x, y, win_w, win_h)
@@ -328,9 +377,11 @@ class TranscriptionOverlay(NSObject):
             if self._scroll_view is not None:
                 self._scroll_view.setHidden_(False)
             self._window.setIgnoresMouseEvents_(True)
+            t = getattr(self, "_brightness", 0.0)
+            br, bg, bb = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
             self._content_view.layer().setBackgroundColor_(
                 NSColor.colorWithSRGBRed_green_blue_alpha_(
-                    0.1, 0.1, 0.12, _BG_ALPHA_MIN
+                    br, bg, bb, _BG_ALPHA_MIN
                 ).CGColor()
             )
         self._cancel_fade()
@@ -348,7 +399,7 @@ class TranscriptionOverlay(NSObject):
         f = _OUTER_FEATHER
         x = (sw - _OVERLAY_WIDTH) / 2 - f
         self._window.setFrame_display_animate_(
-            NSMakeRect(x, _OVERLAY_BOTTOM_MARGIN - f,
+            NSMakeRect(x, _window_origin_y(_OVERLAY_HEIGHT),
                        _OVERLAY_WIDTH + 2 * f, _OVERLAY_HEIGHT + 2 * f),
             True, False
         )
@@ -372,6 +423,12 @@ class TranscriptionOverlay(NSObject):
             interval, self, "fadeStep:", None, True
         )
         logger.info("Overlay show")
+
+    def set_brightness(self, brightness: float, immediate: bool = False) -> None:
+        """Set screen brightness (0.0 dark – 1.0 bright) for adaptive compositing."""
+        self._brightness_target = min(max(brightness, 0.0), 1.0)
+        if immediate:
+            self._brightness = self._brightness_target
 
     def hide(self) -> None:
         """Fade the overlay out smoothly."""
@@ -514,12 +571,31 @@ class TranscriptionOverlay(NSObject):
         else:
             self._text_amplitude *= _SMOOTH_DECAY
 
+        # Chase brightness target over roughly half a second at the live update cadence.
+        _BRIGHTNESS_CHASE = 0.08
+        target = getattr(self, "_brightness_target", 0.0)
+        current = getattr(self, "_brightness", 0.0)
+        if abs(target - current) > 0.001:
+            self._brightness = current + (target - current) * _BRIGHTNESS_CHASE
+
         scaled = min(self._text_amplitude / _TEXT_AMP_SATURATION, 1.0)
 
-        text_alpha = _TEXT_ALPHA_MIN + scaled * (_TEXT_ALPHA_MAX - _TEXT_ALPHA_MIN)
+        t = getattr(self, "_brightness", 0.0)
+        text_alpha_max = _lerp(_TEXT_ALPHA_MAX, _TEXT_ALPHA_MAX_LIGHT, t)
+        text_alpha = _TEXT_ALPHA_MIN + scaled * (text_alpha_max - _TEXT_ALPHA_MIN)
+        text_t = t ** 1.3
+        tr, tg, tb = _lerp_color(_TEXT_COLOR_DARK, _TEXT_COLOR_LIGHT, text_t)
         self._text_view.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, text_alpha)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, text_alpha)
         )
+
+        # Darken/lighten the frosted panel as amplitude rises.
+        bg_alpha = _BG_ALPHA_MIN * (1.0 + 2.25 * scaled)
+        bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
+        if hasattr(self, '_content_view') and self._content_view is not None:
+            self._content_view.layer().setBackgroundColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(bg_r, bg_g, bg_b, bg_alpha).CGColor()
+            )
 
     def update_glow_amplitude(self, opacity: float, cap_factor: float = 1.0) -> None:
         """Update inner and outer glow opacity to match the screen glow.
@@ -527,9 +603,23 @@ class TranscriptionOverlay(NSObject):
         opacity should be the screen glow's current opacity (0.0–1.0).
         cap_factor scales the glow down during the recording cap countdown
         (1.0 = full, ramps toward 0.25 near the cap).
+
+        Has its own smoothing (60% of screen glow's attack speed) so the
+        overlay glow responds more gently than the screen edge.
         """
         if not self._visible:
             return
+        # Independent smoothing — 60% of the screen glow's attack
+        _OVERLAY_GLOW_RISE = 0.54   # 60% of screen glow's 0.90
+        _OVERLAY_GLOW_DECAY = 0.70  # 60% blend toward screen glow's 0.50
+        if not hasattr(self, '_smoothed_glow_opacity'):
+            self._smoothed_glow_opacity = 0.0
+        if opacity > self._smoothed_glow_opacity:
+            self._smoothed_glow_opacity += (opacity - self._smoothed_glow_opacity) * _OVERLAY_GLOW_RISE
+        else:
+            self._smoothed_glow_opacity += (opacity - self._smoothed_glow_opacity) * (1.0 - _OVERLAY_GLOW_DECAY)
+        opacity = self._smoothed_glow_opacity
+
         # Apply recording-cap countdown scaling
         if cap_factor < 1.0:
             cap_floor = 0.25
@@ -537,11 +627,13 @@ class TranscriptionOverlay(NSObject):
             opacity *= scale
         outer_opacity = _compress_outer_glow_peak(opacity)
         if hasattr(self, '_inner_shadow'):
-            self._inner_shadow.setShadowOpacity_(opacity)
+            self._inner_shadow.setShadowOpacity_(
+                min(opacity * 1.68, _INNER_GLOW_PEAK_TARGET * 1.2)
+            )
         if hasattr(self, '_outer_glow_tight'):
-            self._outer_glow_tight.setShadowOpacity_(outer_opacity * 0.5)
+            self._outer_glow_tight.setShadowOpacity_(min(outer_opacity * 0.7, 1.0))
         if hasattr(self, '_outer_glow_wide'):
-            self._outer_glow_wide.setShadowOpacity_(outer_opacity * 0.8)
+            self._outer_glow_wide.setShadowOpacity_(min(outer_opacity * _WIDE_OUTER_GLOW_SCALE, 1.0))
 
     # ── layout helpers ───────────────────────────────────────
 
@@ -616,12 +708,14 @@ class TranscriptionOverlay(NSObject):
             else:
                 text_height = _OVERLAY_HEIGHT - 16
 
-            new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), _OVERLAY_MAX_HEIGHT)
+            max_height = _max_overlay_height(self._screen.frame().size.height)
+            new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), max_height)
 
             f = _OUTER_FEATHER
             win_frame = self._window.frame()
             new_win_h = new_height + 2 * f
             if abs(win_frame.size.height - new_win_h) > 4:
+                win_frame.origin.y = _window_origin_y(new_height)
                 win_frame.size.height = new_win_h
                 self._window.setFrame_display_animate_(win_frame, True, False)
                 self._content_view.setFrame_(
@@ -635,6 +729,77 @@ class TranscriptionOverlay(NSObject):
             self._text_view.scrollRangeToVisible_((end, 0))
         except Exception:
             pass
+
+    # ── tray mode ──────────────────────────────────────────────
+
+    def show_tray(self, text: str) -> None:
+        """Show the tray overlay with the given text.
+
+        Displays the text immediately (no typewriter effect) in the
+        normal overlay style. No buttons, no interactive elements.
+        The tray gesture vocabulary handles all interaction.
+        """
+        if self._window is None:
+            return
+
+        # Clean up any existing recovery state
+        if self._recovery_mode:
+            self._recovery_mode = False
+            self._teardown_recovery_views()
+            self._window.setIgnoresMouseEvents_(True)
+
+        self._cancel_fade()
+        self._cancel_typewriter()
+
+        # Show normal scroll view
+        if self._scroll_view is not None:
+            self._scroll_view.setHidden_(False)
+
+        # Reset background to normal overlay style
+        self._content_view.layer().setBackgroundColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                0.1, 0.1, 0.12, _RECOVERY_BG_ALPHA
+            ).CGColor()
+        )
+
+        # Reset to default height
+        screen_frame = self._screen.frame()
+        sw = screen_frame.size.width
+        f = _OUTER_FEATHER
+        x = (sw - _OVERLAY_WIDTH) / 2 - f
+        self._window.setFrame_display_animate_(
+            NSMakeRect(x, _OVERLAY_BOTTOM_MARGIN - f,
+                       _OVERLAY_WIDTH + 2 * f, _OVERLAY_HEIGHT + 2 * f),
+            True, False
+        )
+        self._content_view.setFrame_(
+            NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
+        )
+        self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
+
+        # Set text immediately (no typewriter)
+        self._typewriter_target = text
+        self._typewriter_displayed = text
+        self._typewriter_hwm = len(text)
+        if self._text_view is not None:
+            self._text_view.setString_(text)
+            # Set text color to higher opacity for tray readability
+            self._text_view.setTextColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(
+                    1.0, 1.0, 1.0, _RECOVERY_TEXT_ALPHA
+                )
+            )
+        self._update_layout()
+
+        # Show overlay
+        self._visible = True
+        self._window.setAlphaValue_(1.0)
+        self._window.orderFrontRegardless()
+
+        # Entrance pop
+        self._pop_entrance()
+
+        logger.info("Tray overlay shown: %r", text[:50] if text else "")
 
     # ── recovery mode ────────────────────────────────────────
 

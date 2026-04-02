@@ -112,6 +112,55 @@ class TestCommandClient:
         client = self._make_client(base_url="http://kwarg-host:8888")
         assert client._base_url == "http://kwarg-host:8888"
 
+    def test_list_models_fetches_openai_models_endpoint(self):
+        """list_models() should return ids from /v1/models in server order."""
+        from spoke.command import CommandClient
+
+        payload = {
+            "data": [
+                {"id": "qwen3p5-35B-A3B"},
+                {"id": "qwen3-14b"},
+                {"id": "qwen3-4b"},
+            ]
+        }
+        fake_resp = MagicMock()
+        fake_resp.__enter__ = MagicMock(return_value=io.BytesIO(json.dumps(payload).encode()))
+        fake_resp.__exit__ = MagicMock(return_value=False)
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+        )
+
+        with patch("urllib.request.urlopen", return_value=fake_resp) as mock_open:
+            assert client.list_models() == ["qwen3p5-35B-A3B", "qwen3-14b", "qwen3-4b"]
+
+        req = mock_open.call_args[0][0]
+        assert req.full_url == "http://localhost:9999/v1/models"
+        assert req.get_method() == "GET"
+
+    def test_list_models_sends_auth_header(self):
+        """list_models() should reuse the configured bearer token."""
+        from spoke.command import CommandClient
+
+        payload = {"data": [{"id": "qwen3p5-35B-A3B"}]}
+        fake_resp = MagicMock()
+        fake_resp.__enter__ = MagicMock(return_value=io.BytesIO(json.dumps(payload).encode()))
+        fake_resp.__exit__ = MagicMock(return_value=False)
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="secret123",
+        )
+
+        with patch("urllib.request.urlopen", return_value=fake_resp) as mock_open:
+            client.list_models()
+
+        req = mock_open.call_args[0][0]
+        assert req.get_header("Authorization") == "Bearer secret123"
+
 
 class TestStreamCommand:
     """Test streaming command dispatch with mocked HTTP."""
@@ -442,8 +491,7 @@ class TestShiftReleaseRouting:
         return det, on_start, on_end
 
     def test_shift_held_at_release_passes_flag(self, input_tap_module):
-        """When shift is held during recording release, on_hold_end should
-        receive shift_held=True (once the routing is wired)."""
+        """Shift-held release should carry the flag through the decision timer."""
         mod = input_tap_module
         det, on_start, on_end = self._make_detector(input_tap_module)
 
@@ -456,7 +504,11 @@ class TestShiftReleaseRouting:
         shift_flag = mod.kCGEventFlagMaskShift
         det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=shift_flag)
         assert det._state == mod._State.IDLE
-        on_end.assert_called_once_with(shift_held=True)
+        assert det._pending_release_active is True
+
+        det.releaseDecisionTimerFired_(None)
+
+        on_end.assert_called_once_with(shift_held=True, enter_held=False)
 
     def test_normal_release_passes_no_shift(self, input_tap_module):
         """Normal release (no shift) should pass shift_held=False."""
@@ -469,7 +521,7 @@ class TestShiftReleaseRouting:
 
         det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
         assert det._state == mod._State.IDLE
-        on_end.assert_called_once_with(shift_held=False)
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
 
     def test_shift_during_keydown_starts_recording(self, input_tap_module):
         """Shift+Space on keyDown should start recording normally.
