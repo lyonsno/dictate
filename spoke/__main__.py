@@ -18,6 +18,7 @@ from contextlib import nullcontext
 import json
 import logging
 import os
+import queue
 from pathlib import Path
 import sys
 import threading
@@ -53,6 +54,13 @@ _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 _DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
+_CURATED_LOCAL_COMMAND_MODEL_IDS = [
+    "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
+    "mlx-community/Qwen3-4B-Thinking-2507-8bit",
+    "lmstudio-community/Qwen2.5-Coder-7B-Instruct-MLX-4bit",
+    "lmstudio-community/Qwen2.5-Coder-3B-Instruct-MLX-8bit",
+    "alexgusevski/LFM2.5-1.2B-Nova-Function-Calling-mlx",
+]
 
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
 
@@ -80,22 +88,43 @@ def _max_record_secs_for_ram(ram_gb: float) -> float | None:
 
 
 def _iter_local_command_model_ids(model_dir: Path) -> list[str]:
-    """Return OMLX-friendly model ids discovered from a local model directory."""
+    """Return a curated list of installed MLX model ids from a local model directory."""
     if not model_dir.is_dir():
         return []
 
-    model_ids: list[str] = []
+    discovered: set[str] = set()
     for child in sorted(model_dir.iterdir(), key=lambda path: path.name.lower()):
         if not child.is_dir():
             continue
-        child_entries = list(child.iterdir())
-        if any(entry.is_file() for entry in child_entries):
-            model_ids.append(child.name)
+        child_entries = sorted(child.iterdir(), key=lambda path: path.name.lower())
+        if _is_local_command_model_leaf(child):
+            discovered.add(child.name)
             continue
-        for grandchild in sorted(child_entries, key=lambda path: path.name.lower()):
-            if grandchild.is_dir():
-                model_ids.append(f"{child.name}/{grandchild.name}")
-    return model_ids
+        for grandchild in child_entries:
+            if _is_local_command_model_leaf(grandchild):
+                discovered.add(f"{child.name}/{grandchild.name}")
+    return [
+        model_id
+        for model_id in _CURATED_LOCAL_COMMAND_MODEL_IDS
+        if model_id in discovered
+    ]
+
+
+def _is_local_command_model_leaf(model_path: Path) -> bool:
+    """Return True when a leaf directory looks like an installed MLX model."""
+    if not model_path.is_dir():
+        return False
+
+    file_names = {
+        entry.name
+        for entry in model_path.iterdir()
+        if entry.is_file()
+    }
+    if "config.json" not in file_names or "tokenizer.json" not in file_names:
+        return False
+    if "model.safetensors" in file_names or "model.safetensors.index.json" in file_names:
+        return True
+    return any(name.endswith(".safetensors") for name in file_names)
 # Recording cap: let 16GB+ local boxes that can run v3 turbo record freely.
 # Keep the 20s cap only for smaller local machines. No cap in sidecar mode.
 _RAM_GB = _get_ram_gb()
@@ -152,6 +181,7 @@ class SpokeAppDelegate(NSObject):
         # Wire tray callbacks on the detector
         self._detector._on_shift_tap = self._on_tray_shift_tap
         self._detector._on_shift_tap_during_hold = self._on_tray_navigate_up
+        self._detector._on_shift_tap_idle = self._on_audio_shift_tap
         self._detector._on_enter_pressed = self._on_tray_enter_pressed
         self._detector._on_tray_delete = self._on_tray_delete_gesture
         self._menubar: MenuBarIcon | None = None
@@ -174,6 +204,11 @@ class SpokeAppDelegate(NSObject):
         self._hold_rejected_during_warmup = False
         self._mic_probe_in_flight = False
 
+        # Segmented Previews state
+        self._transcribed_segments: list[str] = []
+        self._segment_queue: queue.Queue = queue.Queue()
+        self._segment_worker_thread: threading.Thread | None = None
+
         # Command pathway — always enabled, defaults to localhost:8001
         command_url = os.environ.get("SPOKE_COMMAND_URL", _DEFAULT_COMMAND_URL)
         if command_url:
@@ -183,9 +218,9 @@ class SpokeAppDelegate(NSObject):
                 or _DEFAULT_COMMAND_MODEL
             )
             self._command_client = CommandClient(model=self._command_model_id)
-            self._command_model_options = [
-                (self._command_model_id, self._command_model_id, True)
-            ]
+            self._command_model_options = self._seed_command_model_options(
+                self._command_model_id
+            )
             self._command_models_refresh_in_flight = False
             self._command_overlay: TranscriptionOverlay | None = None
             logger.info(
@@ -568,13 +603,21 @@ class SpokeAppDelegate(NSObject):
                 )
             self._overlay.show()
         try:
+            if self._menubar is not None:
+                self._menubar.set_vad_state(True, True)
+            
             def on_vad_state(is_speech: bool):
                 if self._menubar is not None:
                     from Foundation import NSNumber
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "updateVadState:", NSNumber.numberWithBool_(is_speech), False
                     )
-            self._capture.start(amplitude_callback=self._on_amplitude, vad_state_callback=on_vad_state)
+            
+            self._capture.start(
+                amplitude_callback=self._on_amplitude, 
+                vad_state_callback=on_vad_state,
+                segment_callback=self._on_audio_segment
+            )
         except Exception:
             logger.exception("Audio capture failed to start")
             if self._glow is not None:
@@ -592,8 +635,8 @@ class SpokeAppDelegate(NSObject):
         self._preview_session_token = getattr(self, "_preview_session_token", 0) + 1
         self._is_speech = True # Start true for grace period
         self._force_preview_update = False
-        self._is_speech = False
-        self._force_preview_update = False
+        self._transcribed_segments = []
+        self._current_preview_frames = []
         if getattr(self, "_preview_done", None) is not None:
             self._preview_done.clear()
 
@@ -605,6 +648,34 @@ class SpokeAppDelegate(NSObject):
         )
         self._preview_thread.start()
 
+    def _on_audio_segment(self, wav_bytes: bytes) -> None:
+        """Called when a silence boundary is reached. Dispatch for opportunistic transcription."""
+        logger.info("VAD segment received (%d bytes) - dispatching opportunistic transcription", len(wav_bytes))
+        self._segment_queue.put(wav_bytes)
+
+    def _segment_transcribe_worker(self):
+        """Background worker to transcribe audio segments as they arrive."""
+        while True:
+            wav_bytes = self._segment_queue.get()
+            if wav_bytes is None:
+                break
+            try:
+                # Use the fast preview client for opportunistic segments
+                with self._local_inference_context(self._preview_client):
+                    text = self._preview_client.transcribe(wav_bytes)
+                if text:
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "addTranscribedSegment:", text, False
+                    )
+            except Exception:
+                logger.error("Segment transcription failed", exc_info=True)
+
+    def addTranscribedSegment_(self, text: str):
+        """Main thread: add a finished segment to our list."""
+        self._transcribed_segments.append(text)
+        # Force a preview update now that we have a new fixed segment
+        self._force_preview_update = True
+
     def _on_amplitude(self, rms: float) -> None:
         """Called from PortAudio thread — marshal to main thread."""
         from Foundation import NSNumber
@@ -613,15 +684,18 @@ class SpokeAppDelegate(NSObject):
         )
 
     def updateVadState_(self, is_speech_number) -> None:
-        # PyObjC sends an NSNumber, convert to python bool
-        is_speech = bool(is_speech_number.boolValue())
-
+        # Robust conversion: handle NSNumber or raw bool
+        if hasattr(is_speech_number, "boolValue"):
+            is_speech = bool(is_speech_number.boolValue())
+        else:
+            is_speech = bool(is_speech_number)
+        
         # If transitioning from speech to silence, force one last preview update
         if getattr(self, "_is_speech", False) and not is_speech:
             self._force_preview_update = True
-
+            
         self._is_speech = is_speech
-
+        
         if self._menubar is not None:
             self._menubar.set_vad_state(is_speech, self._transcribing or self._capture.is_recording)
 
@@ -772,11 +846,6 @@ class SpokeAppDelegate(NSObject):
             while self._preview_active:
                 loop_start = time.monotonic()
 
-                wav_bytes = self._capture.get_buffer()
-                if not wav_bytes:
-                    time.sleep(0.1 if self._local_mode else 0.2)
-                    continue
-
                 is_speech = getattr(self, "_is_speech", True)
                 force_update = getattr(self, "_force_preview_update", False)
                 if not is_speech and not force_update:
@@ -788,8 +857,28 @@ class SpokeAppDelegate(NSObject):
                 self._force_preview_update = False
 
                 try:
+                    # OPTIMIZATION: only transcribe the NEW audio in the current active segment
+                    if not hasattr(self, "_current_preview_frames"):
+                        self._current_preview_frames = []
+                    
+                    new_frames = self._capture.get_new_frames()
+                    if new_frames.size > 0:
+                        self._current_preview_frames.append(new_frames)
+                    
+                    if not self._current_preview_frames:
+                        continue
+                        
+                    current_wav = self._capture._encode_wav(np.concatenate(self._current_preview_frames))
+                    
                     with self._local_inference_context(self._preview_client):
-                        text = self._preview_client.transcribe(wav_bytes)
+                        partial_text = self._preview_client.transcribe(current_wav)
+                    
+                    # If we just finished a segment, clear our local partial buffer
+                    if force_update:
+                        self._current_preview_frames = []
+                    
+                    # Combine fixed segments with the current live partial
+                    text = " ".join(self._transcribed_segments + [partial_text])
                 except Exception:
                     logger.debug("Preview transcription failed", exc_info=True)
                     time.sleep(0.5)
@@ -812,7 +901,7 @@ class SpokeAppDelegate(NSObject):
 
     def previewTextUpdate_(self, payload) -> None:
         """Main thread: update the overlay with preview transcription text."""
-        if isinstance(payload, dict):
+        if hasattr(payload, "get"):
             token = payload.get("token")
             text = payload.get("text", "")
         else:
@@ -872,6 +961,7 @@ class SpokeAppDelegate(NSObject):
         logger.info("Hold ended — shift=%s enter=%s", shift_held, enter_held)
         self._preview_active = False
         self._preview_cancelled_on_release = True
+        self._segment_queue.put(None)
         wav_bytes = self._capture.stop()
 
         # Short shift-hold (under 800ms of recording) = recall into tray
@@ -1262,6 +1352,18 @@ class SpokeAppDelegate(NSObject):
             logger.info("Shift tap during tray — dismiss")
             self._dismiss_tray()
 
+    def _on_audio_shift_tap(self) -> None:
+        """Shift tap while idle toggles current TTS audibility."""
+        if self._tray_active:
+            return
+        tts = getattr(self, "_tts_client", None)
+        if tts is None:
+            return
+        audible = tts.toggle_audio()
+        logger.info("Idle shift tap — audio target now %s", "on" if audible else "off")
+        if self._menubar is not None:
+            self._menubar.set_status_text("Audio on" if audible else "Audio muted")
+
     def _on_tray_navigate_up(self) -> None:
         """Spacebar held + shift tapped during tray = navigate up (more recent)."""
         if self._tray_active:
@@ -1528,23 +1630,34 @@ class SpokeAppDelegate(NSObject):
         """Main thread: append a streamed token to the command overlay."""
         if payload["token"] != self._transcription_token:
             return
+        overlay = self._command_overlay
         # First content token: invert the thinking timer and update status
         if getattr(self, "_command_first_token", False):
             self._command_first_token = False
-            if self._command_overlay is not None:
-                self._command_overlay.invert_thinking_timer()
+            if overlay is not None:
+                try:
+                    overlay.invert_thinking_timer()
+                except Exception:
+                    logger.exception("Command overlay failed to invert thinking timer")
             if self._menubar is not None:
                 self._menubar.set_status_text("Responding…")
-        if self._command_overlay is not None:
-            self._command_overlay.append_token(payload["text"])
+        if overlay is not None:
+            try:
+                overlay.append_token(payload["text"])
+            except Exception:
+                logger.exception("Command overlay failed to append streamed token")
 
     def commandComplete_(self, payload: dict) -> None:
         """Main thread: command response finished streaming."""
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
-        if self._command_overlay is not None:
-            self._command_overlay.finish()
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay.finish()
+            except Exception:
+                logger.exception("Command overlay finish failed")
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
         # Autoplay response via TTS if enabled — glow hides, overlay breathes with voice
@@ -1553,15 +1666,26 @@ class SpokeAppDelegate(NSObject):
         if response and tts is not None:
             if self._glow is not None:
                 self._glow.hide()
-            if self._command_overlay is not None:
-                self._command_overlay.tts_start()
-            tts.speak_async(
-                response,
-                amplitude_callback=self._on_tts_amplitude,
-                done_callback=lambda: self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "ttsFinished:", None, False
-                ),
-            )
+            if overlay is not None:
+                try:
+                    overlay.tts_start()
+                except Exception:
+                    logger.exception("Command overlay TTS start failed")
+            try:
+                tts.speak_async(
+                    response,
+                    amplitude_callback=self._on_tts_amplitude,
+                    done_callback=lambda: self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "ttsFinished:", None, False
+                    ),
+                )
+            except Exception:
+                logger.exception("Command autoplay failed to start")
+                if overlay is not None:
+                    try:
+                        overlay.tts_stop()
+                    except Exception:
+                        logger.exception("Command overlay TTS stop failed")
         elif self._glow is not None:
             self._glow.hide()
 
@@ -1576,12 +1700,18 @@ class SpokeAppDelegate(NSObject):
         """Main thread: forward TTS amplitude to command overlay."""
         rms = float(rms_number)
         if self._command_overlay is not None:
-            self._command_overlay.update_tts_amplitude(rms)
+            try:
+                self._command_overlay.update_tts_amplitude(rms)
+            except Exception:
+                logger.exception("Command overlay amplitude update failed")
 
     def ttsFinished_(self, _) -> None:
         """Main thread: TTS playback ended — restore overlay opacity."""
         if self._command_overlay is not None:
-            self._command_overlay.tts_stop()
+            try:
+                self._command_overlay.tts_stop()
+            except Exception:
+                logger.exception("Command overlay TTS stop failed")
 
     def commandFailed_(self, payload: dict) -> None:
         """Main thread: show error in the command overlay, then fade."""
@@ -1598,9 +1728,18 @@ class SpokeAppDelegate(NSObject):
         if self._command_overlay is not None:
             if not self._command_overlay._visible:
                 self._sync_command_overlay_brightness(immediate=True)
-                self._command_overlay.show()
-            self._command_overlay.append_token("couldn't reach the model — try again in a moment")
-            self._command_overlay.finish()
+                try:
+                    self._command_overlay.show()
+                except Exception:
+                    logger.exception("Command overlay show failed during error presentation")
+            try:
+                self._command_overlay.append_token("couldn't reach the model — try again in a moment")
+            except Exception:
+                logger.exception("Command overlay append failed during error presentation")
+            try:
+                self._command_overlay.finish()
+            except Exception:
+                logger.exception("Command overlay finish failed during error presentation")
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
 
@@ -2124,27 +2263,51 @@ class SpokeAppDelegate(NSObject):
     def _discover_command_models(
         self, selected_model: str
     ) -> list[tuple[str, str, bool]]:
-        model_ids: list[str] = []
+        server_model_ids: list[str] = []
         if self._command_client is not None:
             try:
-                model_ids = self._command_client.list_models()
+                server_model_ids = self._command_client.list_models()
             except Exception:
                 logger.warning("Failed to fetch assistant models from OMLX", exc_info=True)
         local_model_dir = Path(
             os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
         ).expanduser()
         local_model_ids = _iter_local_command_model_ids(local_model_dir)
-        model_ids.extend(local_model_ids)
-        if selected_model and selected_model not in model_ids:
-            model_ids.insert(0, selected_model)
+        if local_model_ids:
+            local_model_set = set(local_model_ids)
+            model_ids = [
+                model_id
+                for model_id in server_model_ids
+                if model_id in local_model_set
+            ]
+            model_ids.extend(
+                model_id for model_id in local_model_ids if model_id not in model_ids
+            )
+        else:
+            model_ids = server_model_ids
         seen: set[str] = set()
         options = []
         for model_id in model_ids:
             if not model_id or model_id in seen:
                 continue
             seen.add(model_id)
-            options.append((model_id, model_id, True))
+            options.append((model_id, model_id, model_id == selected_model))
         return options
+
+    def _seed_command_model_options(
+        self, selected_model: str
+    ) -> list[tuple[str, str, bool]]:
+        """Seed the Assistant menu from local disk without hitting /v1/models."""
+        local_model_dir = Path(
+            os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
+        ).expanduser()
+        local_model_ids = _iter_local_command_model_ids(local_model_dir)
+        if local_model_ids:
+            return [
+                (model_id, model_id, model_id == selected_model)
+                for model_id in local_model_ids
+            ]
+        return [(selected_model, selected_model, True)] if selected_model else []
 
     def _refresh_command_model_options_async(self) -> None:
         if self._command_client is None or self._command_models_refresh_in_flight:
@@ -2167,10 +2330,7 @@ class SpokeAppDelegate(NSObject):
 
     def commandModelsDiscovered_(self, payload: dict) -> None:
         self._command_models_refresh_in_flight = False
-        current_model = self._command_model_id
         options = payload.get("options") or []
-        if current_model not in [model_id for model_id, _, _ in options]:
-            options = [(current_model, current_model, True), *options]
         self._command_model_options = options
         if self._menubar is not None:
             self._menubar.refresh_menu()
