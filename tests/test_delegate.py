@@ -2829,8 +2829,10 @@ class TestShortShiftHold:
         assert d._tray_index == 0
         d._overlay.show_tray.assert_called()
 
-    def test_short_shift_enter_hold_recalls_command_overlay(self, main_module, monkeypatch):
-        """When both Shift and Enter were used, Enter should win for assistant recall."""
+    def test_short_shift_enter_hold_recalls_tray_not_command_overlay(
+        self, main_module, monkeypatch
+    ):
+        """Shift+Enter short empty hold should stay on the tray path, not toggle assistant UI."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b"audio"
         d._record_start_time = time.monotonic() - 0.1  # 100ms
@@ -2841,17 +2843,15 @@ class TestShortShiftHold:
 
         d._on_hold_end(shift_held=True, enter_held=True)
 
-        assert d._tray_active is False
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.set_utterance.assert_called_once_with("hello")
-        d._command_overlay.append_token.assert_called()
-        d._command_overlay.finish.assert_called_once()
-        d._overlay.show_tray.assert_not_called()
+        assert d._tray_active is True
+        d._command_overlay.show.assert_not_called()
+        d._command_overlay.finish.assert_not_called()
+        d._overlay.show_tray.assert_called_once()
 
     def test_short_shift_enter_hold_dismisses_visible_command_overlay(
         self, main_module, monkeypatch
     ):
-        """The same combined gesture should dismiss the assistant overlay with Shift still held."""
+        """Shift+Enter short empty hold should not dismiss a visible assistant overlay."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b"audio"
         d._record_start_time = time.monotonic() - 0.1  # 100ms
@@ -2863,17 +2863,17 @@ class TestShortShiftHold:
 
         d._on_hold_end(shift_held=True, enter_held=True)
 
-        assert d._tray_active is False
-        d._command_overlay.cancel_dismiss.assert_called_once()
-        assert d._detector.command_overlay_active is False
-        d._overlay.show_tray.assert_not_called()
+        assert d._tray_active is True
+        d._command_overlay.cancel_dismiss.assert_not_called()
+        assert d._detector.command_overlay_active is True
+        d._overlay.show_tray.assert_called_once()
 
 
 class TestCommandOverlayDismissRecallCycle:
     """Test the dismiss → recall → dismiss cycle using command_overlay_active flag."""
 
-    def test_enter_empty_recalls_when_overlay_not_active(self, main_module, monkeypatch):
-        """Enter+empty recording should recall when command_overlay_active is False."""
+    def test_enter_empty_is_noop_when_overlay_not_active(self, main_module, monkeypatch):
+        """Bare Enter+empty recording should not recall when the overlay is hidden."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b""
         d._command_client = MagicMock()
@@ -2883,9 +2883,9 @@ class TestCommandOverlayDismissRecallCycle:
 
         d._on_hold_end(shift_held=False, enter_held=True)
 
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.finish.assert_called_once()
-        assert d._detector.command_overlay_active is True
+        d._command_overlay.show.assert_not_called()
+        d._command_overlay.finish.assert_not_called()
+        assert d._detector.command_overlay_active is False
 
     def test_enter_empty_dismisses_when_overlay_active(self, main_module, monkeypatch):
         """Enter+empty recording should dismiss when command_overlay_active is True."""
@@ -2901,8 +2901,8 @@ class TestCommandOverlayDismissRecallCycle:
         d._command_overlay.cancel_dismiss.assert_called_once()
         assert d._detector.command_overlay_active is False
 
-    def test_enter_empty_recall_after_dismiss_cycle(self, main_module, monkeypatch):
-        """Full cycle: dismiss then recall should both work using the flag."""
+    def test_enter_empty_after_dismiss_cycle_stays_hidden(self, main_module, monkeypatch):
+        """After bare Enter dismisses, a second bare Enter empty tap should stay hidden."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b""
         d._command_client = MagicMock()
@@ -2915,13 +2915,12 @@ class TestCommandOverlayDismissRecallCycle:
         assert d._detector.command_overlay_active is False
         d._command_overlay.cancel_dismiss.assert_called_once()
 
-        # Step 2: recall (flag is False now, _visible may still be True from animation)
+        # Step 2: no recall (flag is False now, _visible may still be True from animation)
         d._command_overlay.reset_mock()
-        # _visible is still True (animation running) but flag is False — should recall
         d._on_hold_end(shift_held=False, enter_held=True)
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.finish.assert_called_once()
-        assert d._detector.command_overlay_active is True
+        d._command_overlay.show.assert_not_called()
+        d._command_overlay.finish.assert_not_called()
+        assert d._detector.command_overlay_active is False
 
     def test_empty_tap_recall_blocked_after_instant_dismiss(self, main_module, monkeypatch):
         """Plain empty tap should NOT recall if instant dismiss just fired on the same tap."""
@@ -3006,8 +3005,8 @@ class TestCommandOverlayDismissRecallCycle:
 
         assert d._detector.command_overlay_active is True
 
-    def test_four_step_dismiss_recall_cycle(self, main_module, monkeypatch):
-        """4-step cycle: dismiss → recall → dismiss → recall with enter_held."""
+    def test_repeated_enter_empty_after_dismiss_stays_hidden(self, main_module, monkeypatch):
+        """Repeated bare Enter empty taps should not re-open assistant history."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b""
         d._command_client = MagicMock()
@@ -3020,25 +3019,19 @@ class TestCommandOverlayDismissRecallCycle:
         assert d._detector.command_overlay_active is False
         d._command_overlay.cancel_dismiss.assert_called_once()
 
-        # Step 2: recall (active=False → True)
-        d._command_overlay.reset_mock()
-        d._on_hold_end(shift_held=False, enter_held=True)
-        assert d._detector.command_overlay_active is True
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.finish.assert_called_once()
-
-        # Step 3: dismiss again (active=True → False)
+        # Step 2: stays hidden
         d._command_overlay.reset_mock()
         d._on_hold_end(shift_held=False, enter_held=True)
         assert d._detector.command_overlay_active is False
-        d._command_overlay.cancel_dismiss.assert_called_once()
+        d._command_overlay.show.assert_not_called()
+        d._command_overlay.finish.assert_not_called()
 
-        # Step 4: recall again (active=False → True)
+        # Step 3: still stays hidden
         d._command_overlay.reset_mock()
         d._on_hold_end(shift_held=False, enter_held=True)
-        assert d._detector.command_overlay_active is True
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.finish.assert_called_once()
+        assert d._detector.command_overlay_active is False
+        d._command_overlay.show.assert_not_called()
+        d._command_overlay.finish.assert_not_called()
 
     def test_instant_dismiss_then_hold_end_no_recall(self, main_module, monkeypatch):
         """Single-gesture simulation: instant dismiss sets _just_dismissed, then
@@ -3060,14 +3053,15 @@ class TestCommandOverlayDismissRecallCycle:
         # Must not recall — _just_dismissed blocks it
         d._command_overlay.show.assert_not_called()
 
-    def test_hold_start_then_empty_recording_recalls_when_history_exists(
+    def test_hold_start_then_empty_recording_does_not_recall_without_overlay(
         self, main_module, monkeypatch
     ):
-        """New gesture after dismiss → empty recording → recall when history exists.
+        """New bare-Enter empty recording should stay hidden when no overlay is up.
 
         _just_dismissed is cleared by the event tap on spacebar keyDown when the
         overlay is not active (the else branch).  _on_hold_start preserves it for
-        the same-tap case but it should already be False for a new gesture.
+        the same-tap case but it should already be False for a new gesture. That
+        still must not turn a bare Enter empty recording into assistant recall.
         """
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b""
@@ -3085,11 +3079,11 @@ class TestCommandOverlayDismissRecallCycle:
         assert d._detector.command_overlay_active is False
         assert d._detector._command_overlay_just_dismissed is False
 
-        # Now empty recording with enter_held: should recall
+        # Now empty recording with enter_held: should remain hidden
         d._on_hold_end(shift_held=False, enter_held=True)
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.finish.assert_called_once()
-        assert d._detector.command_overlay_active is True
+        d._command_overlay.show.assert_not_called()
+        d._command_overlay.finish.assert_not_called()
+        assert d._detector.command_overlay_active is False
 
     def test_enter_spacebar_while_overlay_active_dismisses(self, main_module, monkeypatch):
         """Enter+spacebar tap while overlay is active should dismiss via enter_held path."""

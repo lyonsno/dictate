@@ -1013,38 +1013,9 @@ class SpokeAppDelegate(NSObject):
             if self._glow is not None:
                 self._glow.hide()
 
-            if enter_held and self._command_client is not None:
-                # Enter + empty recording = toggle last assistant response.
-                # Use command_overlay_active (our flag) not _visible (animation state)
-                # to avoid re-dismissing during the dismiss animation.
-                self._detector._command_overlay_just_dismissed = False
-                if self._detector.command_overlay_active:
-                    # Already showing — dismiss it
-                    logger.info("Enter+empty — dismissing command overlay")
-                    if self._command_overlay is not None:
-                        self._command_overlay.cancel_dismiss()
-                    self._detector.command_overlay_active = False
-                    logger.info("command_overlay_active -> False (enter+empty dismiss)")
-                else:
-                    # Not showing — recall last response
-                    history = self._command_client.history
-                    if history:
-                        last_utterance, last_response = history[-1]
-                        logger.info("Enter+empty — recalling last response")
-                        if self._command_overlay is not None:
-                            try:
-                                self._command_overlay.show()
-                                self._command_overlay.set_utterance(last_utterance)
-                                self._command_overlay.append_token(last_response)
-                                self._command_overlay.finish()
-                                self._detector.command_overlay_active = True
-                                logger.info("command_overlay_active -> True (enter+empty recall)")
-                            except Exception:
-                                logger.exception("Recall overlay failed")
-                    else:
-                        logger.info("Enter+empty — no history to recall")
-            elif shift_held:
-                # Shift + empty recording = recall tray
+            if shift_held:
+                # Shift owns the empty-audio review path. Combined Shift+Enter
+                # should not toggle assistant overlay visibility.
                 if self._tray_stack:
                     logger.info("Shift+empty — recalling tray (stack has %d entries)", len(self._tray_stack))
                     self._tray_active = True
@@ -1054,6 +1025,22 @@ class SpokeAppDelegate(NSObject):
                     return
                 else:
                     logger.info("Shift+empty — no tray entries to recall")
+            elif enter_held and self._command_client is not None:
+                # Bare Enter + empty recording only dismisses an already-visible
+                # assistant overlay. Do not recall history here; assistant
+                # surfaces should come back only after a real command send.
+                # Use command_overlay_active (our flag) not _visible (animation
+                # state) to avoid re-dismissing during the dismiss animation.
+                self._detector._command_overlay_just_dismissed = False
+                if self._detector.command_overlay_active:
+                    # Already showing — dismiss it
+                    logger.info("Enter+empty — dismissing command overlay")
+                    if self._command_overlay is not None:
+                        self._command_overlay.cancel_dismiss()
+                    self._detector.command_overlay_active = False
+                    logger.info("command_overlay_active -> False (enter+empty dismiss)")
+                else:
+                    logger.info("Enter+empty — overlay hidden; leaving it hidden")
             else:
                 # Only dismiss if the overlay wasn't already dismissed by the
                 # instant-press handler (which clears command_overlay_active).
