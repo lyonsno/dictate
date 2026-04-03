@@ -526,11 +526,6 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             if getattr(det, "_pending_release_active", False):
                 det._finish_pending_release(enter_held=True)
                 return None
-            if det._state == _State.LATCHED:
-                det._cancel_safety_timer()
-                det._state = _State.IDLE
-                det._on_hold_end(shift_held=False, enter_held=True)
-                return None
             if det._state in (_State.WAITING, _State.RECORDING):
                 det._enter_latched = True
                 return None  # suppress enter while space is held
