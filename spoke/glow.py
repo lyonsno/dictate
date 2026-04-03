@@ -68,6 +68,37 @@ _DISPLAY_CORNER_RADII: dict[tuple[int, int], tuple[float, float]] = {
     # 14" MacBook Pro (2021+): 3024×1964 native
     (3024, 1964): (10.0, 6.0),  # start from 16" values, tune visually
 }
+_DISPLAY_NOTCH_PROFILE: dict[tuple[int, int], dict[str, float]] = {
+    # Exact top-edge notch row profiles extracted from Apple's official
+    # MacBook Pro M4 bezel PSD resources after flattening the visible opening.
+    # We use M4 as the public-source baseline for current 14"/16" MacBook Pro
+    # panels because it is closer to the local M2 Pro hardware than the newer
+    # M5 package, and the big-box 16" machine is itself M4.
+    # Values are the center-gap widths, in native pixels, for each row from
+    # the top edge of the opening down through the 64 px notch height.
+    (3024, 1964): {
+        "profile_widths": (
+            386, 380, 376, 376, 374, 372, 372, 372, 372, 372, 372, 370, 370,
+            370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370,
+            370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370,
+            370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 368, 368, 366,
+            366, 364, 364, 362, 360, 358, 356, 354, 352, 348, 344, 336,
+        ),
+        "bottom_radius": 0.0,
+        "shoulder_smoothing": 0.0,
+    },
+    (3456, 2234): {
+        "profile_widths": (
+            386, 380, 378, 376, 374, 372, 372, 372, 372, 372, 372, 372, 372,
+            372, 372, 372, 372, 372, 372, 372, 372, 372, 372, 372, 372, 372,
+            372, 372, 372, 372, 372, 372, 372, 372, 372, 372, 372, 372, 372,
+            372, 372, 372, 372, 370, 370, 370, 370, 370, 370, 368, 368, 368,
+            366, 366, 364, 362, 360, 360, 356, 354, 352, 348, 344, 336,
+        ),
+        "bottom_radius": 0.0,
+        "shoulder_smoothing": 0.0,
+    },
+}
 _CORNER_RADIUS_TOP_DEFAULT = 10.0
 _CORNER_RADIUS_BOTTOM_DEFAULT = 6.0
 
@@ -288,14 +319,21 @@ def _display_shape_geometry(screen, width_pt: float, height_pt: float, scale: fl
     notch_height = max(height_pt - notch_base_y, 0.0)
     if notch_width <= 0.0 or notch_height <= 0.0:
         return geometry
+    notch_profile = _DISPLAY_NOTCH_PROFILE.get((pixel_width, pixel_height), {})
+    notch_bottom_r = notch_profile.get("bottom_radius", _NOTCH_BOTTOM_RADIUS)
+    notch_shoulder = notch_profile.get("shoulder_smoothing", _NOTCH_SHOULDER_SMOOTHING)
 
     geometry["notch"] = {
         "x": left_max_x * scale,
         "y": notch_base_y * scale,
         "width": notch_width * scale,
         "height": notch_height * scale,
-        "bottom_radius": min(notch_height * scale * 0.45, _NOTCH_BOTTOM_RADIUS * scale),
-        "shoulder_smoothing": _NOTCH_SHOULDER_SMOOTHING * scale,
+        "bottom_radius": min(notch_height * scale * 0.45, notch_bottom_r * scale),
+        "shoulder_smoothing": notch_shoulder * scale,
+        "body_inset": max(notch_profile.get("body_inset", 0.0), 0.0) * scale,
+        "top_cap_height": max(notch_profile.get("top_cap_height", 0.0), 0.0) * scale,
+        "top_cap_bottom_radius": max(notch_profile.get("top_cap_bottom_radius", 0.0), 0.0) * scale,
+        "profile_widths": notch_profile.get("profile_widths"),
     }
     return geometry
 
@@ -307,6 +345,7 @@ def _asymmetric_rounded_rect_sdf(
     height: float,
     top_radius: float,
     bottom_radius: float,
+    corner_smoothing: float = 24.0,
 ) :
     import numpy as np
 
@@ -316,14 +355,83 @@ def _asymmetric_rounded_rect_sdf(
     qx = np.abs(x) - (half_width - radii)
     qy = np.abs(y) - (half_height - radii)
     outside = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0))
-    
-    # Smooth the inner corner ridge where the negative distances meet
-    corner_smoothing = 24.0
+
+    if corner_smoothing <= 0.0:
+        inside = np.minimum(np.maximum(qx, qy), 0.0)
+        return outside + inside - radii
+
+    # Smooth the inner corner ridge where the negative distances meet.
     seam = np.maximum(corner_smoothing - np.abs(qx - qy), 0.0)
     smoothed_max = np.maximum(qx, qy) + (seam * seam) * (0.25 / corner_smoothing)
-    
     inside = np.minimum(smoothed_max, 0.0)
     return outside + inside - radii
+
+
+def _notch_signed_distance_field(centered_x, centered_y, notch: dict):
+    import numpy as np
+
+    width = notch["width"]
+    height = notch["height"]
+    profile_widths = notch.get("profile_widths")
+    if profile_widths:
+        profile = np.asarray(profile_widths, dtype=np.float32)
+        target_height = max(int(round(height)), 1)
+        if profile.size != target_height:
+            src_rows = np.arange(profile.size, dtype=np.float32)
+            dst_rows = np.linspace(0.0, profile.size - 1.0, num=target_height, dtype=np.float32)
+            profile = np.interp(dst_rows, src_rows, profile).astype(np.float32)
+
+        row_from_top = (height * 0.5) - centered_y - 0.5
+        sample_rows = np.clip(row_from_top, 0.0, float(target_height - 1))
+        half_widths = np.interp(
+            sample_rows,
+            np.arange(target_height, dtype=np.float32),
+            profile * 0.5,
+        ).astype(np.float32, copy=False)
+        horizontal_signed = np.abs(centered_x) - half_widths
+        vertical_signed = np.maximum(centered_y - (height * 0.5), (-height * 0.5) - centered_y)
+        return np.maximum(horizontal_signed, vertical_signed)
+
+    body_inset = max(notch.get("body_inset", 0.0), 0.0)
+    top_cap_height = min(max(notch.get("top_cap_height", 0.0), 0.0), height)
+    top_cap_bottom_radius = max(notch.get("top_cap_bottom_radius", 0.0), 0.0)
+
+    notch_signed = _asymmetric_rounded_rect_sdf(
+        centered_x,
+        centered_y,
+        width,
+        height,
+        0.0,
+        notch["bottom_radius"],
+        corner_smoothing=0.0,
+    )
+    if body_inset <= 0.0 or top_cap_height <= 0.0 or top_cap_height >= height:
+        return notch_signed
+
+    body_width = max(width - body_inset * 2.0, 1.0)
+    body_height = max(height - top_cap_height, 1.0)
+    top_cap_center_y = height * 0.5 - top_cap_height * 0.5
+    body_center_y = -top_cap_height * 0.5
+
+    top_cap_signed = _asymmetric_rounded_rect_sdf(
+        centered_x,
+        centered_y - top_cap_center_y,
+        width,
+        top_cap_height,
+        0.0,
+        top_cap_bottom_radius,
+        corner_smoothing=0.0,
+    )
+    body_signed = _asymmetric_rounded_rect_sdf(
+        centered_x,
+        centered_y - body_center_y,
+        body_width,
+        body_height,
+        0.0,
+        notch["bottom_radius"],
+        corner_smoothing=0.0,
+    )
+    return np.minimum(top_cap_signed, body_signed)
 
 
 def _display_signed_distance_field(geometry: dict):
@@ -352,13 +460,10 @@ def _display_signed_distance_field(geometry: dict):
 
     notch_center_x = notch["x"] + notch["width"] * 0.5 - width * 0.5
     notch_center_y = notch["y"] + notch["height"] * 0.5 - height * 0.5
-    notch_signed = _asymmetric_rounded_rect_sdf(
+    notch_signed = _notch_signed_distance_field(
         centered_x - notch_center_x,
         centered_y - notch_center_y,
-        notch["width"],
-        notch["height"],
-        0.0,
-        notch["bottom_radius"],
+        notch,
     )
     shoulder_smoothing = max(notch.get("shoulder_smoothing", 0.0), 0.0)
     if shoulder_smoothing <= 0.0:
