@@ -54,6 +54,7 @@ from .launch_targets import (
 )
 from .menubar import MenuBarIcon
 from .overlay import TranscriptionOverlay
+from .tintilla import LayerVisibilityState, TintillaPanelController
 from .transcribe import TranscriptionClient
 from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
 from .transcribe_parakeet import ParakeetCoreMLClient, _PARAKEET_MODEL_ID
@@ -351,6 +352,8 @@ class SpokeAppDelegate(NSObject):
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
+        self._visual_layer_state = LayerVisibilityState()
+        self._tintilla_panel_controller: TintillaPanelController | None = None
         self._transcribing = False
         self._transcription_token = 0
         self._cancel_spring_active = False
@@ -470,6 +473,10 @@ class SpokeAppDelegate(NSObject):
     # ── NSApplication delegate ──────────────────────────────
 
     def applicationDidFinishLaunching_(self, notification) -> None:
+        if not hasattr(self, "_visual_layer_state") or self._visual_layer_state is None:
+            self._visual_layer_state = LayerVisibilityState()
+        if not hasattr(self, "_tintilla_panel_controller"):
+            self._tintilla_panel_controller = None
         _record_runtime_phase(
             "app.did_finish_launching",
             local_mode=self._local_mode,
@@ -484,15 +491,18 @@ class SpokeAppDelegate(NSObject):
         self._menubar.setup()
 
         self._glow = GlowOverlay.alloc().initWithScreen_(None)
+        self._glow.set_visual_layer_state(self._visual_layer_state)
         self._glow.setup()
 
         self._overlay = TranscriptionOverlay.alloc().initWithScreen_(None)
+        self._overlay.set_visual_layer_state(self._visual_layer_state)
         self._overlay.setup()
 
         # Command output overlay — separate surface for command responses
         if self._command_client is not None:
             from .command_overlay import CommandOverlay
             self._command_overlay = CommandOverlay.alloc().initWithScreen_(None)
+            self._command_overlay.set_visual_layer_state(self._visual_layer_state)
             self._command_overlay.setup()
             self._command_overlay._on_cancel_spring_threshold = self._on_cancel_spring_threshold
             self._refresh_command_model_options_async()
@@ -2622,6 +2632,12 @@ class SpokeAppDelegate(NSObject):
                         ),
                     ],
                 }
+            state["vision_quest"] = {
+                "title": "Vision Quest",
+                "items": [
+                    ("show_tintilla", "Show Tintilla Panel", False, True),
+                ],
+            }
             tts = getattr(self, "_tts_client", None)
             tts_backend = getattr(self, "_tts_backend", "local")
             tts_voice_pref = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE", "")
@@ -2693,6 +2709,10 @@ class SpokeAppDelegate(NSObject):
             return
         if role == "local_whisper":
             self._toggle_local_whisper_setting(model_id)
+            return
+        if role == "vision_quest":
+            if model_id == "show_tintilla":
+                self._show_tintilla_panel()
             return
         if role not in {"preview", "transcription"}:
             return
@@ -2778,6 +2798,16 @@ class SpokeAppDelegate(NSObject):
             return
         if self._menubar is not None:
             self._menubar.set_status_text(f"Switching to {target_id}…")
+
+    def _show_tintilla_panel(self) -> None:
+        controller = getattr(self, "_tintilla_panel_controller", None)
+        if controller is None:
+            controller = TintillaPanelController.alloc().initWithState_(self._visual_layer_state)
+            controller.setup()
+            self._tintilla_panel_controller = controller
+        controller.show()
+        if self._menubar is not None:
+            self._menubar.set_status_text("Tintilla ready")
 
     def _apply_model_selection(self, preview_model: str, transcription_model: str) -> None:
         if not self._model_allowed(preview_model):

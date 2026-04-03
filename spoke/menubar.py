@@ -316,6 +316,16 @@ class MenuBarIcon(NSObject):
                         )
                     )
                     added_menu_section = True
+                vision_quest = model_state.get("vision_quest")
+                if vision_quest:
+                    menu.addItem_(
+                        self._build_toggle_submenu_item(
+                            vision_quest["title"],
+                            "vision_quest",
+                            vision_quest["items"],
+                        )
+                    )
+                    added_menu_section = True
             elif model_state:
                 for model_id, label, enabled in model_state:
                     item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(

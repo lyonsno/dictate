@@ -36,6 +36,7 @@ from Foundation import NSMakeRect, NSObject, NSTimer
 from Quartz import CAGradientLayer, CALayer, CAShapeLayer, CGPathCreateWithRoundedRect, CGAffineTransformIdentity
 
 from .dedup import ontology_term_spans
+from .tintilla import PREVIEW_FILL_LAYER_ID
 
 logger = logging.getLogger(__name__)
 
@@ -372,6 +373,7 @@ class TranscriptionOverlay(NSObject):
         self._brightness_target = 0.0
         self._fill_override_rgb: tuple[float, float, float] | None = None
         self._fill_override_opacity: float | None = None
+        self._visual_layer_state = None
 
         # Recovery mode state
         self._recovery_mode = False
@@ -385,6 +387,26 @@ class TranscriptionOverlay(NSObject):
         self._on_insert_callback = None
         self._on_clipboard_toggle_callback = None
         return self
+
+    def set_visual_layer_state(self, state) -> None:
+        old_state = getattr(self, "_visual_layer_state", None)
+        if old_state is state:
+            return
+        if old_state is not None and hasattr(old_state, "remove_listener"):
+            old_state.remove_listener(self._on_visual_layer_state_change)
+        self._visual_layer_state = state
+        if state is not None and hasattr(state, "add_listener"):
+            state.add_listener(self._on_visual_layer_state_change)
+        self._apply_visual_layer_state()
+
+    def _on_visual_layer_state_change(self, state) -> None:
+        self._apply_visual_layer_state()
+
+    def _apply_visual_layer_state(self) -> None:
+        if not hasattr(self, "_fill_layer") or self._fill_layer is None:
+            return
+        state = getattr(self, "_visual_layer_state", None)
+        self._fill_layer.setHidden_(False if state is None else not state.is_visible(PREVIEW_FILL_LAYER_ID))
 
     def setup(self) -> None:
         """Create the overlay window."""
@@ -451,6 +473,7 @@ class TranscriptionOverlay(NSObject):
 
         # Build initial SDF fill image
         self._apply_ridge_masks(w, h)
+        self._apply_visual_layer_state()
 
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
 

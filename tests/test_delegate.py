@@ -1001,6 +1001,21 @@ class TestDualModelConfiguration:
             ],
         }
 
+    def test_handle_model_menu_none_exposes_vision_quest_panel_action(
+        self, main_module, monkeypatch
+    ):
+        """Vision Quest should advertise a Tintilla opener in the live menu state."""
+        d = _make_delegate(main_module, monkeypatch)
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["vision_quest"] == {
+            "title": "Vision Quest",
+            "items": [
+                ("show_tintilla", "Show Tintilla Panel", False, True),
+            ],
+        }
+
     def test_selecting_launch_target_persists_choice_and_invokes_helper(
         self, main_module, monkeypatch
     ):
@@ -1011,6 +1026,18 @@ class TestDualModelConfiguration:
         d._handle_model_menu_action(("launch_target", "smoke"))
 
         d._apply_launch_target_selection.assert_called_once_with("smoke")
+
+    def test_selecting_vision_quest_panel_action_shows_tintilla_panel(
+        self, main_module, monkeypatch
+    ):
+        """The Vision Quest menu action should open the floating Tintilla panel."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._show_tintilla_panel = MagicMock()
+
+        d._handle_model_menu_action(("vision_quest", "show_tintilla"))
+
+        d._show_tintilla_panel.assert_called_once_with()
+
     def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
         self, main_module, monkeypatch
     ):

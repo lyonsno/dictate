@@ -27,8 +27,27 @@ from Quartz import (
     CALayer,
     CAMediaTimingFunction,
 )
+from .tintilla import (
+    SCREEN_GLOW_CORE_LAYER_ID,
+    SCREEN_GLOW_TIGHT_BLOOM_LAYER_ID,
+    SCREEN_GLOW_WIDE_BLOOM_LAYER_ID,
+    SCREEN_VIGNETTE_CORE_LAYER_ID,
+    SCREEN_VIGNETTE_MID_LAYER_ID,
+    SCREEN_VIGNETTE_TAIL_LAYER_ID,
+)
 
 logger = logging.getLogger(__name__)
+
+_GLOW_LAYER_IDS = [
+    SCREEN_GLOW_CORE_LAYER_ID,
+    SCREEN_GLOW_TIGHT_BLOOM_LAYER_ID,
+    SCREEN_GLOW_WIDE_BLOOM_LAYER_ID,
+]
+_VIGNETTE_LAYER_IDS = [
+    SCREEN_VIGNETTE_CORE_LAYER_ID,
+    SCREEN_VIGNETTE_MID_LAYER_ID,
+    SCREEN_VIGNETTE_TAIL_LAYER_ID,
+]
 
 
 def _scale_color_saturation(
@@ -548,7 +567,31 @@ class GlowOverlay(NSObject):
         self._glow_peak_target = _GLOW_PEAK_TARGET
         self._brightness_timer = None
         self._brightness = 0.5
+        self._visual_layer_state = None
         return self
+
+    def set_visual_layer_state(self, state) -> None:
+        old_state = getattr(self, "_visual_layer_state", None)
+        if old_state is state:
+            return
+        if old_state is not None and hasattr(old_state, "remove_listener"):
+            old_state.remove_listener(self._on_visual_layer_state_change)
+        self._visual_layer_state = state
+        if state is not None and hasattr(state, "add_listener"):
+            state.add_listener(self._on_visual_layer_state_change)
+        self._apply_visual_layer_state()
+
+    def _on_visual_layer_state_change(self, state) -> None:
+        self._apply_visual_layer_state()
+
+    def _apply_visual_layer_state(self) -> None:
+        state = getattr(self, "_visual_layer_state", None)
+        if hasattr(self, "_glow_pass_layers"):
+            for layer_id, entry in zip(_GLOW_LAYER_IDS, self._glow_pass_layers):
+                entry["layer"].setHidden_(False if state is None else not state.is_visible(layer_id))
+        if hasattr(self, "_vignette_pass_layers"):
+            for layer_id, entry in zip(_VIGNETTE_LAYER_IDS, self._vignette_pass_layers):
+                entry["layer"].setHidden_(False if state is None else not state.is_visible(layer_id))
 
     def _cancel_pending_hide(self) -> None:
         if self._hide_timer is not None:
@@ -643,6 +686,7 @@ class GlowOverlay(NSObject):
 
         self._vignette_pass_layers = vignette_pass_layers
         self._apply_glow_color(_GLOW_COLOR)
+        self._apply_visual_layer_state()
         content.layer().addSublayer_(self._glow_layer)
         content.layer().addSublayer_(self._vignette_layer)
         logger.info("Glow overlay created (%.0fx%.0f, border=%.0f, shadow=%.0f)",

@@ -99,6 +99,7 @@ def _make_fake_appkit():
         "NSAlert",
         "NSApplication",
         "NSBezierPath",
+        "NSButton",
         "NSColor",
         "NSImage",
         "NSMenu",
@@ -129,9 +130,15 @@ def _make_fake_appkit():
     a.NSPanel = MagicMock()
     a.NSWorkspace = MagicMock()
     a.NSWindowStyleMaskNonactivatingPanel = 128
+    a.NSWindowStyleMaskTitled = 1 << 0
+    a.NSWindowStyleMaskClosable = 1 << 1
     a.NSWindowCollectionBehaviorCanJoinAllSpaces = 1 << 0
     a.NSWindowCollectionBehaviorFullScreenAuxiliary = 1 << 8
     a.NSWindowCollectionBehaviorStationary = 1 << 4
+    a.NSFloatingWindowLevel = 3
+    a.NSControlStateValueOn = 1
+    a.NSControlStateValueOff = 0
+    a.NSSwitchButton = 3
     return a
 
 

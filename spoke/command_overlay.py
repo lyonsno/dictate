@@ -33,6 +33,7 @@ from AppKit import (
 )
 from Foundation import NSMakeRect, NSObject, NSTimer
 from Quartz import CALayer, CAShapeLayer, CGPathCreateWithRoundedRect
+from .tintilla import COMMAND_FILL_LAYER_ID
 
 logger = logging.getLogger(__name__)
 
@@ -221,8 +222,29 @@ class CommandOverlay(NSObject):
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
         self._brightness_target = 0.0
+        self._visual_layer_state = None
 
         return self
+
+    def set_visual_layer_state(self, state) -> None:
+        old_state = getattr(self, "_visual_layer_state", None)
+        if old_state is state:
+            return
+        if old_state is not None and hasattr(old_state, "remove_listener"):
+            old_state.remove_listener(self._on_visual_layer_state_change)
+        self._visual_layer_state = state
+        if state is not None and hasattr(state, "add_listener"):
+            state.add_listener(self._on_visual_layer_state_change)
+        self._apply_visual_layer_state()
+
+    def _on_visual_layer_state_change(self, state) -> None:
+        self._apply_visual_layer_state()
+
+    def _apply_visual_layer_state(self) -> None:
+        if not hasattr(self, "_fill_layer") or self._fill_layer is None:
+            return
+        state = getattr(self, "_visual_layer_state", None)
+        self._fill_layer.setHidden_(False if state is None else not state.is_visible(COMMAND_FILL_LAYER_ID))
 
     def setup(self) -> None:
         """Create the command overlay window."""
@@ -279,6 +301,7 @@ class CommandOverlay(NSObject):
         self._fill_layer.setContentsGravity_("resize")
 
         self._apply_ridge_masks(w, h)
+        self._apply_visual_layer_state()
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
 
         # Cancel spring tint layer — sits above fill, masked to the same SDF shape
