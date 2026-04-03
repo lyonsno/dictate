@@ -171,7 +171,7 @@ def test_pass_composition_matches_source_over_alpha_math(mock_pyobjc):
 
 
 def test_split_precision_compare_uses_legacy_left_and_current_right(mock_pyobjc):
-    """Split-compare payload should show legacy left, a divider, and highlighted current on the right."""
+    """Split-compare payload should show legacy left, a divider, and current on the right."""
     sys.modules.pop("spoke.glow", None)
     mod = importlib.import_module("spoke.glow")
     try:
@@ -188,7 +188,24 @@ def test_split_precision_compare_uses_legacy_left_and_current_right(mock_pyobjc)
 
         assert split[0, 0].tolist() == [1, 1, 1, 1]
         assert split[0, 1].tolist() == [255, 255, 255, 255]
-        assert split[0, 2, 1] > current[0, 2, 1]
-        assert split[0, 3, 1] > current[0, 3, 1]
+        assert split[0, 2].tolist() == [255, 255, 255, 255]
+        assert split[0, 3].tolist() == [14, 14, 14, 14]
+    finally:
+        sys.modules.pop("spoke.glow", None)
+
+
+def test_diagnostic_alpha_lift_brightens_faint_premultiplied_tails(mock_pyobjc):
+    """Diagnostic compare mode should lift low alpha without breaking premultiplied alignment."""
+    sys.modules.pop("spoke.glow", None)
+    mod = importlib.import_module("spoke.glow")
+    try:
+        rgba = np.array([[[0.02, 0.01, 0.0, 0.02]]], dtype=np.float32)
+
+        lifted = mod._diagnostic_alpha_lift_rgba(rgba, gamma=0.5)
+
+        assert lifted[0, 0, 3] > rgba[0, 0, 3]
+        assert lifted[0, 0, 0] > rgba[0, 0, 0]
+        assert lifted[0, 0, 1] > rgba[0, 0, 1]
+        assert lifted[0, 0, 2] == pytest.approx(0.0)
     finally:
         sys.modules.pop("spoke.glow", None)
