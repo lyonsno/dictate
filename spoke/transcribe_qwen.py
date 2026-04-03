@@ -22,12 +22,13 @@ _DEFAULT_MODEL = "Qwen/Qwen3-ASR-0.6B"
 mlx_qwen3_asr = None
 
 
-def _get_mlx_qwen3_asr():
+def _ensure_qwen_runtime():
+    """Import mlx-qwen3-asr only when the local Qwen path is actually used."""
     global mlx_qwen3_asr
     if mlx_qwen3_asr is None:
-        import spoke.patch_qwen3_streaming  # noqa: F401
-
-        mlx_qwen3_asr = __import__("mlx_qwen3_asr")
+        import mlx_qwen3_asr as runtime
+        import spoke.patch_qwen3_streaming  # noqa: F401 — fix upstream merge bug
+        mlx_qwen3_asr = runtime
     return mlx_qwen3_asr
 
 
@@ -55,8 +56,9 @@ class LocalQwenClient:
         """Lazy-init the Session so model loads on first transcribe, not import."""
         if self._session is not None:
             return
+        runtime = _ensure_qwen_runtime()
         logger.info("Loading Qwen3 ASR model %s (first use may download ~1.2GB)", self._model)
-        self._session = _get_mlx_qwen3_asr().Session(model=self._model)
+        self._session = runtime.Session(model=self._model)
 
     def prepare(self) -> None:
         """Warm the Qwen session without starting a transcription."""
@@ -183,7 +185,19 @@ class LocalQwenClient:
             pcm = np.frombuffer(frames, dtype=np.int16)
             return pcm.astype(np.float32) / 32768.0
 
-    def close(self) -> None:
-        """Release the model session and any streaming state."""
+    def unload(self) -> None:
+        """Release the model session to free memory."""
+        if self._session is None:
+            return
+        logger.info("Unloading Qwen ASR model %s", self._model)
         self._stream_state = None
         self._session = None
+
+    @property
+    def is_loaded(self) -> bool:
+        """Whether the model is currently resident in memory."""
+        return self._session is not None
+
+    def close(self) -> None:
+        """Release the model session and any streaming state."""
+        self.unload()

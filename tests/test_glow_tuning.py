@@ -38,8 +38,8 @@ class TestGlowTuning:
         sys.modules.pop("spoke.glow", None)
         mod = importlib.import_module("spoke.glow")
         try:
-            assert mod._DIM_SHOW_FADE_S == pytest.approx(1.08)
-            assert mod._DIM_HIDE_FADE_S == pytest.approx(2.4)
+            assert mod._DIM_SHOW_FADE_S == pytest.approx(0.36)
+            assert mod._DIM_HIDE_FADE_S == pytest.approx(0.8)
             assert mod._GLOW_SHOW_TIMING == "easeIn"
         finally:
             sys.modules.pop("spoke.glow", None)
@@ -103,17 +103,22 @@ class TestGlowTuning:
         finally:
             sys.modules.pop("spoke.glow", None)
 
-    def test_edge_mix_gives_light_backgrounds_extra_subtractive_presence(self, mock_pyobjc):
-        """Bright scenes should get a modest subtractive boost so the edge treatment stays visible."""
+    def test_edge_mix_keeps_dark_scenes_purely_additive_until_light_backgrounds(self, mock_pyobjc):
+        """Dark scenes should not carry any subtractive vignette until the background is genuinely bright."""
         sys.modules.pop("spoke.glow", None)
         mod = importlib.import_module("spoke.glow")
         try:
             dark_add, dark_sub = mod._edge_mix_for_brightness(0.1)
             mid_add, mid_sub = mod._edge_mix_for_brightness(0.5)
+            bright_add, bright_sub = mod._edge_mix_for_brightness(0.8)
             light_add, light_sub = mod._edge_mix_for_brightness(1.0)
 
-            assert dark_add > dark_sub
-            assert mid_sub > 0.5
+            assert dark_add == pytest.approx(1.0)
+            assert dark_sub == pytest.approx(0.0)
+            assert mid_add == pytest.approx(1.0)
+            assert mid_sub == pytest.approx(0.0)
+            assert bright_add < 1.0
+            assert bright_sub > 0.0
             assert light_add == pytest.approx(0.0)
             assert light_sub == pytest.approx(1.664)
         finally:
@@ -124,7 +129,11 @@ class TestGlowTuning:
         sys.modules.pop("spoke.glow", None)
         mod = importlib.import_module("spoke.glow")
         try:
-            assert mod._DIM_OPACITY_LIGHT == pytest.approx(0.424)
+            assert mod._DIM_OPACITY_DARK == pytest.approx(0.42)
+            assert mod._DIM_OPACITY_LIGHT == pytest.approx(0.636)
+            assert mod._dim_target_for_brightness(0.0) == pytest.approx(mod._DIM_OPACITY_DARK)
+            assert mod._dim_target_for_brightness(0.5) == pytest.approx(0.8)
+            assert mod._dim_target_for_brightness(1.0) == pytest.approx(mod._DIM_OPACITY_LIGHT)
         finally:
             sys.modules.pop("spoke.glow", None)
 
@@ -208,7 +217,7 @@ class TestGlowTuning:
             glow.hide()
 
             call = mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
-            assert call.args[0] == pytest.approx(2.45)
+            assert call.args[0] == pytest.approx(0.816)
             assert call.args[1] is glow
             assert call.args[2] == "hideWindowAfterFade:"
             assert call.args[3] == 1
@@ -298,11 +307,11 @@ class TestGlowTuning:
         mod = importlib.import_module("spoke.glow")
         try:
             assert mod._compress_screen_glow_peak(0.1) == pytest.approx(0.1)
+            assert mod._compress_screen_glow_peak(0.6) == pytest.approx(0.6)
+            assert mod._compress_screen_glow_peak(0.81) == pytest.approx(0.81)
             assert mod._compress_screen_glow_peak(mod._GLOW_PEAK_TARGET) == pytest.approx(
                 mod._GLOW_PEAK_TARGET
             )
-            assert mod._compress_screen_glow_peak(0.6) == pytest.approx(mod._GLOW_PEAK_TARGET)
-            assert mod._compress_screen_glow_peak(0.81) == pytest.approx(mod._GLOW_PEAK_TARGET)
 
             peak_opacity = mod._compress_screen_glow_peak(1.0)
             assert peak_opacity == pytest.approx(mod._GLOW_PEAK_TARGET)

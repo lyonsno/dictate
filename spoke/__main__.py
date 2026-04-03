@@ -59,8 +59,14 @@ from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
 from .transcribe_parakeet import ParakeetCoreMLClient, _PARAKEET_MODEL_ID
 from .transcribe_qwen import LocalQwenClient
 from .tts import TTSClient, RemoteTTSClient
+from .heartbeat import HeartbeatManager, zombie_sweep, HEARTBEAT_INTERVAL_S
 
 logger = logging.getLogger(__name__)
+
+_LOCK_PATH = os.environ.get(
+    "SPOKE_LOCK_PATH",
+    os.path.expanduser("~/Library/Logs/.spoke.lock"),
+)
 
 _DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx-8bit"
 _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
@@ -335,7 +341,9 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_shift_tap = self._on_tray_shift_tap
         self._detector._on_shift_tap_during_hold = self._on_tray_navigate_up
         self._detector._on_shift_tap_idle = self._on_audio_shift_tap
-        self._detector._on_enter_pressed = self._on_tray_enter_pressed
+        # Bare Enter should belong to the foreground app; tray actions stay
+        # on explicit space-rooted gestures instead of ambient key capture.
+        self._detector._on_enter_pressed = None
         self._detector._on_tray_delete = self._on_tray_delete_gesture
         self._detector._on_command_overlay_dismiss = self._dismiss_command_overlay
         self._menubar: MenuBarIcon | None = None
@@ -401,6 +409,14 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay = None
             self._scene_cache = None
             self._tool_schemas = None
+
+        # Heartbeat — zombie sweep runs before us, this starts the writer.
+        self._heartbeat = HeartbeatManager()
+        self._heartbeat.set_context(
+            worktree=os.getcwd(),
+        )
+        self._heartbeat.set_evict_callback(self._evict_model)
+        self._heartbeat_timer = None
 
         # TTS autoplay — initialized if SPOKE_TTS_VOICE is set.
         # Preference-based model override takes priority over env var.
@@ -665,6 +681,10 @@ class SpokeAppDelegate(NSObject):
         _record_runtime_phase("app.ready")
         self._menubar.set_status_text("Ready — hold spacebar")
         self._hide_startup_status()
+
+        # Register loaded models with the heartbeat manager.
+        self._register_loaded_models()
+        self._start_heartbeat_timer()
 
         # Warm TTS after Whisper is loaded, but keep it off the main thread.
         tts = getattr(self, "_tts_client", None)
@@ -1648,9 +1668,9 @@ class SpokeAppDelegate(NSObject):
             self._tray_navigate_up()
 
     def _on_tray_enter_pressed(self) -> None:
-        """Bare Enter during tray does nothing; assistant send is space-rooted only."""
+        """Legacy tray Enter hook retained as a no-op safety shim."""
         if self._tray_active:
-            logger.info("Enter during tray — ignored (assistant send requires space-rooted chord)")
+            logger.info("Enter during tray — ignored (space-rooted contract)")
 
     def _on_tray_delete_gesture(self) -> None:
         """Shift held + double-tap spacebar = delete current tray entry."""
@@ -2126,6 +2146,7 @@ class SpokeAppDelegate(NSObject):
                     overlay.tts_start()
                 except Exception:
                     logger.exception("Command overlay TTS start failed")
+            self._touch_model(tts)
             try:
                 logger.info("TTS autoplay: calling speak_async with %d chars", len(response))
                 tts.speak_async(
@@ -2914,29 +2935,15 @@ class SpokeAppDelegate(NSObject):
         return normalized or None
 
     def _resolve_command_backend(self) -> tuple[str | None, str | None]:
-        env_raw = os.environ.get("SPOKE_COMMAND_URL")
-        env_url = (
-            self._normalize_command_url(env_raw) if env_raw is not None else None
-        )
         pref_backend = self._load_command_backend_preference()
         pref_sidecar_url = self._load_command_sidecar_url_preference()
-        explicit_env_url = env_raw is not None and env_url not in {
-            None,
-            _DEFAULT_COMMAND_URL,
-        }
 
-        if explicit_env_url:
-            return "sidecar", env_url
         if pref_backend == "sidecar" and pref_sidecar_url:
             return "sidecar", pref_sidecar_url
         if pref_backend == "sidecar" and not pref_sidecar_url:
             logger.warning(
                 "Saved assistant backend is sidecar but no sidecar URL is configured; falling back to local OMLX"
             )
-        if env_raw is not None:
-            if env_url is None:
-                return None, None
-            return "local", env_url
         return "local", _DEFAULT_COMMAND_URL
 
     def _build_tts_client(self):
@@ -3305,10 +3312,6 @@ class SpokeAppDelegate(NSObject):
         self._command_backend = selection
         self._command_url = target_url
         self._command_sidecar_url = persisted_sidecar_url
-        if target_url is None:
-            os.environ.pop("SPOKE_COMMAND_URL", None)
-        else:
-            os.environ["SPOKE_COMMAND_URL"] = target_url
         self._relaunch()
 
     def _configure_command_sidecar_url(self) -> None:
@@ -3328,7 +3331,6 @@ class SpokeAppDelegate(NSObject):
         self._command_sidecar_url = sidecar_url
         if current_backend == "sidecar":
             self._command_url = sidecar_url
-            os.environ["SPOKE_COMMAND_URL"] = sidecar_url
             self._relaunch()
             return
         if self._menubar is not None:
@@ -3437,6 +3439,13 @@ class SpokeAppDelegate(NSObject):
                 )
             prepare = getattr(client, "prepare", None)
             if callable(prepare):
+                if isinstance(client, (LocalTranscriptionClient, LocalQwenClient)):
+                    logger.info(
+                        "Deferring startup warmup for local MLX %s client (%s) until first use",
+                        role,
+                        model_id,
+                    )
+                    continue
                 _record_runtime_phase(
                     "client.prepare.start",
                     role=role,
@@ -3464,6 +3473,89 @@ class SpokeAppDelegate(NSObject):
             close = getattr(client, "close", None)
             if callable(close):
                 close()
+
+    # ── Heartbeat & model TTL ─────────────────────────────────
+
+    def _register_loaded_models(self) -> None:
+        """Tell the heartbeat manager which models are currently resident."""
+        hb = getattr(self, "_heartbeat", None)
+        if hb is None:
+            return
+        for client in self._iter_unique_clients():
+            loaded = getattr(client, "is_loaded", False)
+            if loaded:
+                model_id = getattr(client, "_model", None) or getattr(client, "_model_id", None)
+                if model_id:
+                    hb.register_model(model_id)
+
+    def _start_heartbeat_timer(self) -> None:
+        """Schedule the heartbeat timer on the main-thread run loop."""
+        from Foundation import NSTimer
+
+        if getattr(self, "_heartbeat_timer", None) is not None:
+            return
+        hb = getattr(self, "_heartbeat", None)
+        if hb is None:
+            return
+        self._heartbeat_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            HEARTBEAT_INTERVAL_S,
+            self,
+            "heartbeatTick:",
+            None,
+            True,
+        )
+        # Write the first heartbeat immediately.
+        self._heartbeat.tick()
+        logger.info(
+            "Heartbeat started (interval=%.0fs, model_ttl=%.0fs)",
+            HEARTBEAT_INTERVAL_S,
+            self._heartbeat._ttl,
+        )
+
+    def heartbeatTick_(self, _timer) -> None:
+        """NSTimer callback — write heartbeat, evict expired models."""
+        # Ensure newly loaded models (e.g. TTS after async warmup) get registered.
+        self._register_loaded_models()
+        expired = self._heartbeat.tick()
+        if expired:
+            logger.info("Heartbeat TTL eviction: %s", expired)
+
+    def _evict_model(self, model_id: str) -> None:
+        """Eviction callback from HeartbeatManager — unload a model by ID."""
+        for client in self._iter_unique_clients():
+            client_model = getattr(client, "_model", None) or getattr(client, "_model_id", None)
+            if client_model == model_id:
+                unload = getattr(client, "unload", None)
+                if callable(unload):
+                    with self._local_inference_context(client):
+                        unload()
+                    self._heartbeat.unregister_model(model_id)
+                    self._heartbeat.clear_metal_cache()
+                    logger.info("Evicted model %s", model_id)
+                    return
+
+    def _touch_model(self, client) -> None:
+        """Update last-use timestamp for a client's model."""
+        hb = getattr(self, "_heartbeat", None)
+        if hb is None:
+            return
+        model_id = getattr(client, "_model", None) or getattr(client, "_model_id", None)
+        if model_id:
+            hb.touch(model_id)
+
+    def _iter_unique_clients(self):
+        """Yield each unique client object (deduplicated)."""
+        seen = []
+        candidates = list(getattr(self, "_client_cache", {}).values()) + [
+            getattr(self, "_client", None),
+            getattr(self, "_preview_client", None),
+            getattr(self, "_tts_client", None),
+        ]
+        for client in candidates:
+            if client is None or any(c is client for c in seen):
+                continue
+            seen.append(client)
+            yield client
 
     def _local_whisper_controls_available(self) -> bool:
         if not getattr(self, "_local_mode", False):
@@ -3598,6 +3690,9 @@ class SpokeAppDelegate(NSObject):
         lock = getattr(self, "_local_inference_lock", None)
         if lock is None or isinstance(client, TranscriptionClient):
             return nullcontext()
+        # Touch the model on each local inference so TTL doesn't expire
+        # while the model is actively in use.
+        self._touch_model(client)
         return lock
 
     def _inject_result_text(self, text: str, status_text: str) -> None:
@@ -3860,7 +3955,7 @@ def _acquire_instance_lock() -> None:
     import signal as sig
     import time
 
-    lock_path = os.path.expanduser("~/Library/Logs/.spoke.lock")
+    lock_path = _LOCK_PATH
     current_pid = os.getpid()
     parent_pid = os.getppid()
     _record_runtime_phase("instance_lock.start", lock_path=lock_path)
@@ -3934,6 +4029,7 @@ def main() -> None:
     _install_crash_diagnostics()
     _record_runtime_phase("process.start")
 
+    zombie_sweep()
     _acquire_instance_lock()
 
     app = NSApplication.sharedApplication()
@@ -3947,7 +4043,7 @@ def main() -> None:
     def _handle_sigterm(signum, frame):
         lock_pid = "unavailable"
         try:
-            with open(os.path.expanduser("~/Library/Logs/.spoke.lock"), encoding="utf-8") as lock_file:
+            with open(_LOCK_PATH, encoding="utf-8") as lock_file:
                 lock_pid = lock_file.read().strip() or "empty"
         except OSError:
             pass
@@ -3962,6 +4058,9 @@ def main() -> None:
         delegate._detector.uninstall()
         if delegate._menubar is not None:
             delegate._menubar.cleanup()
+        # Remove heartbeat so next launch doesn't see us as a zombie.
+        if hasattr(delegate, "_heartbeat"):
+            delegate._heartbeat.remove()
         NSApp.terminate_(None)
 
     signal.signal(signal.SIGTERM, _handle_sigterm)

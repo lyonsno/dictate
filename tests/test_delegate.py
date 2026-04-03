@@ -1444,7 +1444,6 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch
     ):
         """Persisted assistant model should bootstrap the OMLX command client."""
-        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://omlx:8001")
         monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
         monkeypatch.setattr(
             main_module.SpokeAppDelegate,
@@ -1464,7 +1463,7 @@ class TestDualModelConfiguration:
 
         assert result is not None
         MockCommand.assert_called_once_with(
-            base_url="http://omlx:8001",
+            base_url="http://localhost:8001",
             model="qwen3-14b",
         )
         assert d._command_model_id == "qwen3-14b"
@@ -1481,7 +1480,6 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch
     ):
         """Startup should not block on /v1/models just to seed the Assistant menu."""
-        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://omlx:8001")
         monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
         monkeypatch.setattr(
             main_module.SpokeAppDelegate,
@@ -1503,7 +1501,7 @@ class TestDualModelConfiguration:
 
         assert result is not None
         MockCommand.assert_called_once_with(
-            base_url="http://omlx:8001",
+            base_url="http://localhost:8001",
             model="qwen3-14b",
         )
         command_client.list_models.assert_not_called()
@@ -1520,7 +1518,6 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch
     ):
         """Choosing the sidecar backend should persist it and relaunch against that URL."""
-        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
         d = _make_delegate(main_module, monkeypatch)
         d._command_client = MagicMock()
         d._command_backend = "local"
@@ -1534,14 +1531,12 @@ class TestDualModelConfiguration:
         d._save_command_backend_preferences.assert_called_once_with(
             "sidecar", "http://other-box:8001"
         )
-        assert os.environ["SPOKE_COMMAND_URL"] == "http://other-box:8001"
         d._relaunch.assert_called_once_with()
 
     def test_selecting_assistant_backend_sidecar_prompts_for_url_when_missing(
         self, main_module, monkeypatch
     ):
         """Choosing sidecar with no saved URL should ask once, persist, and relaunch."""
-        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
         d = _make_delegate(main_module, monkeypatch)
         d._command_client = MagicMock()
         d._command_backend = "local"
@@ -1559,14 +1554,12 @@ class TestDualModelConfiguration:
         d._save_command_backend_preferences.assert_called_once_with(
             "sidecar", "http://other-box:8001"
         )
-        assert os.environ["SPOKE_COMMAND_URL"] == "http://other-box:8001"
         d._relaunch.assert_called_once_with()
 
     def test_configuring_assistant_sidecar_url_persists_without_relaunch_when_local_backend_active(
         self, main_module, monkeypatch
     ):
         """Saving a sidecar URL should not force a relaunch while local backend remains active."""
-        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
         d = _make_delegate(main_module, monkeypatch)
         d._command_client = MagicMock()
         d._command_backend = "local"
@@ -1589,8 +1582,7 @@ class TestDualModelConfiguration:
     def test_init_prefers_persisted_sidecar_backend_over_launcher_default_local_url(
         self, main_module, monkeypatch
     ):
-        """Saved sidecar selection should beat the launcher's default localhost seed."""
-        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
+        """Saved sidecar selection should beat the persisted local default."""
         monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
         monkeypatch.setattr(
             main_module.SpokeAppDelegate,
@@ -1911,6 +1903,41 @@ class TestWarmupContract:
         assert isinstance(d._warm_error, RuntimeError)
         mock_phase.assert_any_call("client_warmup.start")
         mock_phase.assert_any_call("client_warmup.failed", error="warm failed")
+
+    def test_prepare_clients_defers_local_whisper_startup_warmup(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._model_allowed = MagicMock(return_value=True)
+        d._transcription_model_id = "mlx-community/whisper-small.en-mlx"
+        d._preview_model_id = "mlx-community/whisper-tiny.en-mlx"
+        d._client = main_module.LocalTranscriptionClient(model=d._transcription_model_id)
+        d._preview_client = main_module.LocalTranscriptionClient(model=d._preview_model_id)
+
+        with patch.object(d._client, "prepare") as prep_client, patch.object(
+            d._preview_client, "prepare"
+        ) as prep_preview:
+            d._prepare_clients()
+
+        prep_client.assert_not_called()
+        prep_preview.assert_not_called()
+
+    def test_prepare_clients_defers_local_qwen_startup_warmup(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._local_mode = True
+        d._model_allowed = MagicMock(return_value=True)
+        d._transcription_model_id = "Qwen/Qwen3-ASR-0.6B"
+        d._client = main_module.LocalQwenClient(model=d._transcription_model_id)
+        d._preview_model_id = None
+        d._preview_client = None
+
+        with patch.object(d._client, "prepare") as prep_client:
+            d._prepare_clients()
+
+        prep_client.assert_not_called()
 
     def test_warmup_success_hides_startup_indicator(
         self, main_module, monkeypatch

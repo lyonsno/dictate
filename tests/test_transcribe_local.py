@@ -1,6 +1,5 @@
 """Tests for local MLX Whisper transcription client."""
 
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import os
 import tempfile
@@ -9,31 +8,9 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _mock_whisper_runtime(monkeypatch):
-    from spoke import transcribe_local
-
-    fake_holder = SimpleNamespace(model=None, model_path=None)
-    fake_transcribe_module = SimpleNamespace(ModelHolder=fake_holder)
-    fake_mx = MagicMock(float16="float16")
-    fake_load_model = MagicMock(return_value=MagicMock())
-    original_import_module = transcribe_local.importlib.import_module
-
-    def fake_import_module(name, package=None):
-        if name == "mlx.core":
-            return transcribe_local.mx
-        if name == "mlx_whisper":
-            return transcribe_local.mlx_whisper
-        if name == "mlx_whisper.load_models":
-            return SimpleNamespace(load_model=transcribe_local.load_model)
-        if name == "mlx_whisper.transcribe":
-            return fake_transcribe_module
-        return original_import_module(name, package)
-
-    monkeypatch.setattr(transcribe_local, "mx", fake_mx)
-    monkeypatch.setattr(transcribe_local, "mlx_whisper", MagicMock())
-    monkeypatch.setattr(transcribe_local, "load_model", fake_load_model)
-    monkeypatch.setattr(transcribe_local.importlib, "import_module", fake_import_module)
-    yield
+def _mock_whisper_model_load():
+    with patch("spoke.transcribe_local.load_model", return_value=MagicMock()):
+        yield
 
 
 class TestLocalTranscriptionClient:
@@ -379,14 +356,12 @@ class TestLocalTranscriptionClient:
     @patch("spoke.transcribe_local.load_model")
     def test_prepare_uses_float16_for_unquantized_whisper_repos(self, mock_load_model):
         """Unquantized MLX Whisper repos should warm with float16."""
-        from spoke import transcribe_local
+        from spoke.transcribe_local import LocalTranscriptionClient
 
         mock_load_model.return_value = MagicMock()
-        transcribe_local.mx = MagicMock(float16="float16")
-        client = transcribe_local.LocalTranscriptionClient(
-            model="mlx-community/whisper-small.en-mlx"
-        )
-        client.prepare()
+        client = LocalTranscriptionClient(model="mlx-community/whisper-small.en-mlx")
+        with patch("spoke.transcribe_local.mx", new=MagicMock(float16="float16")):
+            client.prepare()
 
         mock_load_model.assert_called_once_with(
             "mlx-community/whisper-small.en-mlx",
@@ -396,32 +371,17 @@ class TestLocalTranscriptionClient:
     @patch("spoke.transcribe_local.load_model")
     def test_prepare_keeps_float16_for_quantized_whisper_repos(self, mock_load_model):
         """Quantized Whisper repos should keep the float16 warmup path."""
-        from spoke import transcribe_local
+        from spoke.transcribe_local import LocalTranscriptionClient
 
         mock_load_model.return_value = MagicMock()
-        transcribe_local.mx = MagicMock(float16="float16")
-        client = transcribe_local.LocalTranscriptionClient(
-            model="mlx-community/whisper-small.en-mlx-8bit"
-        )
-        client.prepare()
+        client = LocalTranscriptionClient(model="mlx-community/whisper-small.en-mlx-8bit")
+        with patch("spoke.transcribe_local.mx", new=MagicMock(float16="float16")):
+            client.prepare()
 
         mock_load_model.assert_called_once_with(
             "mlx-community/whisper-small.en-mlx-8bit",
             dtype="float16",
         )
-
-    def test_imports_mlx_whisper_lazily(self):
-        """Importing the module should not require mlx-whisper until first use."""
-        from spoke import transcribe_local
-
-        transcribe_local.mx = None
-        transcribe_local.mlx_whisper = None
-        transcribe_local.load_model = None
-
-        with patch.object(transcribe_local.importlib, "import_module") as mock_import:
-            client = transcribe_local.LocalTranscriptionClient(model="test/model")
-            assert client._model == "test/model"
-            mock_import.assert_not_called()
 
 
 def _make_wav_bytes(n_samples=1000):

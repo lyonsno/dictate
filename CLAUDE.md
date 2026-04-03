@@ -8,6 +8,25 @@ When writing or updating docs, reviews, Epistaxis notes, PR text, release notes,
 
 Treat the repo as renamed for documentation purposes and keep naming consistent with `spoke`.
 
+## Branching
+
+**`main-next` is the active integration branch.** All new feature branches,
+fix branches, and worktrees must be sliced from `origin/main-next`, not from
+`main` or `dev`. `main` is reference-only and receives promotions from `main-next`
+after smoke validation. Do not branch from `main` for new work. Do not land
+new work onto `main` directly.
+
+Treat remote `origin/main-next` as the source of truth rather than any older
+local trunk witness or smoke worktree. If a local surface named `Main Next
+Trunk` exists, refresh or recreate it from current `origin/main-next` before
+calling it the current tip.
+
+Before creating a worktree: `git fetch origin main-next` and branch from
+`origin/main-next`. Failing to do this means your branch will be missing
+weeks of integration work (sidecar toggle, lazy MLX startup, ontology
+vocabulary, overlay cleanup, etc.) and will diverge from every other active
+surface.
+
 ## Testing
 
 Always run `uv run pytest -q` after code changes and before committing. All tests must pass.
@@ -34,20 +53,27 @@ the active worktree and tell the user it's ready:
 echo '/path/to/worktree' > ~/.config/spoke/smoke-target
 ```
 
-When a surface is smoke-ready, repoint the launcher state that the human will
-actually use before presenting it. Keep the stable pin and any menu/registry
-state aligned for that launcher path, such as `~/.config/spoke/main-target`,
-`dev-target`, `smoke-target`, or `launch_targets.json`.
+**Every smoke-ready surface must be added to the launcher registry**
+(`~/.config/spoke/launch_targets.json`) with a descriptive label and selected
+as the active target. The registry entry must include:
+- `id`: short snake_case identifier
+- `label`: human-readable label (use the operation codename if one exists)
+- `path`: absolute path to the worktree
+- `note` (optional): branch name and one-line description
 
-This repointing step is autonomous. It does not authorize killing or
-relaunching the currently running app. If an older surface is still live,
-report that the next manual launch will land on the new worktree.
+If the surface has a sēmeion (operation codename), use it as the label.
+Include the branch name in the `note` field so the user can identify which
+code is running.
 
-Do not call a surface smoke-ready if invoking the intended launcher would still
-reopen an older worktree.
+The registry is the primary launch surface — file-based targets
+(`dev-target`, `smoke-target`) are secondary. If a surface isn't in the
+registry, the user can't reach it from the menubar, and it's effectively
+not smoke-ready regardless of what the file-based targets say. Also update
+the file-based targets (`main-target`, `dev-target`, `smoke-target`) to
+point at the new worktree so all launch paths converge.
 
-The user triggers the launcher themselves unless they explicitly ask for a live
-relaunch. Do not kill the running process or relaunch on your own.
+The user triggers the smoke Automator hotkey themselves. Do not kill the
+running process or relaunch — `launch-smoke.sh` handles that.
 
 Per-worktree env overrides can go in `.spoke-smoke-env` at the worktree root
 (e.g. `SPOKE_COMMAND_URL`, `SPOKE_TTS_VOICE`).

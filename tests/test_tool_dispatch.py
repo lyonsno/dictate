@@ -70,6 +70,33 @@ class TestToolSchemas:
         ra_schema = next(s for s in schemas if s["function"]["name"] == "read_aloud")
         params = ra_schema["function"]["parameters"]
         assert "source_ref" in params.get("properties", {})
+        assert "arbitrary phrase or sentence" in ra_schema["function"]["description"]
+        assert "Use literal when you need to speak exact text directly" in (
+            params["properties"]["source_ref"]["description"]
+        )
+
+    def test_epistaxis_ops_schema(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        assert "run_epistaxis_ops" in names
+
+        op_schema = next(s for s in schemas if s["function"]["name"] == "run_epistaxis_ops")
+        params = op_schema["function"]["parameters"]
+        assert "epistaxis_root" in params.get("properties", {})
+        assert "target_repo" in params.get("properties", {})
+        assert "operations" in params.get("properties", {})
+
+    def test_query_gmail_schema(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        assert "query_gmail" in names
+
+        gmail_schema = next(s for s in schemas if s["function"]["name"] == "query_gmail")
+        params = gmail_schema["function"]["parameters"]
+        assert "mode" in params.get("properties", {})
+        assert "max_results" in params.get("properties", {})
 
 
     def test_list_directory_schema(self):
@@ -361,6 +388,86 @@ class TestExecuteTool:
         mod = _import_tools()
         result = mod.execute_tool(name="nonexistent", arguments={})
         assert "unknown tool" in result.lower() or "error" in result.lower()
+
+    def test_execute_epistaxis_ops(self):
+        mod = _import_tools()
+        fake_result = {"target_repo": "spoke", "operations": [{"op": "git_status", "status": ""}]}
+        fake_operator = MagicMock()
+        fake_operator.execute_plan.return_value = fake_result["operations"]
+
+        with patch("spoke.tool_dispatch.EpistaxisOperator", return_value=fake_operator):
+            result = mod.execute_tool(
+                name="run_epistaxis_ops",
+                arguments={
+                    "epistaxis_root": "/tmp/epistaxis-spoke-operator",
+                    "target_repo": "spoke",
+                    "operations": [{"op": "git_status"}],
+                },
+            )
+
+        parsed = json.loads(result)
+        assert parsed == fake_result
+
+    def test_execute_epistaxis_ops_error(self):
+        mod = _import_tools()
+        with patch(
+            "spoke.tool_dispatch.EpistaxisOperator",
+            side_effect=mod.EpistaxisOperatorError("bad worktree"),
+        ):
+            result = mod.execute_tool(
+                name="run_epistaxis_ops",
+                arguments={
+                    "epistaxis_root": "/Users/noahlyons/dev/epistaxis",
+                    "target_repo": "spoke",
+                    "operations": [{"op": "git_status"}],
+                },
+            )
+
+        parsed = json.loads(result)
+        assert parsed["error"] == "bad worktree"
+
+    def test_execute_query_gmail(self):
+        mod = _import_tools()
+        fake_result = {
+            "mode": "starred_recruiter_mail",
+            "matched_count": 1,
+            "messages": [{"id": "m-1"}],
+        }
+        fake_operator = MagicMock()
+        fake_operator.execute_query.return_value = fake_result
+
+        with patch("spoke.tool_dispatch.GmailOperator", return_value=fake_operator):
+            result = mod.execute_tool(
+                name="query_gmail",
+                arguments={"mode": "starred_recruiter_mail", "max_results": 5},
+            )
+
+        assert json.loads(result) == fake_result
+
+    def test_execute_query_gmail_error(self):
+        mod = _import_tools()
+        with patch(
+            "spoke.tool_dispatch.GmailOperator",
+            side_effect=mod.GmailOperatorError("missing credentials"),
+        ):
+            result = mod.execute_tool(
+                name="query_gmail",
+                arguments={"mode": "starred_recruiter_mail", "max_results": 5},
+            )
+
+        parsed = json.loads(result)
+        assert parsed["error"] == "missing credentials"
+
+    def test_execute_query_gmail_handles_null_max_results(self):
+        mod = _import_tools()
+
+        result = mod.execute_tool(
+            name="query_gmail",
+            arguments={"mode": "starred_recruiter_mail", "max_results": None},
+        )
+
+        parsed = json.loads(result)
+        assert "error" in parsed
 
 
 # ── Command client with tools ────────────────────────────────────

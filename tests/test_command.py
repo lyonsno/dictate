@@ -41,7 +41,14 @@ class TestCommandClient:
         assert len(msgs) == 2
         assert msgs[0]["role"] == "system"
         assert "add_to_tray" in msgs[0]["content"]
+        assert "query_gmail" in msgs[0]["content"]
         assert msgs[1] == {"role": "user", "content": "hello world"}
+
+    def test_system_prompt_explicitly_allows_literal_read_aloud(self):
+        """The prompt should tell the assistant to use literal refs for arbitrary speech."""
+        from spoke.command import _SYSTEM_PROMPT
+        assert "literal:<exact text to speak>" in _SYSTEM_PROMPT
+        assert "Do not pretend read_aloud is limited to visible text." in _SYSTEM_PROMPT
 
     def test_build_messages_with_history(self):
         """History pairs are injected between system and current utterance."""
@@ -94,21 +101,19 @@ class TestCommandClient:
         assert client._history == []
 
     def test_config_from_env(self, monkeypatch):
-        """Client should read config from environment variables."""
-        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://env-host:7777")
+        """Client should read model/key config from environment variables."""
         monkeypatch.setenv("SPOKE_COMMAND_MODEL", "env-model")
         monkeypatch.setenv("SPOKE_COMMAND_API_KEY", "env-key")
         monkeypatch.setenv("SPOKE_COMMAND_HISTORY", "20")
         from spoke.command import CommandClient
         client = CommandClient()
-        assert client._base_url == "http://env-host:7777"
+        assert client._base_url == "http://localhost:8001"
         assert client._model == "env-model"
         assert client._api_key == "env-key"
         assert client._max_history == 20
 
-    def test_config_kwargs_override_env(self, monkeypatch):
-        """Explicit kwargs should take precedence over env vars."""
-        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://env-host:7777")
+    def test_config_kwargs_override_default(self, monkeypatch):
+        """Explicit kwargs should take precedence over the built-in default."""
         client = self._make_client(base_url="http://kwarg-host:8888")
         assert client._base_url == "http://kwarg-host:8888"
 

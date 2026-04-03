@@ -580,8 +580,8 @@ class TestLatchedRecording:
         assert det._state == mod._State.LATCHED
         on_end.assert_not_called()
 
-    def test_enter_during_latched_recording_ends_with_command_route(self, input_tap_module):
-        """Enter during latched recording should stop capture and route to assistant."""
+    def test_enter_during_latched_recording_passes_through(self, input_tap_module):
+        """In LATCHED, bare Enter belongs to the foreground app, not Spoke."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
@@ -595,9 +595,10 @@ class TestLatchedRecording:
 
         result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
 
-        assert result is None
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
-        assert det._state == mod._State.IDLE
+        assert result is event
+        on_end.assert_not_called()
+        assert det._state == mod._State.LATCHED
+        assert det._enter_held is True
 
     def test_initial_spacebar_release_in_latched_is_swallowed(
         self, input_tap_module
@@ -798,8 +799,8 @@ class TestTrayAwareness:
 
         assert det._enter_held is False
 
-    def test_enter_during_tray_fires_callback(self, input_tap_module):
-        """Enter pressed while tray is active should fire on_enter_pressed."""
+    def test_enter_during_tray_does_not_fire_callback(self, input_tap_module):
+        """Tray visibility alone should not arm bare Enter as a Spoke command."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
@@ -810,9 +811,11 @@ class TestTrayAwareness:
         Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
         Quartz.CGEventGetFlags.return_value = 0
         event = MagicMock()
-        mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
 
-        on_enter.assert_called_once()
+        on_enter.assert_not_called()
+        assert result is event
+        assert det._enter_held is True
 
     def test_enter_outside_tray_no_callback(self, input_tap_module):
         """Enter pressed outside tray should not fire on_enter_pressed."""
@@ -857,12 +860,36 @@ class TestTrayAwareness:
 
         Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
         Quartz.CGEventGetFlags.return_value = 0
-        mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
-        mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+
+        assert result_down is None, "Enter keyDown must be suppressed during recording"
+        assert result_up is None, "Enter keyUp must be suppressed during recording"
 
         det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
 
         on_end.assert_called_once_with(shift_held=False, enter_held=True)
+
+    def test_enter_suppressed_during_waiting(self, input_tap_module):
+        """Enter pressed during WAITING (before timer fires) must be suppressed."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        mod._active_detector = det
+        event = MagicMock()
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        assert det._state == mod._State.WAITING
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+
+        assert result_down is None, "Enter keyDown must be suppressed during waiting"
+        assert result_up is None, "Enter keyUp must be suppressed during waiting"
+        assert det._enter_latched is True
 
     def test_shift_release_then_enter_within_grace_routes_as_command(
         self, input_tap_module
@@ -1080,8 +1107,10 @@ class TestCommandOverlayFlags:
         assert result is event  # passed through
         assert det._enter_held is True
 
-    def test_instant_dismiss_on_spacebar_keydown_when_overlay_active(self, input_tap_module):
-        """Spacebar keyDown while command_overlay_active=True should call dismiss callback."""
+    def test_spacebar_does_not_dismiss_overlay_on_keydown(self, input_tap_module):
+        """Spacebar keyDown while command_overlay_active=True must NOT instant-
+        dismiss.  Overlay dismiss is handled by the hold-and-release path
+        (_on_hold_end with no audio), not by bare spacebar press."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
@@ -1092,39 +1121,10 @@ class TestCommandOverlayFlags:
         Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
         Quartz.CGEventGetFlags.return_value = 0
         event = MagicMock()
-        result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
-
-        assert result is None  # suppressed by handle_key_down
-        on_dismiss.assert_called_once()
-        # Note: command_overlay_active and _just_dismissed are set by the
-        # delegate's dismissCommandOverlay_ (the callback target), not by
-        # the input tap directly. The input tap's contract is to call dismiss.
-
-    def test_just_dismissed_set_by_dismiss_callback(self, input_tap_module):
-        """Instant dismiss callback fires on spacebar keyDown; the callback is
-        responsible for setting _command_overlay_just_dismissed=True.  Simulate
-        the delegate's behavior in the callback to verify the full contract."""
-        mod = input_tap_module
-        Quartz = __import__("Quartz")
-
-        det, _, _, _ = self._make_detector(input_tap_module)
-        det.command_overlay_active = True
-
-        # Wire dismiss callback to set flags like the real delegate does
-        def dismiss_sets_flags():
-            det.command_overlay_active = False
-            det._command_overlay_just_dismissed = True
-
-        det._on_command_overlay_dismiss = dismiss_sets_flags
-        mod._active_detector = det
-
-        Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
-        Quartz.CGEventGetFlags.return_value = 0
-        event = MagicMock()
         mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
 
-        assert det.command_overlay_active is False
-        assert det._command_overlay_just_dismissed is True
+        on_dismiss.assert_not_called()
+        assert det.command_overlay_active is True
 
     def test_enter_quick_tap_routes_to_hold_end_in_waiting_state(self, input_tap_module):
         """Enter+spacebar quick tap in WAITING state should route to _on_hold_end

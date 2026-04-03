@@ -123,8 +123,7 @@ class SpacebarHoldDetector(NSObject):
         # tray navigation callbacks.
         self.tray_active = False
         # Command overlay suppression — set by the delegate when the
-        # command overlay is visible.  When True, Enter is suppressed
-        # and spacebar keyDown instantly dismisses the overlay.
+        # command overlay is visible.  When True, Enter is suppressed.
         self.command_overlay_active = False
         self._command_overlay_just_dismissed = False
         self._on_command_overlay_dismiss: Callable[[], None] | None = None
@@ -527,46 +526,22 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             if getattr(det, "_pending_release_active", False):
                 det._finish_pending_release(enter_held=True)
                 return None
-            if det._state == _State.LATCHED:
-                det._cancel_safety_timer()
-                det._state = _State.IDLE
-                det._on_hold_end(shift_held=False, enter_held=True)
-                return None
             if det._state in (_State.WAITING, _State.RECORDING):
                 det._enter_latched = True
-            # If tray is active, Enter = send to assistant.
-            # Only suppress Enter if the callback exists and is called.
-            # Always let Enter through if tray is not active.
-            if getattr(det, 'tray_active', False):
-                on_enter = getattr(det, '_on_enter_pressed', None)
-                if on_enter is not None:
-                    on_enter()
-                    return None  # suppress enter during tray
+                return None  # suppress enter while space is held
             # Suppress Enter while the command overlay is visible so it
             # doesn't leak through to the underlying app.
             if getattr(det, 'command_overlay_active', False):
                 return None
-            # Enter passes through to the OS when tray is not active
+            # Bare Enter otherwise belongs to the foreground app, even if the
+            # tray is visible. Assistant send remains a space-rooted chord.
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:
             logger.info("keyDown space: flags=%#x shift=%s state=%s",
                         flags, bool(flags & kCGEventFlagMaskShift), det._state)
-            # Instant dismiss: if the command overlay is visible, dismiss it
-            # on the first spacebar press instead of waiting for a hold.
-            if (
-                getattr(det, 'command_overlay_active', False)
-                and det._state == _State.IDLE
-                and not getattr(det, 'tray_active', False)
-            ):
-                dismiss = getattr(det, '_on_command_overlay_dismiss', None)
-                if dismiss is not None:
-                    logger.info("Instant dismiss — marshaling to main thread")
-                    dismiss()
-            else:
-                # New spacebar press that isn't a dismiss — clear _just_dismissed
-                # so the recall path works for this fresh gesture.
-                det._command_overlay_just_dismissed = False
+            # Clear _just_dismissed so the recall path works for fresh gestures.
+            det._command_overlay_just_dismissed = False
             # Mark space between shift down/up for tray shift-tap discrimination
             if getattr(det, 'tray_active', False) and getattr(det, '_tray_shift_down', False):
                 det._tray_space_between = True
@@ -577,6 +552,8 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         # Track enter key release
         if keycode == ENTER_KEYCODE:
             det._enter_held = False
+            if det._state in (_State.WAITING, _State.RECORDING):
+                return None  # suppress enter release while space is held
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:

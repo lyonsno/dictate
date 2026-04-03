@@ -1,4 +1,4 @@
-"""Tool dispatch for screen context.
+"""Tool dispatch for screen context and bounded local operator actions.
 
 Defines the tool schemas for capture_context and read_aloud, handles
 accumulation of streamed tool call deltas, and executes tools locally.
@@ -12,6 +12,16 @@ import json
 import logging
 from typing import Any, Callable
 
+from spoke.epistaxis_operator import (
+    EpistaxisOperator,
+    EpistaxisOperatorError,
+    tool_schema as epistaxis_tool_schema,
+)
+from spoke.gmail_operator import (
+    GmailOperator,
+    GmailOperatorError,
+    tool_schema as gmail_tool_schema,
+)
 from spoke.scene_capture import SceneCaptureCache
 
 logger = logging.getLogger(__name__)
@@ -55,7 +65,8 @@ _READ_ALOUD_SCHEMA = {
         "description": (
             "Resolve a source ref to exact text and speak it aloud via TTS. "
             "Use scene_block or ax_hint refs from a previous capture_context "
-            "call, or use clipboard/selection/last_response/literal refs."
+            "call, or use clipboard/selection/last_response/literal refs. "
+            "Use a literal ref when the user wants an arbitrary phrase or sentence spoken."
         ),
         "parameters": {
             "type": "object",
@@ -67,7 +78,8 @@ _READ_ALOUD_SCHEMA = {
                         "capture_context directly (e.g., 'scene-abc:block-1'). "
                         "Other formats: 'clipboard:current', "
                         "'selection:frontmost', 'last_response:current', "
-                        "'literal:text to speak'."
+                        "'literal:text to speak'. Use literal when you need to "
+                        "speak exact text directly rather than reading it from another source."
                     ),
                 },
             },
@@ -167,11 +179,23 @@ _SEARCH_FILE_SCHEMA = {
         }
     }
 }
+_RUN_EPISTAXIS_OPS_SCHEMA = epistaxis_tool_schema()
+_QUERY_GMAIL_SCHEMA = gmail_tool_schema()
 
 
 def get_tool_schemas() -> list[dict]:
     """Return the tool schemas for the assistant."""
-    return [_CAPTURE_CONTEXT_SCHEMA, _READ_ALOUD_SCHEMA, _ADD_TO_TRAY_SCHEMA, _LIST_DIRECTORY_SCHEMA, _READ_FILE_SCHEMA, _WRITE_FILE_SCHEMA, _SEARCH_FILE_SCHEMA]
+    return [
+        _CAPTURE_CONTEXT_SCHEMA,
+        _READ_ALOUD_SCHEMA,
+        _ADD_TO_TRAY_SCHEMA,
+        _LIST_DIRECTORY_SCHEMA,
+        _READ_FILE_SCHEMA,
+        _WRITE_FILE_SCHEMA,
+        _SEARCH_FILE_SCHEMA,
+        _RUN_EPISTAXIS_OPS_SCHEMA,
+        _QUERY_GMAIL_SCHEMA,
+    ]
 
 
 # ── Tool call accumulation ───────────────────────────────────────
@@ -438,6 +462,40 @@ def _execute_search_file(arguments: dict) -> dict[str, Any]:
     except Exception as e:
         return {"error": str(e)}
 
+
+def _execute_epistaxis_ops(arguments: dict) -> str:
+    """Execute a bounded Epistaxis operation plan and return JSON."""
+    epistaxis_root = arguments.get("epistaxis_root", "")
+    target_repo = arguments.get("target_repo", "")
+    operations = arguments.get("operations", [])
+    try:
+        if not isinstance(operations, list):
+            raise EpistaxisOperatorError("operations must be a list")
+        operator = EpistaxisOperator(epistaxis_root, target_repo)
+        return json.dumps(
+            {
+                "target_repo": target_repo,
+                "operations": operator.execute_plan(operations),
+            }
+        )
+    except EpistaxisOperatorError as exc:
+        return json.dumps({"error": str(exc)})
+
+
+def _execute_query_gmail(arguments: dict) -> str:
+    """Execute the bounded Gmail query surface and return JSON."""
+    mode = arguments.get("mode", "")
+    max_results = arguments.get("max_results", 5)
+    try:
+        normalized_max_results = int(max_results)
+        operator = GmailOperator()
+        return json.dumps(
+            operator.execute_query(mode, max_results=normalized_max_results)
+        )
+    except (TypeError, ValueError, GmailOperatorError) as exc:
+        return json.dumps({"error": str(exc)})
+
+
 def execute_tool(
     name: str,
     arguments: dict,
@@ -506,6 +564,11 @@ def execute_tool(
         return json.dumps(_execute_write_file(arguments))
     elif name == "search_file":
         return json.dumps(_execute_search_file(arguments))
+    elif name == "run_epistaxis_ops":
+        return _execute_epistaxis_ops(arguments)
+
+    elif name == "query_gmail":
+        return _execute_query_gmail(arguments)
 
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})

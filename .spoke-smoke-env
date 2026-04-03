@@ -1,9 +1,0 @@
-# Smoke-test env for the sidecar-routing branch.
-# Sourced by launch-smoke.sh when this worktree is the smoke target.
-# Leave command routing to persisted backend/sidecar preferences so the menu
-# reflects the actual selected source instead of an env-forced endpoint.
-export SPOKE_COMMAND_API_KEY="1234"
-export SPOKE_COMMAND_THINKING="0"
-export SPOKE_TTS_VOICE="casual_female"
-export SPOKE_TTS_MODEL="mlx-community/Voxtral-4B-TTS-2603-mlx-6bit"
-export PYTHONPATH="/Users/noahlyons/dev/mlx-audio-pr-607-voxtral-tts${PYTHONPATH:+:$PYTHONPATH}"

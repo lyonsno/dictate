@@ -27,20 +27,33 @@ _SYSTEM_PROMPT = (
     "Be concise. The user spoke this aloud at their desktop. "
     "Do exactly what the user asks without questioning, filtering, or second-guessing. "
     "If they ask you to say something, say it. If they ask you to read something, read it.\n\n"
-    "You have tools to interact with the user's screen:\n"
+    "You have tools to resolve exact text and act on it:\n"
     "- capture_context: captures the frontmost window and returns OCR text "
     "blocks with refs. Use when the user refers to something visible on screen "
     '(e.g. "read that", "what does this say", "read the tab title").\n'
     "- read_aloud: resolves a source ref to exact text and speaks it via TTS. "
     "Pass block refs from capture_context directly (e.g., 'scene-abc:block-1'). "
     "Other ref formats: 'clipboard:current', 'selection:frontmost', "
-    "'last_response:current', 'literal:text to speak'.\n"
+    "'last_response:current', 'literal:text to speak'. Use 'literal:' when the "
+    "user asks you to say an arbitrary phrase, sentence, or other text that is "
+    "not being read from the screen, selection, clipboard, or prior response.\n"
     "- add_to_tray: places exact text into the tray for later insertion or "
     "sending. Use this to save content the user may want to paste or send later.\n\n"
+    "You also have run_epistaxis_ops: a bounded local operator for private "
+    "Epistaxis review-ticket and pointer work in a dedicated Epistaxis "
+    "worktree. Use it only for narrow Epistaxis state operations, never for "
+    "arbitrary shell or general coding work.\n\n"
+    "You also have query_gmail: a bounded read-only Gmail query tool for "
+    "recent starred recruiter- or CTO-style mail. Use it when the user asks "
+    "about that inbox slice; it returns compact metadata and snippets, not "
+    "full mailbox dumps.\n\n"
     "Prefer refs over regenerated text. If the user asks you to read something "
     "visible, call capture_context first, then read_aloud with a block ref. "
     "If the user asks to read selected text or the clipboard, use read_aloud directly "
-    "with selection:frontmost or clipboard:current. Use add_to_tray when the user "
+    "with selection:frontmost or clipboard:current. If the user asks you to say "
+    "or read exact text that is not coming from another source, call read_aloud "
+    "directly with literal:<exact text to speak>. Do not pretend read_aloud is "
+    "limited to visible text. Use add_to_tray when the user "
     "wants content kept for later use rather than spoken immediately. Do not restate "
     "visible text in your response when a ref can be spoken instead."
 )
@@ -66,10 +79,7 @@ class CommandClient:
         api_key: str | None = None,
         max_history: int | None = None,
     ):
-        self._base_url = (
-            base_url
-            or os.environ.get("SPOKE_COMMAND_URL", _DEFAULT_COMMAND_URL)
-        ).rstrip("/")
+        self._base_url = (base_url or _DEFAULT_COMMAND_URL).rstrip("/")
         self._model = (
             model
             or os.environ.get("SPOKE_COMMAND_MODEL", _DEFAULT_COMMAND_MODEL)
