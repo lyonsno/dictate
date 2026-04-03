@@ -8,6 +8,20 @@ When writing or updating docs, reviews, Epistaxis notes, PR text, release notes,
 
 Treat the repo as renamed for documentation purposes and keep naming consistent with `spoke`.
 
+## Branching
+
+**`main-next` is the active integration branch.** All new feature branches,
+fix branches, and worktrees must be sliced from `origin/main-next`, not from
+`main`. `main` is reference-only and receives promotions from `main-next`
+after smoke validation. Do not branch from `main` for new work. Do not land
+new work onto `main` directly.
+
+Before creating a worktree: `git fetch origin main-next` and branch from
+`origin/main-next`. Failing to do this means your branch will be missing
+weeks of integration work (sidecar toggle, lazy MLX startup, ontology
+vocabulary, overlay cleanup, etc.) and will diverge from every other active
+surface.
+
 ## Testing
 
 Always run `uv run pytest -q` after code changes and before committing. All tests must pass.
@@ -36,10 +50,22 @@ echo '/path/to/worktree' > ~/.config/spoke/smoke-target
 
 **Every smoke-ready surface must be added to the launcher registry**
 (`~/.config/spoke/launch_targets.json`) with a descriptive label and selected
-as the active target. The registry is the primary launch surface — file-based
-targets (`dev-target`, `smoke-target`) are secondary. If a surface isn't in
-the registry, the user can't reach it from the menubar, and it's effectively
-not smoke-ready regardless of what the file-based targets say.
+as the active target. The registry entry must include:
+- `id`: short snake_case identifier
+- `label`: human-readable label (use the operation codename if one exists)
+- `path`: absolute path to the worktree
+- `note` (optional): branch name and one-line description
+
+If the surface has a sēmeion (operation codename), use it as the label.
+Include the branch name in the `note` field so the user can identify which
+code is running.
+
+The registry is the primary launch surface — file-based targets
+(`dev-target`, `smoke-target`) are secondary. If a surface isn't in the
+registry, the user can't reach it from the menubar, and it's effectively
+not smoke-ready regardless of what the file-based targets say. Also update
+the file-based targets (`main-target`, `dev-target`, `smoke-target`) to
+point at the new worktree so all launch paths converge.
 
 The user triggers the smoke Automator hotkey themselves. Do not kill the
 running process or relaunch — `launch-smoke.sh` handles that.
