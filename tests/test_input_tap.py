@@ -702,10 +702,9 @@ class TestLatchedRecording:
         assert result_down is None
         assert result_up is None
 
-        # Releasing Space should still route through enter_held=True.
-        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
-
         on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        assert det._awaiting_space_release is True
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
         assert det._state == mod._State.IDLE
 
     def test_enter_keyup_after_latched_space_release_stays_suppressed(
@@ -731,9 +730,13 @@ class TestLatchedRecording:
         result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
         assert result_down is None
 
-        # Space release should route as command.
+        # Space release should route as overlay toggle.
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        on_end.assert_called_once_with(
+            shift_held=False,
+            enter_held=False,
+            toggle_command_overlay=True,
+        )
 
         # Trailing Enter release must still be swallowed.
         result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
@@ -787,10 +790,72 @@ class TestTrayAwareness:
         det.tray_active = True
 
         det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
-        det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
 
         on_end.assert_called_once_with(shift_held=False, enter_held=False)
         assert det._forwarding is False
+
+    def test_tray_spacebar_tap_after_overlay_dismiss_is_swallowed(
+        self, input_tap_module
+    ):
+        """A tray-visible overlay dismiss tap must not fall through into tray insert."""
+        mod = input_tap_module
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        det.tray_active = True
+        det._command_overlay_just_dismissed = True
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+
+        on_end.assert_not_called()
+        assert det._forwarding is False
+
+    def test_tray_space_enter_space_release_routes_overlay_toggle(
+        self, input_tap_module
+    ):
+        """With tray visible, space-first Enter should still toggle assistant overlay."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        det.tray_active = True
+        mod._active_detector = det
+        event = MagicMock()
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+
+        assert result_down is None
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+        on_end.assert_called_once_with(
+            shift_held=False,
+            enter_held=False,
+            toggle_command_overlay=True,
+        )
+
+    def test_tray_space_enter_enter_release_routes_assistant_path(
+        self, input_tap_module
+    ):
+        """With tray visible, Enter-first release should still route as assistant/send."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        det.tray_active = True
+        mod._active_detector = det
+        event = MagicMock()
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        assert result_down is None
+
+        result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+        assert result_up is None
+        on_end.assert_called_once_with(shift_held=False, enter_held=True)
 
     def test_tray_shift_hold_then_shift_release_stays_tray_native(
         self, input_tap_module
@@ -899,20 +964,25 @@ class TestTrayAwareness:
         on_enter.assert_not_called()
         assert det._enter_held is True
 
-    def test_enter_held_passed_on_recording_release(self, input_tap_module):
-        """Enter held during recording should pass enter_held=True to on_hold_end."""
+    def test_enter_release_during_recording_routes_as_command(self, input_tap_module):
+        """If Enter releases first during recording, the chord should route as assistant."""
         mod = input_tap_module
+        Quartz = __import__("Quartz")
         det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
-        det._enter_held = True
-
+        mod._active_detector = det
+        event = MagicMock()
         det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
         det.holdTimerFired_(None)
-        det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
-
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+        assert result_up is None
         on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        assert det._awaiting_space_release is True
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
 
-    def test_enter_tap_before_recording_release_stays_latched(self, input_tap_module):
-        """A brief Enter tap during recording should still route the release as command."""
+    def test_enter_tap_before_recording_release_routes_assistant(self, input_tap_module):
+        """A brief Enter tap during recording should win if Enter releases before Space."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
@@ -931,12 +1001,36 @@ class TestTrayAwareness:
         assert result_down is None, "Enter keyDown must be suppressed during recording"
         assert result_up is None, "Enter keyUp must be suppressed during recording"
 
-        det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+
+        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+
+    def test_enter_tap_before_waiting_release_routes_assistant(self, input_tap_module):
+        """A brief Enter tap during WAITING should win if Enter releases before Space."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        mod._active_detector = det
+        event = MagicMock()
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        assert det._state == mod._State.WAITING
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+
+        assert result_down is None, "Enter keyDown must be suppressed during waiting"
+        assert result_up is None, "Enter keyUp must be suppressed during waiting"
+
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
 
         on_end.assert_called_once_with(shift_held=False, enter_held=True)
 
     def test_enter_keyup_after_space_release_stays_suppressed(self, input_tap_module):
-        """If Space releases before Enter, the trailing Enter keyUp must still be swallowed."""
+        """If Space releases first, the trailing Enter keyUp must still be swallowed."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
@@ -954,7 +1048,11 @@ class TestTrayAwareness:
         assert result_down is None
 
         det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        on_end.assert_called_once_with(
+            shift_held=False,
+            enter_held=False,
+            toggle_command_overlay=True,
+        )
 
         result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
         assert result_up is None
@@ -978,7 +1076,7 @@ class TestTrayAwareness:
 
         assert result_down is None, "Enter keyDown must be suppressed during waiting"
         assert result_up is None, "Enter keyUp must be suppressed during waiting"
-        assert det._enter_latched is True
+        assert det._enter_held is False
 
     def test_shift_release_then_enter_within_grace_routes_as_command(
         self, input_tap_module
@@ -1216,8 +1314,7 @@ class TestCommandOverlayFlags:
         assert det.command_overlay_active is True
 
     def test_enter_quick_tap_routes_to_hold_end_in_waiting_state(self, input_tap_module):
-        """Enter+spacebar quick tap in WAITING state should route to _on_hold_end
-        with enter_held=True."""
+        """If Enter releases first in WAITING, the chord should route as assistant."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
@@ -1225,19 +1322,21 @@ class TestCommandOverlayFlags:
         mod._active_detector = det
         event = MagicMock()
 
-        # Press Enter first (sets _enter_held and _enter_latched in WAITING)
+        # Press Enter while WAITING.
         det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
         assert det._state == mod._State.WAITING
 
-        # Enter keyDown while WAITING → sets _enter_latched
+        # Enter keyDown while WAITING should mark Enter as currently held.
         Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
         Quartz.CGEventGetFlags.return_value = 0
         mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
-        assert det._enter_latched is True
+        assert det._enter_held is True
 
-        # Release spacebar before hold timer → WAITING quick release path
-        det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
+        # Enter releases before Space.
+        result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+        assert result_up is None
 
         # Should route through on_hold_end with enter_held=True
         on_end.assert_called_once_with(shift_held=False, enter_held=True)
-        assert det._state == mod._State.IDLE
+        assert det._awaiting_space_release is True
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
