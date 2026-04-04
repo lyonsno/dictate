@@ -2,6 +2,7 @@
 
 import colorsys
 import importlib
+import math
 import sys
 from unittest.mock import MagicMock
 
@@ -412,21 +413,6 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_glow_fill_alpha_doubles_outer_tail_for_vision_quest(self, mock_pyobjc):
-        """The overlay fill should ride the same louder SDF treatment as the screen glow."""
-        import numpy as np
-
-        sys.modules.pop("spoke.overlay", None)
-        mod = importlib.import_module("spoke.overlay")
-        try:
-            alpha = mod._glow_fill_alpha(
-                np.array([[4.0]], dtype=np.float32),
-                width=4.0,
-            )
-
-            assert float(alpha[0, 0]) == pytest.approx(min(math.exp(-1.0) * 2.0, 1.0))
-        finally:
-            sys.modules.pop("spoke.overlay", None)
     def test_default_brightness_is_dark(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")

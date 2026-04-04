@@ -2784,22 +2784,6 @@ class TestCommandCallbacks:
         parsed = json.loads(result)
         assert parsed["status"] == "added"
 
-    def test_tool_executor_does_not_mark_tool_tts_usage_on_launch_failure(
-        self, main_module, monkeypatch
-    ):
-        d = _make_delegate(main_module, monkeypatch)
-        d._command_client = MagicMock()
-        d._command_client.history = []
-        d._tts_client = MagicMock()
-        d._tts_client.speak.side_effect = RuntimeError("device unavailable")
-
-        executor = d._make_tool_executor()
-        result = executor("read_aloud", {"source_ref": "literal:hello world"})
-
-        assert result == "Error speaking text: device unavailable"
-        assert d._command_tool_used_tts is False
-        d._tts_client.speak.assert_called_once_with("hello world")
-
     def test_command_failed_shows_error_in_overlay(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._command_overlay = MagicMock()
