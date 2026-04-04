@@ -201,6 +201,7 @@ class MenuBarIcon(NSObject):
         branch_item.setEnabled_(False)
         menu.addItem_(branch_item)
 
+        menu.addItem_(NSMenuItem.separatorItem())
         added_menu_section = False
         if getattr(self, '_on_select_model', None) is not None:
             model_state = self._on_select_model(None)
@@ -223,7 +224,7 @@ class MenuBarIcon(NSObject):
                 if assistant:
                     menu.addItem_(
                         self._build_choice_submenu_item(
-                            "Assistant",
+                            "Assistant Model",
                             "assistant",
                             assistant["selected"],
                             assistant["models"],
@@ -258,18 +259,53 @@ class MenuBarIcon(NSObject):
                             preview["models"],
                         )
                     )
-                    added_menu_section = True
-                tts = model_state.get("tts")
-                if tts:
+                tts_backend = model_state.get("tts_backend")
+                if tts_backend:
                     menu.addItem_(
-                        self._build_choice_submenu_item(
-                            "TTS",
-                            "tts",
-                            tts["selected"],
-                            tts["models"],
+                        self._build_toggle_submenu_item(
+                            tts_backend["title"],
+                            "tts_backend",
+                            tts_backend["items"],
                         )
                     )
                     added_menu_section = True
+                tts_model = model_state.get("tts")
+                if tts_model:
+                    menu.addItem_(
+                        self._build_choice_submenu_item(
+                            "TTS Model",
+                            "tts",
+                            tts_model["selected"],
+                            tts_model["models"],
+                        )
+                    )
+                    added_menu_section = True
+                tts_voice = model_state.get("tts_voice")
+                if tts_voice:
+                    if tts_voice.get("type") == "choice":
+                        menu.addItem_(
+                            self._build_choice_submenu_item(
+                                "TTS Voice",
+                                "tts_voice",
+                                tts_voice["selected"],
+                                tts_voice["models"],
+                            )
+                        )
+                    else:
+                        menu.addItem_(
+                            self._build_toggle_submenu_item(
+                                tts_voice["title"],
+                                "tts_voice",
+                                tts_voice["items"],
+                            )
+                        )
+                    added_menu_section = True
+                tts_endpoint = model_state.get("tts_endpoint")
+                if tts_endpoint:
+                    menu.addItem_(self._build_info_item(tts_endpoint["title"]))
+                    note = tts_endpoint.get("note")
+                    if note:
+                        menu.addItem_(self._build_info_item(note))
                 local_whisper = model_state.get("local_whisper")
                 if local_whisper:
                     menu.addItem_(
@@ -347,6 +383,13 @@ class MenuBarIcon(NSObject):
             submenu.addItem_(item)
         submenu_item.setSubmenu_(submenu)
         return submenu_item
+
+    def _build_info_item(self, title: str):
+        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            title, None, ""
+        )
+        item.setEnabled_(False)
+        return item
 
     def selectModel_(self, sender) -> None:
         selection = sender.representedObject()

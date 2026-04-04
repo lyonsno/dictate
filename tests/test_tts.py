@@ -502,12 +502,16 @@ class TestGPULockDiscipline:
         locked_during_write = []
 
         fake_model = MagicMock()
+        locked_during_next = []
         def fake_generate(**kwargs):
             locked_during_generate.append(lock.locked())
-            r = MagicMock()
-            r.audio = [0.1] * 2400  # 100ms at 24kHz
-            r.sample_rate = 24000
-            yield r
+            def _iter():
+                locked_during_next.append(lock.locked())
+                r = MagicMock()
+                r.audio = [0.1] * 2400  # 100ms at 24kHz
+                r.sample_rate = 24000
+                yield r
+            return _iter()
         fake_model.generate = fake_generate
         mock_load.return_value = fake_model
 
@@ -526,6 +530,7 @@ class TestGPULockDiscipline:
         client.speak("test")
 
         assert locked_during_generate == [True], "Lock must be held during generate()"
+        assert locked_during_next == [False], "Lock must NOT be held during chunk iteration"
         assert any(not locked for locked in locked_during_write), "Lock must be released during audio write"
 
     @patch("spoke.tts.sd")
@@ -730,9 +735,10 @@ class TestCommandCompletionAutoplay:
 
         delegate._command_overlay.finish.assert_called_once()
 
-    def test_hold_start_cancels_tts(self, main_module):
-        """Starting a new hold should interrupt active TTS before reopening input."""
+    def test_hold_start_cancels_tts_audio_but_keeps_stream(self, main_module):
+        """Hold during TTS playback should cancel audio but not invalidate the stream token."""
         tts = MagicMock()
+        tts._stream = MagicMock()  # simulate active playback
         delegate = self._make_delegate(main_module, tts_client=tts)
         delegate._models_ready = True
         delegate._capture = MagicMock()
@@ -742,10 +748,13 @@ class TestCommandCompletionAutoplay:
         delegate._detector._shift_at_press = False
         delegate._preview_done = None
         delegate._preview_session_token = 0
+        delegate._transcribing = True
+        old_token = delegate._transcription_token
 
         delegate._on_hold_start()
 
-        tts.cancel.assert_called_once_with()
+        tts.cancel.assert_called_once()
+        assert delegate._transcription_token == old_token, "Stream token must not change during TTS playback"
 
     def test_idle_shift_tap_toggles_audio(self, main_module):
         """Idle shift tap should route to the TTS audio toggle callback."""

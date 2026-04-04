@@ -289,9 +289,17 @@ def _execute_read_aloud(
             tts_client.speak(text)
             logger.info("read_aloud: speak finished")
             return f"Speaking: {text}"
-        except Exception:
-            logger.warning("TTS playback failed", exc_info=True)
-            return "Error speaking text: TTS playback failed"
+        except Exception as exc:
+            detail = str(exc)
+            if hasattr(exc, "read"):
+                try:
+                    detail = exc.read().decode("utf-8", errors="replace")
+                except Exception:
+                    pass
+            elif hasattr(exc, "reason"):
+                detail = f"{exc.reason} ({detail})"
+            logger.warning("TTS playback failed: %s", detail, exc_info=True)
+            return f"Error speaking text: {detail}"
     else:
         logger.warning("read_aloud: no tts_client available")
 

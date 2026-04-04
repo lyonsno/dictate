@@ -22,6 +22,13 @@ def _smoke_script_text() -> str:
     return script.read_text()
 
 
+def _main_inline_launcher_source() -> str:
+    text = _main_script_text()
+    start = text.index("<<'PY'\n") + len("<<'PY'\n")
+    end = text.rindex("\nPY")
+    return text[start:end]
+
+
 def _launch_target_script_text() -> str:
     script = Path(__file__).resolve().parent.parent / "scripts" / "launch-target.sh"
     return script.read_text()
@@ -60,6 +67,25 @@ def _run_inline_launcher(
         env.update(extra_env)
     return subprocess.run(
         [sys.executable, "-c", _inline_launcher_source()],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _run_main_inline_launcher(
+    repo_root: Path,
+    log_file: Path,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["REPO_ROOT"] = str(repo_root)
+    env["LOG_FILE"] = str(log_file)
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [sys.executable, "-c", _main_inline_launcher_source()],
         env=env,
         capture_output=True,
         text=True,
@@ -130,11 +156,17 @@ def test_launch_script_does_not_override_persisted_model_preferences():
     assert 'SPOKE_WHISPER_MODEL="${SPOKE_WHISPER_MODEL:-mlx-community/whisper-medium.en-mlx-8bit}"' not in text
 
 
-def test_launch_script_seeds_default_command_url():
-    """The dev launcher should enable the local command path by default."""
+def test_launch_scripts_do_not_seed_default_command_url():
+    """Launchers should not inject localhost and override persisted backend routing."""
     text = _script_text()
+    main_text = _main_script_text()
+    launch_target_text = _launch_target_script_text()
 
-    assert 'SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"' in text
+    assert 'SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"' not in text
+    assert 'SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"' not in main_text
+    assert 'child_env.setdefault("SPOKE_COMMAND_URL", "http://localhost:8001")' not in text
+    assert 'child_env.setdefault("SPOKE_COMMAND_URL", "http://localhost:8001")' not in main_text
+    assert 'child_env.setdefault("SPOKE_COMMAND_URL", "http://localhost:8001")' not in launch_target_text
 
 
 def test_launch_script_supports_configured_dev_target():
@@ -160,6 +192,17 @@ def test_launch_scripts_support_interpreter_override():
     """Pinned main/dev surfaces should be able to choose a known-good Python runtime."""
     assert 'export VENV_PYTHON="${SPOKE_VENV_PYTHON:-$REPO_ROOT/.venv/bin/python}"' in _script_text()
     assert 'export VENV_PYTHON="${SPOKE_VENV_PYTHON:-$REPO_ROOT/.venv/bin/python}"' in _main_script_text()
+
+
+def test_launch_scripts_bootstrap_missing_repo_venv():
+    """Launchers should repair a fresh worktree runtime instead of assuming someone ran uv sync."""
+    assert '"sync",' in _script_text()
+    assert '"--extra",' in _script_text()
+    assert '"tts",' in _script_text()
+    assert '"--group",' in _script_text()
+    assert '"dev",' in _script_text()
+    assert '"sync",' in _main_script_text()
+    assert '"sync",' in _smoke_script_text()
 
 
 def test_launch_scripts_preserve_spaces_in_target_paths():
@@ -210,7 +253,7 @@ def test_launch_target_script_reads_named_target_registry():
     assert "spoke-launch-target.log" in text
     assert "SPOKE_LAUNCH_TARGET_ID" in text
     assert '"pkill", "-TERM", "-f", "python.*spoke"' in text
-    assert ".spoke.lock" in text
+    assert "lock_file.unlink(missing_ok=True)" not in text
 
 
 def test_main_launch_script_replaces_existing_local_python_spoke_process():
@@ -218,9 +261,16 @@ def test_main_launch_script_replaces_existing_local_python_spoke_process():
     text = _main_script_text()
 
     assert '"pkill", "-TERM", "-f", "python.*spoke"' in text
-    assert 'lock_file = Path.home() / "Library" / "Logs" / ".spoke.lock"' in text
+    assert "lock_file.unlink(missing_ok=True)" not in text
     assert 'SPOKE_COMMAND_URL="${SPOKE_COMMAND_URL:-http://localhost:8001}"' not in text
     assert 'child_env.setdefault("SPOKE_COMMAND_URL", "http://localhost:8001")' not in text
+
+
+def test_launch_target_script_does_not_unlink_lockfile():
+    """The target launcher must not replace the live flock inode and fork state."""
+    text = _launch_target_script_text()
+
+    assert "lock_file.unlink(missing_ok=True)" not in text
 
 
 def test_inline_launch_target_launcher_starts_requested_target(tmp_path):
@@ -325,8 +375,8 @@ def test_inline_launcher_strips_model_override_env_vars(tmp_path, monkeypatch):
     assert "legacy=\n" in log_text
 
 
-def test_inline_launcher_preserves_default_command_url(tmp_path):
-    """Detached launch should keep the default local command URL in the child env."""
+def test_inline_launcher_does_not_seed_default_command_url(tmp_path):
+    """Detached dev launch should leave SPOKE_COMMAND_URL unset unless explicitly provided."""
     repo_root = tmp_path / "repo"
     python_exe = repo_root / ".venv" / "bin" / "python"
     python_exe.parent.mkdir(parents=True)
@@ -349,7 +399,48 @@ def test_inline_launcher_preserves_default_command_url(tmp_path):
     else:
         raise AssertionError("expected detached child output to reach launch log")
 
-    assert "command_url=http://localhost:8001\n" in log_file.read_text()
+    assert "command_url=\n" in log_file.read_text()
+
+
+def test_launch_target_inline_launcher_does_not_seed_default_command_url(tmp_path):
+    """Registry-target launch should preserve unset command routing for backend selection."""
+    helper_repo_root = tmp_path / "helper"
+    helper_repo_root.mkdir()
+
+    target_repo = tmp_path / "target repo"
+    python_exe = target_repo / ".venv" / "bin" / "python"
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text(
+        "#!/bin/sh\n"
+        "printf 'command_url=%s\\n' \"${SPOKE_COMMAND_URL:-}\"\n"
+    )
+    python_exe.chmod(0o755)
+
+    targets_file = tmp_path / "launch_targets.json"
+    targets_file.write_text(
+        '{"selected":"airstrike","targets":[{"id":"airstrike","label":"Airstrike","path":"%s"}]}'
+        % target_repo
+    )
+
+    log_file = tmp_path / "launch-target.log"
+    result = _run_launch_target_inline_launcher(
+        helper_repo_root=helper_repo_root,
+        targets_file=targets_file,
+        target_id="airstrike",
+        log_file=log_file,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "command_url=" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected detached child output to reach launch log")
+
+    assert "command_url=\n" in log_file.read_text()
 
 
 def test_inline_launcher_logs_child_spawn_context(tmp_path):
@@ -394,6 +485,94 @@ def test_inline_launcher_logs_spawn_failure_to_log(tmp_path):
     assert log_file.exists()
     log_text = log_file.read_text()
     assert "No repo .venv Python found and UV launcher is unavailable." in log_text
+
+
+def test_inline_launcher_bootstraps_missing_repo_venv_before_launch(tmp_path):
+    """Dev launch should sync the repo env when a fresh worktree has no local Python yet."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    sync_log = tmp_path / "sync.log"
+    uv_bin = tmp_path / "fake-uv"
+    uv_bin.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$BOOTSTRAP_LOG\"\n"
+        "if [ \"$1\" = \"sync\" ]; then\n"
+        "  mkdir -p \"$3/.venv/bin\"\n"
+        "  cat > \"$3/.venv/bin/python\" <<'EOF'\n"
+        "#!/bin/sh\n"
+        "printf 'bootstrapped-python-started\\n'\n"
+        "EOF\n"
+        "  chmod +x \"$3/.venv/bin/python\"\n"
+        "fi\n"
+    )
+    uv_bin.chmod(0o755)
+
+    log_file = tmp_path / "launch.log"
+    result = _run_inline_launcher(
+        repo_root,
+        log_file,
+        extra_env={
+            "UV_BIN": str(uv_bin),
+            "BOOTSTRAP_LOG": str(sync_log),
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "bootstrapped-python-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected bootstrapped repo python output to reach launch log")
+
+    assert sync_log.read_text().strip() == f"sync --directory {repo_root} --extra tts --group dev"
+    assert "bootstrapped-python-started\n" in log_file.read_text()
+
+
+def test_main_inline_launcher_bootstraps_missing_repo_venv_before_launch(tmp_path):
+    """Main launch should self-heal a missing worktree env before starting spoke."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    sync_log = tmp_path / "sync.log"
+    uv_bin = tmp_path / "fake-uv"
+    uv_bin.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$BOOTSTRAP_LOG\"\n"
+        "if [ \"$1\" = \"sync\" ]; then\n"
+        "  mkdir -p \"$3/.venv/bin\"\n"
+        "  cat > \"$3/.venv/bin/python\" <<'EOF'\n"
+        "#!/bin/sh\n"
+        "printf 'main-bootstrapped-python-started\\n'\n"
+        "EOF\n"
+        "  chmod +x \"$3/.venv/bin/python\"\n"
+        "fi\n"
+    )
+    uv_bin.chmod(0o755)
+
+    log_file = tmp_path / "launch.log"
+    result = _run_main_inline_launcher(
+        repo_root,
+        log_file,
+        extra_env={
+            "UV_BIN": str(uv_bin),
+            "BOOTSTRAP_LOG": str(sync_log),
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "main-bootstrapped-python-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected bootstrapped main repo python output to reach launch log")
+
+    assert sync_log.read_text().strip() == f"sync --directory {repo_root} --extra tts --group dev"
+    assert "main-bootstrapped-python-started\n" in log_file.read_text()
 
 
 def test_smoke_inline_launcher_prefers_uv_tts_runtime(tmp_path):
@@ -518,6 +697,57 @@ def test_smoke_inline_launcher_falls_back_to_path_uv_for_tts_runtime(tmp_path):
     assert "venv-python-started\n" not in log_text
     assert "--extra" in log_text
     assert "tts" in log_text
+
+
+def test_smoke_inline_launcher_bootstraps_missing_repo_venv_before_uv_run(tmp_path):
+    """Smoke launch should repair the repo env first so the worktree is reusable after launch."""
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    sync_log = tmp_path / "sync.log"
+    uv_bin = tmp_path / "fake-uv"
+    uv_bin.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$BOOTSTRAP_LOG\"\n"
+        "if [ \"$1\" = \"sync\" ]; then\n"
+        "  mkdir -p \"$3/.venv/bin\"\n"
+        "  cat > \"$3/.venv/bin/python\" <<'EOF'\n"
+        "#!/bin/sh\n"
+        "printf 'smoke-bootstrapped-python\\n'\n"
+        "EOF\n"
+        "  chmod +x \"$3/.venv/bin/python\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [ \"$1\" = \"run\" ]; then\n"
+        "  printf 'smoke-uv-run-started\\n'\n"
+        "fi\n"
+    )
+    uv_bin.chmod(0o755)
+
+    log_file = tmp_path / "launch.log"
+    result = _run_smoke_inline_launcher(
+        repo_root,
+        log_file,
+        extra_env={
+            "UV_BIN": str(uv_bin),
+            "BOOTSTRAP_LOG": str(sync_log),
+            "SPOKE_TTS_VOICE": "casual_female",
+        },
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+    for _ in range(20):
+        if log_file.exists() and "smoke-uv-run-started" in log_file.read_text():
+            break
+        time.sleep(0.02)
+    else:
+        raise AssertionError("expected smoke uv run output to reach launch log")
+
+    sync_lines = sync_log.read_text().splitlines()
+    assert sync_lines[0] == f"sync --directory {repo_root} --extra tts --group dev"
+    assert sync_lines[1] == f"run --directory {repo_root} --extra tts python -m spoke"
+    assert (repo_root / ".venv" / "bin" / "python").is_file()
 
 
 def test_launch_script_prefers_configured_dev_target(tmp_path):

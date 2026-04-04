@@ -112,8 +112,6 @@ with log_file.open("a", encoding="utf-8") as log:
             log.write("No repo .venv Python found and UV launcher is unavailable.\n")
             raise SystemExit(1)
 
-        log.write(f"Launching Spoke target {target_id} from {repo_root}\n")
-        log.write(f"Launcher child command: {command!r}\n")
         subprocess.run(
             ["pkill", "-TERM", "-f", "python.*spoke"],
             stdout=subprocess.DEVNULL,
@@ -123,7 +121,9 @@ with log_file.open("a", encoding="utf-8") as log:
         time.sleep(0.5)
         lock_file = Path.home() / "Library" / "Logs" / ".spoke.lock"
         lock_file.unlink(missing_ok=True)
+
         log.write("Launch target handoff: terminated prior local python-based spoke processes.\n")
+        log.write(f"Launcher child command: {command!r}\n")
         log.flush()
 
         subprocess.Popen(
