@@ -1451,6 +1451,12 @@ class TestDualModelConfiguration:
             lambda self: "qwen3-14b",
             raising=False,
         )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "local",
+            raising=False,
+        )
         with patch.object(main_module, "CommandClient") as MockCommand:
             MockCommand.return_value = MagicMock()
             with patch.object(
@@ -1485,6 +1491,12 @@ class TestDualModelConfiguration:
             main_module.SpokeAppDelegate,
             "_load_command_model_preference",
             lambda self: "qwen3-14b",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "local",
             raising=False,
         )
 

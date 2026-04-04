@@ -3161,8 +3161,21 @@ class SpokeAppDelegate(NSObject):
     def _seed_command_model_options(
         self, selected_model: str
     ) -> list[tuple[str, str, bool]]:
-        """Seed the Assistant menu from local disk without hitting /v1/models."""
+        """Seed the Assistant menu — sidecar queries /v1/models, local uses disk."""
         if getattr(self, "_command_backend", "local") == "sidecar":
+            if self._command_client is not None:
+                try:
+                    server_model_ids = self._command_client.list_models()
+                    if server_model_ids:
+                        return [
+                            (mid, mid, mid == selected_model)
+                            for mid in server_model_ids
+                        ]
+                except Exception:
+                    logger.warning(
+                        "Sidecar model seed failed — falling back to persisted model",
+                        exc_info=True,
+                    )
             return [(selected_model, selected_model, True)] if selected_model else []
         local_model_dir = Path(
             os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
