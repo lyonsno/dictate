@@ -282,11 +282,8 @@ def _execute_read_aloud(
 
     # Speak via TTS if available
     if tts_client is not None:
-        model_id = getattr(tts_client, "_model_id", "unknown")
-        cancelled = getattr(tts_client, "_cancelled", "unknown")
-        model_loaded = getattr(tts_client, "_model", None) is not None
-        logger.info("read_aloud: tts_client present, model=%s, model_loaded=%s, cancelled=%s, text=%d chars",
-                     model_id, model_loaded, cancelled, len(text))
+        logger.info("read_aloud: tts_client present, model=%s, text=%d chars",
+                     getattr(tts_client, "_model_id", "?"), len(text))
         try:
             logger.info("read_aloud: calling speak (blocking)")
             tts_client.speak(text)
@@ -302,19 +299,11 @@ def _execute_read_aloud(
             elif hasattr(exc, "reason"):
                 detail = f"{exc.reason} ({detail})"
             logger.warning("TTS playback failed: %s", detail, exc_info=True)
-            return (
-                f"Error speaking text: TTS playback failed. "
-                f"model={model_id}, model_loaded={model_loaded}, "
-                f"cancelled={cancelled}, error={type(exc).__name__}: {detail}"
-            )
+            return f"Error speaking text: {detail}"
     else:
         logger.warning("read_aloud: no tts_client available")
-        return (
-            "Error: TTS client is not available. "
-            "This means SPOKE_TTS_VOICE is not set in the environment, "
-            "or the TTS client failed to initialize at startup. "
-            "Tell the user: TTS is not configured."
-        )
+
+    return f"Spoke: {text}"
 
 
 def _execute_add_to_tray(
