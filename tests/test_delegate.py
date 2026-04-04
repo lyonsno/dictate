@@ -73,6 +73,16 @@ class TestHoldCallbacks:
         d._capture.start.assert_called_once()
         d._menubar.set_recording.assert_called_with(True)
 
+    def test_hold_start_starts_capture_before_showing_glow(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        call_order: list[str] = []
+        d._capture.start.side_effect = lambda **kwargs: call_order.append("capture")
+        d._glow.show.side_effect = lambda: call_order.append("glow")
+
+        d._on_hold_start()
+
+        assert call_order[:2] == ["capture", "glow"]
+
     def test_hold_start_capture_failure_restores_idle_ui(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._capture.start.side_effect = RuntimeError("audio dead")

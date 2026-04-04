@@ -680,15 +680,6 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
-        if self._glow is not None:
-            self._glow.show()
-        if self._overlay is not None:
-            if self._glow is not None:
-                self._overlay.set_brightness(
-                    getattr(self._glow, "_brightness", 0.0),
-                    immediate=True,
-                )
-            self._overlay.show()
         try:
             def on_vad_state(is_speech: bool):
                 if self._menubar is not None:
@@ -706,6 +697,15 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_recording(False)
                 self._menubar.set_status_text("Audio input error — try again")
             return
+        if self._glow is not None:
+            self._glow.show()
+        if self._overlay is not None:
+            if self._glow is not None:
+                self._overlay.set_brightness(
+                    getattr(self._glow, "_brightness", 0.0),
+                    immediate=True,
+                )
+            self._overlay.show()
         self._record_start_time = time.monotonic()
         self._cap_fired = False
         self._last_preview_text = ""
