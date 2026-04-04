@@ -783,6 +783,10 @@ class TranscriptionOverlay(NSObject):
         layer = content_view.layer() if hasattr(content_view, "layer") else None
         if layer is None or not hasattr(layer, "setBackgroundColor_"):
             return
+        state = getattr(self, "_visual_layer_state", None)
+        if state is not None and not state.is_visible(PREVIEW_FILL_LAYER_ID):
+            layer.setBackgroundColor_(None)
+            return
 
         t = min(max(brightness, 0.0), 1.0)
         if t <= _LIGHT_BACKGROUND_DIRECT_BACKSTOP_START:

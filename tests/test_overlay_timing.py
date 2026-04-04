@@ -236,6 +236,25 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_preview_fill_toggle_disables_direct_dark_backstop(self, mock_pyobjc):
+        """Turning Preview Fill off should clear the preview-body backstop as well."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            class _State:
+                def is_visible(self, layer_id):
+                    return False
+
+            overlay = self._make_overlay(mod)
+            overlay._visual_layer_state = _State()
+
+            overlay._content_view.layer.return_value.setBackgroundColor_.reset_mock()
+            overlay._apply_direct_fill_backstop(1.0, mod._BG_COLOR_LIGHT, 0.95)
+
+            overlay._content_view.layer.return_value.setBackgroundColor_.assert_called_once_with(None)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_dark_background_uses_light_text_and_sets_fill_opacity(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")

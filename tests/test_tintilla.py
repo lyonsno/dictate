@@ -9,6 +9,7 @@ class TestLayerVisibilityState:
             COMMAND_FILL_LAYER_ID,
             LayerVisibilityState,
             PREVIEW_FILL_LAYER_ID,
+            SCREEN_DIMMER_LAYER_ID,
             SCREEN_GLOW_WIDE_BLOOM_LAYER_ID,
         )
 
@@ -17,6 +18,7 @@ class TestLayerVisibilityState:
         state.add_listener(listener)
 
         assert state.is_visible(SCREEN_GLOW_WIDE_BLOOM_LAYER_ID) is True
+        assert state.is_visible(SCREEN_DIMMER_LAYER_ID) is True
         assert state.is_visible(PREVIEW_FILL_LAYER_ID) is True
         assert state.is_visible(COMMAND_FILL_LAYER_ID) is True
 

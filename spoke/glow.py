@@ -31,6 +31,7 @@ from .tintilla import (
     SCREEN_GLOW_CORE_LAYER_ID,
     SCREEN_GLOW_TIGHT_BLOOM_LAYER_ID,
     SCREEN_GLOW_WIDE_BLOOM_LAYER_ID,
+    SCREEN_DIMMER_LAYER_ID,
     SCREEN_VIGNETTE_CORE_LAYER_ID,
     SCREEN_VIGNETTE_MID_LAYER_ID,
     SCREEN_VIGNETTE_TAIL_LAYER_ID,
@@ -592,6 +593,11 @@ class GlowOverlay(NSObject):
         if hasattr(self, "_vignette_pass_layers"):
             for layer_id, entry in zip(_VIGNETTE_LAYER_IDS, self._vignette_pass_layers):
                 entry["layer"].setHidden_(False if state is None else not state.is_visible(layer_id))
+        if getattr(self, "_dim_layer", None) is not None:
+            self._dim_layer.setHidden_(
+                False if state is None else not state.is_visible(SCREEN_DIMMER_LAYER_ID)
+            )
+        self._apply_glow_color(self._glow_color)
 
     def _cancel_pending_hide(self) -> None:
         if self._hide_timer is not None:

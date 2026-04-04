@@ -33,6 +33,7 @@ SCREEN_GLOW_WIDE_BLOOM_LAYER_ID = "screen_glow_wide_bloom"
 SCREEN_VIGNETTE_CORE_LAYER_ID = "screen_vignette_core"
 SCREEN_VIGNETTE_MID_LAYER_ID = "screen_vignette_mid"
 SCREEN_VIGNETTE_TAIL_LAYER_ID = "screen_vignette_tail"
+SCREEN_DIMMER_LAYER_ID = "screen_dimmer"
 PREVIEW_FILL_LAYER_ID = "preview_fill"
 COMMAND_FILL_LAYER_ID = "command_fill"
 
@@ -43,6 +44,7 @@ LAYER_SPECS: list[tuple[str, str]] = [
     (SCREEN_VIGNETTE_CORE_LAYER_ID, "Screen Vignette: Core"),
     (SCREEN_VIGNETTE_MID_LAYER_ID, "Screen Vignette: Mid"),
     (SCREEN_VIGNETTE_TAIL_LAYER_ID, "Screen Vignette: Tail"),
+    (SCREEN_DIMMER_LAYER_ID, "Screen Dimmer"),
     (PREVIEW_FILL_LAYER_ID, "Preview Fill"),
     (COMMAND_FILL_LAYER_ID, "Command Fill"),
 ]
