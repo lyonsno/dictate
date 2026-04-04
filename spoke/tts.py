@@ -552,12 +552,10 @@ class RemoteTTSClient:
             audio = audio.reshape(-1, 1)
 
         chunk_size = int(sample_rate * 0.064)
-        done = threading.Event()
         stream = sd.OutputStream(
             samplerate=sample_rate,
             channels=audio.shape[1],
             dtype="float32",
-            finished_callback=lambda: done.set(),
         )
         self._stream = stream
         self._last_chunk = None
@@ -577,12 +575,7 @@ class RemoteTTSClient:
                     amplitude_callback(rms)
                 offset = end
 
-            while not done.is_set():
-                if self._cancelled:
-                    break
-                done.wait(timeout=0.05)
-
-            if self._cancelled and not done.is_set() and self._last_chunk is not None:
+            if self._cancelled and self._last_chunk is not None:
                 fade_samples = int(sample_rate * 0.05)
                 last_amp = float(np.mean(np.abs(self._last_chunk[-1:])))
                 fade_ramp = np.linspace(last_amp, 0.0, fade_samples, dtype=np.float32).reshape(-1, 1)
