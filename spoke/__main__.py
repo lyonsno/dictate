@@ -351,6 +351,8 @@ class SpokeAppDelegate(NSObject):
         self._overlay: TranscriptionOverlay | None = None
         self._transcribing = False
         self._transcription_token = 0
+        self._cancel_spring_active = False
+        self._cancel_spring_start = 0.0
         self._preview_active = False
         self._preview_thread: threading.Thread | None = None
         self._preview_done = threading.Event()
@@ -770,6 +772,18 @@ class SpokeAppDelegate(NSObject):
             getattr(tts, "_playback_active", False)
             or getattr(tts, "_stream", None) is not None
         )
+        # ── Cancel spring: space+enter hold during active generation ──
+        # Don't cancel immediately — start the visual spring wind-up.
+        # The cancel fires on release if the spring is past threshold.
+        enter_held = getattr(self._detector, '_enter_held', False) is True
+        if self._transcribing and enter_held and not tts_playing:
+            logger.info("Space+enter hold during active generation — starting cancel spring")
+            self._cancel_spring_active = True
+            self._cancel_spring_start = time.monotonic()
+            if self._command_overlay is not None:
+                self._command_overlay.set_cancel_spring(1.0)
+            return  # don't start recording
+
         if self._transcribing:
             if tts_playing:
                 logger.info("Hold during TTS playback — cancelling audio, keeping stream alive")
@@ -1206,19 +1220,30 @@ class SpokeAppDelegate(NSObject):
                 else:
                     logger.info("Shift+empty — no tray entries to recall")
             elif toggle_command_overlay and self._command_client is not None:
-                # ── Panic switch: cancel active generation ──
-                # If the assistant is actively streaming (transcribing),
-                # the space+enter chord cancels generation instead of
-                # toggling overlay visibility.
-                if self._transcribing:
-                    logger.info(
-                        "Space+enter cancel chord — cancelling active generation "
-                        "(token %d)", self._transcription_token,
-                    )
-                    self._transcription_token += 1
-                    self._transcribing = False
-                    if self._menubar is not None:
-                        self._menubar.set_status_text("Cancelled")
+                # ── Panic switch: cancel spring release ──
+                # If the spring was winding up, check how long it was held.
+                # Past threshold → cancel generation. Under → snap back.
+                _CANCEL_SPRING_THRESHOLD_S = 0.5
+                if getattr(self, '_cancel_spring_active', False):
+                    self._cancel_spring_active = False
+                    elapsed = time.monotonic() - self._cancel_spring_start
+                    # Snap the spring back visually
+                    if self._command_overlay is not None:
+                        self._command_overlay.set_cancel_spring(0.0)
+                    if elapsed >= _CANCEL_SPRING_THRESHOLD_S:
+                        logger.info(
+                            "Cancel spring released at %.0fms — cancelling generation "
+                            "(token %d)", elapsed * 1000, self._transcription_token,
+                        )
+                        self._transcription_token += 1
+                        self._transcribing = False
+                        if self._menubar is not None:
+                            self._menubar.set_status_text("Cancelled")
+                    else:
+                        logger.info(
+                            "Cancel spring released at %.0fms — below threshold, snapping back",
+                            elapsed * 1000,
+                        )
                     return
 
                 # Use command_overlay_active (our flag) not _visible (animation
@@ -2162,6 +2187,10 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
+        # Reset cancel spring if generation finishes while spring is winding
+        self._cancel_spring_active = False
+        if self._command_overlay is not None:
+            self._command_overlay.set_cancel_spring(0.0)
         overlay = self._command_overlay
         if overlay is not None:
             overlay.set_tool_active(False)

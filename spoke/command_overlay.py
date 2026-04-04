@@ -207,6 +207,10 @@ class CommandOverlay(NSObject):
         # Thinking timer state
         self._thinking_timer: NSTimer | None = None
         self._thinking_seconds = 0.0
+
+        # Cancel spring state — 0.0 = idle, 1.0 = fully wound
+        self._cancel_spring = 0.0
+        self._cancel_spring_target = 0.0  # 1.0 while winding, 0.0 while unwinding
         self._thinking_label = None  # NSTextField for the counter
         self._thinking_glow_layer = None  # CALayer for the glow behind the number
         self._thinking_inverted = False  # False = glowing number, True = cutout
@@ -464,6 +468,14 @@ class CommandOverlay(NSObject):
         # Don't cancel pulse here — let it continue during fade-out.
         # It will be cancelled when the fade completes (window ordered out).
         self._start_fade_out()
+
+    def set_cancel_spring(self, target: float) -> None:
+        """Set the cancel spring target (0.0 = idle, 1.0 = winding up).
+
+        The spring animates toward the target in the pulse tick, so
+        calling this once starts the wind-up or snap-back.
+        """
+        self._cancel_spring_target = max(0.0, min(1.0, target))
 
     def set_utterance(self, text: str) -> None:
         """Show the user's utterance in the text view at reduced opacity."""
@@ -809,13 +821,47 @@ class CommandOverlay(NSObject):
         if self._color_phase > 1.0:
             self._color_phase -= 1.0
         hue = self._color_phase
+
+        # ── Cancel spring animation ──
+        # The spring chases _cancel_spring_target with asymmetric speed:
+        # winding up is deliberate (~600ms to full), snapping back is fast
+        # (~150ms).  While wound, hue shifts toward red and saturation
+        # climbs — like a coil heating up.
+        spring = self._cancel_spring
+        target = self._cancel_spring_target
+        if spring < target:
+            # Wind up — deliberate
+            spring = min(target, spring + dt / 0.6)
+        elif spring > target:
+            # Snap back — fast
+            spring = max(target, spring - dt / 0.15)
+        self._cancel_spring = spring
+
+        if spring > 0.001:
+            # Blend hue toward red (0.0).  Use shortest arc — if hue is
+            # in the violet/red neighborhood already (>0.8), go forward
+            # past 1.0 toward 1.0≡0.0.  Otherwise pull back toward 0.0.
+            red_hue = 0.0
+            if hue > 0.5:
+                # Go forward through red end
+                target_hue = 1.0  # wraps to 0.0
+            else:
+                target_hue = red_hue
+            hue = hue + (target_hue - hue) * spring
+            if hue >= 1.0:
+                hue -= 1.0
+
         # Log color phase every ~1s (every 30th tick)
         if not hasattr(self, '_color_log_counter'):
             self._color_log_counter = 0
         self._color_log_counter += 1
         if self._color_log_counter % 30 == 0:
-            logger.info("Color phase: %.3f hue, vel_phase=%.3f", hue, self._color_velocity_phase)
-        s, v = 0.228, 0.81  # desaturated — legible, ambient, not neon
+            logger.info("Color phase: %.3f hue, vel_phase=%.3f, spring=%.3f", hue, self._color_velocity_phase, spring)
+
+        # Saturation and value — spring winds up saturation toward vivid red
+        base_s, base_v = 0.228, 0.81  # desaturated — legible, ambient, not neon
+        s = base_s + (0.75 - base_s) * spring  # 0.228 → 0.75 at full wind
+        v = base_v + (0.90 - base_v) * spring  # 0.81  → 0.90 at full wind
         c = v * s
         x = c * (1.0 - abs((hue * 6.0) % 2.0 - 1.0))
         m = v - c
