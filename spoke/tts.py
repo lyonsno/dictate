@@ -606,8 +606,7 @@ class RemoteTTSClient:
     ) -> None:
         if not text:
             return
-        if self._cancelled:
-            return
+        self._cancelled = False
 
         import urllib.request
         import urllib.error
