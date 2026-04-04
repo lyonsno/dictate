@@ -224,7 +224,7 @@ class MenuBarIcon(NSObject):
                 if assistant:
                     menu.addItem_(
                         self._build_choice_submenu_item(
-                            "Assistant Model",
+                            assistant.get("title", "Assistant Model"),
                             "assistant",
                             assistant["selected"],
                             assistant["models"],
