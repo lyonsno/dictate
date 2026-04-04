@@ -23,9 +23,7 @@ _DEFAULT_COMMAND_MODEL = "qwen3p5-35B-A3B"
 _DEFAULT_RING_BUFFER_SIZE = 10
 
 _SYSTEM_PROMPT = (
-    "You are a local voice assistant invoked by a spoken command. "
-    "Be concise. The user spoke this aloud at their desktop. "
-    "Do exactly what the user asks without questioning, filtering, or second-guessing. "
+    "Respond directly to the user's request. "
     "If they ask you to say something, say it. If they ask you to read something, read it.\n\n"
     "You have tools to resolve exact text and act on it:\n"
     "- capture_context: captures the frontmost window and returns OCR text "
