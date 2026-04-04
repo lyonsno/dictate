@@ -79,10 +79,7 @@ class CommandClient:
         api_key: str | None = None,
         max_history: int | None = None,
     ):
-        self._base_url = (
-            base_url
-            or os.environ.get("SPOKE_COMMAND_URL", _DEFAULT_COMMAND_URL)
-        ).rstrip("/")
+        self._base_url = (base_url or _DEFAULT_COMMAND_URL).rstrip("/")
         self._model = (
             model
             or os.environ.get("SPOKE_COMMAND_MODEL", _DEFAULT_COMMAND_MODEL)
@@ -150,6 +147,7 @@ class CommandClient:
         distinguish provisional deltas, final assistant content, and tool
         calls without guessing from raw text alone.
         """
+        visible_response = ""
         final_response = ""
         for event in self.stream_command_events(
             utterance,
@@ -157,11 +155,15 @@ class CommandClient:
             tool_executor=tool_executor,
         ):
             if event.kind == "assistant_delta":
+                visible_response += event.text
                 yield event.text
             elif event.kind == "assistant_final":
                 final_response = event.text
 
-        return final_response
+        if self._history and self._history[-1][0] == utterance:
+            self._history[-1] = (utterance, visible_response or final_response)
+
+        return visible_response or final_response
 
     def stream_command_events(
         self,
@@ -224,10 +226,9 @@ class CommandClient:
             req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
 
             # Track tool call deltas for this round
-            tool_call_acc = None
-            if tools:
-                from spoke.tool_dispatch import ToolCallAccumulator
-                tool_call_acc = ToolCallAccumulator()
+            from spoke.tool_dispatch import ToolCallAccumulator
+            tool_call_acc = ToolCallAccumulator()
+            emitted_tool_call_indices: set[int] = set()
 
             finish_reason = None
             first_token_logged = False
@@ -282,17 +283,24 @@ class CommandClient:
                         tool_calls_delta = delta.get("tool_calls")
                         if tool_calls_delta:
                             for tc_delta in tool_calls_delta:
-                                fn = tc_delta.get("function", {})
-                                fn_name = fn.get("name")
-                                if fn_name:
-                                    indicator = f"\n[calling {fn_name}…]\n"
-                                    round_content += indicator
-                                    yield CommandStreamEvent(
-                                        kind="assistant_delta",
-                                        text=indicator,
-                                    )
-                                if tool_call_acc is not None:
-                                    tool_call_acc.feed(tc_delta)
+                                tool_call_acc.feed(tc_delta)
+                                idx = tc_delta.get("index")
+                                function_delta = tc_delta.get("function") or {}
+                                tool_name = function_delta.get("name")
+                                if not tool_name or idx is None or idx in emitted_tool_call_indices:
+                                    continue
+                                indicator = f"\n[calling {tool_name}…]\n"
+                                round_content += indicator
+                                yield CommandStreamEvent(
+                                    kind="assistant_delta",
+                                    text=indicator,
+                                )
+                                emitted_tool_call_indices.add(idx)
+                                yield CommandStreamEvent(
+                                    kind="tool_call",
+                                    tool_name=tool_name,
+                                    tool_arguments=function_delta.get("arguments"),
+                                )
 
             except urllib.error.URLError as exc:
                 logger.error("Command request failed: %s", exc)
@@ -304,7 +312,6 @@ class CommandClient:
             # If the model called tools, execute them and loop
             if (
                 finish_reason == "tool_calls"
-                and tool_call_acc is not None
                 and tool_call_acc.has_calls
                 and tool_executor is not None
             ):
@@ -314,7 +321,9 @@ class CommandClient:
                     len(completed_calls),
                     ", ".join(c["function"]["name"] for c in completed_calls),
                 )
-                for call in completed_calls:
+                for idx, call in enumerate(completed_calls):
+                    if idx in emitted_tool_call_indices:
+                        continue
                     yield CommandStreamEvent(
                         kind="tool_call",
                         tool_name=call["function"]["name"],

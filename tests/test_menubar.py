@@ -267,7 +267,7 @@ class TestMenuBarIcon:
         icon.setup()
 
         calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
-        assert any(call.args == ("Assistant", None, "") for call in calls)
+        assert any(call.args == ("Assistant Model", None, "") for call in calls)
         assert any(call.args == ("qwen3p5-35B-A3B", "selectModel:", "") for call in calls)
         assert any(call.args == ("qwen3-14b", "selectModel:", "") for call in calls)
 

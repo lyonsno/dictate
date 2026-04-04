@@ -1,6 +1,5 @@
-# Smoke-test env for voxtral-autoplay branch.
-# Sourced by launch-smoke.sh when this worktree is the smoke target.
-export SPOKE_COMMAND_URL="http://localhost:8001"
+# API key for sidecar OMLX — required for /v1/models discovery.
+# SPOKE_COMMAND_URL is intentionally absent (Thunder-Strike Armor env-unhook).
 export SPOKE_COMMAND_API_KEY="1234"
 export SPOKE_COMMAND_THINKING="0"
 export SPOKE_TTS_VOICE="casual_female"
@@ -8,3 +7,4 @@ export SPOKE_TTS_MODEL="mlx-community/Voxtral-4B-TTS-2603-mlx-6bit"
 export SPOKE_SDF_PRECISION_SPLIT="1"
 export SPOKE_SDF_PRECISION_SPLIT_ALPHA_GAMMA="0.35"
 export PYTHONPATH="/Users/noahlyons/dev/mlx-audio-pr-607-voxtral-tts${PYTHONPATH:+:$PYTHONPATH}"
+export OMLX_SERVER_API_KEY="1234"

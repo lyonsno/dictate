@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import dataclass
+from datetime import datetime
+import faulthandler
 import json
 import logging
 import os
@@ -23,6 +25,8 @@ from pathlib import Path
 import sys
 import threading
 import time
+import traceback
+import uuid
 
 import objc
 from AppKit import (
@@ -43,6 +47,7 @@ from .glow import GlowOverlay
 from .inject import inject_text, save_pasteboard, restore_pasteboard, set_pasteboard_only
 from .input_tap import SpacebarHoldDetector
 from .launch_targets import (
+    current_launch_target,
     current_launch_target_id,
     iter_launch_targets,
     save_selected_launch_target,
@@ -53,9 +58,15 @@ from .transcribe import TranscriptionClient
 from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
 from .transcribe_parakeet import ParakeetCoreMLClient, _PARAKEET_MODEL_ID
 from .transcribe_qwen import LocalQwenClient
-from .tts import TTSClient
+from .tts import TTSClient, RemoteTTSClient
+from .heartbeat import HeartbeatManager, zombie_sweep, HEARTBEAT_INTERVAL_S
 
 logger = logging.getLogger(__name__)
+
+_LOCK_PATH = os.environ.get(
+    "SPOKE_LOCK_PATH",
+    os.path.expanduser("~/Library/Logs/.spoke.lock"),
+)
 
 _DEFAULT_PREVIEW_MODEL = "mlx-community/whisper-base.en-mlx-8bit"
 _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
@@ -63,6 +74,15 @@ _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 _DEFAULT_COMMAND_BACKEND = "local"
 _DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
+_DEFAULT_COMMAND_SIDECAR_URL = ""
+_DEFAULT_TTS_SIDECAR_URL = "http://MacBook-Pro-2.local:9001"
+
+
+def _url_host(url: str) -> str:
+    """Extract host:port from a URL for display."""
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    return parsed.netloc or url
 _CURATED_LOCAL_COMMAND_MODEL_IDS = [
     "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
     "mlx-community/Qwen3-4B-Thinking-2507-8bit",
@@ -80,6 +100,102 @@ _TTS_MODELS = [
 ]
 
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
+_PROCESS_LAUNCH_ID = os.environ.get("SPOKE_LAUNCH_ID") or f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
+os.environ["SPOKE_LAUNCH_ID"] = _PROCESS_LAUNCH_ID
+
+
+def _runtime_phase_path() -> Path:
+    return Path(
+        os.environ.get(
+            "SPOKE_RUNTIME_PHASE_PATH",
+            str(Path.home() / "Library" / "Logs" / "spoke-last-phase.json"),
+        )
+    ).expanduser()
+
+
+def _flush_logging_handlers() -> None:
+    for handler in logging.getLogger().handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
+
+
+def _record_runtime_phase(phase: str, **details) -> None:
+    cwd = os.getcwd()
+    payload = {
+        "timestamp": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "phase": phase,
+        "launch_id": _PROCESS_LAUNCH_ID,
+        "parent_launch_id": os.environ.get("SPOKE_PARENT_LAUNCH_ID"),
+        "pid": os.getpid(),
+        "ppid": os.getppid(),
+        "cwd": cwd,
+        "python": sys.executable,
+        "thread": threading.current_thread().name,
+    }
+    phase_details = {key: value for key, value in details.items() if value is not None}
+    launch_target = current_launch_target(Path(cwd))
+    if launch_target is not None:
+        phase_details.setdefault("launch_target_id", launch_target["id"])
+        phase_details.setdefault("launch_target_label", launch_target["label"])
+    payload.update(phase_details)
+
+    try:
+        path = _runtime_phase_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_name(
+            f"{path.name}.{os.getpid()}.{threading.get_ident()}.{uuid.uuid4().hex}.tmp"
+        )
+        tmp_path.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp_path, path)
+    except Exception:
+        logger.exception("Failed to write runtime phase snapshot")
+
+    detail_text = ", ".join(f"{key}={value!r}" for key, value in phase_details.items())
+    if detail_text:
+        logger.info("Runtime phase: %s (%s)", phase, detail_text)
+    else:
+        logger.info("Runtime phase: %s", phase)
+    _flush_logging_handlers()
+
+
+def _install_crash_diagnostics() -> None:
+    try:
+        faulthandler.enable(all_threads=True)
+    except Exception:
+        logger.warning("Failed to enable faulthandler", exc_info=True)
+
+    previous_sys_excepthook = sys.excepthook
+
+    def _sys_excepthook(exc_type, exc, tb):
+        _record_runtime_phase(
+            "exception.uncaught",
+            exception_type=getattr(exc_type, "__name__", str(exc_type)),
+            exception=str(exc),
+            traceback="".join(traceback.format_exception(exc_type, exc, tb)),
+        )
+        previous_sys_excepthook(exc_type, exc, tb)
+
+    sys.excepthook = _sys_excepthook
+
+    previous_threading_excepthook = getattr(threading, "excepthook", None)
+
+    def _threading_excepthook(args):
+        _record_runtime_phase(
+            "exception.thread",
+            exception_type=getattr(args.exc_type, "__name__", str(args.exc_type)),
+            exception=str(args.exc_value),
+            thread_name=getattr(args.thread, "name", None),
+            traceback="".join(
+                traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)
+            ),
+        )
+        if previous_threading_excepthook is not None:
+            previous_threading_excepthook(args)
+
+    if previous_threading_excepthook is not None:
+        threading.excepthook = _threading_excepthook
 
 
 def _get_ram_gb() -> float:
@@ -283,6 +399,7 @@ class SpokeAppDelegate(NSObject):
                 self._command_model_id,
             )
         else:
+            self._command_url = None
             self._command_client = None
             self._command_backend = None
             self._command_url = None
@@ -293,15 +410,28 @@ class SpokeAppDelegate(NSObject):
             self._scene_cache = None
             self._tool_schemas = None
 
+        # Heartbeat — zombie sweep runs before us, this starts the writer.
+        self._heartbeat = HeartbeatManager()
+        self._heartbeat.set_context(
+            worktree=os.getcwd(),
+        )
+        self._heartbeat.set_evict_callback(self._evict_model)
+        self._heartbeat_timer = None
+
         # TTS autoplay — initialized if SPOKE_TTS_VOICE is set.
         # Preference-based model override takes priority over env var.
         tts_model_pref = self._load_preferences().get("tts_model")
         if tts_model_pref:
             os.environ["SPOKE_TTS_MODEL"] = tts_model_pref
-        self._tts_client = TTSClient.from_env(gpu_lock=self._local_inference_lock)
+        self._tts_backend = self._load_preference("tts_backend") or "local"
+        self._tts_sidecar_url = (
+            self._load_preference("tts_sidecar_url") or _DEFAULT_TTS_SIDECAR_URL
+        )
+        self._tts_client = self._build_tts_client()
         self._command_tool_used_tts = False
         if self._tts_client is not None:
-            logger.info("TTS enabled: model=%s voice=%s", self._tts_client._model_id, self._tts_client._voice)
+            backend_label = "sidecar" if isinstance(self._tts_client, RemoteTTSClient) else "local"
+            logger.info("TTS enabled: backend=%s voice=%s", backend_label, self._tts_client._voice)
 
         # Tray state — speech-native stacked clipboard
         self._tray_stack: list[TrayEntry | str] = []
@@ -336,6 +466,14 @@ class SpokeAppDelegate(NSObject):
     # ── NSApplication delegate ──────────────────────────────
 
     def applicationDidFinishLaunching_(self, notification) -> None:
+        _record_runtime_phase(
+            "app.did_finish_launching",
+            local_mode=self._local_mode,
+            preview_model=self._preview_model_id,
+            transcription_model=self._transcription_model_id,
+            command_model=self._command_model_id,
+            tts_enabled=self._tts_client is not None,
+        )
         self._menubar = MenuBarIcon.alloc().initWithQuitCallback_selectModelCallback_(
             self._quit, self._handle_model_menu_action
         )
@@ -370,6 +508,7 @@ class SpokeAppDelegate(NSObject):
         if self._mic_probe_in_flight:
             return
         self._mic_probe_in_flight = True
+        _record_runtime_phase("mic_probe.start")
         threading.Thread(
             target=self._probe_mic_permission, daemon=True, name="mic-probe"
         ).start()
@@ -380,12 +519,14 @@ class SpokeAppDelegate(NSObject):
         try:
             self._run_mic_permission_probe(sd)
             logger.info("Microphone access granted")
+            _record_runtime_phase("mic_probe.granted")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "micPermissionGranted:", None, False
             )
         except Exception as exc:
             if self._is_permission_probe_denial(exc):
                 logger.warning("Mic permission not yet granted: %s", exc)
+                _record_runtime_phase("mic_probe.denied", error=str(exc))
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "micPermissionDenied:", None, False
                 )
@@ -400,12 +541,14 @@ class SpokeAppDelegate(NSObject):
             try:
                 self._run_mic_permission_probe(sd)
                 logger.info("Microphone access granted after PortAudio reset")
+                _record_runtime_phase("mic_probe.granted_after_reset")
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "micPermissionGranted:", None, False
                 )
             except Exception as retry_exc:
                 if self._is_permission_probe_denial(retry_exc):
                     logger.warning("Mic permission not yet granted: %s", retry_exc)
+                    _record_runtime_phase("mic_probe.denied_after_reset", error=str(retry_exc))
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "micPermissionDenied:", None, False
                     )
@@ -414,6 +557,7 @@ class SpokeAppDelegate(NSObject):
                     "Mic probe failed after PortAudio reset",
                     exc_info=True,
                 )
+                _record_runtime_phase("mic_probe.failed", error=str(retry_exc))
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "micProbeFailed:", None, False
                 )
@@ -512,16 +656,19 @@ class SpokeAppDelegate(NSObject):
         ).start()
 
     def _prepare_clients_in_background(self) -> None:
+        _record_runtime_phase("client_warmup.start")
         try:
             self._prepare_clients()
         except Exception as exc:
             self._warm_error = exc
             logger.exception("Model preparation failed")
+            _record_runtime_phase("client_warmup.failed", error=str(exc))
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "clientWarmupFailed:", None, False
             )
             return
 
+        _record_runtime_phase("client_warmup.succeeded")
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "clientWarmupSucceeded:", None, False
         )
@@ -531,8 +678,13 @@ class SpokeAppDelegate(NSObject):
         self._models_ready = True
         self._warm_error = None
         logger.info("spoke ready — hold spacebar to record")
+        _record_runtime_phase("app.ready")
         self._menubar.set_status_text("Ready — hold spacebar")
         self._hide_startup_status()
+
+        # Register loaded models with the heartbeat manager.
+        self._register_loaded_models()
+        self._start_heartbeat_timer()
 
         # Warm TTS after Whisper is loaded, but keep it off the main thread.
         tts = getattr(self, "_tts_client", None)
@@ -555,8 +707,11 @@ class SpokeAppDelegate(NSObject):
         if tts is None:
             return
         try:
+            _record_runtime_phase("tts_warmup.start")
             tts.warm()
+            _record_runtime_phase("tts_warmup.started")
         except Exception:
+            _record_runtime_phase("tts_warmup.failed")
             logger.exception("TTS warmup failed")
 
     def _show_startup_status(self, text: str) -> None:
@@ -607,22 +762,40 @@ class SpokeAppDelegate(NSObject):
             self._hold_rejected_during_warmup = True
             self._refresh_startup_status()
             return
-        # If a command is actively streaming, cancel it
+        # If TTS is playing from a tool call, cancel the playback but
+        # don't invalidate the stream token — let the remaining tool batch
+        # finish so subsequent read_aloud calls still execute.
+        tts = getattr(self, "_tts_client", None)
+        tts_playing = tts is not None and (
+            getattr(tts, "_playback_active", False)
+            or getattr(tts, "_stream", None) is not None
+        )
         if self._transcribing:
-            logger.info("Hold during active stream — cancelling")
-            self._transcription_token += 1
-            self._transcribing = False
+            if tts_playing:
+                logger.info("Hold during TTS playback — cancelling audio, keeping stream alive")
+                tts.cancel()
+            else:
+                logger.info("Hold during active stream — cancelling")
+                self._transcription_token += 1
+                self._transcribing = False
             # Fall through to start recording
-        # Don't cancel TTS on hold-start — let tool-call playback finish
-        # naturally. TTS is cancelled on explicit overlay dismiss or when
-        # a new command response arrives and supersedes the old one.
-        # Clear Enter suppression — new hold replaces/dismisses the overlay.
-        self._detector.command_overlay_active = False
+        # Keep the detector flag aligned with the overlay's real visible state.
+        overlay_visible = (
+            self._command_overlay is not None
+            and getattr(self._command_overlay, "_visible", False)
+        )
+        self._detector.command_overlay_active = (
+            overlay_visible and not self._detector._command_overlay_just_dismissed
+        )
         # Do NOT clear _just_dismissed here — it must survive until
         # _on_hold_end so the empty-recording path can see it.
         # Otherwise a slow dismiss tap (>400ms) would recall immediately.
-        logger.info("command_overlay_active -> False (hold start), _just_dismissed=%s (preserved)",
-                     self._detector._command_overlay_just_dismissed)
+        logger.info(
+            "command_overlay_active -> %s (hold start, overlay_visible=%s), _just_dismissed=%s (preserved)",
+            self._detector.command_overlay_active,
+            overlay_visible,
+            self._detector._command_overlay_just_dismissed,
+        )
         # Note: if command overlay is visible but finished, leave it up.
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
@@ -662,15 +835,6 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
-        if self._glow is not None:
-            self._glow.show()
-        if self._overlay is not None:
-            if self._glow is not None:
-                self._overlay.set_brightness(
-                    getattr(self._glow, "_brightness", 0.0),
-                    immediate=True,
-                )
-            self._overlay.show()
         try:
             def on_vad_state(is_speech: bool):
                 if self._menubar is not None:
@@ -688,6 +852,15 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_recording(False)
                 self._menubar.set_status_text("Audio input error — try again")
             return
+        if self._glow is not None:
+            self._glow.show()
+        if self._overlay is not None:
+            if self._glow is not None:
+                self._overlay.set_brightness(
+                    getattr(self._glow, "_brightness", 0.0),
+                    immediate=True,
+                )
+            self._overlay.show()
         self._record_start_time = time.monotonic()
         self._cap_fired = False
         self._last_preview_text = ""
@@ -938,7 +1111,12 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             self._overlay.set_text(text)
 
-    def _on_hold_end(self, shift_held: bool = False, enter_held: bool = False) -> None:
+    def _on_hold_end(
+        self,
+        shift_held: bool = False,
+        enter_held: bool = False,
+        toggle_command_overlay: bool = False,
+    ) -> None:
         if getattr(self, "_hold_rejected_during_warmup", False):
             self._hold_rejected_during_warmup = False
             logger.info(
@@ -952,12 +1130,17 @@ class SpokeAppDelegate(NSObject):
         # When the tray is active, gestures route through the tray handler.
         tray_active = getattr(self, "_tray_active", False)
         recovery_active = getattr(self, "_recovery_text", None) is not None
-        if tray_active or recovery_active or getattr(self, "_recovery_hold_active", False):
+        if toggle_command_overlay:
+            pass
+        elif tray_active or recovery_active or getattr(self, "_recovery_hold_active", False):
             self._recovery_hold_active = False
             if shift_held:
                 # Shift held + release spacebar from tray = navigate down (older)
                 logger.info("Shift+space during tray — navigate down")
                 self._tray_navigate_down()
+            elif enter_held and tray_active:
+                logger.info("Enter-first release during tray — sending current tray entry")
+                self._tray_send_current()
             elif tray_active:
                 # Spacebar from tray (tap or hold release) = insert
                 logger.info("Spacebar during tray — inserting text")
@@ -969,7 +1152,12 @@ class SpokeAppDelegate(NSObject):
             return
 
         # ── Normal recording end ──
-        logger.info("Hold ended — shift=%s enter=%s", shift_held, enter_held)
+        logger.info(
+            "Hold ended — shift=%s enter=%s toggle_overlay=%s",
+            shift_held,
+            enter_held,
+            toggle_command_overlay,
+        )
         self._preview_active = False
         self._preview_cancelled_on_release = True
         wav_bytes = self._capture.stop()
@@ -979,54 +1167,35 @@ class SpokeAppDelegate(NSObject):
         if shift_held and elapsed < 0.8:
             logger.info("Short shift-hold (%.0fms) — recalling into tray", elapsed * 1000)
             wav_bytes = b""  # force the empty-audio path
+        elif toggle_command_overlay:
+            logger.info(
+                "Space-first enter chord — discarding %d bytes and toggling assistant overlay",
+                len(wav_bytes),
+            )
+            wav_bytes = b""
 
         # Glow/dimmer: hide immediately for text insertion
-        if not shift_held and not enter_held and self._glow is not None:
+        if not shift_held and not enter_held and not toggle_command_overlay and self._glow is not None:
             self._glow.hide()
         if self._menubar is not None:
             self._menubar.set_vad_state(False, False)
             self._menubar.set_recording(False)
 
         if not wav_bytes:
-            logger.info("No audio — instant path (shift=%s, enter=%s, overlay_active=%s)",
-                        shift_held, enter_held, self._detector.command_overlay_active)
+            logger.info(
+                "No audio — instant path (shift=%s, enter=%s, toggle_overlay=%s, overlay_active=%s)",
+                shift_held,
+                enter_held,
+                toggle_command_overlay,
+                self._detector.command_overlay_active,
+            )
             if self._overlay is not None:
                 self._overlay.hide()
             if self._glow is not None:
                 self._glow.hide()
-
-            if enter_held and self._command_client is not None:
-                # Enter + empty recording = toggle last assistant response.
-                # Use command_overlay_active (our flag) not _visible (animation state)
-                # to avoid re-dismissing during the dismiss animation.
-                self._detector._command_overlay_just_dismissed = False
-                if self._detector.command_overlay_active:
-                    # Already showing — dismiss it
-                    logger.info("Enter+empty — dismissing command overlay")
-                    if self._command_overlay is not None:
-                        self._command_overlay.cancel_dismiss()
-                    self._detector.command_overlay_active = False
-                    logger.info("command_overlay_active -> False (enter+empty dismiss)")
-                else:
-                    # Not showing — recall last response
-                    history = self._command_client.history
-                    if history:
-                        last_utterance, last_response = history[-1]
-                        logger.info("Enter+empty — recalling last response")
-                        if self._command_overlay is not None:
-                            try:
-                                self._command_overlay.show()
-                                self._command_overlay.set_utterance(last_utterance)
-                                self._command_overlay.append_token(last_response)
-                                self._command_overlay.finish()
-                                self._detector.command_overlay_active = True
-                                logger.info("command_overlay_active -> True (enter+empty recall)")
-                            except Exception:
-                                logger.exception("Recall overlay failed")
-                    else:
-                        logger.info("Enter+empty — no history to recall")
-            elif shift_held:
-                # Shift + empty recording = recall tray
+            if shift_held:
+                # Shift owns the empty-audio review path. Combined Shift+Enter
+                # should not toggle assistant overlay visibility.
                 if self._tray_stack:
                     logger.info("Shift+empty — recalling tray (stack has %d entries)", len(self._tray_stack))
                     self._tray_active = True
@@ -1036,6 +1205,37 @@ class SpokeAppDelegate(NSObject):
                     return
                 else:
                     logger.info("Shift+empty — no tray entries to recall")
+            elif toggle_command_overlay and self._command_client is not None:
+                # Use command_overlay_active (our flag) not _visible (animation
+                # state) to avoid re-dismissing during the dismiss animation.
+                self._detector._command_overlay_just_dismissed = False
+                if self._detector.command_overlay_active:
+                    # Already showing — dismiss it
+                    logger.info("Space-first enter chord — dismissing command overlay")
+                    if self._command_overlay is not None:
+                        self._command_overlay.cancel_dismiss()
+                    self._detector.command_overlay_active = False
+                    logger.info("command_overlay_active -> False (space-first toggle dismiss)")
+                else:
+                    snapshot = self._last_command_overlay_snapshot()
+                    if snapshot is not None:
+                        last_utterance, last_response = snapshot
+                        logger.info("Space-first enter chord — recalling last response")
+                        if self._command_overlay is not None:
+                            try:
+                                self._sync_command_overlay_brightness(immediate=True)
+                                self._command_overlay.show()
+                                self._command_overlay.set_utterance(last_utterance)
+                                self._command_overlay.append_token(last_response)
+                                self._command_overlay.finish()
+                                self._detector.command_overlay_active = True
+                                logger.info("command_overlay_active -> True (space-first toggle recall)")
+                            except Exception:
+                                logger.exception("Recall overlay failed")
+                    else:
+                        logger.info("Space-first enter chord — no assistant overlay snapshot to recall")
+            elif enter_held and self._command_client is not None:
+                logger.info("Enter-first empty chord — assistant path with no utterance")
             else:
                 # Only dismiss if the overlay wasn't already dismissed by the
                 # instant-press handler (which clears command_overlay_active).
@@ -1049,24 +1249,8 @@ class SpokeAppDelegate(NSObject):
                         self._command_overlay.cancel_dismiss()
                         self._detector.command_overlay_active = False
                         logger.info("command_overlay_active -> False (empty dismiss)")
-                elif self._command_client is not None and not self._detector._command_overlay_just_dismissed:
-                    # Overlay not visible — recall last response on empty tap.
-                    # Skip if this tap already dismissed the overlay (avoid dismiss→recall stutter).
-                    history = self._command_client.history
-                    if history:
-                        last_utterance, last_response = history[-1]
-                        logger.info("Empty tap — recalling last response")
-                        if self._command_overlay is not None:
-                            try:
-                                self._sync_command_overlay_brightness(immediate=True)
-                                self._command_overlay.show()
-                                self._command_overlay.set_utterance(last_utterance)
-                                self._command_overlay.append_token(last_response)
-                                self._command_overlay.finish()
-                                self._detector.command_overlay_active = True
-                                logger.info("command_overlay_active -> True (empty tap recall)")
-                            except Exception:
-                                logger.exception("Recall overlay failed")
+                else:
+                    logger.info("Empty tap — overlay hidden; leaving it hidden")
 
             # Clear _just_dismissed now that the decision has been made.
             # This flag only needs to survive from instant-dismiss through
@@ -1201,6 +1385,18 @@ class SpokeAppDelegate(NSObject):
         if self._overlay is not None:
             self._overlay.hide()
 
+    def _last_command_overlay_snapshot(self) -> tuple[str, str] | None:
+        """Return the most recent assistant overlay content, including failures."""
+        if self._command_client is not None:
+            history = self._command_client.history
+            if history:
+                return history[-1]
+        utterance = getattr(self, "_last_command_utterance", "")
+        response = getattr(self, "_last_command_response", "")
+        if utterance and response:
+            return utterance, response
+        return None
+
     def _recallLastResponse_(self, payload) -> None:
         """Main thread: recall the last command/response from history."""
         if payload["token"] != self._transcription_token:
@@ -1211,23 +1407,22 @@ class SpokeAppDelegate(NSObject):
         if self._glow is not None:
             self._glow.hide()
 
-        if self._command_client is not None:
-            history = self._command_client.history
-            if history:
-                last_utterance, last_response = history[-1]
-                logger.info("Recalling last response: %r", last_utterance[:50])
-                if self._command_overlay is not None:
-                    self._sync_command_overlay_brightness(immediate=True)
-                    self._command_overlay.show()
-                    self._command_overlay.set_utterance(last_utterance)
-                    for ch in last_response:
-                        self._command_overlay.append_token(ch)
-                    self._command_overlay.finish()
-                    self._detector.command_overlay_active = True
-                    logger.info("command_overlay_active -> True (shift recall)")
-                if self._menubar is not None:
-                    self._menubar.set_status_text("Ready — hold spacebar")
-                return
+        snapshot = self._last_command_overlay_snapshot()
+        if snapshot is not None:
+            last_utterance, last_response = snapshot
+            logger.info("Recalling last response: %r", last_utterance[:50])
+            if self._command_overlay is not None:
+                self._sync_command_overlay_brightness(immediate=True)
+                self._command_overlay.show()
+                self._command_overlay.set_utterance(last_utterance)
+                for ch in last_response:
+                    self._command_overlay.append_token(ch)
+                self._command_overlay.finish()
+                self._detector.command_overlay_active = True
+                logger.info("command_overlay_active -> True (shift recall)")
+            if self._menubar is not None:
+                self._menubar.set_status_text("Ready — hold spacebar")
+            return
 
         logger.info("No history to recall")
         if self._menubar is not None:
@@ -1894,6 +2089,8 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return
         utterance = payload["utterance"]
+        self._last_command_utterance = utterance
+        self._last_command_response = ""
         # Hide the input overlay
         if self._overlay is not None:
             self._overlay.hide()
@@ -1952,6 +2149,8 @@ class SpokeAppDelegate(NSObject):
         if overlay is not None:
             overlay.set_tool_active(False)
         response = payload.get("response", "")
+        if response:
+            self._last_command_response = response
         if overlay is not None and response:
             try:
                 overlay.set_response_text(response)
@@ -1991,6 +2190,7 @@ class SpokeAppDelegate(NSObject):
                     overlay.tts_start()
                 except Exception:
                     logger.exception("Command overlay TTS start failed")
+            self._touch_model(tts)
             try:
                 logger.info("TTS autoplay: calling speak_async with %d chars", len(response))
                 tts.speak_async(
@@ -1998,6 +2198,9 @@ class SpokeAppDelegate(NSObject):
                     amplitude_callback=self._on_tts_amplitude,
                     done_callback=lambda: self.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "ttsFinished:", None, False
+                    ),
+                    error_callback=lambda msg: self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "ttsError:", msg, False
                     ),
                 )
                 logger.info("TTS autoplay: speak_async returned (queued)")
@@ -2035,17 +2238,29 @@ class SpokeAppDelegate(NSObject):
             except Exception:
                 logger.exception("Command overlay TTS stop failed")
 
+    def ttsError_(self, message) -> None:
+        """Main thread: TTS playback failed — show error in menubar."""
+        msg = str(message) if message else "TTS playback failed"
+        logger.error("TTS autoplay error surfaced: %s", msg)
+        if self._menubar is not None:
+            # Truncate for menubar but keep it useful
+            short = msg if len(msg) <= 80 else msg[:77] + "..."
+            self._menubar.set_status_text(f"TTS error: {short}")
+
     def commandFailed_(self, payload: dict) -> None:
         """Main thread: show error in the command overlay, then fade."""
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
         error = payload.get("error", "Unknown error")
+        error_text = "couldn't reach the model — try again in a moment"
         logger.error("Command pathway error: %s", error)
         if self._glow is not None:
             self._glow.hide()
         if self._overlay is not None:
             self._overlay.hide()
+        if getattr(self, "_last_command_utterance", ""):
+            self._last_command_response = error_text
         # Show the error in the command overlay like a response
         if self._command_overlay is not None:
             if not self._command_overlay._visible:
@@ -2055,7 +2270,7 @@ class SpokeAppDelegate(NSObject):
                 except Exception:
                     logger.exception("Command overlay show failed during error presentation")
             try:
-                self._command_overlay.append_token("couldn't reach the model — try again in a moment")
+                self._command_overlay.append_token(error_text)
             except Exception:
                 logger.exception("Command overlay append failed during error presentation")
             try:
@@ -2262,6 +2477,37 @@ class SpokeAppDelegate(NSObject):
                         ("configure", "Set Sidecar URL…", False, True),
                     ],
                 }
+            tts_client = getattr(self, "_tts_client", None)
+            if tts_client is not None or os.environ.get("SPOKE_TTS_VOICE"):
+                tts_sidecar_url = getattr(self, "_tts_sidecar_url", "")
+                tts_backend = getattr(self, "_tts_backend", "local")
+                has_tts_sidecar_url = bool(tts_sidecar_url)
+                tts_target = "not active"
+                if tts_client is not None:
+                    if isinstance(tts_client, RemoteTTSClient):
+                        tts_target = _url_host(getattr(tts_client, "_base_url", ""))
+                    else:
+                        tts_target = "local MLX"
+                state["tts_backend"] = {
+                    "title": f"TTS Backend: {'Sidecar' if tts_backend == 'sidecar' else 'Local'}",
+                    "items": [
+                        ("local", "Local (Voxtral MLX)", tts_backend == "local"),
+                        ("sidecar", (
+                            f"Sidecar ({_url_host(tts_sidecar_url)})"
+                            if has_tts_sidecar_url
+                            else "Sidecar (not configured)"
+                        ), tts_backend == "sidecar", has_tts_sidecar_url),
+                        ("configure_tts", "Set TTS Sidecar URL\u2026", False, True),
+                    ],
+                }
+                state["tts_endpoint"] = {
+                    "title": f"TTS Endpoint: {tts_target}",
+                    "note": (
+                        "Routing source: saved sidecar URL"
+                        if tts_backend == "sidecar" and has_tts_sidecar_url
+                        else "Routing source: local MLX"
+                    ),
+                }
             if self._local_whisper_controls_available():
                 eager_eval_available = self._local_whisper_eager_eval_available()
                 state["local_whisper"] = {
@@ -2299,16 +2545,51 @@ class SpokeAppDelegate(NSObject):
                     ],
                 }
             tts = getattr(self, "_tts_client", None)
-            if tts is not None:
-                current_tts_model = tts._model_id
-                tts_models = [
-                    (model_id, label, True)
-                    for model_id, label in _TTS_MODELS
-                ]
-                state["tts"] = {
-                    "selected": current_tts_model,
-                    "models": tts_models,
-                }
+            tts_backend = getattr(self, "_tts_backend", "local")
+            tts_voice_pref = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE", "")
+            show_tts_menus = tts is not None or tts_backend == "sidecar" or tts_voice_pref
+            if show_tts_menus:
+                current_tts_model = getattr(tts, "_model_id", "") if tts else ""
+                if tts_backend == "sidecar":
+                    sidecar_models = self._discover_tts_sidecar_models()
+                    if sidecar_models:
+                        tts_models = sidecar_models
+                    elif current_tts_model:
+                        tts_models = [(current_tts_model, current_tts_model, True)]
+                    else:
+                        tts_models = []
+                else:
+                    tts_models = [
+                        (model_id, label, model_id == current_tts_model)
+                        for model_id, label in _TTS_MODELS
+                    ]
+                if tts_models:
+                    state["tts"] = {
+                        "selected": current_tts_model,
+                        "models": tts_models,
+                    }
+                current_voice = getattr(tts, "_voice", "") if tts else tts_voice_pref
+                if tts_backend == "sidecar":
+                    sidecar_voices = self._discover_tts_sidecar_voices(current_tts_model)
+                else:
+                    sidecar_voices = []
+                if sidecar_voices:
+                    voice_models = [
+                        (v, v, v == current_voice) for v in sidecar_voices
+                    ]
+                    state["tts_voice"] = {
+                        "type": "choice",
+                        "selected": current_voice,
+                        "models": voice_models,
+                    }
+                else:
+                    state["tts_voice"] = {
+                        "type": "toggle",
+                        "title": f"TTS Voice: {current_voice or '(not set)'}",
+                        "items": [
+                            ("configure_voice", "Set TTS Voice\u2026", False, True),
+                        ],
+                    }
             return state
         if not isinstance(selection, tuple) or len(selection) != 2:
             self._select_model(selection)
@@ -2322,6 +2603,12 @@ class SpokeAppDelegate(NSObject):
             return
         if role == "launch_target":
             self._apply_launch_target_selection(model_id)
+            return
+        if role == "tts_backend":
+            self._apply_tts_backend_selection(model_id)
+            return
+        if role == "tts_voice":
+            self._apply_tts_voice_selection(model_id)
             return
         if role == "tts":
             self._apply_tts_model_selection(model_id)
@@ -2670,6 +2957,14 @@ class SpokeAppDelegate(NSObject):
             logger.warning("Failed to save model preferences to %s", path, exc_info=True)
             return False
 
+    def _load_preference(self, key: str):
+        return self._load_preferences().get(key)
+
+    def _save_preference(self, key: str, value) -> bool:
+        payload = self._load_preferences()
+        payload[key] = value
+        return self._save_preferences(payload)
+
     @staticmethod
     def _coerce_command_backend(value: str | None) -> str | None:
         if value is None:
@@ -2687,30 +2982,133 @@ class SpokeAppDelegate(NSObject):
         return normalized or None
 
     def _resolve_command_backend(self) -> tuple[str | None, str | None]:
-        env_raw = os.environ.get("SPOKE_COMMAND_URL")
-        env_url = (
-            self._normalize_command_url(env_raw) if env_raw is not None else None
-        )
         pref_backend = self._load_command_backend_preference()
         pref_sidecar_url = self._load_command_sidecar_url_preference()
-        explicit_env_url = env_raw is not None and env_url not in {
-            None,
-            _DEFAULT_COMMAND_URL,
-        }
 
-        if explicit_env_url:
-            return "sidecar", env_url
         if pref_backend == "sidecar" and pref_sidecar_url:
             return "sidecar", pref_sidecar_url
         if pref_backend == "sidecar" and not pref_sidecar_url:
             logger.warning(
                 "Saved assistant backend is sidecar but no sidecar URL is configured; falling back to local OMLX"
             )
-        if env_raw is not None:
-            if env_url is None:
-                return None, None
-            return "local", env_url
         return "local", _DEFAULT_COMMAND_URL
+
+    def _build_tts_client(self):
+        """Build a TTS client based on backend preference and env vars."""
+        voice = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE")
+        if not voice:
+            return None
+        if self._tts_backend == "sidecar" and self._tts_sidecar_url:
+            model_id = (
+                self._load_preference("tts_sidecar_model")
+                or os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
+            )
+            return RemoteTTSClient(
+                base_url=self._tts_sidecar_url,
+                model_id=model_id,
+                voice=voice,
+            )
+        return TTSClient.from_env(gpu_lock=self._local_inference_lock)
+
+    def _discover_tts_sidecar_models(self) -> list[tuple[str, str, bool]]:
+        """Fetch available models from the TTS sidecar's /v1/models endpoint."""
+        url = getattr(self, "_tts_sidecar_url", "")
+        if not url:
+            return []
+        import urllib.request
+        import urllib.error
+        models_url = f"{url.rstrip('/')}/v1/models"
+        try:
+            req = urllib.request.Request(models_url, method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+        except Exception:
+            logger.warning("Failed to fetch TTS sidecar models from %s", models_url, exc_info=True)
+            return []
+        current_model = ""
+        tts = getattr(self, "_tts_client", None)
+        if tts is not None:
+            current_model = getattr(tts, "_model_id", "")
+        entries = data.get("data", []) if isinstance(data, dict) else []
+        options = []
+        for entry in entries:
+            model_id = entry.get("id", "") if isinstance(entry, dict) else str(entry)
+            if model_id:
+                options.append((model_id, model_id, model_id == current_model))
+        return options
+
+    def _discover_tts_sidecar_voices(self, model_name: str = "") -> list[str]:
+        """Fetch available voices from the TTS sidecar's /v1/voices endpoint."""
+        url = getattr(self, "_tts_sidecar_url", "")
+        if not url:
+            return []
+        import urllib.request
+        import urllib.error
+        import urllib.parse
+        voices_url = f"{url.rstrip('/')}/v1/voices"
+        if model_name:
+            voices_url += f"?model_name={urllib.parse.quote(model_name)}"
+        try:
+            req = urllib.request.Request(voices_url, method="GET")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+        except Exception:
+            logger.warning("Failed to fetch TTS sidecar voices from %s", voices_url, exc_info=True)
+            return []
+        entries = data.get("data", []) if isinstance(data, dict) else []
+        voices: list[str] = []
+        for entry in entries:
+            if isinstance(entry, dict):
+                voices.extend(entry.get("voices", []))
+        return voices
+
+    def _apply_tts_backend_selection(self, backend: str) -> None:
+        """Switch TTS backend between 'local' and 'sidecar', then relaunch."""
+        if backend == "configure_tts":
+            self._configure_tts_sidecar_url()
+            return
+        if backend == self._tts_backend:
+            return
+        if backend == "sidecar" and not self._tts_sidecar_url:
+            logger.warning("Cannot switch to sidecar: no TTS sidecar URL configured")
+            if self._menubar is not None:
+                self._menubar.set_status_text("No TTS sidecar URL configured")
+            return
+        logger.info("Switching TTS backend: %s -> %s", self._tts_backend, backend)
+        self._save_preference("tts_backend", backend)
+        self._tts_backend = backend
+        self._relaunch()
+
+    def _configure_tts_sidecar_url(self) -> None:
+        """Show a dialog to set or change the TTS sidecar URL."""
+        current_url = getattr(self, "_tts_sidecar_url", "") or _DEFAULT_TTS_SIDECAR_URL
+        alert = NSAlert.new()
+        alert.setMessageText_("TTS Sidecar URL")
+        alert.setInformativeText_(
+            "Enter the base URL for the OpenAI-compatible /v1/audio/speech endpoint."
+        )
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
+        field.setStringValue_(current_url)
+        alert.setAccessoryView_(field)
+        alert.addButtonWithTitle_("Save")
+        alert.addButtonWithTitle_("Cancel")
+        response = alert.runModal()
+        if response != 1000:
+            return
+        value = field.stringValue()
+        if not isinstance(value, str):
+            return
+        value = value.strip().rstrip("/")
+        if not value:
+            return
+        self._save_preference("tts_sidecar_url", value)
+        self._tts_sidecar_url = value
+        logger.info("TTS sidecar URL saved: %s", value)
+        if self._tts_backend == "sidecar":
+            self._relaunch()
+            return
+        if self._menubar is not None:
+            self._menubar.set_status_text("TTS sidecar URL saved")
 
     def _get_client(self, whisper_url: str, model_id: str):
         cache_key = (whisper_url, model_id)
@@ -2810,8 +3208,21 @@ class SpokeAppDelegate(NSObject):
     def _seed_command_model_options(
         self, selected_model: str
     ) -> list[tuple[str, str, bool]]:
-        """Seed the Assistant menu from local disk without hitting /v1/models."""
+        """Seed the Assistant menu — sidecar queries /v1/models, local uses disk."""
         if getattr(self, "_command_backend", "local") == "sidecar":
+            if self._command_client is not None:
+                try:
+                    server_model_ids = self._command_client.list_models()
+                    if server_model_ids:
+                        return [
+                            (mid, mid, mid == selected_model)
+                            for mid in server_model_ids
+                        ]
+                except Exception:
+                    logger.warning(
+                        "Sidecar model seed failed — falling back to persisted model",
+                        exc_info=True,
+                    )
             return [(selected_model, selected_model, True)] if selected_model else []
         local_model_dir = Path(
             os.environ.get("SPOKE_COMMAND_MODEL_DIR", str(_DEFAULT_COMMAND_MODEL_DIR))
@@ -2830,7 +3241,12 @@ class SpokeAppDelegate(NSObject):
         self._command_models_refresh_in_flight = True
 
         def _load():
+            _record_runtime_phase("command_models.refresh.start")
             options = self._discover_command_models(self._command_model_id)
+            _record_runtime_phase(
+                "command_models.refresh.succeeded",
+                option_count=len(options),
+            )
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "commandModelsDiscovered:",
                 {"options": options},
@@ -2897,7 +3313,6 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_status_text("Couldn't save model selection")
             return
         self._command_model_id = model_id
-        os.environ["SPOKE_COMMAND_MODEL"] = model_id
         self._relaunch()
 
     def _apply_command_backend_selection(self, selection: str) -> None:
@@ -2957,10 +3372,6 @@ class SpokeAppDelegate(NSObject):
         self._command_backend = selection
         self._command_url = target_url
         self._command_sidecar_url = persisted_sidecar_url
-        if target_url is None:
-            os.environ.pop("SPOKE_COMMAND_URL", None)
-        else:
-            os.environ["SPOKE_COMMAND_URL"] = target_url
         self._relaunch()
 
     def _configure_command_sidecar_url(self) -> None:
@@ -2980,7 +3391,6 @@ class SpokeAppDelegate(NSObject):
         self._command_sidecar_url = sidecar_url
         if current_backend == "sidecar":
             self._command_url = sidecar_url
-            os.environ["SPOKE_COMMAND_URL"] = sidecar_url
             self._relaunch()
             return
         if self._menubar is not None:
@@ -3016,7 +3426,11 @@ class SpokeAppDelegate(NSObject):
             model_id,
         )
         payload = self._load_preferences()
-        payload["tts_model"] = model_id
+        tts_backend = getattr(self, "_tts_backend", "local")
+        if tts_backend == "sidecar":
+            payload["tts_sidecar_model"] = model_id
+        else:
+            payload["tts_model"] = model_id
         if not self._save_preferences(payload):
             logger.warning(
                 "Skipping relaunch because the TTS model selection could not be persisted"
@@ -3024,6 +3438,49 @@ class SpokeAppDelegate(NSObject):
             if self._menubar is not None:
                 self._menubar.set_status_text("Couldn't save TTS model selection")
             return
+        self._relaunch()
+
+    def _apply_tts_voice_selection(self, selection: str) -> None:
+        """Handle TTS voice menu selections."""
+        if selection == "configure_voice":
+            self._configure_tts_voice()
+            return
+        # Direct voice name selection from discovered voices
+        tts = getattr(self, "_tts_client", None)
+        current_voice = getattr(tts, "_voice", "") if tts else ""
+        if selection == current_voice:
+            return
+        self._save_preference("tts_voice", selection)
+        logger.info("TTS voice changed: %s -> %s", current_voice, selection)
+        self._relaunch()
+
+    def _configure_tts_voice(self) -> None:
+        """Show a dialog to set the TTS voice name."""
+        tts = getattr(self, "_tts_client", None)
+        current_voice = getattr(tts, "_voice", "") if tts else ""
+        if not current_voice:
+            current_voice = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE", "")
+        alert = NSAlert.new()
+        alert.setMessageText_("TTS Voice")
+        alert.setInformativeText_(
+            "Enter the voice name to use for TTS synthesis."
+        )
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
+        field.setStringValue_(current_voice)
+        alert.setAccessoryView_(field)
+        alert.addButtonWithTitle_("Save")
+        alert.addButtonWithTitle_("Cancel")
+        response = alert.runModal()
+        if response != 1000:
+            return
+        value = field.stringValue()
+        if not isinstance(value, str):
+            return
+        value = value.strip()
+        if not value:
+            return
+        self._save_preference("tts_voice", value)
+        logger.info("TTS voice saved: %s", value)
         self._relaunch()
 
     def _prepare_clients(self) -> None:
@@ -3051,6 +3508,12 @@ class SpokeAppDelegate(NSObject):
                     continue
                 with self._local_inference_context(client):
                     prepare()
+                _record_runtime_phase(
+                    "client.prepare.succeeded",
+                    role=role,
+                    model=model_id,
+                    client_type=type(client).__name__,
+                )
 
     def _close_clients(self) -> None:
         seen_clients = []
@@ -3064,6 +3527,89 @@ class SpokeAppDelegate(NSObject):
             close = getattr(client, "close", None)
             if callable(close):
                 close()
+
+    # ── Heartbeat & model TTL ─────────────────────────────────
+
+    def _register_loaded_models(self) -> None:
+        """Tell the heartbeat manager which models are currently resident."""
+        hb = getattr(self, "_heartbeat", None)
+        if hb is None:
+            return
+        for client in self._iter_unique_clients():
+            loaded = getattr(client, "is_loaded", False)
+            if loaded:
+                model_id = getattr(client, "_model", None) or getattr(client, "_model_id", None)
+                if model_id:
+                    hb.register_model(model_id)
+
+    def _start_heartbeat_timer(self) -> None:
+        """Schedule the heartbeat timer on the main-thread run loop."""
+        from Foundation import NSTimer
+
+        if getattr(self, "_heartbeat_timer", None) is not None:
+            return
+        hb = getattr(self, "_heartbeat", None)
+        if hb is None:
+            return
+        self._heartbeat_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            HEARTBEAT_INTERVAL_S,
+            self,
+            "heartbeatTick:",
+            None,
+            True,
+        )
+        # Write the first heartbeat immediately.
+        self._heartbeat.tick()
+        logger.info(
+            "Heartbeat started (interval=%.0fs, model_ttl=%.0fs)",
+            HEARTBEAT_INTERVAL_S,
+            self._heartbeat._ttl,
+        )
+
+    def heartbeatTick_(self, _timer) -> None:
+        """NSTimer callback — write heartbeat, evict expired models."""
+        # Ensure newly loaded models (e.g. TTS after async warmup) get registered.
+        self._register_loaded_models()
+        expired = self._heartbeat.tick()
+        if expired:
+            logger.info("Heartbeat TTL eviction: %s", expired)
+
+    def _evict_model(self, model_id: str) -> None:
+        """Eviction callback from HeartbeatManager — unload a model by ID."""
+        for client in self._iter_unique_clients():
+            client_model = getattr(client, "_model", None) or getattr(client, "_model_id", None)
+            if client_model == model_id:
+                unload = getattr(client, "unload", None)
+                if callable(unload):
+                    with self._local_inference_context(client):
+                        unload()
+                    self._heartbeat.unregister_model(model_id)
+                    self._heartbeat.clear_metal_cache()
+                    logger.info("Evicted model %s", model_id)
+                    return
+
+    def _touch_model(self, client) -> None:
+        """Update last-use timestamp for a client's model."""
+        hb = getattr(self, "_heartbeat", None)
+        if hb is None:
+            return
+        model_id = getattr(client, "_model", None) or getattr(client, "_model_id", None)
+        if model_id:
+            hb.touch(model_id)
+
+    def _iter_unique_clients(self):
+        """Yield each unique client object (deduplicated)."""
+        seen = []
+        candidates = list(getattr(self, "_client_cache", {}).values()) + [
+            getattr(self, "_client", None),
+            getattr(self, "_preview_client", None),
+            getattr(self, "_tts_client", None),
+        ]
+        for client in candidates:
+            if client is None or any(c is client for c in seen):
+                continue
+            seen.append(client)
+            yield client
 
     def _local_whisper_controls_available(self) -> bool:
         if not getattr(self, "_local_mode", False):
@@ -3144,10 +3690,6 @@ class SpokeAppDelegate(NSObject):
         self._local_whisper_decode_timeout = decode_timeout
         self._local_whisper_eager_eval = eager_eval
         self._save_local_whisper_preferences(decode_timeout, eager_eval)
-        os.environ["SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT"] = self._format_decode_timeout_env(
-            decode_timeout
-        )
-        os.environ["SPOKE_LOCAL_WHISPER_EAGER_EVAL"] = "1" if eager_eval else "0"
         self._relaunch()
 
     @staticmethod
@@ -3190,6 +3732,9 @@ class SpokeAppDelegate(NSObject):
         return str(value)
 
     def _relaunch(self) -> None:
+        _record_runtime_phase("app.relaunch")
+        os.environ["SPOKE_PARENT_LAUNCH_ID"] = _PROCESS_LAUNCH_ID
+        os.environ["SPOKE_LAUNCH_ID"] = f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
         self._detector.uninstall()
         self._preview_active = False
         self._close_clients()
@@ -3199,6 +3744,9 @@ class SpokeAppDelegate(NSObject):
         lock = getattr(self, "_local_inference_lock", None)
         if lock is None or isinstance(client, TranscriptionClient):
             return nullcontext()
+        # Touch the model on each local inference so TTL doesn't expire
+        # while the model is actively in use.
+        self._touch_model(client)
         return lock
 
     def _inject_result_text(self, text: str, status_text: str) -> None:
@@ -3461,9 +4009,10 @@ def _acquire_instance_lock() -> None:
     import signal as sig
     import time
 
-    lock_path = os.path.expanduser("~/Library/Logs/.spoke.lock")
+    lock_path = _LOCK_PATH
     current_pid = os.getpid()
     parent_pid = os.getppid()
+    _record_runtime_phase("instance_lock.start", lock_path=lock_path)
     logger.info(
         "Single-instance guard starting (pid=%d ppid=%d lock=%s)",
         current_pid,
@@ -3506,6 +4055,7 @@ def _acquire_instance_lock() -> None:
                 continue
         else:
             logger.warning("Another instance is running — exiting")
+            _record_runtime_phase("instance_lock.exit_existing_instance", lock_path=lock_path)
             sys.exit(0)
 
     lock_file.seek(0)
@@ -3517,6 +4067,7 @@ def _acquire_instance_lock() -> None:
         current_pid,
         lock_path,
     )
+    _record_runtime_phase("instance_lock.acquired", lock_path=lock_path)
     # Keep lock_file alive for process lifetime
     _acquire_instance_lock._lock_file = lock_file
 
@@ -3529,7 +4080,10 @@ def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+    _install_crash_diagnostics()
+    _record_runtime_phase("process.start")
 
+    zombie_sweep()
     _acquire_instance_lock()
 
     app = NSApplication.sharedApplication()
@@ -3543,7 +4097,7 @@ def main() -> None:
     def _handle_sigterm(signum, frame):
         lock_pid = "unavailable"
         try:
-            with open(os.path.expanduser("~/Library/Logs/.spoke.lock"), encoding="utf-8") as lock_file:
+            with open(_LOCK_PATH, encoding="utf-8") as lock_file:
                 lock_pid = lock_file.read().strip() or "empty"
         except OSError:
             pass
@@ -3554,9 +4108,13 @@ def main() -> None:
             os.getcwd(),
             lock_pid,
         )
+        _record_runtime_phase("signal.sigterm", lock_pid=lock_pid)
         delegate._detector.uninstall()
         if delegate._menubar is not None:
             delegate._menubar.cleanup()
+        # Remove heartbeat so next launch doesn't see us as a zombie.
+        if hasattr(delegate, "_heartbeat"):
+            delegate._heartbeat.remove()
         NSApp.terminate_(None)
 
     signal.signal(signal.SIGTERM, _handle_sigterm)

@@ -8,6 +8,7 @@ import logging
 import os
 import json
 import time
+import threading
 from unittest.mock import MagicMock, call, patch
 
 
@@ -29,6 +30,8 @@ def _make_delegate(main_module, monkeypatch):
     delegate._preview_active = False
     delegate._preview_thread = None
     delegate._preview_client = MagicMock()
+    delegate._preview_model_id = "preview-model"
+    delegate._transcription_model_id = "transcription-model"
     delegate._local_mode = False
     delegate._record_start_time = 0.0
     delegate._cap_fired = False
@@ -72,6 +75,16 @@ class TestHoldCallbacks:
 
         d._capture.start.assert_called_once()
         d._menubar.set_recording.assert_called_with(True)
+
+    def test_hold_start_starts_capture_before_showing_glow(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        call_order: list[str] = []
+        d._capture.start.side_effect = lambda **kwargs: call_order.append("capture")
+        d._glow.show.side_effect = lambda: call_order.append("glow")
+
+        d._on_hold_start()
+
+        assert call_order[:2] == ["capture", "glow"]
 
     def test_hold_start_capture_failure_restores_idle_ui(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
@@ -753,6 +766,7 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch
     ):
         """Role-specific env vars should create distinct clients when models differ."""
+        monkeypatch.setattr(main_module, "_RAM_GB", 32.0)
         monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
         monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
         monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
@@ -936,6 +950,30 @@ class TestDualModelConfiguration:
             ],
         }
 
+    def test_handle_model_menu_none_surfaces_tts_backend_and_endpoint(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = MagicMock()
+        d._tts_backend = "local"
+        d._tts_sidecar_url = ""
+        monkeypatch.setenv("SPOKE_TTS_VOICE", "casual_female")
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["tts_backend"] == {
+            "title": "TTS Backend: Local",
+            "items": [
+                ("local", "Local (Voxtral MLX)", True),
+                ("sidecar", "Sidecar (not configured)", False, False),
+                ("configure_tts", "Set TTS Sidecar URL\u2026", False, True),
+            ],
+        }
+        assert model_state["tts_endpoint"] == {
+            "title": "TTS Endpoint: local MLX",
+            "note": "Routing source: local MLX",
+        }
+
     def test_handle_model_menu_none_exposes_launch_targets_from_registry(
         self, main_module, monkeypatch
     ):
@@ -973,24 +1011,25 @@ class TestDualModelConfiguration:
         d._handle_model_menu_action(("launch_target", "smoke"))
 
         d._apply_launch_target_selection.assert_called_once_with("smoke")
-
     def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
         self, main_module, monkeypatch
     ):
-        """Toggling eager-eval should persist, update env, and relaunch."""
+        """Toggling eager-eval should persist and relaunch without shadowing prefs via env."""
         d = _make_delegate(main_module, monkeypatch)
         d._local_mode = True
         d._local_whisper_decode_timeout = 30.0
         d._local_whisper_eager_eval = False
         d._save_local_whisper_preferences = MagicMock()
         monkeypatch.setattr(main_module, "supports_eager_eval", lambda: True)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
 
         with patch.object(main_module.os, "execv") as mock_execv:
             d._handle_model_menu_action(("local_whisper", "eager_eval"))
 
         d._save_local_whisper_preferences.assert_called_once_with(30.0, True)
-        assert os.environ["SPOKE_LOCAL_WHISPER_EAGER_EVAL"] == "1"
-        assert os.environ["SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT"] == "30"
+        assert "SPOKE_LOCAL_WHISPER_EAGER_EVAL" not in os.environ
+        assert "SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT" not in os.environ
         mock_execv.assert_called_once()
 
     def test_toggle_local_whisper_eager_eval_is_ignored_when_backend_lacks_support(
@@ -1019,13 +1058,15 @@ class TestDualModelConfiguration:
         d._local_whisper_decode_timeout = 30.0
         d._local_whisper_eager_eval = False
         d._save_local_whisper_preferences = MagicMock()
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
 
         with patch.object(main_module.os, "execv") as mock_execv:
             d._handle_model_menu_action(("local_whisper", "decode_timeout"))
 
         d._save_local_whisper_preferences.assert_called_once_with(None, False)
-        assert os.environ["SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT"] == "off"
-        assert os.environ["SPOKE_LOCAL_WHISPER_EAGER_EVAL"] == "0"
+        assert "SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT" not in os.environ
+        assert "SPOKE_LOCAL_WHISPER_EAGER_EVAL" not in os.environ
         mock_execv.assert_called_once()
 
     def test_selecting_assistant_model_persists_and_relaunches(
@@ -1040,13 +1081,62 @@ class TestDualModelConfiguration:
             ("qwen3-14b", "qwen3-14b", True),
         ]
         d._save_command_model_preference = MagicMock(return_value=True)
+        monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
 
         with patch.object(main_module.os, "execv") as mock_execv:
             d._handle_model_menu_action(("assistant", "qwen3-14b"))
 
         d._save_command_model_preference.assert_called_once_with("qwen3-14b")
-        assert os.environ["SPOKE_COMMAND_MODEL"] == "qwen3-14b"
+        assert "SPOKE_COMMAND_MODEL" not in os.environ
         mock_execv.assert_called_once()
+
+    def test_selecting_assistant_model_survives_relaunch_via_saved_preferences(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Assistant model changes should survive relaunch from prefs without env shadowing."""
+        prefs_file = tmp_path / "model_preferences.json"
+        prefs_file.write_text(
+            '{\n'
+            '  "command_model": "qwen3p5-35B-A3B"\n'
+            '}\n'
+        )
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+        monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
+
+        first = _make_delegate(main_module, monkeypatch)
+        first._command_client = MagicMock()
+        first._command_model_id = "qwen3p5-35B-A3B"
+        first._command_model_options = [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("qwen3-14b", "qwen3-14b", True),
+        ]
+        first._save_command_model_preference = (
+            main_module.SpokeAppDelegate._save_command_model_preference.__get__(
+                first, main_module.SpokeAppDelegate
+            )
+        )
+        first._load_preferences = main_module.SpokeAppDelegate._load_preferences.__get__(
+            first, main_module.SpokeAppDelegate
+        )
+        first._preferences_path = main_module.SpokeAppDelegate._preferences_path.__get__(
+            first, main_module.SpokeAppDelegate
+        )
+        first._save_preferences = main_module.SpokeAppDelegate._save_preferences.__get__(
+            first, main_module.SpokeAppDelegate
+        )
+
+        with patch.object(main_module.os, "execv"):
+            first._handle_model_menu_action(("assistant", "qwen3-14b"))
+
+        reloaded = json.loads(prefs_file.read_text())
+        assert reloaded["command_model"] == "qwen3-14b"
+
+        second = _make_delegate(main_module, monkeypatch)
+        second._load_preferences = main_module.SpokeAppDelegate._load_preferences.__get__(
+            second, main_module.SpokeAppDelegate
+        )
+
+        assert second._load_command_model_preference() == "qwen3-14b"
 
     def test_discover_command_models_merges_server_and_local_inventory(
         self, main_module, monkeypatch, tmp_path
@@ -1281,6 +1371,7 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch
     ):
         """Persisted selections should be used when role-specific env vars are unset."""
+        monkeypatch.setattr(main_module, "_RAM_GB", 32.0)
         monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
         monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
         monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
@@ -1363,12 +1454,17 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch
     ):
         """Persisted assistant model should bootstrap the OMLX command client."""
-        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://omlx:8001")
         monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
         monkeypatch.setattr(
             main_module.SpokeAppDelegate,
             "_load_command_model_preference",
             lambda self: "qwen3-14b",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "local",
             raising=False,
         )
         with patch.object(main_module, "CommandClient") as MockCommand:
@@ -1383,7 +1479,7 @@ class TestDualModelConfiguration:
 
         assert result is not None
         MockCommand.assert_called_once_with(
-            base_url="http://omlx:8001",
+            base_url="http://localhost:8001",
             model="qwen3-14b",
         )
         assert d._command_model_id == "qwen3-14b"
@@ -1400,12 +1496,17 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch
     ):
         """Startup should not block on /v1/models just to seed the Assistant menu."""
-        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://omlx:8001")
         monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
         monkeypatch.setattr(
             main_module.SpokeAppDelegate,
             "_load_command_model_preference",
             lambda self: "qwen3-14b",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "local",
             raising=False,
         )
 
@@ -1422,7 +1523,7 @@ class TestDualModelConfiguration:
 
         assert result is not None
         MockCommand.assert_called_once_with(
-            base_url="http://omlx:8001",
+            base_url="http://localhost:8001",
             model="qwen3-14b",
         )
         command_client.list_models.assert_not_called()
@@ -1439,7 +1540,6 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch
     ):
         """Choosing the sidecar backend should persist it and relaunch against that URL."""
-        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
         d = _make_delegate(main_module, monkeypatch)
         d._command_client = MagicMock()
         d._command_backend = "local"
@@ -1453,14 +1553,12 @@ class TestDualModelConfiguration:
         d._save_command_backend_preferences.assert_called_once_with(
             "sidecar", "http://other-box:8001"
         )
-        assert os.environ["SPOKE_COMMAND_URL"] == "http://other-box:8001"
         d._relaunch.assert_called_once_with()
 
     def test_selecting_assistant_backend_sidecar_prompts_for_url_when_missing(
         self, main_module, monkeypatch
     ):
         """Choosing sidecar with no saved URL should ask once, persist, and relaunch."""
-        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
         d = _make_delegate(main_module, monkeypatch)
         d._command_client = MagicMock()
         d._command_backend = "local"
@@ -1478,14 +1576,12 @@ class TestDualModelConfiguration:
         d._save_command_backend_preferences.assert_called_once_with(
             "sidecar", "http://other-box:8001"
         )
-        assert os.environ["SPOKE_COMMAND_URL"] == "http://other-box:8001"
         d._relaunch.assert_called_once_with()
 
     def test_configuring_assistant_sidecar_url_persists_without_relaunch_when_local_backend_active(
         self, main_module, monkeypatch
     ):
         """Saving a sidecar URL should not force a relaunch while local backend remains active."""
-        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
         d = _make_delegate(main_module, monkeypatch)
         d._command_client = MagicMock()
         d._command_backend = "local"
@@ -1508,8 +1604,7 @@ class TestDualModelConfiguration:
     def test_init_prefers_persisted_sidecar_backend_over_launcher_default_local_url(
         self, main_module, monkeypatch
     ):
-        """Saved sidecar selection should beat the launcher's default localhost seed."""
-        monkeypatch.setenv("SPOKE_COMMAND_URL", "http://localhost:8001")
+        """Saved sidecar selection should beat the persisted local default."""
         monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
         monkeypatch.setattr(
             main_module.SpokeAppDelegate,
@@ -1553,6 +1648,7 @@ class TestDualModelConfiguration:
         assert d._command_backend == "sidecar"
         assert d._command_url == "http://other-box:8001"
         assert d._command_sidecar_url == "http://other-box:8001"
+
 
     def test_handle_model_menu_none_sanitizes_unsupported_selected_model(
         self, main_module, monkeypatch
@@ -1804,11 +1900,14 @@ class TestWarmupContract:
         d = _make_delegate(main_module, monkeypatch)
         d._prepare_clients = MagicMock()
 
-        d._prepare_clients_in_background()
+        with patch.object(main_module, "_record_runtime_phase") as mock_phase:
+            d._prepare_clients_in_background()
 
         d.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_once_with(
             "clientWarmupSucceeded:", None, False
         )
+        mock_phase.assert_any_call("client_warmup.start")
+        mock_phase.assert_any_call("client_warmup.succeeded")
 
     def test_background_warmup_dispatches_failure_to_main_thread(
         self, main_module, monkeypatch
@@ -1817,16 +1916,20 @@ class TestWarmupContract:
         d = _make_delegate(main_module, monkeypatch)
         d._prepare_clients = MagicMock(side_effect=RuntimeError("warm failed"))
 
-        d._prepare_clients_in_background()
+        with patch.object(main_module, "_record_runtime_phase") as mock_phase:
+            d._prepare_clients_in_background()
 
         d.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_once_with(
             "clientWarmupFailed:", None, False
         )
         assert isinstance(d._warm_error, RuntimeError)
+        mock_phase.assert_any_call("client_warmup.start")
+        mock_phase.assert_any_call("client_warmup.failed", error="warm failed")
 
-    def test_prepare_clients_defers_local_whisper_startup_warmup(
+    def test_prepare_clients_defers_local_whisper_warmup(
         self, main_module, monkeypatch
     ):
+        """Local MLX Whisper client warmup is deferred until first use."""
         d = _make_delegate(main_module, monkeypatch)
         d._local_mode = True
         d._model_allowed = MagicMock(return_value=True)
@@ -1843,9 +1946,10 @@ class TestWarmupContract:
         prep_client.assert_not_called()
         prep_preview.assert_not_called()
 
-    def test_prepare_clients_defers_local_qwen_startup_warmup(
+    def test_prepare_clients_defers_local_qwen_warmup(
         self, main_module, monkeypatch
     ):
+        """Local MLX Qwen client warmup is deferred until first use."""
         d = _make_delegate(main_module, monkeypatch)
         d._local_mode = True
         d._model_allowed = MagicMock(return_value=True)
@@ -1865,10 +1969,83 @@ class TestWarmupContract:
         """Successful warmup should remove the loading overlay."""
         d = _make_delegate(main_module, monkeypatch)
         d._tts_client = None
-        d.clientWarmupSucceeded_(None)
+        with patch.object(main_module, "_record_runtime_phase") as mock_phase:
+            d.clientWarmupSucceeded_(None)
 
         d._overlay.hide.assert_called_once_with()
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+        mock_phase.assert_called_with("app.ready")
+
+class TestRuntimePhaseLogging:
+    """Test runtime phase snapshot behavior under repeated writes."""
+
+    def test_record_runtime_phase_handles_concurrent_updates(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv(
+            "SPOKE_RUNTIME_PHASE_PATH",
+            str(tmp_path / "spoke-last-phase.json"),
+        )
+
+        real_write_text = main_module.Path.write_text
+        barrier = threading.Barrier(2)
+        tmp_names = []
+
+        def synced_write_text(self, data, *args, **kwargs):
+            result = real_write_text(self, data, *args, **kwargs)
+            if self.name.startswith("spoke-last-phase.json") and self.name.endswith(".tmp"):
+                tmp_names.append(self.name)
+                barrier.wait(timeout=1.0)
+            return result
+
+        with patch.object(main_module.Path, "write_text", new=synced_write_text):
+            with patch.object(main_module.logger, "exception") as mock_exception:
+                threads = [
+                    threading.Thread(
+                        target=main_module._record_runtime_phase,
+                        args=(f"phase-{idx}",),
+                    )
+                    for idx in range(2)
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=1.0)
+
+        assert not any(thread.is_alive() for thread in threads)
+        mock_exception.assert_not_called()
+        assert len(tmp_names) == 2
+        assert len(set(tmp_names)) == 2
+
+        payload = json.loads((tmp_path / "spoke-last-phase.json").read_text())
+        assert payload["phase"] in {"phase-0", "phase-1"}
+
+    def test_record_runtime_phase_includes_visible_launch_target(self, main_module, monkeypatch, tmp_path):
+        """Crash breadcrumbs should name the visible Launch Target."""
+        phase_path = tmp_path / "spoke-last-phase.json"
+        monkeypatch.setenv("SPOKE_RUNTIME_PHASE_PATH", str(phase_path))
+        monkeypatch.setattr(
+            main_module,
+            "current_launch_target",
+            lambda _cwd: {
+                "id": "airstrike",
+                "label": "Assistant Backend on Main Next Airstrike",
+                "path": tmp_path,
+                "enabled": True,
+            },
+        )
+
+        with patch.object(main_module.logger, "info") as mock_info:
+            main_module._record_runtime_phase("process.start", detail="value")
+
+        payload = json.loads(phase_path.read_text())
+        assert payload["launch_target_id"] == "airstrike"
+        assert payload["launch_target_label"] == "Assistant Backend on Main Next Airstrike"
+        assert mock_info.call_args[0][0] == "Runtime phase: %s (%s)"
+        assert mock_info.call_args[0][1] == "process.start"
+        log_detail_text = mock_info.call_args[0][2]
+        assert "launch_target_id='airstrike'" in log_detail_text
+        assert "launch_target_label='Assistant Backend on Main Next Airstrike'" in log_detail_text
 
     def test_warmup_failure_updates_startup_indicator(
         self, main_module, monkeypatch
@@ -2602,7 +2779,7 @@ class TestCommandCallbacks:
         executor = d._make_tool_executor()
         result = executor("read_aloud", {"source_ref": "literal:hello world"})
 
-        assert result == "Error speaking text: TTS playback failed"
+        assert result == "Error speaking text: device unavailable"
         assert d._command_tool_used_tts is False
         d._tts_client.speak.assert_called_once_with("hello world")
 
@@ -2741,6 +2918,24 @@ class TestCommandCallbacks:
 
         d._command_overlay.show.assert_not_called()
 
+    def test_recall_last_response_uses_error_snapshot_when_history_empty(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._command_overlay = MagicMock()
+        d._last_command_utterance = "what time is it"
+        d._last_command_response = "couldn't reach the model — try again in a moment"
+        d._transcription_token = 1
+        d._transcribing = True
+
+        d._recallLastResponse_({"token": 1})
+
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.set_utterance.assert_called_once_with("what time is it")
+        d._command_overlay.finish.assert_called_once()
+
 
 class TestResultInjection:
     """Test timing of the post-injection overlay cleanup."""
@@ -2837,8 +3032,10 @@ class TestShortShiftHold:
         assert d._tray_index == 0
         d._overlay.show_tray.assert_called()
 
-    def test_short_shift_enter_hold_recalls_command_overlay(self, main_module, monkeypatch):
-        """When both Shift and Enter were used, Enter should win for assistant recall."""
+    def test_short_shift_enter_hold_recalls_tray_not_command_overlay(
+        self, main_module, monkeypatch
+    ):
+        """Shift+Enter short empty hold should stay on the tray path, not toggle assistant UI."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b"audio"
         d._record_start_time = time.monotonic() - 0.1  # 100ms
@@ -2849,17 +3046,86 @@ class TestShortShiftHold:
 
         d._on_hold_end(shift_held=True, enter_held=True)
 
-        assert d._tray_active is False
+        assert d._tray_active is True
+        d._command_overlay.show.assert_not_called()
+        d._command_overlay.finish.assert_not_called()
+        d._overlay.show_tray.assert_called_once()
+
+    def test_tray_toggle_command_overlay_bypasses_tray_insert(
+        self, main_module, monkeypatch
+    ):
+        """A tray-visible space-first Enter chord should toggle assistant UI, not insert tray text."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._tray_active = True
+        d._detector.tray_active = True
+        d._tray_stack = ["previous text"]
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=False)
+
+        d._on_hold_end(
+            shift_held=False,
+            enter_held=False,
+            toggle_command_overlay=True,
+        )
+
         d._command_overlay.show.assert_called_once()
-        d._command_overlay.set_utterance.assert_called_once_with("hello")
-        d._command_overlay.append_token.assert_called()
         d._command_overlay.finish.assert_called_once()
         d._overlay.show_tray.assert_not_called()
+
+    def test_tray_enter_first_release_sends_current_entry_to_assistant(
+        self, main_module, monkeypatch
+    ):
+        """A tray-visible enter-first release should send the current tray entry, not insert it."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._tray_active = True
+        d._detector.tray_active = True
+        d._tray_stack = ["previous text"]
+        d._tray_index = 0
+        d._command_client = MagicMock()
+        d._send_text_as_command = MagicMock()
+
+        d._on_hold_end(
+            shift_held=False,
+            enter_held=True,
+        )
+
+        d._send_text_as_command.assert_called_once_with("previous text")
+        d._overlay.show_tray.assert_not_called()
+
+    def test_tray_toggle_command_overlay_preserves_existing_tray_entry(
+        self, main_module, monkeypatch
+    ):
+        """Toggling assistant UI from tray must not consume or delete the tray entry."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._tray_active = True
+        d._detector.tray_active = True
+        d._tray_stack = ["previous text"]
+        d._tray_index = 0
+        d._recovery_text = "previous text"
+        d._detector._shift_at_press = False
+        d._detector._shift_latched = False
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=False)
+        d._capture.stop.return_value = b""
+
+        d._on_hold_start()
+        d._on_hold_end(
+            shift_held=False,
+            enter_held=False,
+            toggle_command_overlay=True,
+        )
+
+        assert d._tray_stack == ["previous text"]
+        assert d._tray_index == 0
 
     def test_short_shift_enter_hold_dismisses_visible_command_overlay(
         self, main_module, monkeypatch
     ):
-        """The same combined gesture should dismiss the assistant overlay with Shift still held."""
+        """Shift+Enter short empty hold should not dismiss a visible assistant overlay."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b"audio"
         d._record_start_time = time.monotonic() - 0.1  # 100ms
@@ -2871,17 +3137,131 @@ class TestShortShiftHold:
 
         d._on_hold_end(shift_held=True, enter_held=True)
 
-        assert d._tray_active is False
-        d._command_overlay.cancel_dismiss.assert_called_once()
-        assert d._detector.command_overlay_active is False
-        d._overlay.show_tray.assert_not_called()
+        assert d._tray_active is True
+        d._command_overlay.cancel_dismiss.assert_not_called()
+        assert d._detector.command_overlay_active is True
+        d._overlay.show_tray.assert_called_once()
 
 
 class TestCommandOverlayDismissRecallCycle:
     """Test the dismiss → recall → dismiss cycle using command_overlay_active flag."""
 
-    def test_enter_empty_recalls_when_overlay_not_active(self, main_module, monkeypatch):
-        """Enter+empty recording should recall when command_overlay_active is False."""
+    def test_enter_empty_tap_is_noop_when_overlay_not_active(self, main_module, monkeypatch):
+        """An earlier Enter tap should not recall when the overlay is hidden."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=False)
+        d._detector.command_overlay_active = False
+
+        d._on_hold_end(shift_held=False, enter_held=False)
+
+        d._command_overlay.show.assert_not_called()
+        d._command_overlay.finish.assert_not_called()
+        assert d._detector.command_overlay_active is False
+
+    def test_space_first_enter_chord_recalls_when_overlay_not_active(self, main_module, monkeypatch):
+        """Space-first enter chord should recall when the overlay is hidden."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=False)
+        d._detector.command_overlay_active = False
+
+        d._on_hold_end(
+            shift_held=False,
+            enter_held=False,
+            toggle_command_overlay=True,
+        )
+
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.finish.assert_called_once()
+        assert d._detector.command_overlay_active is True
+
+    def test_space_first_enter_chord_recalls_error_snapshot_when_history_empty(
+        self, main_module, monkeypatch
+    ):
+        """Space-first enter chord should recall the last failed assistant overlay."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._command_overlay = MagicMock(_visible=False)
+        d._detector.command_overlay_active = False
+        d._last_command_utterance = "hello"
+        d._last_command_response = "couldn't reach the model — try again in a moment"
+
+        d._on_hold_end(
+            shift_held=False,
+            enter_held=False,
+            toggle_command_overlay=True,
+        )
+
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.set_utterance.assert_called_once_with("hello")
+        d._command_overlay.finish.assert_called_once()
+        assert d._detector.command_overlay_active is True
+
+    def test_space_first_enter_chord_dismisses_when_overlay_active(self, main_module, monkeypatch):
+        """Space-first enter chord should dismiss when command_overlay_active is True."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=True)
+        d._detector.command_overlay_active = True
+
+        d._on_hold_end(
+            shift_held=False,
+            enter_held=False,
+            toggle_command_overlay=True,
+        )
+
+        d._command_overlay.cancel_dismiss.assert_called_once()
+        assert d._detector.command_overlay_active is False
+
+    def test_space_first_enter_chord_after_dismiss_cycle_recall_requires_toggle_route(
+        self, main_module, monkeypatch
+    ):
+        """After dismiss, only the explicit toggle route should recall the assistant overlay."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=True)
+        d._detector.command_overlay_active = True
+
+        # Step 1: dismiss
+        d._on_hold_end(
+            shift_held=False,
+            enter_held=False,
+            toggle_command_overlay=True,
+        )
+        assert d._detector.command_overlay_active is False
+        d._command_overlay.cancel_dismiss.assert_called_once()
+
+        # Step 2: earlier Enter tap should not recall
+        d._command_overlay.reset_mock()
+        d._on_hold_end(shift_held=False, enter_held=False)
+        d._command_overlay.show.assert_not_called()
+        d._command_overlay.finish.assert_not_called()
+        assert d._detector.command_overlay_active is False
+
+        # Step 3: explicit toggle route should recall
+        d._command_overlay.reset_mock()
+        d._on_hold_end(
+            shift_held=False,
+            enter_held=False,
+            toggle_command_overlay=True,
+        )
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.finish.assert_called_once()
+        assert d._detector.command_overlay_active is True
+
+    def test_enter_first_empty_chord_is_noop_when_overlay_not_active(self, main_module, monkeypatch):
+        """Enter-first empty chord should not recall when there is no utterance to send."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b""
         d._command_client = MagicMock()
@@ -2891,48 +3271,12 @@ class TestCommandOverlayDismissRecallCycle:
 
         d._on_hold_end(shift_held=False, enter_held=True)
 
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.finish.assert_called_once()
-        assert d._detector.command_overlay_active is True
-
-    def test_enter_empty_dismisses_when_overlay_active(self, main_module, monkeypatch):
-        """Enter+empty recording should dismiss when command_overlay_active is True."""
-        d = _make_delegate(main_module, monkeypatch)
-        d._capture.stop.return_value = b""
-        d._command_client = MagicMock()
-        d._command_client.history = [("hello", "world")]
-        d._command_overlay = MagicMock(_visible=True)
-        d._detector.command_overlay_active = True
-
-        d._on_hold_end(shift_held=False, enter_held=True)
-
-        d._command_overlay.cancel_dismiss.assert_called_once()
+        d._command_overlay.show.assert_not_called()
+        d._command_overlay.finish.assert_not_called()
         assert d._detector.command_overlay_active is False
-
-    def test_enter_empty_recall_after_dismiss_cycle(self, main_module, monkeypatch):
-        """Full cycle: dismiss then recall should both work using the flag."""
-        d = _make_delegate(main_module, monkeypatch)
-        d._capture.stop.return_value = b""
-        d._command_client = MagicMock()
-        d._command_client.history = [("hello", "world")]
-        d._command_overlay = MagicMock(_visible=True)
-        d._detector.command_overlay_active = True
-
-        # Step 1: dismiss
-        d._on_hold_end(shift_held=False, enter_held=True)
-        assert d._detector.command_overlay_active is False
-        d._command_overlay.cancel_dismiss.assert_called_once()
-
-        # Step 2: recall (flag is False now, _visible may still be True from animation)
-        d._command_overlay.reset_mock()
-        # _visible is still True (animation running) but flag is False — should recall
-        d._on_hold_end(shift_held=False, enter_held=True)
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.finish.assert_called_once()
-        assert d._detector.command_overlay_active is True
 
     def test_empty_tap_recall_blocked_after_instant_dismiss(self, main_module, monkeypatch):
-        """Plain empty tap should NOT recall if instant dismiss just fired on the same tap."""
+        """Plain empty tap should stay hidden if instant dismiss just fired on the same tap."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b""
         d._command_client = MagicMock()
@@ -2944,9 +3288,10 @@ class TestCommandOverlayDismissRecallCycle:
         d._on_hold_end(shift_held=False, enter_held=False)
 
         d._command_overlay.show.assert_not_called()
+        assert d._detector.command_overlay_active is False
 
-    def test_empty_tap_recall_works_on_fresh_tap(self, main_module, monkeypatch):
-        """Plain empty tap should recall when _just_dismissed is False."""
+    def test_empty_tap_stays_hidden_on_fresh_tap(self, main_module, monkeypatch):
+        """Plain empty tap should stay hidden when the overlay is already hidden."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b""
         d._command_client = MagicMock()
@@ -2957,18 +3302,31 @@ class TestCommandOverlayDismissRecallCycle:
 
         d._on_hold_end(shift_held=False, enter_held=False)
 
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.finish.assert_called_once()
-        assert d._detector.command_overlay_active is True
+        d._command_overlay.show.assert_not_called()
+        d._command_overlay.finish.assert_not_called()
+        assert d._detector.command_overlay_active is False
 
-    def test_hold_start_clears_overlay_active_but_preserves_just_dismissed(self, main_module, monkeypatch):
-        """_on_hold_start clears command_overlay_active but preserves _just_dismissed.
+    def test_hold_start_preserves_visible_overlay_active(self, main_module, monkeypatch):
+        """_on_hold_start should keep assistant overlay active when it is visibly up."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock(_visible=True)
+        d._detector.command_overlay_active = False
+        d._detector._command_overlay_just_dismissed = False
+
+        d._on_hold_start()
+
+        assert d._detector.command_overlay_active is True
+        assert d._detector._command_overlay_just_dismissed is False
+
+    def test_hold_start_keeps_dismissed_overlay_inactive(self, main_module, monkeypatch):
+        """_on_hold_start preserves _just_dismissed and keeps the overlay inactive.
 
         _just_dismissed must survive until _on_hold_end so the empty-recording
         recall path can see it.  If hold_start cleared it, a slow dismiss tap
         (>400ms, reaching RECORDING) would recall the overlay it just dismissed.
         """
         d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock(_visible=True)
         d._detector.command_overlay_active = True
         d._detector._command_overlay_just_dismissed = True
 
@@ -3014,8 +3372,10 @@ class TestCommandOverlayDismissRecallCycle:
 
         assert d._detector.command_overlay_active is True
 
-    def test_four_step_dismiss_recall_cycle(self, main_module, monkeypatch):
-        """4-step cycle: dismiss → recall → dismiss → recall with enter_held."""
+    def test_repeated_enter_first_empty_chords_stay_hidden_after_dismiss(
+        self, main_module, monkeypatch
+    ):
+        """Repeated enter-first empty chords should not re-open assistant history."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b""
         d._command_client = MagicMock()
@@ -3024,29 +3384,27 @@ class TestCommandOverlayDismissRecallCycle:
         d._detector.command_overlay_active = True
 
         # Step 1: dismiss (active=True → False)
-        d._on_hold_end(shift_held=False, enter_held=True)
+        d._on_hold_end(
+            shift_held=False,
+            enter_held=False,
+            toggle_command_overlay=True,
+        )
         assert d._detector.command_overlay_active is False
         d._command_overlay.cancel_dismiss.assert_called_once()
 
-        # Step 2: recall (active=False → True)
+        # Step 2: earlier Enter tap stays hidden
         d._command_overlay.reset_mock()
-        d._on_hold_end(shift_held=False, enter_held=True)
-        assert d._detector.command_overlay_active is True
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.finish.assert_called_once()
-
-        # Step 3: dismiss again (active=True → False)
-        d._command_overlay.reset_mock()
-        d._on_hold_end(shift_held=False, enter_held=True)
+        d._on_hold_end(shift_held=False, enter_held=False)
         assert d._detector.command_overlay_active is False
-        d._command_overlay.cancel_dismiss.assert_called_once()
+        d._command_overlay.show.assert_not_called()
+        d._command_overlay.finish.assert_not_called()
 
-        # Step 4: recall again (active=False → True)
+        # Step 3: still stays hidden
         d._command_overlay.reset_mock()
-        d._on_hold_end(shift_held=False, enter_held=True)
-        assert d._detector.command_overlay_active is True
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.finish.assert_called_once()
+        d._on_hold_end(shift_held=False, enter_held=False)
+        assert d._detector.command_overlay_active is False
+        d._command_overlay.show.assert_not_called()
+        d._command_overlay.finish.assert_not_called()
 
     def test_instant_dismiss_then_hold_end_no_recall(self, main_module, monkeypatch):
         """Single-gesture simulation: instant dismiss sets _just_dismissed, then
@@ -3068,14 +3426,15 @@ class TestCommandOverlayDismissRecallCycle:
         # Must not recall — _just_dismissed blocks it
         d._command_overlay.show.assert_not_called()
 
-    def test_hold_start_then_empty_recording_recalls_when_history_exists(
+    def test_hold_start_then_empty_recording_does_not_recall_without_overlay(
         self, main_module, monkeypatch
     ):
-        """New gesture after dismiss → empty recording → recall when history exists.
+        """New bare-Enter empty recording should stay hidden when no overlay is up.
 
         _just_dismissed is cleared by the event tap on spacebar keyDown when the
         overlay is not active (the else branch).  _on_hold_start preserves it for
-        the same-tap case but it should already be False for a new gesture.
+        the same-tap case but it should already be False for a new gesture. That
+        still must not turn a bare Enter empty recording into assistant recall.
         """
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b""
@@ -3093,14 +3452,14 @@ class TestCommandOverlayDismissRecallCycle:
         assert d._detector.command_overlay_active is False
         assert d._detector._command_overlay_just_dismissed is False
 
-        # Now empty recording with enter_held: should recall
-        d._on_hold_end(shift_held=False, enter_held=True)
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.finish.assert_called_once()
-        assert d._detector.command_overlay_active is True
+        # Now empty recording with no Enter held at release: should remain hidden
+        d._on_hold_end(shift_held=False, enter_held=False)
+        d._command_overlay.show.assert_not_called()
+        d._command_overlay.finish.assert_not_called()
+        assert d._detector.command_overlay_active is False
 
-    def test_enter_spacebar_while_overlay_active_dismisses(self, main_module, monkeypatch):
-        """Enter+spacebar tap while overlay is active should dismiss via enter_held path."""
+    def test_enter_first_empty_chord_while_overlay_active_is_noop(self, main_module, monkeypatch):
+        """Enter-first empty chord should not dismiss an already visible overlay."""
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b""
         d._command_client = MagicMock()
@@ -3108,12 +3467,11 @@ class TestCommandOverlayDismissRecallCycle:
         d._command_overlay = MagicMock(_visible=True)
         d._detector.command_overlay_active = True
 
-        # Enter held + empty recording while overlay active → dismiss
+        # Enter-first empty recording with visible overlay → no-op
         d._on_hold_end(shift_held=False, enter_held=True)
 
-        d._command_overlay.cancel_dismiss.assert_called_once()
-        assert d._detector.command_overlay_active is False
-        # show should NOT be called — this is a dismiss, not recall
+        d._command_overlay.cancel_dismiss.assert_not_called()
+        assert d._detector.command_overlay_active is True
         d._command_overlay.show.assert_not_called()
 
 
