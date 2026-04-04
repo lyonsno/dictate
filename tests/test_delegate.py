@@ -8,6 +8,7 @@ import logging
 import os
 import json
 import time
+import threading
 from unittest.mock import MagicMock, call, patch
 
 
@@ -29,6 +30,8 @@ def _make_delegate(main_module, monkeypatch):
     delegate._preview_active = False
     delegate._preview_thread = None
     delegate._preview_client = MagicMock()
+    delegate._preview_model_id = "preview-model"
+    delegate._transcription_model_id = "transcription-model"
     delegate._local_mode = False
     delegate._record_start_time = 0.0
     delegate._cap_fired = False
@@ -763,6 +766,7 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch
     ):
         """Role-specific env vars should create distinct clients when models differ."""
+        monkeypatch.setattr(main_module, "_RAM_GB", 32.0)
         monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
         monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
         monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
@@ -946,6 +950,30 @@ class TestDualModelConfiguration:
             ],
         }
 
+    def test_handle_model_menu_none_surfaces_tts_backend_and_endpoint(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = MagicMock()
+        d._tts_backend = "local"
+        d._tts_sidecar_url = ""
+        monkeypatch.setenv("SPOKE_TTS_VOICE", "casual_female")
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["tts_backend"] == {
+            "title": "TTS Backend: Local",
+            "items": [
+                ("local", "Local (Voxtral MLX)", True),
+                ("sidecar", "Sidecar (not configured)", False, False),
+                ("configure_tts", "Set TTS Sidecar URL\u2026", False, True),
+            ],
+        }
+        assert model_state["tts_endpoint"] == {
+            "title": "TTS Endpoint: local MLX",
+            "note": "Routing source: local MLX",
+        }
+
     def test_handle_model_menu_none_exposes_launch_targets_from_registry(
         self, main_module, monkeypatch
     ):
@@ -983,24 +1011,25 @@ class TestDualModelConfiguration:
         d._handle_model_menu_action(("launch_target", "smoke"))
 
         d._apply_launch_target_selection.assert_called_once_with("smoke")
-
     def test_toggle_local_whisper_eager_eval_persists_and_relaunches(
         self, main_module, monkeypatch
     ):
-        """Toggling eager-eval should persist, update env, and relaunch."""
+        """Toggling eager-eval should persist and relaunch without shadowing prefs via env."""
         d = _make_delegate(main_module, monkeypatch)
         d._local_mode = True
         d._local_whisper_decode_timeout = 30.0
         d._local_whisper_eager_eval = False
         d._save_local_whisper_preferences = MagicMock()
         monkeypatch.setattr(main_module, "supports_eager_eval", lambda: True)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
 
         with patch.object(main_module.os, "execv") as mock_execv:
             d._handle_model_menu_action(("local_whisper", "eager_eval"))
 
         d._save_local_whisper_preferences.assert_called_once_with(30.0, True)
-        assert os.environ["SPOKE_LOCAL_WHISPER_EAGER_EVAL"] == "1"
-        assert os.environ["SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT"] == "30"
+        assert "SPOKE_LOCAL_WHISPER_EAGER_EVAL" not in os.environ
+        assert "SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT" not in os.environ
         mock_execv.assert_called_once()
 
     def test_toggle_local_whisper_eager_eval_is_ignored_when_backend_lacks_support(
@@ -1029,13 +1058,15 @@ class TestDualModelConfiguration:
         d._local_whisper_decode_timeout = 30.0
         d._local_whisper_eager_eval = False
         d._save_local_whisper_preferences = MagicMock()
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
+        monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
 
         with patch.object(main_module.os, "execv") as mock_execv:
             d._handle_model_menu_action(("local_whisper", "decode_timeout"))
 
         d._save_local_whisper_preferences.assert_called_once_with(None, False)
-        assert os.environ["SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT"] == "off"
-        assert os.environ["SPOKE_LOCAL_WHISPER_EAGER_EVAL"] == "0"
+        assert "SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT" not in os.environ
+        assert "SPOKE_LOCAL_WHISPER_EAGER_EVAL" not in os.environ
         mock_execv.assert_called_once()
 
     def test_selecting_assistant_model_persists_and_relaunches(
@@ -1050,13 +1081,62 @@ class TestDualModelConfiguration:
             ("qwen3-14b", "qwen3-14b", True),
         ]
         d._save_command_model_preference = MagicMock(return_value=True)
+        monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
 
         with patch.object(main_module.os, "execv") as mock_execv:
             d._handle_model_menu_action(("assistant", "qwen3-14b"))
 
         d._save_command_model_preference.assert_called_once_with("qwen3-14b")
-        assert os.environ["SPOKE_COMMAND_MODEL"] == "qwen3-14b"
+        assert "SPOKE_COMMAND_MODEL" not in os.environ
         mock_execv.assert_called_once()
+
+    def test_selecting_assistant_model_survives_relaunch_via_saved_preferences(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        """Assistant model changes should survive relaunch from prefs without env shadowing."""
+        prefs_file = tmp_path / "model_preferences.json"
+        prefs_file.write_text(
+            '{\n'
+            '  "command_model": "qwen3p5-35B-A3B"\n'
+            '}\n'
+        )
+        monkeypatch.setenv("SPOKE_MODEL_PREFERENCES_PATH", str(prefs_file))
+        monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
+
+        first = _make_delegate(main_module, monkeypatch)
+        first._command_client = MagicMock()
+        first._command_model_id = "qwen3p5-35B-A3B"
+        first._command_model_options = [
+            ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
+            ("qwen3-14b", "qwen3-14b", True),
+        ]
+        first._save_command_model_preference = (
+            main_module.SpokeAppDelegate._save_command_model_preference.__get__(
+                first, main_module.SpokeAppDelegate
+            )
+        )
+        first._load_preferences = main_module.SpokeAppDelegate._load_preferences.__get__(
+            first, main_module.SpokeAppDelegate
+        )
+        first._preferences_path = main_module.SpokeAppDelegate._preferences_path.__get__(
+            first, main_module.SpokeAppDelegate
+        )
+        first._save_preferences = main_module.SpokeAppDelegate._save_preferences.__get__(
+            first, main_module.SpokeAppDelegate
+        )
+
+        with patch.object(main_module.os, "execv"):
+            first._handle_model_menu_action(("assistant", "qwen3-14b"))
+
+        reloaded = json.loads(prefs_file.read_text())
+        assert reloaded["command_model"] == "qwen3-14b"
+
+        second = _make_delegate(main_module, monkeypatch)
+        second._load_preferences = main_module.SpokeAppDelegate._load_preferences.__get__(
+            second, main_module.SpokeAppDelegate
+        )
+
+        assert second._load_command_model_preference() == "qwen3-14b"
 
     def test_discover_command_models_merges_server_and_local_inventory(
         self, main_module, monkeypatch, tmp_path
@@ -1291,6 +1371,7 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch
     ):
         """Persisted selections should be used when role-specific env vars are unset."""
+        monkeypatch.setattr(main_module, "_RAM_GB", 32.0)
         monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
         monkeypatch.delenv("SPOKE_LOCAL_WHISPER_DECODE_TIMEOUT", raising=False)
         monkeypatch.delenv("SPOKE_LOCAL_WHISPER_EAGER_EVAL", raising=False)
@@ -1380,6 +1461,12 @@ class TestDualModelConfiguration:
             lambda self: "qwen3-14b",
             raising=False,
         )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "local",
+            raising=False,
+        )
         with patch.object(main_module, "CommandClient") as MockCommand:
             MockCommand.return_value = MagicMock()
             with patch.object(
@@ -1414,6 +1501,12 @@ class TestDualModelConfiguration:
             main_module.SpokeAppDelegate,
             "_load_command_model_preference",
             lambda self: "qwen3-14b",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "local",
             raising=False,
         )
 
@@ -1555,6 +1648,7 @@ class TestDualModelConfiguration:
         assert d._command_backend == "sidecar"
         assert d._command_url == "http://other-box:8001"
         assert d._command_sidecar_url == "http://other-box:8001"
+
 
     def test_handle_model_menu_none_sanitizes_unsupported_selected_model(
         self, main_module, monkeypatch
@@ -1806,11 +1900,14 @@ class TestWarmupContract:
         d = _make_delegate(main_module, monkeypatch)
         d._prepare_clients = MagicMock()
 
-        d._prepare_clients_in_background()
+        with patch.object(main_module, "_record_runtime_phase") as mock_phase:
+            d._prepare_clients_in_background()
 
         d.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_once_with(
             "clientWarmupSucceeded:", None, False
         )
+        mock_phase.assert_any_call("client_warmup.start")
+        mock_phase.assert_any_call("client_warmup.succeeded")
 
     def test_background_warmup_dispatches_failure_to_main_thread(
         self, main_module, monkeypatch
@@ -1819,16 +1916,20 @@ class TestWarmupContract:
         d = _make_delegate(main_module, monkeypatch)
         d._prepare_clients = MagicMock(side_effect=RuntimeError("warm failed"))
 
-        d._prepare_clients_in_background()
+        with patch.object(main_module, "_record_runtime_phase") as mock_phase:
+            d._prepare_clients_in_background()
 
         d.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_once_with(
             "clientWarmupFailed:", None, False
         )
         assert isinstance(d._warm_error, RuntimeError)
+        mock_phase.assert_any_call("client_warmup.start")
+        mock_phase.assert_any_call("client_warmup.failed", error="warm failed")
 
-    def test_prepare_clients_warms_local_whisper_at_startup(
+    def test_prepare_clients_defers_local_whisper_warmup(
         self, main_module, monkeypatch
     ):
+        """Local MLX Whisper client warmup is deferred until first use."""
         d = _make_delegate(main_module, monkeypatch)
         d._local_mode = True
         d._model_allowed = MagicMock(return_value=True)
@@ -1842,12 +1943,13 @@ class TestWarmupContract:
         ) as prep_preview:
             d._prepare_clients()
 
-        prep_client.assert_called_once()
-        prep_preview.assert_called_once()
+        prep_client.assert_not_called()
+        prep_preview.assert_not_called()
 
-    def test_prepare_clients_warms_local_qwen_at_startup(
+    def test_prepare_clients_defers_local_qwen_warmup(
         self, main_module, monkeypatch
     ):
+        """Local MLX Qwen client warmup is deferred until first use."""
         d = _make_delegate(main_module, monkeypatch)
         d._local_mode = True
         d._model_allowed = MagicMock(return_value=True)
@@ -1859,7 +1961,7 @@ class TestWarmupContract:
         with patch.object(d._client, "prepare") as prep_client:
             d._prepare_clients()
 
-        prep_client.assert_called_once()
+        prep_client.assert_not_called()
 
     def test_warmup_success_hides_startup_indicator(
         self, main_module, monkeypatch
@@ -1867,10 +1969,83 @@ class TestWarmupContract:
         """Successful warmup should remove the loading overlay."""
         d = _make_delegate(main_module, monkeypatch)
         d._tts_client = None
-        d.clientWarmupSucceeded_(None)
+        with patch.object(main_module, "_record_runtime_phase") as mock_phase:
+            d.clientWarmupSucceeded_(None)
 
         d._overlay.hide.assert_called_once_with()
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+        mock_phase.assert_called_with("app.ready")
+
+class TestRuntimePhaseLogging:
+    """Test runtime phase snapshot behavior under repeated writes."""
+
+    def test_record_runtime_phase_handles_concurrent_updates(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv(
+            "SPOKE_RUNTIME_PHASE_PATH",
+            str(tmp_path / "spoke-last-phase.json"),
+        )
+
+        real_write_text = main_module.Path.write_text
+        barrier = threading.Barrier(2)
+        tmp_names = []
+
+        def synced_write_text(self, data, *args, **kwargs):
+            result = real_write_text(self, data, *args, **kwargs)
+            if self.name.startswith("spoke-last-phase.json") and self.name.endswith(".tmp"):
+                tmp_names.append(self.name)
+                barrier.wait(timeout=1.0)
+            return result
+
+        with patch.object(main_module.Path, "write_text", new=synced_write_text):
+            with patch.object(main_module.logger, "exception") as mock_exception:
+                threads = [
+                    threading.Thread(
+                        target=main_module._record_runtime_phase,
+                        args=(f"phase-{idx}",),
+                    )
+                    for idx in range(2)
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=1.0)
+
+        assert not any(thread.is_alive() for thread in threads)
+        mock_exception.assert_not_called()
+        assert len(tmp_names) == 2
+        assert len(set(tmp_names)) == 2
+
+        payload = json.loads((tmp_path / "spoke-last-phase.json").read_text())
+        assert payload["phase"] in {"phase-0", "phase-1"}
+
+    def test_record_runtime_phase_includes_visible_launch_target(self, main_module, monkeypatch, tmp_path):
+        """Crash breadcrumbs should name the visible Launch Target."""
+        phase_path = tmp_path / "spoke-last-phase.json"
+        monkeypatch.setenv("SPOKE_RUNTIME_PHASE_PATH", str(phase_path))
+        monkeypatch.setattr(
+            main_module,
+            "current_launch_target",
+            lambda _cwd: {
+                "id": "airstrike",
+                "label": "Assistant Backend on Main Next Airstrike",
+                "path": tmp_path,
+                "enabled": True,
+            },
+        )
+
+        with patch.object(main_module.logger, "info") as mock_info:
+            main_module._record_runtime_phase("process.start", detail="value")
+
+        payload = json.loads(phase_path.read_text())
+        assert payload["launch_target_id"] == "airstrike"
+        assert payload["launch_target_label"] == "Assistant Backend on Main Next Airstrike"
+        assert mock_info.call_args[0][0] == "Runtime phase: %s (%s)"
+        assert mock_info.call_args[0][1] == "process.start"
+        log_detail_text = mock_info.call_args[0][2]
+        assert "launch_target_id='airstrike'" in log_detail_text
+        assert "launch_target_label='Assistant Backend on Main Next Airstrike'" in log_detail_text
 
     def test_warmup_failure_updates_startup_indicator(
         self, main_module, monkeypatch
@@ -2604,7 +2779,7 @@ class TestCommandCallbacks:
         executor = d._make_tool_executor()
         result = executor("read_aloud", {"source_ref": "literal:hello world"})
 
-        assert result == "Error speaking text: TTS playback failed"
+        assert result == "Error speaking text: device unavailable"
         assert d._command_tool_used_tts is False
         d._tts_client.speak.assert_called_once_with("hello world")
 
