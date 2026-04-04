@@ -84,6 +84,9 @@ _SMOOTH_RISE = _env("SPOKE_SMOOTH_RISE", 0.10)
 _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 _DARK_FILL_ADDITIVE_THRESHOLD = 0.15
 _DARK_FILL_ADDITIVE_FILTER = "plusL"
+_TEXT_SNAP_SPEED = 0.18
+_LIGHT_BACKGROUND_DIRECT_BACKSTOP_START = 0.42
+_LIGHT_BACKGROUND_DIRECT_BACKSTOP_MAX_ALPHA = 0.78
 
 # Adaptive compositing endpoints.
 # On dark backgrounds: light/white fill, dark text — the overlay is a
@@ -768,6 +771,40 @@ class TranscriptionOverlay(NSObject):
             self._typewriter_timer.invalidate()
             self._typewriter_timer = None
 
+    def _apply_direct_fill_backstop(
+        self,
+        brightness: float,
+        rgb: tuple[float, float, float],
+        fill_opacity: float,
+    ) -> None:
+        content_view = getattr(self, "_content_view", None)
+        if content_view is None:
+            return
+        layer = content_view.layer() if hasattr(content_view, "layer") else None
+        if layer is None or not hasattr(layer, "setBackgroundColor_"):
+            return
+
+        t = min(max(brightness, 0.0), 1.0)
+        if t <= _LIGHT_BACKGROUND_DIRECT_BACKSTOP_START:
+            layer.setBackgroundColor_(None)
+            return
+
+        backstop_t = (t - _LIGHT_BACKGROUND_DIRECT_BACKSTOP_START) / (
+            1.0 - _LIGHT_BACKGROUND_DIRECT_BACKSTOP_START
+        )
+        backstop_alpha = min(
+            fill_opacity * (0.55 + 0.35 * backstop_t),
+            _LIGHT_BACKGROUND_DIRECT_BACKSTOP_MAX_ALPHA,
+        )
+        layer.setBackgroundColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                rgb[0],
+                rgb[1],
+                rgb[2],
+                backstop_alpha,
+            ).CGColor()
+        )
+
     # ── amplitude-reactive text ──────────────────────────────
 
     def update_text_amplitude(self, amplitude: float) -> None:
@@ -821,7 +858,6 @@ class TranscriptionOverlay(NSObject):
         # ~200ms at 60Hz = ~12 frames.  The ease-out makes the snap feel
         # satisfying — it commits immediately then settles.
         current_text_lum = getattr(self, '_text_lum', target_text_lum)
-        _TEXT_SNAP_SPEED = 0.35  # ease-out: big initial jump, then settles
         current_text_lum += (target_text_lum - current_text_lum) * _TEXT_SNAP_SPEED
         self._text_lum = current_text_lum
         tr = tg = tb = current_text_lum
@@ -853,6 +889,7 @@ class TranscriptionOverlay(NSObject):
         fill_min = _lerp(0.06, 0.92, t)   # was 0.84 on bright screens
         fill_max = _lerp(0.92, 1.0, t)    # was 0.99 on bright screens
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
+        fill_rgb = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(fill_opacity, 0.99))
             # Rebuild the fill image when brightness changes enough to
@@ -871,6 +908,7 @@ class TranscriptionOverlay(NSObject):
                         self._apply_ridge_masks(cf.size.width, cf.size.height)
                     except Exception:
                         pass
+        self._apply_direct_fill_backstop(t, fill_rgb, fill_opacity)
 
     def update_glow_amplitude(self, opacity: float, cap_factor: float = 1.0) -> None:
         """Update inner and outer glow opacity to match the screen glow.

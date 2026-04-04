@@ -220,6 +220,22 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_light_background_applies_direct_dark_backstop(self, mock_pyobjc):
+        """Bright backgrounds should now force a direct dark body behind the preview text."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay.set_brightness(1.0, immediate=True)
+
+            overlay._content_view.layer.return_value.setBackgroundColor_.reset_mock()
+            overlay.update_text_amplitude(10.0)
+
+            overlay._content_view.layer.return_value.setBackgroundColor_.assert_called()
+            assert overlay._content_view.layer.return_value.setBackgroundColor_.call_args[0][0] is not None
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_dark_background_uses_light_text_and_sets_fill_opacity(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
@@ -241,6 +257,14 @@ class TestAdaptiveOverlayCompositing:
 
             # Fill layer opacity should be set
             assert overlay._fill_layer.setOpacity_.called
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_text_snap_speed_is_slower_for_visual_stability(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            assert mod._TEXT_SNAP_SPEED == pytest.approx(0.18)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
