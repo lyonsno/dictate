@@ -923,6 +923,7 @@ class TestDualModelConfiguration:
         model_state = d._handle_model_menu_action(None)
 
         assert model_state["assistant"] == {
+            "title": "Assistant Model",
             "selected": "qwen3p5-35B-A3B",
             "models": [
                 ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
@@ -946,7 +947,9 @@ class TestDualModelConfiguration:
             "items": [
                 ("local", "Local OMLX", False, True),
                 ("sidecar", "Sidecar OMLX", True, True),
+                ("cloud", "Cloud", False, True),
                 ("configure", "Set Sidecar URL…", False, True),
+                ("configure_cloud", "Set Cloud Endpoint…", False, True),
             ],
         }
 
