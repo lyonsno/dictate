@@ -762,15 +762,23 @@ class SpokeAppDelegate(NSObject):
             self._hold_rejected_during_warmup = True
             self._refresh_startup_status()
             return
-        # If a command is actively streaming, cancel it
+        # If TTS is playing from a tool call, cancel the playback but
+        # don't invalidate the stream token — let the remaining tool batch
+        # finish so subsequent read_aloud calls still execute.
+        tts = getattr(self, "_tts_client", None)
+        tts_playing = tts is not None and (
+            getattr(tts, "_playback_active", False)
+            or getattr(tts, "_stream", None) is not None
+        )
         if self._transcribing:
-            logger.info("Hold during active stream — cancelling")
-            self._transcription_token += 1
-            self._transcribing = False
+            if tts_playing:
+                logger.info("Hold during TTS playback — cancelling audio, keeping stream alive")
+                tts.cancel()
+            else:
+                logger.info("Hold during active stream — cancelling")
+                self._transcription_token += 1
+                self._transcribing = False
             # Fall through to start recording
-        # Don't cancel TTS on hold-start — let tool-call playback finish
-        # naturally. TTS is cancelled on explicit overlay dismiss or when
-        # a new command response arrives and supersedes the old one.
         # Clear Enter suppression — new hold replaces/dismisses the overlay.
         self._detector.command_overlay_active = False
         # Do NOT clear _just_dismissed here — it must survive until

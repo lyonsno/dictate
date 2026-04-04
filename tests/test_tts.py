@@ -735,9 +735,10 @@ class TestCommandCompletionAutoplay:
 
         delegate._command_overlay.finish.assert_called_once()
 
-    def test_hold_start_preserves_tts(self, main_module):
-        """Starting a new hold should leave active TTS playing until explicitly superseded."""
+    def test_hold_start_cancels_tts_audio_but_keeps_stream(self, main_module):
+        """Hold during TTS playback should cancel audio but not invalidate the stream token."""
         tts = MagicMock()
+        tts._stream = MagicMock()  # simulate active playback
         delegate = self._make_delegate(main_module, tts_client=tts)
         delegate._models_ready = True
         delegate._capture = MagicMock()
@@ -747,10 +748,13 @@ class TestCommandCompletionAutoplay:
         delegate._detector._shift_at_press = False
         delegate._preview_done = None
         delegate._preview_session_token = 0
+        delegate._transcribing = True
+        old_token = delegate._transcription_token
 
         delegate._on_hold_start()
 
-        tts.cancel.assert_not_called()
+        tts.cancel.assert_called_once()
+        assert delegate._transcription_token == old_token, "Stream token must not change during TTS playback"
 
     def test_idle_shift_tap_toggles_audio(self, main_module):
         """Idle shift tap should route to the TTS audio toggle callback."""
