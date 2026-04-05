@@ -307,7 +307,7 @@ class TestAdaptiveOverlayCompositing:
             sys.modules.pop("spoke.overlay", None)
 
     def test_light_background_fill_is_opaque(self, mock_pyobjc):
-        """On bright backgrounds, the fill layer becomes near-opaque to support the cutout."""
+        """On bright backgrounds, the fill layer stays strong without pinning at the ceiling."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -319,7 +319,7 @@ class TestAdaptiveOverlayCompositing:
 
             # Fill layer opacity should be high on light backgrounds
             fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
-            assert fill_opacity > 0.8  # near-opaque fill
+            assert 0.75 < fill_opacity < 0.9
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -336,7 +336,7 @@ class TestAdaptiveOverlayCompositing:
             sys.modules.pop("spoke.overlay", None)
 
     def test_light_background_silence_floor_is_heavier_for_regression_triage(self, mock_pyobjc):
-        """Even at silence, bright backgrounds should keep a much heavier dark fill."""
+        """Even at silence, bright backgrounds should keep a visible dark fill without crushing headroom."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -348,7 +348,30 @@ class TestAdaptiveOverlayCompositing:
             overlay.update_text_amplitude(0.0)
 
             fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
-            assert fill_opacity > 0.9
+            assert 0.5 < fill_opacity < 0.8
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_light_background_fill_keeps_headroom_for_amplitude(self, mock_pyobjc):
+        """Bright-screen dark fill should leave room to breathe instead of starting pinned near 1.0."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay.set_brightness(1.0, immediate=True)
+
+            overlay._fill_layer.reset_mock()
+            overlay._text_amplitude = 0.0
+            overlay.update_text_amplitude(0.0)
+            alpha_silent = overlay._fill_layer.setOpacity_.call_args[0][0]
+
+            overlay._fill_layer.reset_mock()
+            overlay._text_amplitude = 0.0
+            overlay.update_text_amplitude(10.0)
+            alpha_loud = overlay._fill_layer.setOpacity_.call_args[0][0]
+
+            assert alpha_silent < 0.8
+            assert alpha_loud > alpha_silent + 0.2
         finally:
             sys.modules.pop("spoke.overlay", None)
 

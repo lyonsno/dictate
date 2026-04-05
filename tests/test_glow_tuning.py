@@ -225,7 +225,35 @@ class TestGlowTuning:
         try:
             specs = mod._continuous_vignette_pass_specs()
             tail = next(spec for spec in specs if spec["name"] == "tail")
-            assert tail["alpha"] == pytest.approx(0.28)
+            assert tail["alpha"] == pytest.approx(0.34)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_light_background_vignette_keeps_headroom_for_rms_motion(self, mock_pyobjc):
+        """Bright-scene vignette should not pin to the ceiling at its floor."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            glow = self._make_glow(mod)
+            glow._visible = True
+            glow._fade_in_until = 0.0
+            glow._noise_floor = 0.0
+            glow._smoothed_amplitude = 0.0
+            glow._glow_base_opacity = mod._GLOW_BASE_OPACITY_LIGHT
+            glow._glow_peak_target = mod._GLOW_MAX_OPACITY
+            glow._additive_mix = 0.0
+            glow._subtractive_mix = mod._edge_mix_for_brightness(1.0)[1]
+            glow._vignette_layer = MagicMock()
+
+            glow.update_amplitude(0.0)
+            low_opacity = glow._vignette_layer.setOpacity_.call_args[0][0]
+
+            glow._vignette_layer.reset_mock()
+            glow.update_amplitude(1.0)
+            high_opacity = glow._vignette_layer.setOpacity_.call_args[0][0]
+
+            assert low_opacity < 1.0
+            assert high_opacity > low_opacity + 0.1
         finally:
             sys.modules.pop("spoke.glow", None)
 

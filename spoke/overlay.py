@@ -128,6 +128,16 @@ _TRAY_CAPTURE_FLASH_ONSET_S = 0.10
 _TRAY_CAPTURE_FLASH_FADE_OUT_S = 0.30
 
 
+def _fill_profile_for_brightness(brightness: float) -> tuple[float, float, float, float]:
+    """Return source-shape and opacity controls for the preview dark-language fill."""
+    t = min(max(brightness, 0.0), 1.0)
+    width = _lerp(2.5, 4.8, t)
+    interior_floor = _lerp(0.55, 0.97, t)
+    opacity_min = _lerp(0.06, 0.56, t)
+    opacity_max = _lerp(0.92, 0.86, t)
+    return width, interior_floor, opacity_min, opacity_max
+
+
 def _truncate_preview(text: str | None) -> str:
     """Truncate text for clipboard preview display."""
     if not text:
@@ -890,8 +900,7 @@ class TranscriptionOverlay(NSObject):
         # use a much steeper low-end response so mid RMS visibly moves
         # the fill instead of looking stuck at its floor.
         fill_drive = _lerp(scaled, min(math.sqrt(max(scaled, 0.0)) * 1.4, 1.0), t)
-        fill_min = _lerp(0.06, 0.92, t)   # was 0.84 on bright screens
-        fill_max = _lerp(0.92, 1.0, t)    # was 0.99 on bright screens
+        _fill_width, _fill_floor, fill_min, fill_max = _fill_profile_for_brightness(t)
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         fill_rgb = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
@@ -1002,14 +1011,9 @@ class TranscriptionOverlay(NSObject):
             return
         try:
             scale = getattr(self, '_fill_scale', 2.0)
-            # Stretched-exponential fill: knife-edge cusp, heavy tails.
-            # Width 2.5 = very aggressive initial drop from peak.
-            # Interior floor varies with brightness: low on dark backgrounds
-            # (more contrast between peak and interior), high on light
-            # backgrounds (more uniform/material).
             t = getattr(self, '_brightness', 0.0)
-            floor = _lerp(0.55, 0.92, t)
-            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=2.5 * scale, interior_floor=floor)
+            width, floor, _opacity_min, _opacity_max = _fill_profile_for_brightness(t)
+            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=width * scale, interior_floor=floor)
 
             fill_override_rgb = getattr(self, "_fill_override_rgb", None)
             if fill_override_rgb is None:
