@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,15 +32,35 @@ STALE_THRESHOLD_S = 120.0  # 2 minutes without heartbeat = stale
 
 
 def _is_process_alive(pid: int) -> bool:
-    """Check whether *pid* refers to a running process (same user)."""
+    """Return True only for running, non-zombie processes owned by this user.
+
+    Pairs the ``kill(pid, 0)`` probe with a ``ps`` stat check so that
+    unreaped zombies are correctly classified as dead.
+    """
     try:
         os.kill(pid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
-        # Alive but owned by another user — shouldn't happen for spoke.
         return True
+
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "stat="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        return False
+    except Exception:
+        # Fall back to the kill(0) probe if process-state lookup fails.
+        return True
+
+    state = result.stdout.strip()
+    if state.startswith("Z"):
+        return False
+    return True
 
 
 def _is_spoke_process(pid: int) -> bool:

@@ -221,6 +221,51 @@ class TestZombieSweep:
         Path(path).write_text(json.dumps({"unrelated": True}))
         zombie_sweep(path)  # Should not raise.
 
+    def test_stale_zombie_treated_as_dead(self, tmp_path):
+        """A zombie process with a stale heartbeat should be treated as dead.
+
+        The sweep should recognize the zombie at the liveness check and
+        take the "already dead" path (clean up heartbeat, no SIGTERM),
+        rather than falling through to staleness/identity checks.
+        """
+        import spoke.heartbeat as hb_module
+
+        path = str(tmp_path / "heartbeat.json")
+        data = {"pid": 77777, "timestamp": "2020-01-01T00:00:00+00:00"}
+        Path(path).write_text(json.dumps(data))
+
+        kill_calls = []
+
+        def fake_kill(pid, sig_num):
+            kill_calls.append((pid, sig_num))
+            if sig_num == 0:
+                return  # kill(pid, 0) succeeds — kernel sees the zombie
+
+        # ps reports zombie state for the liveness check, and a spoke-like
+        # command for the identity check.  If the sweep calls _is_spoke_process
+        # at all, that means it didn't detect the zombie early enough.
+        is_spoke_called = []
+        original_is_spoke = hb_module._is_spoke_process
+
+        def spy_is_spoke(pid):
+            is_spoke_called.append(pid)
+            return True  # pretend it's spoke — if reached, the sweep will SIGTERM
+
+        with mock.patch.object(hb_module.os, "kill", side_effect=fake_kill):
+            with mock.patch.object(hb_module, "_is_spoke_process", side_effect=spy_is_spoke):
+                with mock.patch("subprocess.run", return_value=mock.MagicMock(stdout="Z\n")):
+                    zombie_sweep(path)
+
+        # Should have cleaned up the heartbeat.
+        assert not Path(path).exists()
+        # The zombie should have been caught at the liveness check, before
+        # the sweep ever reached the identity or staleness checks.
+        assert is_spoke_called == [], (
+            "_is_spoke_process should not be called for a zombie — "
+            "the liveness check should have caught it"
+        )
+        assert (77777, signal.SIGTERM) not in kill_calls
+
 
 # ── _is_process_alive ──────────────────────────────────────────
 
