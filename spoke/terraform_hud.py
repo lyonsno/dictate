@@ -14,8 +14,10 @@ from pathlib import Path
 import objc
 from AppKit import (
     NSBackingStoreBuffered,
+    NSBezierPath,
     NSColor,
     NSFont,
+    NSGraphicsContext,
     NSPanel,
     NSScreen,
     NSScrollView,
@@ -26,6 +28,7 @@ from AppKit import (
     NSWindowCollectionBehaviorStationary,
     NSWindowStyleMaskNonactivatingPanel,
 )
+import Quartz
 
 # Style mask constants not always available via PyObjC — use numeric values
 _NSWindowStyleMaskTitled = 1 << 0
@@ -75,9 +78,33 @@ class ToposRowView(NSView):
         view = cls.alloc().initWithFrame_(NSMakeRect(0, 0, width, _ROW_HEIGHT))
         view._topos = topos
         view.setWantsLayer_(True)
-        view.layer().setCornerRadius_(6.0)
-        view.layer().setBackgroundColor_(
-            _temp_color(topos.temperature).CGColor()
+
+        layer = view.layer()
+        layer.setCornerRadius_(8.0)
+        layer.setMasksToBounds_(True)
+
+        # SDF-style glow: inner color fading to edge
+        rgba = _TEMP_COLORS.get(topos.temperature or "", (0.5, 0.5, 0.5, 0.08))
+        r, g, b, a = rgba
+        # Brighter center, fading to near-transparent edge
+        center_color = Quartz.CGColorCreateGenericRGB(r, g, b, a * 3.0)
+        mid_color = Quartz.CGColorCreateGenericRGB(r, g, b, a * 1.5)
+        edge_color = Quartz.CGColorCreateGenericRGB(r * 0.3, g * 0.3, b * 0.3, a * 0.4)
+
+        gradient = Quartz.CAGradientLayer.layer()
+        gradient.setFrame_(((0, 0), (width, _ROW_HEIGHT)))
+        gradient.setType_("radial")
+        gradient.setColors_([center_color, mid_color, edge_color])
+        gradient.setLocations_([0.0, 0.5, 1.0])
+        gradient.setStartPoint_((0.5, 0.5))
+        gradient.setEndPoint_((1.0, 1.0))
+        gradient.setCornerRadius_(8.0)
+        layer.addSublayer_(gradient)
+
+        # Subtle border glow
+        layer.setBorderWidth_(0.5)
+        layer.setBorderColor_(
+            Quartz.CGColorCreateGenericRGB(r, g, b, a * 2.0)
         )
 
         # Semeion name (bold, primary)
