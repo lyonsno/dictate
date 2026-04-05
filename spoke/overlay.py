@@ -85,9 +85,6 @@ _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 _DARK_FILL_ADDITIVE_THRESHOLD = 0.15
 _DARK_FILL_ADDITIVE_FILTER = "plusL"
 _TEXT_SNAP_SPEED = 0.18
-_LIGHT_BACKGROUND_DIRECT_BACKSTOP_START = 0.42
-_LIGHT_BACKGROUND_DIRECT_BACKSTOP_MAX_ALPHA = 0.78
-
 # Adaptive compositing endpoints.
 # On dark backgrounds: light/white fill, dark text — the overlay is a
 # bright ghostly bubble that reads as additive glow.
@@ -793,31 +790,7 @@ class TranscriptionOverlay(NSObject):
         layer = content_view.layer() if hasattr(content_view, "layer") else None
         if layer is None or not hasattr(layer, "setBackgroundColor_"):
             return
-        state = getattr(self, "_visual_layer_state", None)
-        if state is not None and not state.is_visible(PREVIEW_FILL_LAYER_ID):
-            layer.setBackgroundColor_(None)
-            return
-
-        t = min(max(brightness, 0.0), 1.0)
-        if t <= _LIGHT_BACKGROUND_DIRECT_BACKSTOP_START:
-            layer.setBackgroundColor_(None)
-            return
-
-        backstop_t = (t - _LIGHT_BACKGROUND_DIRECT_BACKSTOP_START) / (
-            1.0 - _LIGHT_BACKGROUND_DIRECT_BACKSTOP_START
-        )
-        backstop_alpha = min(
-            fill_opacity * (0.55 + 0.35 * backstop_t),
-            _LIGHT_BACKGROUND_DIRECT_BACKSTOP_MAX_ALPHA,
-        )
-        layer.setBackgroundColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(
-                rgb[0],
-                rgb[1],
-                rgb[2],
-                backstop_alpha,
-            ).CGColor()
-        )
+        layer.setBackgroundColor_(None)
 
     # ── amplitude-reactive text ──────────────────────────────
 

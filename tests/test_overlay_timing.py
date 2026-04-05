@@ -221,8 +221,8 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_light_background_applies_direct_dark_backstop(self, mock_pyobjc):
-        """Bright backgrounds should now force a direct dark body behind the preview text."""
+    def test_light_background_does_not_draw_rectangular_backstop(self, mock_pyobjc):
+        """Bright backgrounds should rely on the SDF fill, not a rectangular fallback box."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -232,13 +232,12 @@ class TestAdaptiveOverlayCompositing:
             overlay._content_view.layer.return_value.setBackgroundColor_.reset_mock()
             overlay.update_text_amplitude(10.0)
 
-            overlay._content_view.layer.return_value.setBackgroundColor_.assert_called()
-            assert overlay._content_view.layer.return_value.setBackgroundColor_.call_args[0][0] is not None
+            overlay._content_view.layer.return_value.setBackgroundColor_.assert_called_once_with(None)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_preview_fill_toggle_disables_direct_dark_backstop(self, mock_pyobjc):
-        """Turning Preview Fill off should clear the preview-body backstop as well."""
+    def test_preview_fill_toggle_still_clears_any_backstop(self, mock_pyobjc):
+        """Turning Preview Fill off should keep the content background clear as well."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
