@@ -352,17 +352,24 @@ class TestExecuteTool:
         assert "error" in parsed
 
 
-    def test_execute_list_directory(self):
+    def test_execute_list_directory(self, tmp_path):
         mod = _import_tools()
-        with patch("os.listdir", return_value=["file1.txt", "dir1"]):
-            with patch("os.path.isdir", return_value=True):
-                result = mod.execute_tool(
-                    name="list_directory",
-                    arguments={"dir_path": "/tmp/testdir"}
-                )
+        d = tmp_path / "testdir"
+        d.mkdir()
+        (d / "file1.txt").write_text("hi")
+        (d / "dir1").mkdir()
+        result = mod.execute_tool(
+            name="list_directory",
+            arguments={"dir_path": str(d)}
+        )
         parsed = json.loads(result)
-        assert "file1.txt" in parsed.get("contents", [])
-        assert "dir1" in parsed.get("contents", [])
+        names = [e["name"] for e in parsed["entries"]]
+        assert "file1.txt" in names
+        assert "dir1" in names
+        file_entry = next(e for e in parsed["entries"] if e["name"] == "file1.txt")
+        assert file_entry["type"] == "file"
+        assert file_entry["size"] == 2
+        assert "modified" in file_entry
 
     def test_execute_read_file(self):
         mod = _import_tools()
@@ -591,10 +598,11 @@ class TestExecuteToolIntegration:
         d = tmp_path / "mydir"
         d.mkdir()
         (d / "file.txt").write_text("hello")
-        
+
         result = mod.execute_tool("list_directory", {"dir_path": str(d)})
         parsed = json.loads(result)
-        assert "file.txt" in parsed.get("contents", [])
+        names = [e["name"] for e in parsed["entries"]]
+        assert "file.txt" in names
 
     def test_execute_read_file_real(self, tmp_path):
         mod = _import_tools()
