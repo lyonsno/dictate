@@ -318,6 +318,7 @@ class TerraformHUD(NSObject):
         self._panel.setTitle_("Terror Form")
         self._panel.setLevel_(1000)  # well above glow/dimmer layer (level 25)
         self._panel.setOpaque_(False)
+        self._panel.setHasShadow_(False)  # shadow renders as a ghost copy on transparent windows
         self._panel.setBackgroundColor_(NSColor.clearColor())
         self._panel.setCollectionBehavior_(
             NSWindowCollectionBehaviorCanJoinAllSpaces
