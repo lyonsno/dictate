@@ -314,9 +314,9 @@ class TerraformHUD(NSObject):
         self._scroll_view.setDrawsBackground_(False)
         self._scroll_view.setAutoresizingMask_(18)  # width + height flex
 
-        # Document view (the actual content that scrolls)
+        # Document view (the actual content that scrolls) — replaced
+        # each refresh cycle to avoid ghost layer accumulation.
         self._content_view = NSView.alloc().initWithFrame_(content_frame)
-        self._content_view.setWantsLayer_(True)
         self._scroll_view.setDocumentView_(self._content_view)
 
         # Fade mask: content fades to transparent at top and bottom
@@ -434,36 +434,41 @@ class TerraformHUD(NSObject):
             self._panel.orderFront_(None)
 
     def _rebuild_content(self) -> None:
-        """Rebuild the scrollable content from current topoi."""
-        if self._content_view is None:
+        """Rebuild the scrollable content from current topoi.
+
+        Replaces the entire document view each cycle rather than
+        mutating in place — prevents ghost layers from accumulating
+        when AppKit's layer-backed view teardown leaves orphans.
+        """
+        if self._scroll_view is None:
             return
 
         # Preserve scroll position across rebuild
         clip_view = self._scroll_view.contentView()
         old_origin = clip_view.bounds().origin if clip_view else None
 
-        # Remove old subviews and their layer trees
-        for subview in list(self._content_view.subviews()):
-            subview.removeFromSuperview()
-        # Also clear any orphaned sublayers on the content view itself
-        if self._content_view.layer() and self._content_view.layer().sublayers():
-            for sl in list(self._content_view.layer().sublayers()):
-                sl.removeFromSuperlayer()
-
-        width = self._scroll_view.bounds().size.width - 8  # edge padding
+        scroll_bounds = self._scroll_view.bounds()
+        width = scroll_bounds.size.width - 8  # edge padding
         row_stride = _ROW_CONTAINER_HEIGHT + 4
         total_height = max(
             len(self._topoi) * row_stride + _PADDING,
-            self._scroll_view.bounds().size.height,
+            scroll_bounds.size.height,
         )
 
-        self._content_view.setFrameSize_((self._scroll_view.bounds().size.width, total_height))
+        # Build a fresh document view — no mutation of the old one
+        new_content = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, scroll_bounds.size.width, total_height)
+        )
 
         for i, topos in enumerate(self._topoi):
             y = total_height - (i + 1) * row_stride
             row = ToposRowView.createWithTopos_width_(topos, width)
             row.setFrameOrigin_((4, y))
-            self._content_view.addSubview_(row)
+            new_content.addSubview_(row)
+
+        # Swap document view atomically
+        self._scroll_view.setDocumentView_(new_content)
+        self._content_view = new_content
 
         # Restore scroll position
         if old_origin is not None and clip_view is not None:
