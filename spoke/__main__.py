@@ -351,6 +351,8 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_command_overlay_dismiss = self._dismiss_command_overlay
         self._detector._on_cancel_spring_start = self._on_cancel_spring_start
         self._detector._on_cancel_spring_release = self._on_cancel_spring_release
+        self._detector._on_double_tap_enter = self._toggle_command_overlay
+        self._detector._on_double_tap_shift = self._toggle_terraform_hud
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
@@ -1788,6 +1790,43 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay.cancel_dismiss()
         if self._menubar is not None:
             self._menubar.set_status_text("Ready — hold spacebar")
+
+    def _toggle_command_overlay(self) -> None:
+        """Toggle command overlay visibility — called from double-tap Enter."""
+        if self._command_client is None:
+            return
+        overlay_visible = (
+            self._command_overlay is not None
+            and getattr(self._command_overlay, '_visible', False)
+        )
+        if overlay_visible:
+            logger.info("Double-tap Enter — dismissing command overlay")
+            self._command_overlay.cancel_dismiss()
+            self._detector.command_overlay_active = False
+        else:
+            snapshot = self._last_command_overlay_snapshot()
+            if snapshot is not None:
+                last_utterance, last_response = snapshot
+                logger.info("Double-tap Enter — recalling last response")
+                if self._command_overlay is not None:
+                    try:
+                        self._sync_command_overlay_brightness(immediate=True)
+                        self._command_overlay.show()
+                        self._command_overlay.set_utterance(last_utterance)
+                        self._command_overlay.append_token(last_response)
+                        self._command_overlay.finish()
+                        self._detector.command_overlay_active = True
+                    except Exception:
+                        logger.exception("Recall overlay failed")
+            else:
+                logger.info("Double-tap Enter — no assistant overlay snapshot to recall")
+
+    def _toggle_terraform_hud(self) -> None:
+        """Toggle Terror Form HUD visibility — called from double-tap Shift."""
+        hud = getattr(self, '_terraform_hud', None)
+        if hud is not None:
+            hud.toggle()
+            logger.info("Double-tap Shift — toggled Terror Form HUD")
 
     def _on_audio_shift_tap(self) -> None:
         """Shift tap while idle toggles current TTS audibility."""

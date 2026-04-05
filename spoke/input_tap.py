@@ -64,6 +64,7 @@ _DEFAULT_HOLD_MS = 400
 _SAFETY_TIMEOUT_S = 300.0  # 5 minutes — covers long dictations, only for truly stuck keyUp
 _FORWARDING_TIMEOUT_S = 0.1  # auto-clear _forwarding if events never arrive
 _ENTER_RELEASE_GRACE_S = 0.15  # small post-release grace so Enter can land a beat late
+_DOUBLE_TAP_WINDOW_S = 0.3  # 300ms window for double-tap detection
 
 
 class _State(Enum):
@@ -144,6 +145,12 @@ class SpacebarHoldDetector(NSObject):
         self._tray_gesture_consumed = False  # True if a tray gesture already fired this hold
         # Double-tap detection for delete gesture (shift held + double-tap spacebar)
         self._tray_last_shift_space_up: float = 0.0
+
+        # Double-tap detection for Enter (toggle command overlay) and Shift (toggle HUD)
+        self._on_double_tap_enter: Callable[[], None] | None = None
+        self._on_double_tap_shift: Callable[[], None] | None = None
+        self._last_idle_enter_up: float = 0.0
+        self._last_idle_shift_up: float = 0.0
 
         return self
 
@@ -652,6 +659,18 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 det._finish_enter_release(shift_held=shift_held)
                 return None
             det._enter_held = False
+            # Double-tap Enter detection in IDLE (not during tray)
+            if det._state == _State.IDLE and not getattr(det, 'tray_active', False):
+                now = time.monotonic()
+                last = getattr(det, '_last_idle_enter_up', 0.0)
+                if (now - last) < _DOUBLE_TAP_WINDOW_S:
+                    det._last_idle_enter_up = 0.0  # reset
+                    cb = getattr(det, '_on_double_tap_enter', None)
+                    if cb is not None:
+                        logger.info("Double-tap Enter — toggling command overlay")
+                        cb()
+                else:
+                    det._last_idle_enter_up = now
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:
@@ -717,9 +736,20 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             elif not shift_now and getattr(det, '_idle_shift_down', False):
                 det._idle_shift_down = False
                 if not getattr(det, '_idle_shift_interrupted', False):
-                    on_shift_tap_idle = getattr(det, '_on_shift_tap_idle', None)
-                    if on_shift_tap_idle is not None:
-                        on_shift_tap_idle()
+                    # Double-tap Shift detection (not during tray)
+                    now = time.monotonic()
+                    last = getattr(det, '_last_idle_shift_up', 0.0)
+                    if (now - last) < _DOUBLE_TAP_WINDOW_S:
+                        det._last_idle_shift_up = 0.0  # reset
+                        cb = getattr(det, '_on_double_tap_shift', None)
+                        if cb is not None:
+                            logger.info("Double-tap Shift — toggling HUD")
+                            cb()
+                    else:
+                        det._last_idle_shift_up = now
+                        on_shift_tap_idle = getattr(det, '_on_shift_tap_idle', None)
+                        if on_shift_tap_idle is not None:
+                            on_shift_tap_idle()
                 det._idle_shift_interrupted = False
 
     return event
