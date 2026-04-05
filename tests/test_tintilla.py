@@ -82,6 +82,15 @@ class TestLayerVisibilityState:
 
 
 class TestTintillaPanelController:
+    def test_setup_enables_panel_frame_autosave(self, mock_pyobjc):
+        from spoke.tintilla import LayerVisibilityState, TintillaPanelController
+
+        controller = TintillaPanelController.alloc().initWithState_(LayerVisibilityState())
+
+        controller.setup()
+
+        controller._panel.setFrameAutosaveName_.assert_called_once_with("SpokeTintillaPanel")
+
     def test_show_activates_app_and_brings_panel_forward(self, mock_pyobjc):
         import spoke.tintilla as tintilla_module
         from spoke.tintilla import LayerVisibilityState, TintillaPanelController

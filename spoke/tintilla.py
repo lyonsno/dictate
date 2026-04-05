@@ -174,6 +174,8 @@ class TintillaPanelController(NSObject):
             False,
         )
         self._panel.setTitle_("Tintilla Panel")
+        if hasattr(self._panel, "setFrameAutosaveName_"):
+            self._panel.setFrameAutosaveName_("SpokeTintillaPanel")
         self._panel.setFloatingPanel_(True)
         self._panel.setLevel_(NSFloatingWindowLevel)
         if hasattr(self._panel, "setReleasedWhenClosed_"):

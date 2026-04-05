@@ -225,7 +225,8 @@ class TestGlowTuning:
         try:
             specs = mod._continuous_vignette_pass_specs()
             tail = next(spec for spec in specs if spec["name"] == "tail")
-            assert tail["alpha"] == pytest.approx(0.34)
+            assert tail["falloff"] == pytest.approx(17.0)
+            assert tail["alpha"] == pytest.approx(0.40)
         finally:
             sys.modules.pop("spoke.glow", None)
 
