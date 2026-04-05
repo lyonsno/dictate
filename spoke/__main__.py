@@ -497,6 +497,11 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay._on_cancel_spring_threshold = self._on_cancel_spring_threshold
             self._refresh_command_model_options_async()
 
+        # Terraform topoi HUD
+        from .terraform_hud import TerraformHUD
+        self._terraform_hud = TerraformHUD.alloc().init()
+        self._menubar._on_toggle_terraform = self._terraform_hud.toggle
+
         # Step 1: Request mic permission with a test recording.
         # This triggers the system prompt before we start listening for spacebar.
         self._menubar.set_status_text("Requesting mic access…")
@@ -4073,6 +4078,8 @@ class SpokeAppDelegate(NSObject):
     def _quit(self) -> None:
         self._detector.uninstall()
         self._preview_active = False
+        if hasattr(self, "_terraform_hud") and self._terraform_hud is not None:
+            self._terraform_hud.cleanup()
         self._close_clients()
         NSApp.terminate_(None)
 
