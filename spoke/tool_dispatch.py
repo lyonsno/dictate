@@ -120,11 +120,16 @@ _LIST_DIRECTORY_SCHEMA = {
     "type": "function",
     "function": {
         "name": "list_directory",
-        "description": "List contents of a directory. Returns files and subdirectories.",
+        "description": (
+            "List contents of a directory with metadata. Returns name, type "
+            "(file/dir), size, and modification date for each entry. "
+            "Supports an optional glob pattern to filter entries."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
-                "dir_path": {"type": "string", "description": "Absolute or relative directory path"}
+                "dir_path": {"type": "string", "description": "Absolute or relative directory path"},
+                "pattern": {"type": "string", "description": "Optional glob pattern to filter entries (e.g. '*.md', 'epistaxis*')"},
             },
             "required": ["dir_path"]
         }
@@ -179,6 +184,27 @@ _SEARCH_FILE_SCHEMA = {
         }
     }
 }
+
+_FIND_FILE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "find_file",
+        "description": (
+            "Find files by name pattern. Recursively searches a directory for "
+            "files matching a glob pattern (e.g. 'epistaxis.md', '*.py', "
+            "'spoke/**/attractors/*.md'). Returns matching paths with size and "
+            "modification date. Much faster than listing directories one by one."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Glob pattern to match filenames (e.g. '*.md', 'epistaxis.md', '**/*.py')"},
+                "dir_path": {"type": "string", "description": "Root directory to search from (recursive)"},
+            },
+            "required": ["pattern", "dir_path"]
+        }
+    }
+}
 _RUN_EPISTAXIS_OPS_SCHEMA = epistaxis_tool_schema()
 _QUERY_GMAIL_SCHEMA = gmail_tool_schema()
 
@@ -193,6 +219,7 @@ def get_tool_schemas() -> list[dict]:
         _READ_FILE_SCHEMA,
         _WRITE_FILE_SCHEMA,
         _SEARCH_FILE_SCHEMA,
+        _FIND_FILE_SCHEMA,
         _RUN_EPISTAXIS_OPS_SCHEMA,
         _QUERY_GMAIL_SCHEMA,
     ]
@@ -342,17 +369,40 @@ def _execute_add_to_tray(
 
 
 def _execute_list_directory(arguments: dict) -> dict[str, Any]:
+    import fnmatch
     import os
+    from datetime import datetime, timezone
+
     dir_path = arguments.get("dir_path")
     if dir_path is None:
         dir_path = "."
+    pattern = arguments.get("pattern")
     try:
         if not os.path.isdir(dir_path):
             return {"error": f"Not a valid directory: {dir_path}"}
-        contents = os.listdir(dir_path)
-        if len(contents) > 1000:
-            contents = contents[:1000] + ["... (truncated, over 1000 items)"]
-        return {"dir_path": dir_path, "contents": contents}
+        names = os.listdir(dir_path)
+        if pattern:
+            names = [n for n in names if fnmatch.fnmatch(n, pattern)]
+        names.sort()
+        entries = []
+        for name in names[:500]:
+            full = os.path.join(dir_path, name)
+            try:
+                st = os.stat(full)
+                is_dir = os.path.isdir(full)
+                mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+                entries.append({
+                    "name": name,
+                    "type": "dir" if is_dir else "file",
+                    "size": st.st_size if not is_dir else None,
+                    "modified": mtime,
+                })
+            except OSError:
+                entries.append({"name": name, "type": "unknown"})
+        result: dict[str, Any] = {"dir_path": dir_path, "entries": entries}
+        if len(names) > 500:
+            result["truncated"] = f"Showing 500 of {len(names)} entries"
+        return result
     except Exception as e:
         return {"error": str(e)}
 
@@ -374,7 +424,18 @@ def _execute_read_file(arguments: dict) -> dict[str, Any]:
 
     try:
         if not os.path.isfile(file_path):
-            return {"error": f"File not found: {file_path}"}
+            # Suggest similar files in the same directory
+            suggestions = []
+            parent = os.path.dirname(file_path) or "."
+            basename = os.path.basename(file_path)
+            if os.path.isdir(parent):
+                from difflib import get_close_matches
+                siblings = os.listdir(parent)
+                suggestions = get_close_matches(basename, siblings, n=3, cutoff=0.4)
+            msg = f"File not found: {file_path}"
+            if suggestions:
+                msg += f". Did you mean: {', '.join(os.path.join(parent, s) for s in suggestions)}?"
+            return {"error": msg}
 
         with open(file_path, "rb") as f_bin:
             total_lines = sum(1 for _ in f_bin)
@@ -470,6 +531,47 @@ def _execute_search_file(arguments: dict) -> dict[str, Any]:
         return {"matches": result.stdout, "dir_path": dir_path, "pattern": pattern}
     except subprocess.TimeoutExpired:
         return {"error": "Search timed out after 10 seconds"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _execute_find_file(arguments: dict) -> dict[str, Any]:
+    import os
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    pattern = arguments.get("pattern", "")
+    dir_path = arguments.get("dir_path", ".")
+    if not pattern:
+        return {"error": "pattern is required"}
+    try:
+        root = Path(dir_path).expanduser()
+        if not root.is_dir():
+            return {"error": f"Not a valid directory: {dir_path}"}
+        # Use ** prefix if the pattern doesn't already have path separators
+        if "/" not in pattern and "**" not in pattern:
+            glob_pattern = f"**/{pattern}"
+        else:
+            glob_pattern = pattern
+        matches = []
+        for p in root.glob(glob_pattern):
+            try:
+                st = p.stat()
+                mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+                matches.append({
+                    "path": str(p),
+                    "type": "dir" if p.is_dir() else "file",
+                    "size": st.st_size if not p.is_dir() else None,
+                    "modified": mtime,
+                })
+            except OSError:
+                matches.append({"path": str(p), "type": "unknown"})
+            if len(matches) >= 100:
+                break
+        result: dict[str, Any] = {"pattern": pattern, "dir_path": dir_path, "matches": matches}
+        if len(matches) >= 100:
+            result["truncated"] = "Showing first 100 matches"
+        return result
     except Exception as e:
         return {"error": str(e)}
 
@@ -576,6 +678,8 @@ def execute_tool(
         return json.dumps(_execute_write_file(arguments))
     elif name == "search_file":
         return json.dumps(_execute_search_file(arguments))
+    elif name == "find_file":
+        return json.dumps(_execute_find_file(arguments))
     elif name == "run_epistaxis_ops":
         return _execute_epistaxis_ops(arguments)
 

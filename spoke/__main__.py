@@ -61,7 +61,7 @@ from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
 from .transcribe_parakeet import ParakeetCoreMLClient, _PARAKEET_MODEL_ID
 from .transcribe_qwen import LocalQwenClient
 from .tts import TTSClient, RemoteTTSClient
-from .heartbeat import HeartbeatManager, zombie_sweep, HEARTBEAT_INTERVAL_S
+from .heartbeat import HeartbeatManager, zombie_sweep, HEARTBEAT_INTERVAL_S, _is_process_alive
 
 logger = logging.getLogger(__name__)
 
@@ -4289,7 +4289,7 @@ def _acquire_instance_lock() -> None:
     # Lock acquired — but a predecessor can release the flock before it has
     # fully exited. Treat unreaped zombies as already dead rather than as live
     # blocked apps, so the warning/SIGKILL path reflects real survivorship.
-    if old_pid is not None and old_pid != current_pid and _is_non_zombie_process_alive(old_pid):
+    if old_pid is not None and old_pid != current_pid and _is_process_alive(old_pid):
         logger.warning(
             "Predecessor pid=%d released lock but is still alive — sending SIGKILL",
             old_pid,
@@ -4312,32 +4312,6 @@ def _acquire_instance_lock() -> None:
     _record_runtime_phase("instance_lock.acquired", lock_path=lock_path)
     # Keep lock_file alive for process lifetime
     _acquire_instance_lock._lock_file = lock_file
-
-
-def _is_non_zombie_process_alive(pid: int) -> bool:
-    """Return True only for running, non-zombie processes owned by this user."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-
-    try:
-        result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "stat="],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except Exception:
-        # Fall back to the kill(0) probe if process-state lookup fails.
-        return True
-
-    state = result.stdout.strip()
-    if state.startswith("Z"):
-        return False
-    return True
 
 
 def main() -> None:
