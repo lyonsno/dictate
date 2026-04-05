@@ -8,7 +8,9 @@ and status snippet.
 from __future__ import annotations
 
 import logging
+import math
 import subprocess
+import time as _time
 from pathlib import Path
 
 import objc
@@ -91,8 +93,9 @@ class ToposRowView(NSView):
         card_y = (_ROW_CONTAINER_HEIGHT - _ROW_HEIGHT) / 2.0
         card_x = 0.0
 
-        # --- Layer 1 (bottom): outer amber-white bloom ring ---
+        # --- Layer 1 (bottom): outer amber-white bloom ring (inverted — bright at edges) ---
         outer_layer = Quartz.CAGradientLayer.layer()
+        outer_layer.setName_("outer_bloom")
         ox = card_x - _OUTER_EXPAND
         oy = card_y - _OUTER_EXPAND
         ow = width + _OUTER_EXPAND * 2
@@ -100,25 +103,25 @@ class ToposRowView(NSView):
         outer_layer.setFrame_(((ox, oy), (ow, oh)))
         outer_layer.setType_("radial")
         outer_layer.setCornerRadius_(12.0)
-        # Warm amber-white center fading out
-        outer_center = Quartz.CGColorCreateGenericRGB(1.0, 0.92, 0.8, 0.06)
+        # Transparent center → warm amber-white at edges
+        outer_center = Quartz.CGColorCreateGenericRGB(1.0, 0.92, 0.8, 0.0)
         outer_mid = Quartz.CGColorCreateGenericRGB(1.0, 0.88, 0.7, 0.03)
-        outer_edge = Quartz.CGColorCreateGenericRGB(1.0, 0.85, 0.6, 0.0)
+        outer_edge = Quartz.CGColorCreateGenericRGB(1.0, 0.85, 0.6, 0.06)
         outer_layer.setColors_([outer_center, outer_mid, outer_edge])
-        outer_layer.setLocations_([0.0, 0.6, 1.0])
+        outer_layer.setLocations_([0.0, 0.4, 1.0])
         outer_layer.setStartPoint_((0.5, 0.5))
         outer_layer.setEndPoint_((1.0, 1.0))
-        # Gaussian blur via Core Animation filter
         try:
             blur_outer = Quartz.CIFilter.filterWithName_("CIGaussianBlur")
             blur_outer.setValue_forKey_(4.0, "inputRadius")
             outer_layer.setFilters_([blur_outer])
         except Exception:
-            pass  # filter unavailable in some contexts
+            pass
         view.layer().addSublayer_(outer_layer)
 
-        # --- Layer 2 (middle): inner white-blue bloom ring ---
+        # --- Layer 2 (middle): inner white-blue bloom ring (inverted — bright at edges) ---
         bloom_layer = Quartz.CAGradientLayer.layer()
+        bloom_layer.setName_("inner_bloom")
         bx = card_x - _BLOOM_EXPAND
         by = card_y - _BLOOM_EXPAND
         bw = width + _BLOOM_EXPAND * 2
@@ -126,10 +129,10 @@ class ToposRowView(NSView):
         bloom_layer.setFrame_(((bx, by), (bw, bh)))
         bloom_layer.setType_("radial")
         bloom_layer.setCornerRadius_(10.0)
-        # Cool white-blue center fading out
-        bloom_center = Quartz.CGColorCreateGenericRGB(0.85, 0.9, 1.0, 0.10)
+        # Transparent center → cool white-blue at edges
+        bloom_center = Quartz.CGColorCreateGenericRGB(0.85, 0.9, 1.0, 0.0)
         bloom_mid = Quartz.CGColorCreateGenericRGB(0.8, 0.88, 1.0, 0.05)
-        bloom_edge = Quartz.CGColorCreateGenericRGB(0.7, 0.85, 1.0, 0.0)
+        bloom_edge = Quartz.CGColorCreateGenericRGB(0.7, 0.85, 1.0, 0.10)
         bloom_layer.setColors_([bloom_center, bloom_mid, bloom_edge])
         bloom_layer.setLocations_([0.0, 0.5, 1.0])
         bloom_layer.setStartPoint_((0.5, 0.5))
@@ -262,6 +265,7 @@ class TerraformHUD(NSObject):
         self._scroll_view: NSScrollView | None = None
         self._topoi: list[Topos] = []
         self._timer: NSTimer | None = None
+        self._anim_timer: NSTimer | None = None
         self._visible = False
         return self
 
@@ -285,7 +289,7 @@ class TerraformHUD(NSObject):
             frame, style, NSBackingStoreBuffered, False
         )
         self._panel.setTitle_("Terror Form")
-        self._panel.setLevel_(26)  # above glow/dimmer layer (level 25)
+        self._panel.setLevel_(1000)  # well above glow/dimmer layer (level 25)
         self._panel.setOpaque_(False)
         self._panel.setBackgroundColor_(NSColor.clearColor())
         self._panel.setCollectionBehavior_(
@@ -367,19 +371,50 @@ class TerraformHUD(NSObject):
         self._timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             _REFRESH_INTERVAL, self, "_timerFired:", None, True
         )
+        # ~30fps animation timer for bloom breathing
+        self._anim_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0 / 30.0, self, "_animTick:", None, True
+        )
 
     def _stop_timer(self) -> None:
         if self._timer is not None:
             self._timer.invalidate()
             self._timer = None
+        if self._anim_timer is not None:
+            self._anim_timer.invalidate()
+            self._anim_timer = None
 
     def _timerFired_(self, timer) -> None:
         self._refresh()
+
+    def _animTick_(self, timer) -> None:
+        """Modulate bloom ring opacity with phase-shifted sine waves."""
+        if self._content_view is None:
+            return
+        t = _time.monotonic()
+        # Outer bloom: slower, larger amplitude — 8s period
+        outer_opacity = 0.6 + 0.4 * math.sin(t * 2.0 * math.pi / 8.0)
+        # Inner bloom: faster, smaller amplitude — 5s period, phase-shifted
+        inner_opacity = 0.7 + 0.3 * math.sin(t * 2.0 * math.pi / 5.0 + 1.2)
+
+        for subview in self._content_view.subviews():
+            layer = subview.layer()
+            if layer is None:
+                continue
+            for sublayer in layer.sublayers() or []:
+                name = sublayer.name()
+                if name == "outer_bloom":
+                    sublayer.setOpacity_(outer_opacity)
+                elif name == "inner_bloom":
+                    sublayer.setOpacity_(inner_opacity)
 
     def _refresh(self) -> None:
         """Reload topoi from epistaxis and rebuild the view."""
         self._topoi = load_topoi()
         self._rebuild_content()
+        # Re-assert window ordering in case glow used orderFrontRegardless
+        if self._panel is not None and self._visible:
+            self._panel.orderFront_(None)
 
     def _rebuild_content(self) -> None:
         """Rebuild the scrollable content from current topoi."""
