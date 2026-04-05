@@ -50,9 +50,12 @@ _REFRESH_INTERVAL = 5.0
 
 # Visual constants
 _PANEL_WIDTH = 320
-_PANEL_HEIGHT = 600
+_PANEL_HEIGHT = 900
 _ROW_HEIGHT = 60
+_ROW_CONTAINER_HEIGHT = 76  # extra vertical space for bloom layers
 _PADDING = 8
+_BLOOM_EXPAND = 6    # how many px the inner bloom ring extends beyond the card
+_OUTER_EXPAND = 10   # how many px the outer amber ring extends beyond the card
 
 # Temperature colors (background tint)
 _TEMP_COLORS = {
@@ -71,54 +74,100 @@ def _temp_color(temperature: str | None) -> NSColor:
 
 
 class ToposRowView(NSView):
-    """A single row in the topoi list."""
+    """A single row in the topoi list — bloom rings + card, stacked additively."""
 
     @classmethod
     def createWithTopos_width_(cls, topos: Topos, width: float) -> ToposRowView:
-        view = cls.alloc().initWithFrame_(NSMakeRect(0, 0, width, _ROW_HEIGHT))
+        # Container is taller than the card to hold bloom overflow
+        view = cls.alloc().initWithFrame_(NSMakeRect(0, 0, width, _ROW_CONTAINER_HEIGHT))
         view._topos = topos
         view.setWantsLayer_(True)
+        view.layer().setMasksToBounds_(False)
 
-        layer = view.layer()
-        layer.setCornerRadius_(8.0)
-        layer.setMasksToBounds_(True)
-
-        # SDF-style glow: inner color fading to edge
         rgba = _TEMP_COLORS.get(topos.temperature or "", (0.5, 0.5, 0.5, 0.08))
         r, g, b, a = rgba
-        # Brighter center, fading to near-transparent edge
-        center_color = Quartz.CGColorCreateGenericRGB(r, g, b, a * 3.0)
-        mid_color = Quartz.CGColorCreateGenericRGB(r, g, b, a * 1.5)
-        edge_color = Quartz.CGColorCreateGenericRGB(r * 0.3, g * 0.3, b * 0.3, a * 0.4)
 
-        gradient = Quartz.CAGradientLayer.layer()
-        gradient.setFrame_(((0, 0), (width, _ROW_HEIGHT)))
-        gradient.setType_("radial")
-        gradient.setColors_([center_color, mid_color, edge_color])
-        gradient.setLocations_([0.0, 0.5, 1.0])
-        gradient.setStartPoint_((0.5, 0.5))
-        gradient.setEndPoint_((1.0, 1.0))
-        gradient.setCornerRadius_(8.0)
-        layer.addSublayer_(gradient)
+        # Card is centered vertically in the container
+        card_y = (_ROW_CONTAINER_HEIGHT - _ROW_HEIGHT) / 2.0
+        card_x = 0.0
 
-        # Subtle border glow
-        layer.setBorderWidth_(0.5)
-        layer.setBorderColor_(
-            Quartz.CGColorCreateGenericRGB(r, g, b, a * 2.0)
-        )
+        # --- Layer 1 (bottom): outer amber-white bloom ring ---
+        outer_layer = Quartz.CAGradientLayer.layer()
+        ox = card_x - _OUTER_EXPAND
+        oy = card_y - _OUTER_EXPAND
+        ow = width + _OUTER_EXPAND * 2
+        oh = _ROW_HEIGHT + _OUTER_EXPAND * 2
+        outer_layer.setFrame_(((ox, oy), (ow, oh)))
+        outer_layer.setType_("radial")
+        outer_layer.setCornerRadius_(12.0)
+        # Warm amber-white center fading out
+        outer_center = Quartz.CGColorCreateGenericRGB(1.0, 0.92, 0.8, 0.06)
+        outer_mid = Quartz.CGColorCreateGenericRGB(1.0, 0.88, 0.7, 0.03)
+        outer_edge = Quartz.CGColorCreateGenericRGB(1.0, 0.85, 0.6, 0.0)
+        outer_layer.setColors_([outer_center, outer_mid, outer_edge])
+        outer_layer.setLocations_([0.0, 0.6, 1.0])
+        outer_layer.setStartPoint_((0.5, 0.5))
+        outer_layer.setEndPoint_((1.0, 1.0))
+        # Gaussian blur via Core Animation filter
+        try:
+            blur_outer = Quartz.CIFilter.filterWithName_("CIGaussianBlur")
+            blur_outer.setValue_forKey_(4.0, "inputRadius")
+            outer_layer.setFilters_([blur_outer])
+        except Exception:
+            pass  # filter unavailable in some contexts
+        view.layer().addSublayer_(outer_layer)
 
-        # Semeion name (bold, primary)
+        # --- Layer 2 (middle): inner white-blue bloom ring ---
+        bloom_layer = Quartz.CAGradientLayer.layer()
+        bx = card_x - _BLOOM_EXPAND
+        by = card_y - _BLOOM_EXPAND
+        bw = width + _BLOOM_EXPAND * 2
+        bh = _ROW_HEIGHT + _BLOOM_EXPAND * 2
+        bloom_layer.setFrame_(((bx, by), (bw, bh)))
+        bloom_layer.setType_("radial")
+        bloom_layer.setCornerRadius_(10.0)
+        # Cool white-blue center fading out
+        bloom_center = Quartz.CGColorCreateGenericRGB(0.85, 0.9, 1.0, 0.10)
+        bloom_mid = Quartz.CGColorCreateGenericRGB(0.8, 0.88, 1.0, 0.05)
+        bloom_edge = Quartz.CGColorCreateGenericRGB(0.7, 0.85, 1.0, 0.0)
+        bloom_layer.setColors_([bloom_center, bloom_mid, bloom_edge])
+        bloom_layer.setLocations_([0.0, 0.5, 1.0])
+        bloom_layer.setStartPoint_((0.5, 0.5))
+        bloom_layer.setEndPoint_((1.0, 1.0))
+        try:
+            blur_bloom = Quartz.CIFilter.filterWithName_("CIGaussianBlur")
+            blur_bloom.setValue_forKey_(6.0, "inputRadius")
+            bloom_layer.setFilters_([blur_bloom])
+        except Exception:
+            pass
+        view.layer().addSublayer_(bloom_layer)
+
+        # --- Layer 3 (top): the card itself ---
+        card_layer = Quartz.CAGradientLayer.layer()
+        card_layer.setFrame_(((card_x, card_y), (width, _ROW_HEIGHT)))
+        card_layer.setType_("radial")
+        card_layer.setCornerRadius_(8.0)
+        # Temperature color center → fully transparent edge (no dark inversion)
+        card_center = Quartz.CGColorCreateGenericRGB(r, g, b, a * 3.0)
+        card_mid = Quartz.CGColorCreateGenericRGB(r, g, b, a * 1.2)
+        card_edge = Quartz.CGColorCreateGenericRGB(r, g, b, 0.0)
+        card_layer.setColors_([card_center, card_mid, card_edge])
+        card_layer.setLocations_([0.0, 0.4, 1.0])
+        card_layer.setStartPoint_((0.5, 0.5))
+        card_layer.setEndPoint_((1.0, 1.0))
+        view.layer().addSublayer_(card_layer)
+
+        # --- Text labels (positioned relative to card_y) ---
         name = topos.semeion or topos.id
         name_label = _make_label(
             name,
-            NSMakeRect(_PADDING, _ROW_HEIGHT - 24, width - _PADDING * 2, 18),
+            NSMakeRect(_PADDING, card_y + _ROW_HEIGHT - 24, width - _PADDING * 2, 18),
             size=13.0,
             bold=True,
             color=NSColor.whiteColor(),
         )
         view.addSubview_(name_label)
 
-        # Temperature + tool badge
         badge_parts = []
         if topos.temperature:
             badge_parts.append(topos.temperature)
@@ -128,21 +177,20 @@ class ToposRowView(NSView):
             badge_text = " · ".join(badge_parts)
             badge_label = _make_label(
                 badge_text,
-                NSMakeRect(_PADDING, _ROW_HEIGHT - 38, width - _PADDING * 2, 14),
+                NSMakeRect(_PADDING, card_y + _ROW_HEIGHT - 38, width - _PADDING * 2, 14),
                 size=10.0,
                 bold=False,
                 color=NSColor.colorWithWhite_alpha_(0.7, 1.0),
             )
             view.addSubview_(badge_label)
 
-        # Status snippet
         if topos.status:
             snippet = topos.status.split(". ")[0]
             if len(snippet) > 60:
                 snippet = snippet[:57] + "..."
             status_label = _make_label(
                 snippet,
-                NSMakeRect(_PADDING, 4, width - _PADDING * 2, 14),
+                NSMakeRect(_PADDING, card_y + 4, width - _PADDING * 2, 14),
                 size=10.0,
                 bold=False,
                 color=NSColor.colorWithWhite_alpha_(0.5, 1.0),
@@ -343,15 +391,16 @@ class TerraformHUD(NSObject):
             subview.removeFromSuperview()
 
         width = self._scroll_view.bounds().size.width - 8  # edge padding
+        row_stride = _ROW_CONTAINER_HEIGHT + 4
         total_height = max(
-            len(self._topoi) * (_ROW_HEIGHT + 4) + _PADDING,
+            len(self._topoi) * row_stride + _PADDING,
             self._scroll_view.bounds().size.height,
         )
 
         self._content_view.setFrameSize_((self._scroll_view.bounds().size.width, total_height))
 
         for i, topos in enumerate(self._topoi):
-            y = total_height - (i + 1) * (_ROW_HEIGHT + 4)
+            y = total_height - (i + 1) * row_stride
             row = ToposRowView.createWithTopos_width_(topos, width)
             row.setFrameOrigin_((4, y))
             self._content_view.addSubview_(row)
