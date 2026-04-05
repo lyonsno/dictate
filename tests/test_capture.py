@@ -592,3 +592,71 @@ class TestVADSlicing:
         # 16384 * 2 = 32768 bytes of audio data + 44 bytes header = 32812 bytes
         # The test verifies we didn't include the 70 frames of pure silence.
         assert len(wav_bytes) == 51244
+
+    @patch("spoke.capture.sd")
+    def test_vad_grace_period_does_not_misclassify_silence_as_speech(self, mock_sd):
+        """Silence-only recording during grace period should produce empty WAV."""
+        cap = AudioCapture()
+        cap.start(segment_callback=MagicMock())
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+
+        # Feed only silence during the grace period
+        silence_chunk = np.zeros((1024, 1), dtype=np.float32)
+        for _ in range(10):
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+
+        assert not cap._is_speech
+        wav = cap.stop()
+        # Empty or header-only WAV — no speech was detected
+        assert len(wav) <= 44 or wav == b""
+
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
+    @patch("spoke.capture.sd")
+    def test_vad_interrupted_silence_does_not_slice(self, mock_sd):
+        """A brief silence burst followed by resumed speech should not trigger a slice."""
+        cap = AudioCapture()
+        mock_cb = MagicMock()
+        cap.start(segment_callback=mock_cb)
+
+        # Prime with silence then start speech
+        silence_chunk = np.zeros((1024, 1), dtype=np.float32)
+        speech_chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+        for _ in range(50):
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+        for _ in range(5):
+            cap._audio_callback(speech_chunk, 1024, None, 0)
+        assert cap._is_speech
+
+        # Brief silence (fewer than MIN_SILENCE_FRAMES)
+        for _ in range(4):
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+
+        # Resume speech
+        for _ in range(5):
+            cap._audio_callback(speech_chunk, 1024, None, 0)
+
+        # Should still be in speech, no slice emitted
+        assert cap._is_speech
+        mock_cb.assert_not_called()
+
+    @patch("spoke.capture.sd")
+    def test_vad_no_model_fallback_uses_rms(self, mock_sd):
+        """When Silero is unavailable, fallback to RMS-based detection."""
+        cap = AudioCapture()
+        # Override the autouse fixture — clear the model
+        cap._silero_model = None
+        cap._silero_sr = None
+        cap._torch = None
+        cap.start(segment_callback=MagicMock())
+
+        silence_chunk = np.zeros((1024, 1), dtype=np.float32)
+        cap._audio_callback(silence_chunk, 1024, None, 0)
+        # Silence should NOT be classified as speech in RMS fallback
+        assert not cap._is_speech
+
+        speech_chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+        for _ in range(5):
+            cap._audio_callback(speech_chunk, 1024, None, 0)
+        # Loud audio should be classified as speech
+        assert cap._is_speech

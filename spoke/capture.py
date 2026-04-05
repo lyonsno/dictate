@@ -111,6 +111,7 @@ class AudioCapture:
         # Silero VAD model (loaded once, reused across recordings)
         self._silero_model, self._silero_sr = _load_silero_vad()
         self._torch = None
+        self._silero_warned = False
         if self._silero_model is not None:
             import torch
             self._torch = torch
@@ -347,6 +348,7 @@ class AudioCapture:
 
             self._encode_queue = None
             self._encode_thread = None
+            had_vad = self._vad_cb is not None or self._segment_cb is not None
             self._amplitude_cb = None
             self._vad_cb = None
             self._stop_callback_dispatch()
@@ -354,14 +356,17 @@ class AudioCapture:
             self._ring_buffer.clear()
 
             self._segment_cb = None
-            
-            # Use trimmed chunks if available
+
+            # Use trimmed speech chunks if available; if VAD never detected
+            # speech, return empty for VAD-aware callers.
             speech_chunks = getattr(self, "_speech_chunks", None)
             if speech_chunks is not None and len(speech_chunks) > 0:
                 final_chunks = list(speech_chunks)
                 if self._is_speech:
                     final_chunks.extend(self._current_segment_chunks)
                 wav_bytes = self._encode_wav(np.concatenate(final_chunks))
+            elif had_vad:
+                wav_bytes = b""
             else:
                 wav_bytes = self._encode_wav(self._get_all_frames())
 
@@ -447,13 +452,11 @@ class AudioCapture:
             self._queue_callback_event("amplitude", rms)
             
         if self._segment_cb is not None or self._vad_cb is not None:
-            # VAD grace period management
+            # Grace period: suppress silence transitions but do NOT force speech.
+            # Silero still decides — grace only prevents premature silence-idle
+            # transitions during the first few seconds of recording.
             if self._grace_chunks_remaining > 0:
                 self._grace_chunks_remaining -= 1
-                if not self._is_speech:
-                    self._is_speech = True
-                    if self._vad_cb is not None:
-                        self._queue_callback_event("vad", True)
 
             # Run Silero VAD on each 512-sample sub-chunk, take max probability
             if self._silero_model is not None:
@@ -468,11 +471,12 @@ class AudioCapture:
                     max_prob = max(max_prob, prob)
                 self._process_vad_decision(max_prob >= SPEECH_PROB_THRESHOLD, chunk, max_prob)
             else:
-                # Fallback: treat everything as speech if Silero unavailable
-                if not self._is_speech:
-                    self._is_speech = True
-                    if self._vad_cb is not None:
-                        self._queue_callback_event("vad", True)
+                # Fallback: RMS-based detection when Silero is unavailable
+                rms = float(np.sqrt(np.mean(chunk ** 2)))
+                self._process_vad_decision(rms > 0.01, chunk, rms)
+                if not self._silero_warned:
+                    logger.warning("Silero VAD unavailable — using RMS fallback (degraded)")
+                    self._silero_warned = True
 
     def _process_vad_decision(self, is_speech_now: bool, chunk: np.ndarray, prob: float) -> None:
         """Process a single Silero VAD decision and manage state transitions."""
