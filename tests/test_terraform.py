@@ -1,6 +1,9 @@
 """Tests for the Terraform epistaxis topoi parser."""
 
-from spoke.terraform import Topos, parse_topoi, format_topos_summary, sort_topoi, filter_topoi
+from spoke.terraform import (
+    Topos, parse_topoi, format_topos_summary, sort_topoi, filter_topoi,
+    disambiguated_name, _is_tag_semeion, _clean_status,
+)
 
 
 _SAMPLE_NOTE = """\
@@ -127,6 +130,99 @@ def test_format_topos_summary_without_semeion():
     topos = Topos(id="cc-something-0404")
     summary = format_topos_summary(topos)
     assert summary == "cc-something-0404"
+
+
+# -- Tag semeion detection --
+
+def test_is_tag_semeion_reboot():
+    assert _is_tag_semeion("reboot")
+    assert _is_tag_semeion("reboot-pending")
+
+
+def test_is_tag_semeion_consult():
+    assert _is_tag_semeion("consult metadosis/spoke_something.md")
+
+
+def test_is_tag_semeion_real_name():
+    assert not _is_tag_semeion("Operation Ham-Hogg")
+    assert not _is_tag_semeion("Project Finger Flounder")
+    assert not _is_tag_semeion("Baboon")
+
+
+def test_tag_semeion_falls_back_to_id():
+    """When all semeions are tags, semeion should be None (falls back to id)."""
+    text = """\
+# Spoke
+
+## Scoped Local State
+
+### gemini-careless-whisper-0402
+- [Sēmeion: reboot — blocked on system restart]
+- [Sēmeion: consult metadosis/something.md — pull commit abc]
+- Status: **Active.**
+"""
+    topoi = parse_topoi(text)
+    assert len(topoi) == 1
+    assert topoi[0].semeion is None  # all semeions are tags
+    assert topoi[0].all_semeions == ["reboot", "consult metadosis/something.md"]
+
+
+def test_tag_semeion_skips_to_real_name():
+    """When first semeion is a tag but second is a name, use the name."""
+    text = """\
+# Spoke
+
+## Scoped Local State
+
+### cc-something-0402
+- [Sēmeion: reboot — blocked]
+- [Sēmeion: `Operation Cool Name` — the real one]
+- Status: **Active.**
+"""
+    topoi = parse_topoi(text)
+    assert topoi[0].semeion == "Operation Cool Name"
+
+
+# -- Status cleaning --
+
+def test_clean_status_strips_backticks():
+    assert _clean_status("`main-next`-adjacent work") == "main-next-adjacent work"
+
+
+def test_clean_status_strips_bold_and_strikethrough():
+    assert _clean_status("**Active.** Some ~~old~~ thing") == "Active. Some old thing"
+
+
+# -- Temperature inference from status --
+
+def test_temperature_inferred_from_status():
+    text = """\
+# Spoke
+
+## Scoped Local State
+
+### cc-ham-hogg-0402
+- Status: **Κατάστασις (2026-04-05)** — Settled.
+"""
+    topoi = parse_topoi(text)
+    assert topoi[0].temperature == "katástasis"
+
+
+# -- Disambiguated names --
+
+def test_disambiguated_name_with_machine_and_tool():
+    t = Topos(id="x", semeion="Finger Flounder", machine="MacBook-Pro-2.local", tool="Codex")
+    assert disambiguated_name(t) == "Finger Flounder  (MacBook-Pro-2, Codex)"
+
+
+def test_disambiguated_name_strips_tool_version():
+    t = Topos(id="x", semeion="Ham-Hogg", machine="nlm2pr.local", tool="Claude Code (Opus 4.6)")
+    assert disambiguated_name(t) == "Ham-Hogg  (nlm2pr, Claude Code)"
+
+
+def test_disambiguated_name_no_metadata():
+    t = Topos(id="cc-something-0404")
+    assert disambiguated_name(t) == "cc-something-0404"
 
 
 def test_parse_empty_scoped_state():

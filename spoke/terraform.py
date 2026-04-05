@@ -37,6 +37,27 @@ class Topos:
     all_semeions: list[str] = field(default_factory=list)
 
 
+_TAG_PATTERNS = re.compile(
+    r"^(reboot|consult |see |pull |check |blocked|shared-surface|leaf \d|"
+    r"operator-chord|launcher-teardown|finger-flounder-coverage|"
+    r"test-isolation)",
+    re.IGNORECASE,
+)
+
+
+def _is_tag_semeion(name: str) -> bool:
+    """Return True if this semeion looks like an operational tag, not a name."""
+    return bool(_TAG_PATTERNS.search(name.strip()))
+
+
+def _clean_status(raw: str) -> str:
+    """Strip markdown artifacts from status text."""
+    s = re.sub(r"\*\*", "", raw)  # bold
+    s = re.sub(r"`([^`]*)`", r"\1", s)  # backticks
+    s = re.sub(r"~~([^~]*)~~", r"\1", s)  # strikethrough
+    return s.strip()
+
+
 def parse_topoi(text: str) -> list[Topos]:
     """Parse scoped local state entries from an epistaxis note.
 
@@ -82,8 +103,11 @@ def parse_topoi(text: str) -> list[Topos]:
             r"\[Sēmeion:\s*`?([^]`—]+)`?\s*(?:—[^]]*)?]", body
         )
         topos.all_semeions = [s.strip() for s in semeion_matches]
-        if topos.all_semeions:
-            topos.semeion = topos.all_semeions[0]
+        # Pick the first semeion that looks like a name, not an instruction/tag
+        for s in topos.all_semeions:
+            if not _is_tag_semeion(s):
+                topos.semeion = s
+                break
 
         # Extract fields from bullet lines
         for line in lines[1:]:
@@ -123,8 +147,14 @@ def parse_topoi(text: str) -> list[Topos]:
             if content.startswith("Status:") or "Status:" in content:
                 status_m = re.search(r"Status:\s*\**(.+)", content)
                 if status_m:
-                    # Strip bold markers
-                    topos.status = re.sub(r"\*\*", "", status_m.group(1)).strip()
+                    topos.status = _clean_status(status_m.group(1))
+                    # Infer temperature from status if not set explicitly
+                    if not topos.temperature:
+                        status_lower = topos.status.lower()
+                        if ("katástasis" in status_lower
+                                or "κατάστασις" in status_lower
+                                or "katastasis" in status_lower):
+                            topos.temperature = "katástasis"
 
             # Attractors
             attr_m = re.search(r"Attractors?:\s*(.+)", content)
@@ -336,3 +366,17 @@ def format_topos_summary(topos: Topos) -> str:
             first_sentence = first_sentence[:77] + "..."
         status_snippet = f" — {first_sentence}"
     return f"{name}{temp}{status_snippet}"
+
+
+def disambiguated_name(topos: Topos) -> str:
+    """Display name with machine/tool suffix when semeion is shared or absent."""
+    name = topos.semeion or topos.id
+    parts = []
+    if topos.machine:
+        # Short hostname: "MacBook-Pro-2.local" → "MacBook-Pro-2"
+        parts.append(topos.machine.split(".")[0])
+    if topos.tool:
+        # Short tool: "Claude Code (Opus 4.6)" → "Claude Code"
+        parts.append(topos.tool.split("(")[0].strip())
+    suffix = f"  ({', '.join(parts)})" if parts else ""
+    return f"{name}{suffix}"

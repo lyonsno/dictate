@@ -43,7 +43,7 @@ from Foundation import (
     NSTimer,
 )
 
-from .terraform import Topos, load_topoi, filter_topoi, sort_topoi, count_attractors, format_topos_summary
+from .terraform import Topos, load_topoi, filter_topoi, sort_topoi, count_attractors, disambiguated_name
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +162,7 @@ class ToposRowView(NSView):
         view.layer().addSublayer_(card_layer)
 
         # --- Text labels (positioned relative to card_y) ---
-        name = topos.semeion or topos.id
+        name = disambiguated_name(topos)
         name_label = _make_label(
             name,
             NSMakeRect(_PADDING, card_y + _ROW_HEIGHT - 24, width - _PADDING * 2, 18),
