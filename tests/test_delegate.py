@@ -1986,10 +1986,12 @@ class TestWarmupContract:
         """Successful warmup should remove the loading overlay."""
         d = _make_delegate(main_module, monkeypatch)
         d._tts_client = None
+        d._show_tintilla_panel = MagicMock()
         with patch.object(main_module, "_record_runtime_phase") as mock_phase:
             d.clientWarmupSucceeded_(None)
 
         d._overlay.hide.assert_called_once_with()
+        d._show_tintilla_panel.assert_called_once_with(silent=True)
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
         mock_phase.assert_called_with("app.ready")
 

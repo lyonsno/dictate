@@ -696,6 +696,7 @@ class SpokeAppDelegate(NSObject):
         _record_runtime_phase("app.ready")
         self._menubar.set_status_text("Ready — hold spacebar")
         self._hide_startup_status()
+        self._show_tintilla_panel(silent=True)
 
         # Register loaded models with the heartbeat manager.
         self._register_loaded_models()
@@ -2799,14 +2800,16 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text(f"Switching to {target_id}…")
 
-    def _show_tintilla_panel(self) -> None:
+    def _show_tintilla_panel(self, silent: bool = False) -> None:
+        if not hasattr(self, "_visual_layer_state") or self._visual_layer_state is None:
+            self._visual_layer_state = LayerVisibilityState()
         controller = getattr(self, "_tintilla_panel_controller", None)
         if controller is None:
             controller = TintillaPanelController.alloc().initWithState_(self._visual_layer_state)
             controller.setup()
             self._tintilla_panel_controller = controller
         controller.show()
-        if self._menubar is not None:
+        if self._menubar is not None and not silent:
             self._menubar.set_status_text("Tintilla ready")
 
     def _apply_model_selection(self, preview_model: str, transcription_model: str) -> None:
