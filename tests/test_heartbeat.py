@@ -253,7 +253,7 @@ class TestZombieSweep:
 
         with mock.patch.object(hb_module.os, "kill", side_effect=fake_kill):
             with mock.patch.object(hb_module, "_is_spoke_process", side_effect=spy_is_spoke):
-                with mock.patch("subprocess.run", return_value=mock.MagicMock(stdout="Z\n")):
+                with mock.patch("spoke.heartbeat.subprocess.run", return_value=mock.MagicMock(returncode=0, stdout="Z\n")):
                     zombie_sweep(path)
 
         # Should have cleaned up the heartbeat.

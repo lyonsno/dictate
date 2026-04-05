@@ -58,6 +58,8 @@ def _is_process_alive(pid: int) -> bool:
         return True
 
     state = result.stdout.strip()
+    if result.returncode != 0 or not state:
+        return False
     if state.startswith("Z"):
         return False
     return True

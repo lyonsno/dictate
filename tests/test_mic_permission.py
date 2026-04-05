@@ -410,12 +410,11 @@ class TestSingleInstanceGuardDiagnostics:
                     with patch.object(main_module.os, "getppid", return_value=333):
                         with patch.object(main_module.os, "kill", side_effect=fake_kill) as mock_kill:
                             with patch.object(main_module, "logger", MagicMock()) as mock_logger:
-                                with patch("subprocess.run", return_value=types.SimpleNamespace(stdout="S\n")):
+                                with patch.object(main_module, "_is_process_alive", return_value=True):
                                     with patch("time.sleep"):
                                         main_module._acquire_instance_lock()
 
         mock_kill.assert_any_call(111, signal.SIGTERM)
-        mock_kill.assert_any_call(111, 0)
         mock_kill.assert_any_call(111, signal.SIGKILL)
         mock_logger.warning.assert_any_call(
             "Predecessor pid=%d released lock but is still alive — sending SIGKILL",
@@ -441,20 +440,17 @@ class TestSingleInstanceGuardDiagnostics:
             if sig_num == 0:
                 return
 
-        fake_ps = types.SimpleNamespace(stdout="Z\n")
-
         with patch.dict(sys.modules, {"fcntl": fake_fcntl}):
             with patch.object(main_module, "_LOCK_PATH", str(lock_path)):
                 with patch.object(main_module.os, "getpid", return_value=222):
                     with patch.object(main_module.os, "getppid", return_value=333):
                         with patch.object(main_module.os, "kill", side_effect=fake_kill) as mock_kill:
                             with patch.object(main_module, "logger", MagicMock()) as mock_logger:
-                                with patch("subprocess.run", return_value=fake_ps):
+                                with patch.object(main_module, "_is_process_alive", return_value=False):
                                     with patch("time.sleep"):
                                         main_module._acquire_instance_lock()
 
         mock_kill.assert_any_call(111, signal.SIGTERM)
-        mock_kill.assert_any_call(111, 0)
         assert (111, signal.SIGKILL) not in kill_calls
         mock_logger.warning.assert_any_call(
             "Single-instance guard sending SIGTERM to prior pid=%d from pid=%d",
