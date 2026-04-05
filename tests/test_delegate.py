@@ -999,9 +999,34 @@ class TestDualModelConfiguration:
         assert model_state["tts"]["selected"] == "k2-fsa/OmniVoice"
         assert model_state["tts_voice"] == {
             "type": "toggle",
-            "title": "TTS Voice: (not set)",
+            "title": "TTS Prompt: (not set)",
             "items": [
-                ("configure_voice", "Set TTS Voice…", False, True),
+                ("configure_voice", "Set TTS Prompt…", False, True),
+            ],
+        }
+
+    def test_handle_model_menu_none_labels_saved_omnivoice_prompt_value_as_prompt(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_backend = "local"
+        d._tts_sidecar_url = ""
+        d._tts_client = None
+        saved = {
+            "tts_model": "k2-fsa/OmniVoice",
+            "tts_voice": "female, british accent",
+        }
+        d._load_preference = lambda key: saved.get(key)
+        monkeypatch.delenv("SPOKE_TTS_VOICE", raising=False)
+        monkeypatch.delenv("SPOKE_TTS_MODEL", raising=False)
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["tts_voice"] == {
+            "type": "toggle",
+            "title": "TTS Prompt: female, british accent",
+            "items": [
+                ("configure_voice", "Set TTS Prompt…", False, True),
             ],
         }
 

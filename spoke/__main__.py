@@ -156,6 +156,10 @@ _TTS_MODELS = [
     ("k2-fsa/OmniVoice", "OmniVoice"),
 ]
 
+
+def _is_omnivoice_tts_model(model_id: str | None) -> bool:
+    return isinstance(model_id, str) and model_id.strip().lower() == "k2-fsa/omnivoice"
+
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
 _PROCESS_LAUNCH_ID = os.environ.get("SPOKE_LAUNCH_ID") or f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
 os.environ["SPOKE_LAUNCH_ID"] = _PROCESS_LAUNCH_ID
@@ -2648,6 +2652,7 @@ class SpokeAppDelegate(NSObject):
                         "models": tts_models,
                     }
                 current_voice = getattr(tts, "_voice", "") if tts else tts_voice_pref
+                prompt_mode = tts_backend != "sidecar" and _is_omnivoice_tts_model(current_tts_model)
                 if tts_backend == "sidecar":
                     sidecar_voices = self._discover_tts_sidecar_voices(current_tts_model)
                 else:
@@ -2679,8 +2684,16 @@ class SpokeAppDelegate(NSObject):
                         ]
                     state["tts_voice"] = {
                         "type": "toggle",
-                        "title": title,
-                        "items": items,
+                        "title": (
+                            f"TTS Prompt: {current_voice or '(not set)'}"
+                            if prompt_mode
+                            else title
+                        ),
+                        "items": (
+                            [("configure_voice", "Set TTS Prompt\u2026", False, True)]
+                            if prompt_mode
+                            else items
+                        ),
                     }
             return state
         if not isinstance(selection, tuple) or len(selection) != 2:
@@ -3706,10 +3719,25 @@ class SpokeAppDelegate(NSObject):
         current_voice = getattr(tts, "_voice", "") if tts else ""
         if not current_voice:
             current_voice = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE", "")
+        if tts is not None:
+            current_model = getattr(tts, "_model_id", "")
+        elif getattr(self, "_tts_backend", "local") == "sidecar":
+            current_model = (
+                self._load_preference("tts_sidecar_model")
+                or os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
+            )
+        else:
+            current_model = (
+                self._load_preference("tts_model")
+                or os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
+            )
+        prompt_mode = getattr(self, "_tts_backend", "local") != "sidecar" and _is_omnivoice_tts_model(current_model)
         alert = NSAlert.new()
-        alert.setMessageText_("TTS Voice")
+        alert.setMessageText_("TTS Prompt" if prompt_mode else "TTS Voice")
         alert.setInformativeText_(
-            "Enter the voice name to use for TTS synthesis."
+            "Enter the OmniVoice prompt to use for TTS synthesis."
+            if prompt_mode
+            else "Enter the voice name to use for TTS synthesis."
         )
         field = _PastableTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
         field.setStringValue_(current_voice)
