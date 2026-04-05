@@ -5,6 +5,8 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 
 def _import_overlay(mock_pyobjc, monkeypatch):
     monkeypatch.setenv("SPOKE_METAL_PREVIEW_FILL", "1")
@@ -94,5 +96,24 @@ def test_fill_override_refreshes_metal_fill_without_geometry_rebuild(
         overlay._fill_renderer.set_fill_state.assert_called()
         overlay._fill_renderer.draw_frame.assert_called()
         overlay._apply_ridge_masks.assert_not_called()
+    finally:
+        sys.modules.pop("spoke.overlay", None)
+
+
+def test_bright_scene_metal_fill_uses_crushed_dark_endpoint_and_deep_floor(
+    mock_pyobjc, monkeypatch
+):
+    mod = _import_overlay(mock_pyobjc, monkeypatch)
+    try:
+        overlay = _make_overlay(mod)
+        overlay._brightness = 1.0
+
+        overlay._update_fill_image(680.0, 160.0)
+
+        overlay._fill_renderer.set_fill_state.assert_called_once()
+        rgb, opacity, floor = overlay._fill_renderer.set_fill_state.call_args[0]
+        assert rgb == pytest.approx((0.02, 0.02, 0.03))
+        assert floor == pytest.approx(0.9997)
+        assert opacity == mod._BG_ALPHA_MIN
     finally:
         sys.modules.pop("spoke.overlay", None)

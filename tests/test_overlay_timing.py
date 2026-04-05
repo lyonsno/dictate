@@ -248,6 +248,17 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_light_background_fill_endpoint_is_crushed_for_cutout_preview(
+        self, mock_pyobjc
+    ):
+        """Bright scenes should push the preview fill all the way down toward near-black."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            assert mod._BG_COLOR_LIGHT == pytest.approx((0.02, 0.02, 0.03))
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_set_brightness_without_immediate_chases_target(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")

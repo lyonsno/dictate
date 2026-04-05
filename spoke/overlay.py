@@ -160,7 +160,7 @@ _DARK_FILL_ADDITIVE_FILTER = "plusL"
 # Match the edge glow color on dark backgrounds — desaturated blue-white
 _BG_COLOR_DARK = _scale_color_saturation((0.50, 0.59, 0.84), 0.40)
 _TEXT_COLOR_DARK = (0.0, 0.0, 0.0)     # dark text on light fill
-_BG_COLOR_LIGHT = (0.10, 0.10, 0.12)   # dark fill on light backgrounds
+_BG_COLOR_LIGHT = (0.02, 0.02, 0.03)   # crushed dark fill on light backgrounds
 _TEXT_COLOR_LIGHT = (1.0, 1.0, 1.0)     # white text on dark fill (light backgrounds)
 
 # Inner glow — matches screen border glow, scaled to overlay size
@@ -190,6 +190,14 @@ _RECOVERY_HINT_MARGIN = 8.0  # gap between overlay and hint
 _RECOVERY_HINT_HEIGHT = 20.0
 _TRAY_CAPTURE_FLASH_ONSET_S = 0.10
 _TRAY_CAPTURE_FLASH_FADE_OUT_S = 0.30
+
+
+def _fill_profile_for_brightness(brightness: float) -> tuple[float, float]:
+    """Return width/floor controls for the preview fill across scene brightness."""
+    t = min(max(brightness, 0.0), 1.0)
+    width = _lerp(3.6, 14.5, t)
+    interior_floor = _lerp(0.72, 0.9997, t)
+    return width, interior_floor
 
 
 def _truncate_preview(text: str | None) -> str:
@@ -450,10 +458,14 @@ class _MetalPreviewFillRenderer:
         rgb: tuple[float, float, float],
         opacity: float,
         interior_floor: float,
+        *,
+        fill_width: float | None = None,
     ) -> None:
         self._rgb = rgb
         self._opacity = opacity
         self._interior_floor = interior_floor
+        if fill_width is not None:
+            self._fill_width = fill_width
 
     def draw_frame(self) -> bool:
         from . import glow as glow_module
@@ -1162,7 +1174,7 @@ class TranscriptionOverlay(NSObject):
         try:
             scale = getattr(self, '_fill_scale', 2.0)
             t = getattr(self, '_brightness', 0.0)
-            floor = _lerp(0.55, 0.775, t)
+            fill_width, floor = _fill_profile_for_brightness(t)
             fill_override_rgb = getattr(self, "_fill_override_rgb", None)
             if fill_override_rgb is None:
                 t = getattr(self, '_brightness', 0.0)
@@ -1181,7 +1193,12 @@ class TranscriptionOverlay(NSObject):
             renderer = getattr(self, "_fill_renderer", None)
             if renderer is not None:
                 renderer.set_geometry(total_w, total_h, self._fill_sdf, scale)
-                renderer.set_fill_state((bg_r, bg_g, bg_b), float(fill_opacity), floor)
+                renderer.set_fill_state(
+                    (bg_r, bg_g, bg_b),
+                    float(fill_opacity),
+                    floor,
+                    fill_width=fill_width * scale,
+                )
                 renderer.draw_frame()
                 if hasattr(self._fill_layer, "setCompositingFilter_"):
                     filter_name = (
@@ -1192,11 +1209,13 @@ class TranscriptionOverlay(NSObject):
                     self._fill_layer.setCompositingFilter_(filter_name)
                 return
             # Stretched-exponential fill: knife-edge cusp, heavy tails.
-            # Width 2.5 = very aggressive initial drop from peak.
-            # Interior floor varies with brightness: low on dark backgrounds
-            # (more contrast between peak and interior), high on light
-            # backgrounds (more uniform/material).
-            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=2.5 * scale, interior_floor=floor)
+            # Bright scenes want a deeper, broader material fill so the cutout
+            # preview reads as intentional substrate rather than dirty gray.
+            fill_alpha = _glow_fill_alpha(
+                self._fill_sdf,
+                width=fill_width * scale,
+                interior_floor=floor,
+            )
             # Scale color to 0-255
             fill_image, self._fill_payload = _fill_field_to_image(
                 fill_alpha,
