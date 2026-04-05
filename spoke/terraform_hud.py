@@ -7,10 +7,9 @@ and status snippet.
 
 from __future__ import annotations
 
+import json
 import logging
-import math
 import subprocess
-import time as _time
 from pathlib import Path
 
 import objc
@@ -44,6 +43,9 @@ from .terraform import Topos, load_topoi, filter_topoi, sort_topoi, count_attrac
 
 logger = logging.getLogger(__name__)
 
+# Persistent state
+_PREFS_PATH = Path.home() / "Library" / "Application Support" / "Spoke" / "terraform_hud.json"
+
 # Refresh interval in seconds
 _REFRESH_INTERVAL = 5.0
 
@@ -51,10 +53,7 @@ _REFRESH_INTERVAL = 5.0
 _PANEL_WIDTH = 320
 _PANEL_HEIGHT = 900
 _ROW_HEIGHT = 60
-_ROW_CONTAINER_HEIGHT = 64  # tight — bloom bleeds slightly into neighbors
 _PADDING = 8
-_BLOOM_EXPAND = 4    # how many px the inner bloom ring extends beyond the card
-_OUTER_EXPAND = 6    # how many px the outer amber ring extends beyond the card
 
 # Temperature colors (background tint)
 _TEMP_COLORS = {
@@ -77,57 +76,29 @@ class ToposRowView(NSView):
 
     @classmethod
     def createWithTopos_width_(cls, topos: Topos, width: float) -> ToposRowView:
-        # Container is taller than the card to hold bloom overflow
-        view = cls.alloc().initWithFrame_(NSMakeRect(0, 0, width, _ROW_CONTAINER_HEIGHT))
+        view = cls.alloc().initWithFrame_(NSMakeRect(0, 0, width, _ROW_HEIGHT))
         view._topos = topos
         view.setWantsLayer_(True)
-        view.layer().setMasksToBounds_(False)
 
-        rgba = _TEMP_COLORS.get(topos.temperature or "", (0.5, 0.5, 0.5, 0.08))
-        r, g, b, a = rgba
-
-        # Card is centered vertically in the container
-        card_y = (_ROW_CONTAINER_HEIGHT - _ROW_HEIGHT) / 2.0
-        card_x = 0.0
-
-        # --- Card: frosted bubble matching overlay language ---
-        # The card layer carries both the visible fill AND the glow shadows.
-        # No separate invisible glow layers — those were ghosting.
-        card_layer = Quartz.CALayer.layer()
-        card_layer.setName_("card")
-        card_layer.setFrame_(((card_x, card_y), (width, _ROW_HEIGHT)))
-        card_layer.setCornerRadius_(10.0)
-        # Match overlay bg: desaturated blue-white (0.50, 0.59, 0.84) at 40% sat
-        card_layer.setBackgroundColor_(
+        layer = view.layer()
+        layer.setCornerRadius_(10.0)
+        layer.setMasksToBounds_(True)
+        # Match overlay bg: desaturated blue-white fill
+        layer.setBackgroundColor_(
             Quartz.CGColorCreateGenericRGB(0.38, 0.42, 0.56, 0.82)
         )
-        # Temperature-tinted border
-        card_layer.setBorderWidth_(1.0)
-        card_layer.setBorderColor_(
-            Quartz.CGColorCreateGenericRGB(r, g, b, min(a * 4.0, 0.5))
-        )
-        # Temperature-colored shadow glow — single shadow on the card itself
-        # masksToBounds must be False for shadow to render
-        card_layer.setMasksToBounds_(False)
-        card_layer.setShadowColor_(Quartz.CGColorCreateGenericRGB(r, g, b, 1.0))
-        card_layer.setShadowOffset_((0, 0))
-        card_layer.setShadowRadius_(6.0)
-        card_layer.setShadowOpacity_(min(a * 6.0, 0.5))
-        # Explicit shadow path for performance and crisp shape
-        shadow_path = Quartz.CGPathCreateWithRoundedRect(
-            ((0, 0), (width, _ROW_HEIGHT)), 10.0, 10.0, None
-        )
-        card_layer.setShadowPath_(shadow_path)
-        view.layer().addSublayer_(card_layer)
 
-        # --- Text labels (positioned relative to card_y) ---
+        # Text — color matched to overlay _TEXT_COLOR_DARK (dark text on light fill)
+        _text_color = NSColor.colorWithRed_green_blue_alpha_(0.0, 0.0, 0.0, 0.85)
+        _sub_color = NSColor.colorWithRed_green_blue_alpha_(0.0, 0.0, 0.0, 0.55)
+
         name = disambiguated_name(topos)
         name_label = _make_label(
             name,
-            NSMakeRect(_PADDING, card_y + _ROW_HEIGHT - 24, width - _PADDING * 2, 18),
+            NSMakeRect(_PADDING, _ROW_HEIGHT - 24, width - _PADDING * 2, 18),
             size=13.0,
             bold=True,
-            color=NSColor.whiteColor(),
+            color=_text_color,
         )
         view.addSubview_(name_label)
 
@@ -140,10 +111,10 @@ class ToposRowView(NSView):
             badge_text = " · ".join(badge_parts)
             badge_label = _make_label(
                 badge_text,
-                NSMakeRect(_PADDING, card_y + _ROW_HEIGHT - 38, width - _PADDING * 2, 14),
+                NSMakeRect(_PADDING, _ROW_HEIGHT - 38, width - _PADDING * 2, 14),
                 size=10.0,
                 bold=False,
-                color=NSColor.colorWithWhite_alpha_(0.7, 1.0),
+                color=_sub_color,
             )
             view.addSubview_(badge_label)
 
@@ -153,10 +124,10 @@ class ToposRowView(NSView):
                 snippet = snippet[:57] + "..."
             status_label = _make_label(
                 snippet,
-                NSMakeRect(_PADDING, card_y + 4, width - _PADDING * 2, 14),
+                NSMakeRect(_PADDING, 4, width - _PADDING * 2, 14),
                 size=10.0,
                 bold=False,
-                color=NSColor.colorWithWhite_alpha_(0.5, 1.0),
+                color=_sub_color,
             )
             view.addSubview_(status_label)
 
@@ -288,7 +259,6 @@ class TerraformHUD(NSObject):
         self._scroll_view: _ManualScrollView | None = None
         self._topoi: list[Topos] = []
         self._timer: NSTimer | None = None
-        self._anim_timer: NSTimer | None = None
         self._visible = False
         self._sort_key = "temperature"
         self._hide_katastasis = True
@@ -301,9 +271,13 @@ class TerraformHUD(NSObject):
         screen = NSScreen.mainScreen()
         screen_frame = screen.visibleFrame()
 
-        # Position on the left side of the screen
-        x = screen_frame.origin.x + 20
-        y = screen_frame.origin.y + screen_frame.size.height - _PANEL_HEIGHT - 40
+        # Restore saved position or default to left side of screen
+        saved = self._load_position()
+        if saved:
+            x, y = saved
+        else:
+            x = screen_frame.origin.x + 20
+            y = screen_frame.origin.y + screen_frame.size.height - _PANEL_HEIGHT - 40
         frame = NSMakeRect(x, y, _PANEL_WIDTH, _PANEL_HEIGHT)
 
         style = (
@@ -362,6 +336,7 @@ class TerraformHUD(NSObject):
     def hide(self) -> None:
         """Hide the HUD panel and stop auto-refresh."""
         if self._panel is not None:
+            self._save_position()
             self._panel.orderOut_(None)
         self._visible = False
         self._stop_timer()
@@ -375,6 +350,7 @@ class TerraformHUD(NSObject):
 
     def cleanup(self) -> None:
         """Clean up resources."""
+        self._save_position()
         self._stop_timer()
         if self._panel is not None:
             self._panel.close()
@@ -382,52 +358,42 @@ class TerraformHUD(NSObject):
 
     # -- private --
 
+    def _save_position(self) -> None:
+        """Persist panel position to disk."""
+        if self._panel is None:
+            return
+        try:
+            frame = self._panel.frame()
+            _PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _PREFS_PATH.write_text(json.dumps({
+                "x": frame.origin.x,
+                "y": frame.origin.y,
+            }))
+        except Exception:
+            logger.debug("Failed to save HUD position", exc_info=True)
+
+    @staticmethod
+    def _load_position() -> tuple[float, float] | None:
+        """Load saved panel position, or None for default."""
+        try:
+            data = json.loads(_PREFS_PATH.read_text())
+            return (float(data["x"]), float(data["y"]))
+        except Exception:
+            return None
+
     def _start_timer(self) -> None:
         self._stop_timer()
         self._timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             _REFRESH_INTERVAL, self, "_timerFired:", None, True
-        )
-        # ~30fps animation timer for bloom breathing
-        self._anim_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            1.0 / 30.0, self, "_animTick:", None, True
         )
 
     def _stop_timer(self) -> None:
         if self._timer is not None:
             self._timer.invalidate()
             self._timer = None
-        if self._anim_timer is not None:
-            self._anim_timer.invalidate()
-            self._anim_timer = None
 
     def _timerFired_(self, timer) -> None:
         self._refresh()
-
-    def _animTick_(self, timer) -> None:
-        """Modulate card shadow glow with three phase-shifted sine waves.
-
-        Each card gets a slightly different phase based on its position
-        so the breathing drifts across the column.
-        """
-        if self._content_view is None:
-            return
-        t = _time.monotonic()
-        # Three waves combined into one modulator per card
-        wave1 = math.sin(t * 2.0 * math.pi / 9.0)         # 9s period
-        wave2 = math.sin(t * 2.0 * math.pi / 7.0 + 2.1)   # 7s period
-        wave3 = math.sin(t * 2.0 * math.pi / 11.0 + 4.0)  # 11s period
-        # Combined: subtle range 0.6–1.0
-        glow_mod = 0.8 + 0.07 * wave1 + 0.07 * wave2 + 0.06 * wave3
-
-        for subview in self._content_view.subviews():
-            layer = subview.layer()
-            if layer is None:
-                continue
-            for sublayer in layer.sublayers() or []:
-                if sublayer.name() == "card":
-                    # Modulate shadow radius for breathing effect
-                    # (opacity stored at creation time, don't decay it)
-                    sublayer.setShadowRadius_(6.0 * glow_mod)
 
     def _refresh(self) -> None:
         """Reload topoi from epistaxis, filter, sort, and rebuild the view."""
@@ -488,7 +454,7 @@ class TerraformHUD(NSObject):
 
         scroll_bounds = self._scroll_view.bounds()
         width = scroll_bounds.size.width - 8  # edge padding
-        row_stride = _ROW_CONTAINER_HEIGHT + 2
+        row_stride = _ROW_HEIGHT + 4
         total_height = max(
             len(self._topoi) * row_stride + _PADDING,
             scroll_bounds.size.height,
