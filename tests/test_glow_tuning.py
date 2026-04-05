@@ -33,15 +33,17 @@ class TestGlowTuning:
         glow._dim_layer.opacity.return_value = 0.0
         return glow
 
-    def test_screen_dim_fade_durations_are_shortened_for_dev_patch(self):
-        """The temporary dimmer patch should keep fade timings short enough to avoid overlap."""
+    def test_screen_dim_fade_durations_keep_the_glow_lingering_longer(self):
+        """Vision Quest should let the glow hang a little longer while the dimmer still gets out of the way quickly."""
         sys.modules.pop("spoke.glow", None)
         mod = importlib.import_module("spoke.glow")
         try:
             assert mod._DIM_SHOW_FADE_S == pytest.approx(0.36)
             assert mod._DIM_HIDE_FADE_S == pytest.approx(0.8)
             assert mod._GLOW_SHOW_TIMING == "easeIn"
-            assert mod._GLOW_HIDE_FADE_S == pytest.approx(0.6)
+            assert mod._GLOW_HIDE_FADE_S == pytest.approx(1.2)
+            assert mod._VIGNETTE_RISE_FACTOR == pytest.approx(0.995)
+            assert mod._VIGNETTE_DECAY_FACTOR == pytest.approx(0.08)
         finally:
             sys.modules.pop("spoke.glow", None)
 
@@ -250,12 +252,38 @@ class TestGlowTuning:
             assert core["alpha"] == pytest.approx(1.0)
             assert mid["alpha"] == pytest.approx(1.0)
             assert tail["alpha"] == pytest.approx(0.9)
+            assert core["floor_gain"] == pytest.approx(2.0)
+            assert core["peak_gain"] == pytest.approx(4.0)
             assert core["power"] == pytest.approx(0.95)
             assert mid["power"] == pytest.approx(1.05)
             assert tail["power"] == pytest.approx(1.15)
             assert core["color_scale"] == pytest.approx(0.0009375)
             assert mid["color_scale"] == pytest.approx(0.00375)
             assert tail["color_scale"] == pytest.approx(0.015)
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
+    def test_vignette_core_gets_a_stronger_floor_and_peak_than_other_passes(self, mock_pyobjc):
+        """The inner vignette shell should carry more of the quiet and loud read than the rest of the stack."""
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            base_opacity = 0.2
+            quiet_core = mod._vignette_pass_opacity(
+                base_opacity,
+                0.0,
+                {"floor_gain": 2.0, "peak_gain": 4.0},
+            )
+            loud_core = mod._vignette_pass_opacity(
+                base_opacity,
+                1.0,
+                {"floor_gain": 2.0, "peak_gain": 4.0},
+            )
+            quiet_tail = mod._vignette_pass_opacity(base_opacity, 0.0, {})
+
+            assert quiet_core == pytest.approx(0.4)
+            assert loud_core == pytest.approx(0.8)
+            assert quiet_core > quiet_tail
         finally:
             sys.modules.pop("spoke.glow", None)
 
@@ -350,21 +378,32 @@ class TestGlowTuning:
             glow._fade_in_until = 0.0
             glow._noise_floor = 0.0
             glow._smoothed_amplitude = 0.0
+            glow._vignette_smoothed_amplitude = 0.0
             glow._glow_base_opacity = mod._GLOW_BASE_OPACITY_LIGHT
             glow._glow_peak_target = mod._GLOW_MAX_OPACITY
             glow._additive_mix = 0.0
             glow._subtractive_mix = mod._edge_mix_for_brightness(1.0)[1]
             glow._vignette_layer = MagicMock()
+            glow._vignette_pass_layers = [
+                {"layer": MagicMock(), "spec": spec}
+                for spec in mod._continuous_vignette_pass_specs()
+            ]
 
             glow.update_amplitude(0.0)
-            low_opacity = glow._vignette_layer.setOpacity_.call_args[0][0]
+            low_parent_opacity = glow._vignette_layer.setOpacity_.call_args[0][0]
+            low_core_opacity = glow._vignette_pass_layers[0]["layer"].setOpacity_.call_args[0][0]
 
             glow._vignette_layer.reset_mock()
+            for entry in glow._vignette_pass_layers:
+                entry["layer"].reset_mock()
             glow.update_amplitude(1.0)
-            high_opacity = glow._vignette_layer.setOpacity_.call_args[0][0]
+            high_parent_opacity = glow._vignette_layer.setOpacity_.call_args[0][0]
+            high_core_opacity = glow._vignette_pass_layers[0]["layer"].setOpacity_.call_args[0][0]
 
-            assert low_opacity < 1.0
-            assert high_opacity > low_opacity + 0.1
+            assert low_parent_opacity == pytest.approx(1.0)
+            assert high_parent_opacity == pytest.approx(1.0)
+            assert low_core_opacity < 1.0
+            assert high_core_opacity > low_core_opacity + 0.1
         finally:
             sys.modules.pop("spoke.glow", None)
 
@@ -463,7 +502,7 @@ class TestGlowTuning:
             glow.hide()
 
             call = mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
-            assert call.args[0] == pytest.approx(0.816)
+            assert call.args[0] == pytest.approx(1.216)
             assert call.args[1] is glow
             assert call.args[2] == "hideWindowAfterFade:"
             assert call.args[3] == 1

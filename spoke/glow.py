@@ -115,15 +115,17 @@ def _dim_target_for_brightness(brightness: float) -> float:
         t = (brightness - 0.5) / 0.5
         return 0.28 + t * (_DIM_OPACITY_LIGHT - 0.28)
 
-# Amplitude smoothing: rise fast, decay slow
+# Amplitude smoothing: glow rises fast and hangs longer.
 _RISE_FACTOR = 0.99  # 3x faster (was 0.90)
 _DECAY_FACTOR = 0.16 # 3x faster (was 0.50)
+_VIGNETTE_RISE_FACTOR = 0.995
+_VIGNETTE_DECAY_FACTOR = 0.08
 
 # Fade timing (all 3x faster)
 _FADE_IN_S = 0.026
 _FADE_OUT_S = 0.066
 _GLOW_SHOW_FADE_S = 0.066
-_GLOW_HIDE_FADE_S = 0.6
+_GLOW_HIDE_FADE_S = 1.2
 _GLOW_SHOW_TIMING = "easeIn"
 _DIM_SHOW_FADE_S = 0.36
 _DIM_HIDE_FADE_S = 0.8
@@ -557,6 +559,8 @@ def _continuous_vignette_pass_specs():
             "power": 0.95,
             "alpha": 1.0,
             "color_scale": 0.0009375,
+            "floor_gain": 2.0,
+            "peak_gain": 4.0,
         },
         {
             "name": "mid",
@@ -565,6 +569,8 @@ def _continuous_vignette_pass_specs():
             "power": 1.05,
             "alpha": 1.0,
             "color_scale": 0.00375,
+            "floor_gain": 1.0,
+            "peak_gain": 1.0,
         },
         {
             "name": "tail",
@@ -573,8 +579,18 @@ def _continuous_vignette_pass_specs():
             "power": 1.15,
             "alpha": 0.9,
             "color_scale": 0.015,
+            "floor_gain": 1.0,
+            "peak_gain": 1.0,
         },
     ]
+
+
+def _vignette_pass_opacity(base_opacity: float, amplitude_opacity: float, spec: dict) -> float:
+    """Scale each vignette stratum independently without giving up the shared RMS envelope."""
+    floor_gain = float(spec.get("floor_gain", 1.0))
+    peak_gain = float(spec.get("peak_gain", floor_gain))
+    gain = floor_gain + (peak_gain - floor_gain) * min(max(amplitude_opacity, 0.0), 1.0)
+    return min(max(base_opacity * gain, 0.0), 1.0)
 
 def _glow_role_colors(base_color: tuple[float, float, float]) -> dict[str, NSColor]:
     """Build additive glow colors keyed by intensity role."""
@@ -616,6 +632,7 @@ class GlowOverlay(NSObject):
         self._window: NSWindow | None = None
         self._glow_layer: CALayer | None = None
         self._smoothed_amplitude = 0.0
+        self._vignette_smoothed_amplitude = 0.0
         self._visible = False
         self._fade_in_until = 0.0
         self._update_count = 0
@@ -903,6 +920,7 @@ class GlowOverlay(NSObject):
         self._hide_generation += 1
         self._visible = True
         self._smoothed_amplitude = 0.0
+        self._vignette_smoothed_amplitude = 0.0
         self._update_count = 0
         self._noise_floor = 0.0
         self._cap_factor = 1.0
@@ -1102,11 +1120,20 @@ class GlowOverlay(NSObject):
         # Subtract floor — only signal above ambient triggers the glow
         signal = max(rms - self._noise_floor, 0.0)
 
-        # Smooth: rise fast, decay slow
+        # Smooth the additive glow: rise fast, decay slow.
         if signal > self._smoothed_amplitude:
             self._smoothed_amplitude += (signal - self._smoothed_amplitude) * _RISE_FACTOR
         else:
             self._smoothed_amplitude *= _DECAY_FACTOR
+
+        # The subtractive stack wants a snappier envelope than the glow.
+        vignette_smoothed = getattr(self, "_vignette_smoothed_amplitude", 0.0)
+        if signal > vignette_smoothed:
+            self._vignette_smoothed_amplitude = vignette_smoothed + (
+                signal - vignette_smoothed
+            ) * _VIGNETTE_RISE_FACTOR
+        else:
+            self._vignette_smoothed_amplitude = vignette_smoothed * _VIGNETTE_DECAY_FACTOR
 
         # Map smoothed amplitude to opacity range [base, max]
         # Fixed multiplier — ceiling is absolute, floor is adaptive
@@ -1117,6 +1144,12 @@ class GlowOverlay(NSObject):
         amplitude_opacity = math.log1p(amplitude_linear * 20.0) / math.log1p(20.0)
         opacity = self._glow_base_opacity + amplitude_opacity * (_GLOW_MAX_OPACITY - self._glow_base_opacity)
         opacity = min(opacity, self._glow_peak_target)
+        vignette_amplitude_linear = min(self._vignette_smoothed_amplitude * _GLOW_MULTIPLIER, 1.0)
+        vignette_amplitude_opacity = math.log1p(vignette_amplitude_linear * 20.0) / math.log1p(20.0)
+        vignette_opacity = self._glow_base_opacity + vignette_amplitude_opacity * (
+            _GLOW_MAX_OPACITY - self._glow_base_opacity
+        )
+        vignette_opacity = min(vignette_opacity, self._glow_peak_target)
 
         # Apply recording-cap countdown: shift color from turquoise to amber
         # as the cap approaches — passive visual warning visible at any opacity.
@@ -1135,7 +1168,17 @@ class GlowOverlay(NSObject):
         subtractive_mix = getattr(self, "_subtractive_mix", 0.0)
         self._glow_layer.setOpacity_(opacity * additive_mix)
         if hasattr(self, "_vignette_layer") and self._vignette_layer is not None:
-            self._vignette_layer.setOpacity_(opacity * subtractive_mix * _VIGNETTE_OPACITY_SCALE)
+            base_vignette_opacity = vignette_opacity * subtractive_mix * _VIGNETTE_OPACITY_SCALE
+            self._vignette_layer.setOpacity_(1.0 if base_vignette_opacity > 0.0 else 0.0)
+            if hasattr(self, "_vignette_pass_layers"):
+                for entry in self._vignette_pass_layers:
+                    entry["layer"].setOpacity_(
+                        _vignette_pass_opacity(
+                            base_vignette_opacity,
+                            vignette_amplitude_opacity,
+                            entry["spec"],
+                        )
+                    )
 
         # Log first few updates and then periodically to verify pipeline
         if self._update_count <= 3 or self._update_count % 50 == 0:
