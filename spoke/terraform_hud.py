@@ -335,6 +335,21 @@ class TerraformHUD(NSObject):
         mask_layer.setEndPoint_((0.5, 1.0))
         self._scroll_view.layer().setMask_(mask_layer)
 
+        # Stats label at the top of the panel (above the scroll view)
+        _STATS_HEIGHT = 20
+        stats_frame = NSMakeRect(8, content_frame.size.height - _STATS_HEIGHT,
+                                  content_frame.size.width - 16, _STATS_HEIGHT)
+        self._stats_label = _make_label(
+            "", stats_frame, size=10.0, bold=False,
+            color=NSColor.colorWithWhite_alpha_(0.45, 1.0),
+        )
+        self._panel.contentView().addSubview_(self._stats_label)
+
+        # Shrink scroll view to make room for stats
+        scroll_frame = NSMakeRect(0, 0, content_frame.size.width,
+                                   content_frame.size.height - _STATS_HEIGHT)
+        self._scroll_view.setFrame_(scroll_frame)
+
         self._panel.contentView().addSubview_(self._scroll_view)
 
         # Initial load
@@ -421,6 +436,7 @@ class TerraformHUD(NSObject):
     def _refresh(self) -> None:
         """Reload topoi from epistaxis, filter, sort, and rebuild the view."""
         raw = load_topoi()
+        self._update_stats(raw)
         filtered = filter_topoi(
             raw,
             hide_katastasis=self._hide_katastasis,
@@ -429,6 +445,22 @@ class TerraformHUD(NSObject):
         )
         self._topoi = sort_topoi(filtered, key=self._sort_key)
         self._rebuild_content()
+
+    def _update_stats(self, topoi: list[Topos]) -> None:
+        """Update the stats label with temperature counts from the full list."""
+        if not hasattr(self, "_stats_label") or self._stats_label is None:
+            return
+        from collections import Counter
+        counts = Counter(t.temperature or "unknown" for t in topoi)
+        parts = []
+        for temp in ("hot", "warm", "cool", "cold", "katástasis"):
+            n = counts.get(temp, 0)
+            if n > 0:
+                parts.append(f"{n} {temp}")
+        unknown = counts.get("unknown", 0)
+        if unknown:
+            parts.append(f"{unknown} ?")
+        self._stats_label.setStringValue_(" · ".join(parts) if parts else "")
         # Re-assert window ordering in case glow used orderFrontRegardless
         if self._panel is not None and self._visible:
             self._panel.orderFront_(None)
