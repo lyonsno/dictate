@@ -115,20 +115,20 @@ def _dim_target_for_brightness(brightness: float) -> float:
         t = (brightness - 0.5) / 0.5
         return 0.28 + t * (_DIM_OPACITY_LIGHT - 0.28)
 
-# Amplitude smoothing: glow rises fast and hangs longer.
-_RISE_FACTOR = 0.99  # 3x faster (was 0.90)
-_DECAY_FACTOR = 0.16 # 3x faster (was 0.50)
-_VIGNETTE_RISE_FACTOR = 0.995
-_VIGNETTE_DECAY_FACTOR = 0.08
+# Amplitude smoothing: slower attack and slower release across the edge stack.
+_RISE_FACTOR = 0.90
+_DECAY_FACTOR = 0.40
+_VIGNETTE_RISE_FACTOR = 0.9292893218813453
+_VIGNETTE_DECAY_FACTOR = 0.282842712474619
 
-# Fade timing (all 3x faster)
+# Fade timing: keep the same shape, but cut the visible attack/release speed in half.
 _FADE_IN_S = 0.026
 _FADE_OUT_S = 0.066
-_GLOW_SHOW_FADE_S = 0.066
-_GLOW_HIDE_FADE_S = 1.2
+_GLOW_SHOW_FADE_S = 0.132
+_GLOW_HIDE_FADE_S = 2.4
 _GLOW_SHOW_TIMING = "easeIn"
-_DIM_SHOW_FADE_S = 0.36
-_DIM_HIDE_FADE_S = 0.8
+_DIM_SHOW_FADE_S = 0.72
+_DIM_HIDE_FADE_S = 1.6
 _WINDOW_TEARDOWN_CUSHION_S = 0.016
 
 

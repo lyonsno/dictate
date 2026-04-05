@@ -38,12 +38,15 @@ class TestGlowTuning:
         sys.modules.pop("spoke.glow", None)
         mod = importlib.import_module("spoke.glow")
         try:
-            assert mod._DIM_SHOW_FADE_S == pytest.approx(0.36)
-            assert mod._DIM_HIDE_FADE_S == pytest.approx(0.8)
+            assert mod._DIM_SHOW_FADE_S == pytest.approx(0.72)
+            assert mod._DIM_HIDE_FADE_S == pytest.approx(1.6)
             assert mod._GLOW_SHOW_TIMING == "easeIn"
-            assert mod._GLOW_HIDE_FADE_S == pytest.approx(1.2)
-            assert mod._VIGNETTE_RISE_FACTOR == pytest.approx(0.995)
-            assert mod._VIGNETTE_DECAY_FACTOR == pytest.approx(0.08)
+            assert mod._GLOW_SHOW_FADE_S == pytest.approx(0.132)
+            assert mod._GLOW_HIDE_FADE_S == pytest.approx(2.4)
+            assert mod._RISE_FACTOR == pytest.approx(0.90)
+            assert mod._DECAY_FACTOR == pytest.approx(0.40)
+            assert mod._VIGNETTE_RISE_FACTOR == pytest.approx(0.9292893218813453)
+            assert mod._VIGNETTE_DECAY_FACTOR == pytest.approx(0.282842712474619)
         finally:
             sys.modules.pop("spoke.glow", None)
 
@@ -535,7 +538,7 @@ class TestGlowTuning:
             glow.hide()
 
             call = mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
-            assert call.args[0] == pytest.approx(1.216)
+            assert call.args[0] == pytest.approx(2.416)
             assert call.args[1] is glow
             assert call.args[2] == "hideWindowAfterFade:"
             assert call.args[3] == 1
