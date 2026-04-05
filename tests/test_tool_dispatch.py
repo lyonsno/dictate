@@ -316,6 +316,24 @@ class TestExecuteTool:
         assert "Error speaking text: TTS playback failed." in result
         assert "audio device unavailable" in result
 
+    def test_execute_read_aloud_local_omnivoice_cold_load_fails_fast(self):
+        """Cold local OmniVoice loads should fail fast instead of wedging the command turn."""
+        mod = _import_tools()
+        tts_client = MagicMock()
+        tts_client._model_id = "k2-fsa/OmniVoice"
+        tts_client._model = None
+        tts_client._base_url = ""
+
+        result = mod.execute_tool(
+            name="read_aloud",
+            arguments={"source_ref": "literal:hello world"},
+            tts_client=tts_client,
+        )
+
+        assert "Error speaking text: Local OmniVoice TTS is not ready yet." in result
+        assert "cold-load would block this command turn" in result
+        tts_client.speak.assert_not_called()
+
     def test_execute_read_aloud_invalid_ref(self):
         """Invalid ref should return an error string, not raise."""
         mod = _import_tools()

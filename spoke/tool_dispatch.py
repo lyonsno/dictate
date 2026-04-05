@@ -27,6 +27,17 @@ from spoke.scene_capture import SceneCaptureCache
 logger = logging.getLogger(__name__)
 
 
+def _is_local_omnivoice_cold_tts(tts_client: Any) -> bool:
+    """Whether the active TTS client is a cold local OmniVoice instance."""
+    model_id = getattr(tts_client, "_model_id", "")
+    if not isinstance(model_id, str) or model_id.strip().lower() != "k2-fsa/omnivoice":
+        return False
+    if getattr(tts_client, "_model", None) is not None:
+        return False
+    base_url = getattr(tts_client, "_base_url", "")
+    return not bool(base_url)
+
+
 # ── Tool schemas (OpenAI function calling format) ────────────────
 
 
@@ -314,6 +325,15 @@ def _execute_read_aloud(
         model_loaded = getattr(tts_client, "_model", None) is not None
         logger.info("read_aloud: tts_client present, model=%s, model_loaded=%s, cancelled=%s, text=%d chars",
                      model_id, model_loaded, cancelled, len(text))
+        if _is_local_omnivoice_cold_tts(tts_client):
+            logger.warning(
+                "read_aloud: refusing cold local OmniVoice load during command turn"
+            )
+            return (
+                "Error speaking text: Local OmniVoice TTS is not ready yet. "
+                "The cold-load would block this command turn. "
+                "Try a non-OmniVoice TTS model/backend for now, or retry after the model is already loaded."
+            )
         try:
             logger.info("read_aloud: calling speak (blocking)")
             tts_client.speak(text)
