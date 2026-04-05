@@ -214,7 +214,7 @@ class TerraformHUD(NSObject):
         self._panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
             frame, style, NSBackingStoreBuffered, False
         )
-        self._panel.setTitle_("Terraform")
+        self._panel.setTitle_("Terror Form")
         self._panel.setLevel_(3)  # NSFloatingWindowLevel
         self._panel.setOpaque_(False)
         self._panel.setBackgroundColor_(

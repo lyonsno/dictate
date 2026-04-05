@@ -333,7 +333,7 @@ class MenuBarIcon(NSObject):
 
         if getattr(self, "_on_toggle_terraform", None) is not None:
             terraform_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                "Terraform HUD", "toggleTerraform:", "t"
+                "Terror Form", "toggleTerraform:", "t"
             )
             terraform_item.setTarget_(self)
             menu.addItem_(terraform_item)
