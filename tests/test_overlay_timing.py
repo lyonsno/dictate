@@ -318,7 +318,7 @@ class TestAdaptiveOverlayCompositing:
 
             # Fill layer opacity should be high on light backgrounds
             fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
-            assert 0.82 < fill_opacity < 0.92
+            assert 0.72 < fill_opacity < 0.82
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -335,7 +335,7 @@ class TestAdaptiveOverlayCompositing:
             sys.modules.pop("spoke.overlay", None)
 
     def test_light_background_silence_floor_is_heavier_for_regression_triage(self, mock_pyobjc):
-        """Even at silence, bright backgrounds should keep a visible dark fill without crushing headroom."""
+        """Even at silence, bright backgrounds should keep a visible dark fill without becoming too constant."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -347,7 +347,7 @@ class TestAdaptiveOverlayCompositing:
             overlay.update_text_amplitude(0.0)
 
             fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
-            assert 0.6 < fill_opacity < 0.8
+            assert 0.4 < fill_opacity < 0.6
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -370,21 +370,21 @@ class TestAdaptiveOverlayCompositing:
             alpha_loud = overlay._fill_layer.setOpacity_.call_args[0][0]
 
             assert alpha_silent < 0.8
-            assert alpha_loud > alpha_silent + 0.15
+            assert alpha_loud > alpha_silent + 0.18
         finally:
             sys.modules.pop("spoke.overlay", None)
 
     def test_light_background_fill_profile_pushes_more_signal_into_the_sdf(self, mock_pyobjc):
-        """Bright-screen dark fill should get stronger from the source shape, not just opacity."""
+        """Bright-screen dark fill should get darker from the source shape while lowering opacity multipliers."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
             width, interior_floor, opacity_min, opacity_max = mod._fill_profile_for_brightness(1.0)
 
-            assert width == pytest.approx(8.2)
-            assert interior_floor == pytest.approx(0.997)
-            assert opacity_min == pytest.approx(0.64)
-            assert opacity_max == pytest.approx(0.88)
+            assert width == pytest.approx(10.0)
+            assert interior_floor == pytest.approx(0.9985)
+            assert opacity_min == pytest.approx(0.48)
+            assert opacity_max == pytest.approx(0.78)
         finally:
             sys.modules.pop("spoke.overlay", None)
 

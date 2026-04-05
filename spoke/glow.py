@@ -137,7 +137,7 @@ _NOTCH_BOTTOM_RADIUS = 8.0
 _NOTCH_SHOULDER_SMOOTHING = 9.5
 _LIGHT_BACKGROUND_EDGE_START = 0.55
 _LIGHT_BACKGROUND_EDGE_BOOST = 0.664
-_VIGNETTE_OPACITY_SCALE = 1.0
+_VIGNETTE_OPACITY_SCALE = 0.78
 
 
 def _sample_screen_brightness(screen, excluding_window_id=None) -> float:
@@ -553,26 +553,26 @@ def _continuous_vignette_pass_specs():
         {
             "name": "core",
             "path_kind": "distance_field",
-            "falloff": 5.4,
-            "power": 1.7,
-            "alpha": 0.92,
-            "color_scale": 0.14,
+            "falloff": 6.0,
+            "power": 1.6,
+            "alpha": 0.96,
+            "color_scale": 0.17,
         },
         {
             "name": "mid",
             "path_kind": "distance_field",
-            "falloff": 11.5,
-            "power": 1.9,
-            "alpha": 0.64,
-            "color_scale": 0.18,
+            "falloff": 13.0,
+            "power": 1.8,
+            "alpha": 0.74,
+            "color_scale": 0.22,
         },
         {
             "name": "tail",
             "path_kind": "distance_field",
-            "falloff": 20.0,
-            "power": 2.0,
-            "alpha": 0.56,
-            "color_scale": 0.22,
+            "falloff": 22.5,
+            "power": 1.9,
+            "alpha": 0.66,
+            "color_scale": 0.28,
         },
     ]
 
