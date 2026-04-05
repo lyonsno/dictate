@@ -201,16 +201,6 @@ class _ManualScrollView(NSView):
             self.addSubview_(view)
             self._apply_scroll()
 
-    def hitTest_(self, point):
-        """Claim all mouse events within bounds — prevents scroll/click
-        from falling through gaps between cards to windows behind."""
-        if self.mouse_inRect_flipped_(point, self.frame(), False):
-            return self
-        return None
-
-    def acceptsFirstMouse_(self, event):
-        return True
-
     def scrollWheel_(self, event):
         if self._content is None:
             return
@@ -303,7 +293,11 @@ class TerraformHUD(NSObject):
         self._panel.setLevel_(1000)  # well above glow/dimmer layer (level 25)
         self._panel.setOpaque_(False)
         self._panel.setHasShadow_(False)  # shadow renders as a ghost copy on transparent windows
-        self._panel.setBackgroundColor_(NSColor.clearColor())
+        # Tiny alpha — visually invisible but prevents click-through.
+        # Fully clear backgrounds make macOS treat the window as transparent to events.
+        self._panel.setBackgroundColor_(
+            NSColor.colorWithRed_green_blue_alpha_(0.0, 0.0, 0.0, 0.005)
+        )
         self._panel.setCollectionBehavior_(
             NSWindowCollectionBehaviorCanJoinAllSpaces
             | NSWindowCollectionBehaviorStationary
