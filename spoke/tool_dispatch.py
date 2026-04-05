@@ -350,14 +350,29 @@ def _execute_read_aloud(
                         "Retry in a moment once the background load finishes."
                     )
             if _is_local_omnivoice_cold_tts(tts_client):
-                logger.warning(
-                    "read_aloud: refusing cold local OmniVoice load during command turn"
-                )
-                return (
-                    "Error speaking text: Local OmniVoice TTS is not ready yet. "
-                    "The cold-load would block this command turn. "
-                    "Try a non-OmniVoice TTS model/backend for now, or retry after the model is already loaded."
-                )
+                warm = getattr(tts_client, "warm", None)
+                if callable(warm):
+                    logger.info(
+                        "read_aloud: starting background warmup for local OmniVoice"
+                    )
+                    warm()
+                if callable(wait_until_ready) and wait_until_ready(timeout=5.0):
+                    model_loaded = getattr(tts_client, "_model", None) is not None
+                    logger.info(
+                        "read_aloud: local OmniVoice warmup completed after cold start"
+                    )
+                if not _is_local_omnivoice_cold_tts(tts_client):
+                    logger.info(
+                        "read_aloud: local OmniVoice became ready after cold warm start"
+                    )
+                else:
+                    logger.warning(
+                        "read_aloud: local OmniVoice still cold after background warm start"
+                    )
+                    return (
+                        "Error speaking text: Local OmniVoice TTS is loading in the background. "
+                        "Try read_aloud again in a moment."
+                    )
         try:
             logger.info("read_aloud: calling speak (blocking)")
             tts_client.speak(text)

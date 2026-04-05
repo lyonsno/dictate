@@ -316,14 +316,15 @@ class TestExecuteTool:
         assert "Error speaking text: TTS playback failed." in result
         assert "audio device unavailable" in result
 
-    def test_execute_read_aloud_local_omnivoice_cold_load_fails_fast(self):
-        """Cold local OmniVoice loads should fail fast instead of wedging the command turn."""
+    def test_execute_read_aloud_local_omnivoice_cold_load_starts_background_warmup(self):
+        """Cold local OmniVoice should start warmup in the background instead of wedging."""
         mod = _import_tools()
         tts_client = MagicMock()
         tts_client._model_id = "k2-fsa/OmniVoice"
         tts_client._model = None
         tts_client._base_url = ""
         tts_client.is_warming = False
+        tts_client.wait_until_ready.return_value = False
 
         result = mod.execute_tool(
             name="read_aloud",
@@ -331,9 +332,37 @@ class TestExecuteTool:
             tts_client=tts_client,
         )
 
-        assert "Error speaking text: Local OmniVoice TTS is not ready yet." in result
-        assert "cold-load would block this command turn" in result
+        tts_client.warm.assert_called_once_with()
+        tts_client.wait_until_ready.assert_called_once_with(timeout=5.0)
+        assert "Local OmniVoice TTS is loading in the background." in result
+        assert "Try read_aloud again in a moment." in result
         tts_client.speak.assert_not_called()
+
+    def test_execute_read_aloud_local_omnivoice_cold_load_can_finish_during_command_turn(self):
+        """A cold local OmniVoice load that finishes quickly should still speak on the same turn."""
+        mod = _import_tools()
+        tts_client = MagicMock()
+        tts_client._model_id = "k2-fsa/OmniVoice"
+        tts_client._model = None
+        tts_client._base_url = ""
+        tts_client.is_warming = False
+
+        def finish_after_warm(timeout: float) -> bool:
+            tts_client._model = object()
+            return True
+
+        tts_client.wait_until_ready.side_effect = finish_after_warm
+
+        result = mod.execute_tool(
+            name="read_aloud",
+            arguments={"source_ref": "literal:hello world"},
+            tts_client=tts_client,
+        )
+
+        tts_client.warm.assert_called_once_with()
+        tts_client.wait_until_ready.assert_called_once_with(timeout=5.0)
+        tts_client.speak.assert_called_once_with("hello world")
+        assert result == "Speaking: hello world"
 
     def test_execute_read_aloud_local_omnivoice_waits_for_inflight_warmup(self):
         """A local OmniVoice warmup already in flight should be allowed to finish."""
