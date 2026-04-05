@@ -153,6 +153,7 @@ _TTS_MODELS = [
     ("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit", "Qwen3-TTS 0.6B CustomVoice (8-bit)"),
     ("mlx-community/VibeVoice-Realtime-0.5B-fp16", "VibeVoice 0.5B Realtime (fp16)"),
     ("mlx-community/Kokoro-82M-bf16", "Kokoro 82M (bf16)"),
+    ("k2-fsa/OmniVoice", "OmniVoice"),
 ]
 
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
@@ -2551,11 +2552,11 @@ class SpokeAppDelegate(NSObject):
                     if isinstance(tts_client, RemoteTTSClient):
                         tts_target = _url_host(getattr(tts_client, "_base_url", ""))
                     else:
-                        tts_target = "local MLX"
+                        tts_target = "local runtime"
                 state["tts_backend"] = {
                     "title": f"TTS Backend: {'Sidecar' if tts_backend == 'sidecar' else 'Local'}",
                     "items": [
-                        ("local", "Local (Voxtral MLX)", tts_backend == "local"),
+                        ("local", "Local runtime", tts_backend == "local"),
                         ("sidecar", (
                             f"Sidecar ({_url_host(tts_sidecar_url)})"
                             if has_tts_sidecar_url
@@ -2569,7 +2570,7 @@ class SpokeAppDelegate(NSObject):
                     "note": (
                         "Routing source: saved sidecar URL"
                         if tts_backend == "sidecar" and has_tts_sidecar_url
-                        else "Routing source: local MLX"
+                        else "Routing source: local runtime"
                     ),
                 }
             if self._local_whisper_controls_available():

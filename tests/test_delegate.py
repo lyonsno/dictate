@@ -957,6 +957,7 @@ class TestDualModelConfiguration:
     ):
         d = _make_delegate(main_module, monkeypatch)
         d._tts_client = MagicMock()
+        d._tts_client._model_id = "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit"
         d._tts_backend = "local"
         d._tts_sidecar_url = ""
         monkeypatch.setenv("SPOKE_TTS_VOICE", "casual_female")
@@ -966,15 +967,19 @@ class TestDualModelConfiguration:
         assert model_state["tts_backend"] == {
             "title": "TTS Backend: Local",
             "items": [
-                ("local", "Local (Voxtral MLX)", True),
+                ("local", "Local runtime", True),
                 ("sidecar", "Sidecar (not configured)", False, False),
                 ("configure_tts", "Set TTS Sidecar URL\u2026", False, True),
             ],
         }
         assert model_state["tts_endpoint"] == {
-            "title": "TTS Endpoint: local MLX",
-            "note": "Routing source: local MLX",
+            "title": "TTS Endpoint: local runtime",
+            "note": "Routing source: local runtime",
         }
+        assert any(
+            model_id == "k2-fsa/OmniVoice"
+            for model_id, _label, _enabled in model_state["tts"]["models"]
+        )
 
     def test_build_tts_client_local_uses_saved_preferences_without_env(
         self, main_module, monkeypatch
