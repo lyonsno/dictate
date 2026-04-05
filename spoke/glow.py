@@ -542,7 +542,7 @@ def _continuous_glow_pass_specs(
             "falloff": wide_bloom_spec["falloff"],
             "power": wide_bloom_spec["power"],
             "fill_role": "outer",
-            "fill_alpha": _scale_sdf_layer_alpha(0.24, intensity_multiplier),
+            "fill_alpha": _scale_sdf_layer_alpha(0.48, intensity_multiplier),
         },
     ]
 
@@ -553,26 +553,26 @@ def _continuous_vignette_pass_specs():
         {
             "name": "core",
             "path_kind": "distance_field",
-            "falloff": 14.0,
-            "power": 1.35,
+            "falloff": 21.0,
+            "power": 0.95,
             "alpha": 1.0,
-            "color_scale": 0.00375,
+            "color_scale": 0.0009375,
         },
         {
             "name": "mid",
             "path_kind": "distance_field",
-            "falloff": 28.0,
-            "power": 1.45,
+            "falloff": 42.0,
+            "power": 1.05,
             "alpha": 1.0,
-            "color_scale": 0.015,
+            "color_scale": 0.00375,
         },
         {
             "name": "tail",
             "path_kind": "distance_field",
-            "falloff": 40.0,
-            "power": 1.55,
+            "falloff": 60.0,
+            "power": 1.15,
             "alpha": 0.9,
-            "color_scale": 0.06,
+            "color_scale": 0.015,
         },
     ]
 

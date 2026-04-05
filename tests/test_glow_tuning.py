@@ -174,7 +174,7 @@ class TestGlowTuning:
             wide = next(spec for spec in specs if spec["name"] == "wide_bloom")
 
             assert core["fill_alpha"] == pytest.approx(0.14)
-            assert wide["fill_alpha"] == pytest.approx(0.24)
+            assert wide["fill_alpha"] == pytest.approx(0.48)
         finally:
             sys.modules.pop("spoke.glow", None)
 
@@ -244,15 +244,18 @@ class TestGlowTuning:
             mid = next(spec for spec in specs if spec["name"] == "mid")
             tail = next(spec for spec in specs if spec["name"] == "tail")
             assert mod._VIGNETTE_OPACITY_SCALE == pytest.approx(0.78)
-            assert core["falloff"] == pytest.approx(14.0)
-            assert mid["falloff"] == pytest.approx(28.0)
-            assert tail["falloff"] == pytest.approx(40.0)
+            assert core["falloff"] == pytest.approx(21.0)
+            assert mid["falloff"] == pytest.approx(42.0)
+            assert tail["falloff"] == pytest.approx(60.0)
             assert core["alpha"] == pytest.approx(1.0)
             assert mid["alpha"] == pytest.approx(1.0)
             assert tail["alpha"] == pytest.approx(0.9)
-            assert core["color_scale"] == pytest.approx(0.00375)
-            assert mid["color_scale"] == pytest.approx(0.015)
-            assert tail["color_scale"] == pytest.approx(0.06)
+            assert core["power"] == pytest.approx(0.95)
+            assert mid["power"] == pytest.approx(1.05)
+            assert tail["power"] == pytest.approx(1.15)
+            assert core["color_scale"] == pytest.approx(0.0009375)
+            assert mid["color_scale"] == pytest.approx(0.00375)
+            assert tail["color_scale"] == pytest.approx(0.015)
         finally:
             sys.modules.pop("spoke.glow", None)
 
