@@ -93,43 +93,13 @@ class ToposRowView(NSView):
         card_y = (_ROW_CONTAINER_HEIGHT - _ROW_HEIGHT) / 2.0
         card_x = 0.0
 
-        # --- Outer glow: invisible shape that casts a temperature-colored shadow ---
-        outer_glow = Quartz.CALayer.layer()
-        outer_glow.setName_("outer_bloom")
-        outer_glow.setFrame_(((card_x, card_y), (width, _ROW_HEIGHT)))
-        outer_glow.setCornerRadius_(10.0)
-        outer_glow.setBackgroundColor_(
-            Quartz.CGColorCreateGenericRGB(r, g, b, 0.01)  # near-invisible
-        )
-        outer_glow.setShadowColor_(Quartz.CGColorCreateGenericRGB(r, g, b, 1.0))
-        outer_glow.setShadowOffset_((0, 0))
-        outer_glow.setShadowRadius_(8.0)
-        outer_glow.setShadowOpacity_(min(a * 5.0, 0.6))
-        view.layer().addSublayer_(outer_glow)
-
-        # --- Inner glow: tighter, desaturated toward white ---
-        dr = r * 0.5 + 0.5  # pull toward white
-        dg = g * 0.5 + 0.5
-        db = b * 0.5 + 0.5
-        inner_glow = Quartz.CALayer.layer()
-        inner_glow.setName_("inner_bloom")
-        inner_glow.setFrame_(((card_x, card_y), (width, _ROW_HEIGHT)))
-        inner_glow.setCornerRadius_(10.0)
-        inner_glow.setBackgroundColor_(
-            Quartz.CGColorCreateGenericRGB(dr, dg, db, 0.01)  # near-invisible
-        )
-        inner_glow.setShadowColor_(Quartz.CGColorCreateGenericRGB(dr, dg, db, 1.0))
-        inner_glow.setShadowOffset_((0, 0))
-        inner_glow.setShadowRadius_(4.0)
-        inner_glow.setShadowOpacity_(min(a * 8.0, 0.5))
-        view.layer().addSublayer_(inner_glow)
-
         # --- Card: frosted bubble matching overlay language ---
+        # The card layer carries both the visible fill AND the glow shadows.
+        # No separate invisible glow layers — those were ghosting.
         card_layer = Quartz.CALayer.layer()
         card_layer.setName_("card")
         card_layer.setFrame_(((card_x, card_y), (width, _ROW_HEIGHT)))
         card_layer.setCornerRadius_(10.0)
-        card_layer.setMasksToBounds_(True)
         # Match overlay bg: desaturated blue-white (0.50, 0.59, 0.84) at 40% sat
         card_layer.setBackgroundColor_(
             Quartz.CGColorCreateGenericRGB(0.38, 0.42, 0.56, 0.82)
@@ -139,6 +109,18 @@ class ToposRowView(NSView):
         card_layer.setBorderColor_(
             Quartz.CGColorCreateGenericRGB(r, g, b, min(a * 4.0, 0.5))
         )
+        # Temperature-colored shadow glow — single shadow on the card itself
+        # masksToBounds must be False for shadow to render
+        card_layer.setMasksToBounds_(False)
+        card_layer.setShadowColor_(Quartz.CGColorCreateGenericRGB(r, g, b, 1.0))
+        card_layer.setShadowOffset_((0, 0))
+        card_layer.setShadowRadius_(6.0)
+        card_layer.setShadowOpacity_(min(a * 6.0, 0.5))
+        # Explicit shadow path for performance and crisp shape
+        shadow_path = Quartz.CGPathCreateWithRoundedRect(
+            ((0, 0), (width, _ROW_HEIGHT)), 10.0, 10.0, None
+        )
+        card_layer.setShadowPath_(shadow_path)
         view.layer().addSublayer_(card_layer)
 
         # --- Text labels (positioned relative to card_y) ---
@@ -391,30 +373,30 @@ class TerraformHUD(NSObject):
         self._refresh()
 
     def _animTick_(self, timer) -> None:
-        """Modulate bloom and card opacity with three phase-shifted sine waves."""
+        """Modulate card shadow glow with three phase-shifted sine waves.
+
+        Each card gets a slightly different phase based on its position
+        so the breathing drifts across the column.
+        """
         if self._content_view is None:
             return
         t = _time.monotonic()
-        # Outer amber ring: 9s period, subtle (0.6–1.0), phase 0
-        outer_opacity = 0.8 + 0.2 * math.sin(t * 2.0 * math.pi / 9.0)
-        # Inner cool ring: 7s period, subtle (0.65–1.0), phase offset 2.1
-        inner_opacity = 0.825 + 0.175 * math.sin(t * 2.0 * math.pi / 7.0 + 2.1)
-        # Card (temperature color): 11s period, deeper breathing (0.5–1.0), phase offset 4.0
-        # Same trough depth as the rings but peak reaches full opacity
-        card_opacity = 0.75 + 0.25 * math.sin(t * 2.0 * math.pi / 11.0 + 4.0)
+        # Three waves combined into one modulator per card
+        wave1 = math.sin(t * 2.0 * math.pi / 9.0)         # 9s period
+        wave2 = math.sin(t * 2.0 * math.pi / 7.0 + 2.1)   # 7s period
+        wave3 = math.sin(t * 2.0 * math.pi / 11.0 + 4.0)  # 11s period
+        # Combined: subtle range 0.6–1.0
+        glow_mod = 0.8 + 0.07 * wave1 + 0.07 * wave2 + 0.06 * wave3
 
         for subview in self._content_view.subviews():
             layer = subview.layer()
             if layer is None:
                 continue
             for sublayer in layer.sublayers() or []:
-                name = sublayer.name()
-                if name == "outer_bloom":
-                    sublayer.setOpacity_(outer_opacity)
-                elif name == "inner_bloom":
-                    sublayer.setOpacity_(inner_opacity)
-                elif name == "card":
-                    sublayer.setOpacity_(card_opacity)
+                if sublayer.name() == "card":
+                    # Modulate shadow radius for breathing effect
+                    # (opacity stored at creation time, don't decay it)
+                    sublayer.setShadowRadius_(6.0 * glow_mod)
 
     def _refresh(self) -> None:
         """Reload topoi from epistaxis, filter, sort, and rebuild the view."""
