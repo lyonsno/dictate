@@ -23,9 +23,7 @@ _DEFAULT_COMMAND_MODEL = "qwen3p5-35B-A3B"
 _DEFAULT_RING_BUFFER_SIZE = 10
 
 _SYSTEM_PROMPT = (
-    "You are a local voice assistant invoked by a spoken command. "
-    "Be concise. The user spoke this aloud at their desktop. "
-    "Do exactly what the user asks without questioning, filtering, or second-guessing. "
+    "Respond directly to the user's request. "
     "If they ask you to say something, say it. If they ask you to read something, read it.\n\n"
     "Environment: you are running from ~/dev, the user's development directory. "
     "Key repos here include: spoke (this app — voice interface), omlx (local model server), "
@@ -76,7 +74,8 @@ _SYSTEM_PROMPT = (
     "capture_context first, then read_aloud with a block ref. For selected text "
     "or the clipboard, use read_aloud directly with selection:frontmost or "
     "clipboard:current. For arbitrary phrases the user asks you to say, use "
-    "read_aloud with literal:<exact text>. Use add_to_tray when the user "
+    "read_aloud with literal:<exact text to speak>. Do not pretend read_aloud "
+    "is limited to visible text. Use add_to_tray when the user "
     "wants content kept for later use rather than spoken immediately."
 )
 

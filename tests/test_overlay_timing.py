@@ -73,6 +73,37 @@ class TestOverlayTiming:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_set_text_seeds_text_polarity_before_first_amplitude_tick(self, mock_pyobjc):
+        """Fresh preview text should not wait for RMS churn before snapping to the current polarity."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
+            overlay._visible = True
+            overlay._text_view = MagicMock()
+            overlay._typewriter_target = ""
+            overlay._typewriter_displayed = ""
+            overlay._typewriter_hwm = 0
+            overlay._typewriter_timer = None
+            overlay._update_layout = MagicMock()
+            overlay._cancel_typewriter = MagicMock()
+            overlay._brightness = 0.0
+            overlay._brightness_target = 0.0
+            overlay._text_amplitude = 0.0
+
+            timer = object()
+            mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.return_value = timer
+            mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
+
+            overlay.set_text("abc")
+
+            assert any(
+                call.args == (0.0, 0.0, 0.0, 0.88)
+                for call in mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list
+            )
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_glow_amplitude_smoothing_converges(
         self, mock_pyobjc
     ):
@@ -194,6 +225,22 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_immediate_brightness_snap_reapplies_visible_text_style(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay._typewriter_displayed = "hello"
+            overlay._set_text_view_content = MagicMock()
+
+            overlay.set_brightness(1.0, immediate=True)
+
+            overlay._set_text_view_content.assert_called_once()
+            assert overlay._set_text_view_content.call_args.args[0] == "hello"
+            assert "base_color" in overlay._set_text_view_content.call_args.kwargs
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_dark_background_fill_uses_additive_experiment(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
@@ -280,8 +327,8 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_dark_background_text_punches_through_fill(self, mock_pyobjc):
-        """On dark backgrounds, preview text should act as a cutout through the light fill."""
+    def test_dark_background_text_stays_normal_instead_of_cutting_out(self, mock_pyobjc):
+        """On dark backgrounds, preview text should stay normal over the light fill."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -290,12 +337,12 @@ class TestAdaptiveOverlayCompositing:
 
             overlay.update_text_amplitude(10.0)
 
-            overlay._text_view.layer.return_value.setCompositingFilter_.assert_called_with("destinationOut")
+            overlay._text_view.layer.return_value.setCompositingFilter_.assert_called_with(None)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_light_background_text_stays_normal_instead_of_cutting_out(self, mock_pyobjc):
-        """On bright backgrounds, preview text should render normally rather than punching holes in the dark fill."""
+    def test_light_background_text_punches_through_fill(self, mock_pyobjc):
+        """On bright backgrounds, preview text should punch holes through the dark fill."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -304,7 +351,22 @@ class TestAdaptiveOverlayCompositing:
 
             overlay.update_text_amplitude(10.0)
 
-            overlay._text_view.layer.return_value.setCompositingFilter_.assert_called_with(None)
+            overlay._text_view.layer.return_value.setCompositingFilter_.assert_called_with("destinationOut")
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_preview_cutout_mode_follows_brightness_target_without_waiting_for_chase(self, mock_pyobjc):
+        """Discrete cutout polarity should follow the latest scene target immediately."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay._brightness = 0.0
+            overlay._brightness_target = 1.0
+
+            overlay.update_text_amplitude(0.0)
+
+            overlay._text_view.layer.return_value.setCompositingFilter_.assert_called_with("destinationOut")
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -625,7 +687,7 @@ class TestMetalPreviewSurfaceSync:
             overlay.set_brightness(1.0, immediate=True)
             overlay.update_text_amplitude(0.0)
 
-            assert overlay._set_text_view_content.call_count == 2
+            assert overlay._set_text_view_content.call_count == 3
         finally:
             sys.modules.pop("spoke.overlay", None)
 

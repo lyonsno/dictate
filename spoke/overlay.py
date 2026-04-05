@@ -9,9 +9,11 @@ out after final injection. Text opacity breathes with voice amplitude.
 from __future__ import annotations
 
 import colorsys
+import ctypes
 import logging
 import math
 import os
+import struct
 
 import objc
 from AppKit import (
@@ -39,6 +41,72 @@ from .dedup import ontology_term_spans
 from .tintilla import PREVIEW_FILL_LAYER_ID
 
 logger = logging.getLogger(__name__)
+
+_METAL_PREVIEW_FILL_ENABLED = os.environ.get("SPOKE_METAL_PREVIEW_FILL", "0") == "1"
+_MTL_PIXEL_FORMAT_BGRA8_UNORM = 80
+_MTL_LOAD_ACTION_CLEAR = 2
+_MTL_STORE_ACTION_STORE = 1
+_MTL_PRIMITIVE_TYPE_TRIANGLE_STRIP = 4
+_PREVIEW_FILL_MTL_BUFFER_LAYOUT = "<" + "f" * 8
+_PREVIEW_FILL_MTL_BUFFER_SIZE = struct.calcsize(_PREVIEW_FILL_MTL_BUFFER_LAYOUT)
+_PREVIEW_FILL_SHADER_SOURCE = """
+#include <metal_stdlib>
+using namespace metal;
+
+struct VSOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+struct Uniforms {
+    float4 viewport_fill;
+    float4 color_floor;
+};
+
+vertex VSOut vs_main(uint vid [[vertex_id]]) {
+    float2 positions[4] = {
+        float2(-1.0, -1.0),
+        float2( 1.0, -1.0),
+        float2(-1.0,  1.0),
+        float2( 1.0,  1.0),
+    };
+    float2 uvs[4] = {
+        float2(0.0, 1.0),
+        float2(1.0, 1.0),
+        float2(0.0, 0.0),
+        float2(1.0, 0.0),
+    };
+
+    VSOut out;
+    out.position = float4(positions[vid], 0.0, 1.0);
+    out.uv = uvs[vid];
+    return out;
+}
+
+inline float fill_alpha(float signed_distance, float fill_width, float interior_floor) {
+    float raw = exp(-sqrt(fabs(signed_distance) / max(fill_width, 1e-6)));
+    if (signed_distance <= 0.0) {
+        return interior_floor + (1.0 - interior_floor) * raw;
+    }
+    return raw;
+}
+
+fragment float4 fs_main(
+    VSOut in [[stage_in]],
+    constant Uniforms& u [[buffer(0)]],
+    constant float* signed_field [[buffer(1)]]
+) {
+    uint width = max(uint(u.viewport_fill.x), 1u);
+    uint height = max(uint(u.viewport_fill.y), 1u);
+    uint x = min(uint(in.uv.x * float(width - 1u)), width - 1u);
+    uint y = min(uint(in.uv.y * float(height - 1u)), height - 1u);
+    float signed_distance = signed_field[y * width + x];
+    float alpha = fill_alpha(signed_distance, u.viewport_fill.w, u.color_floor.w) *
+        clamp(u.viewport_fill.z, 0.0, 1.0);
+    float3 rgb = u.color_floor.rgb;
+    return float4(rgb * alpha, alpha);
+}
+"""
 
 def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
@@ -326,6 +394,140 @@ def _fill_field_to_image(alpha, r: int, g: int, b: int):
     return image, payload
 
 
+def _build_preview_fill_metal_pipeline(device):
+    from . import glow as glow_module
+
+    glow_module._load_metal_symbols()
+    pipeline_descriptor = objc.lookUpClass("MTLRenderPipelineDescriptor").alloc().init()
+    library = device.newLibraryWithSource_options_error_(_PREVIEW_FILL_SHADER_SOURCE, None, None)
+    pipeline_descriptor.setVertexFunction_(library.newFunctionWithName_("vs_main"))
+    pipeline_descriptor.setFragmentFunction_(library.newFunctionWithName_("fs_main"))
+    attachment = pipeline_descriptor.colorAttachments().objectAtIndexedSubscript_(0)
+    attachment.setPixelFormat_(_MTL_PIXEL_FORMAT_BGRA8_UNORM)
+    return device.newRenderPipelineStateWithDescriptor_error_(pipeline_descriptor, None)
+
+
+class _MetalPreviewFillRenderer:
+    def __init__(self, frame_size: tuple[float, float], scale: float):
+        from . import glow as glow_module
+
+        glow_module._load_metal_symbols()
+        device = glow_module.MTLCreateSystemDefaultDevice()
+        if device is None:
+            raise RuntimeError("Metal default device unavailable")
+
+        self._device = device
+        self._queue = device.newCommandQueue()
+        self._pipeline = _build_preview_fill_metal_pipeline(device)
+        self._uniform_buffer = device.newBufferWithLength_options_(_PREVIEW_FILL_MTL_BUFFER_SIZE, 0)
+        self._field_buffer = None
+        self._field_buffer_size = 0
+        self._pixel_width = 0
+        self._pixel_height = 0
+        self._fill_width = 1.0
+        self._rgb = (0.0, 0.0, 0.0)
+        self._opacity = _BG_ALPHA_MIN
+        self._interior_floor = 0.55
+        self._layer = objc.lookUpClass("CAMetalLayer").layer()
+        self._layer.setDevice_(device)
+        self._layer.setPixelFormat_(_MTL_PIXEL_FORMAT_BGRA8_UNORM)
+        self._layer.setFramebufferOnly_(True)
+        self._layer.setOpaque_(False)
+        self._set_layer_geometry(frame_size, scale)
+
+    def layer(self):
+        return self._layer
+
+    def _set_layer_geometry(self, frame_size: tuple[float, float], scale: float) -> None:
+        width_pt, height_pt = frame_size
+        self._layer.setFrame_(((0, 0), (width_pt, height_pt)))
+        self._layer.setContentsScale_(scale)
+        self._pixel_width = max(int(round(width_pt * scale)), 1)
+        self._pixel_height = max(int(round(height_pt * scale)), 1)
+        self._layer.setDrawableSize_((float(self._pixel_width), float(self._pixel_height)))
+
+    def set_geometry(self, total_w: float, total_h: float, sdf, scale: float) -> None:
+        from . import glow as glow_module
+
+        self._set_layer_geometry((total_w, total_h), scale)
+        payload = sdf.tobytes()
+        required = len(payload)
+        if self._field_buffer is None or required != self._field_buffer_size:
+            self._field_buffer = self._device.newBufferWithLength_options_(required, 0)
+            self._field_buffer_size = required
+        glow_module._copy_bytes_to_metal_buffer(self._field_buffer, payload)
+        self._fill_width = 2.5 * scale
+
+    def set_fill_state(
+        self,
+        rgb: tuple[float, float, float],
+        opacity: float,
+        interior_floor: float,
+        *,
+        fill_width: float | None = None,
+    ) -> None:
+        self._rgb = rgb
+        self._opacity = opacity
+        self._interior_floor = interior_floor
+        if fill_width is not None:
+            self._fill_width = fill_width
+
+    def draw_frame(self) -> bool:
+        from . import glow as glow_module
+
+        if self._field_buffer is None:
+            return False
+        drawable = self._layer.nextDrawable()
+        if drawable is None:
+            return False
+
+        uniforms = struct.pack(
+            _PREVIEW_FILL_MTL_BUFFER_LAYOUT,
+            float(self._pixel_width),
+            float(self._pixel_height),
+            float(self._opacity),
+            float(self._fill_width),
+            float(self._rgb[0]),
+            float(self._rgb[1]),
+            float(self._rgb[2]),
+            float(self._interior_floor),
+        )
+        glow_module._copy_bytes_to_metal_buffer(self._uniform_buffer, uniforms)
+
+        render_pass_descriptor = objc.lookUpClass("MTLRenderPassDescriptor").renderPassDescriptor()
+        attachment = render_pass_descriptor.colorAttachments().objectAtIndexedSubscript_(0)
+        attachment.setTexture_(drawable.texture())
+        attachment.setLoadAction_(_MTL_LOAD_ACTION_CLEAR)
+        attachment.setStoreAction_(_MTL_STORE_ACTION_STORE)
+        attachment.setClearColor_((0.0, 0.0, 0.0, 0.0))
+
+        command_buffer = self._queue.commandBuffer()
+        encoder = command_buffer.renderCommandEncoderWithDescriptor_(render_pass_descriptor)
+        encoder.setRenderPipelineState_(self._pipeline)
+        encoder.setFragmentBuffer_offset_atIndex_(self._uniform_buffer, 0, 0)
+        encoder.setFragmentBuffer_offset_atIndex_(self._field_buffer, 0, 1)
+        encoder.drawPrimitives_vertexStart_vertexCount_(_MTL_PRIMITIVE_TYPE_TRIANGLE_STRIP, 0, 4)
+        encoder.endEncoding()
+        command_buffer.presentDrawable_(drawable)
+        command_buffer.commit()
+        return True
+
+
+def _maybe_create_metal_preview_fill_renderer(frame_size: tuple[float, float], scale: float):
+    if not _METAL_PREVIEW_FILL_ENABLED:
+        return None
+    try:
+        from . import glow as glow_module
+
+        if not glow_module._metal_device_available():
+            logger.warning("Metal preview fill requested but Metal is unavailable; falling back")
+            return None
+        return _MetalPreviewFillRenderer(frame_size, scale)
+    except Exception:
+        logger.exception("Failed to initialize preview Metal fill renderer; falling back")
+        return None
+
+
 def _build_ridge_image(field_width: float, field_height: float,
                        rect_width: float, rect_height: float,
                        corner_radius: float, scale: float,
@@ -393,6 +595,7 @@ class TranscriptionOverlay(NSObject):
         self._brightness_target = 0.0
         self._fill_override_rgb: tuple[float, float, float] | None = None
         self._fill_override_opacity: float | None = None
+        self._fill_renderer = None
         self._visual_layer_state = None
 
         # Recovery mode state
@@ -487,9 +690,13 @@ class TranscriptionOverlay(NSObject):
         # per-pixel alpha from the SDF smoothstep.  No mask layer needed —
         # the alpha falloff is in the image itself.  The fill color is updated
         # by rebuilding the image in update_text_amplitude.
-        self._fill_layer = CALayer.alloc().init()
-        self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
-        self._fill_layer.setContentsGravity_("resize")
+        self._fill_renderer = _maybe_create_metal_preview_fill_renderer((win_w, win_h), self._ridge_scale)
+        if self._fill_renderer is not None:
+            self._fill_layer = self._fill_renderer.layer()
+        else:
+            self._fill_layer = CALayer.alloc().init()
+            self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
+            self._fill_layer.setContentsGravity_("resize")
 
         # Build initial SDF fill image
         self._apply_ridge_masks(w, h)
@@ -635,6 +842,8 @@ class TranscriptionOverlay(NSObject):
         self._brightness_target = min(max(brightness, 0.0), 1.0)
         if immediate:
             self._brightness = self._brightness_target
+            if self._visible and self._text_view is not None:
+                self._refresh_preview_text_style(snap_polarity=True)
 
     def hide(self, *, fade_duration: float | None = None) -> None:
         """Fade the overlay out smoothly."""
@@ -925,6 +1134,55 @@ class TranscriptionOverlay(NSObject):
         self._text_payload_dirty = False
         return True
 
+    def _preview_text_colors(
+        self, *, snap_polarity: bool = False
+    ) -> tuple[NSColor, NSColor]:
+        scaled = min(getattr(self, "_text_amplitude", 0.0) / _TEXT_AMP_SATURATION, 1.0)
+        t = getattr(self, "_brightness_target", getattr(self, "_brightness", 0.0))
+
+        if t > 0.15:
+            text_alpha = 1.0
+        else:
+            text_alpha = 0.88
+
+        bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
+        bg_lum = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b
+        target_text_lum = 0.0 if bg_lum > 0.5 else 1.0
+
+        if snap_polarity or not hasattr(self, "_text_lum"):
+            current_text_lum = target_text_lum
+        else:
+            current_text_lum = getattr(self, "_text_lum", target_text_lum)
+            current_text_lum += (target_text_lum - current_text_lum) * _TEXT_SNAP_SPEED
+
+        self._text_lum = current_text_lum
+        tr = tg = tb = current_text_lum
+        base_color = NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, text_alpha)
+        ontology_r, ontology_g, ontology_b = _ontology_text_rgb(current_text_lum)
+        ontology_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            ontology_r,
+            ontology_g,
+            ontology_b,
+            text_alpha,
+        )
+        return base_color, ontology_color
+
+    def _refresh_preview_text_style(
+        self, *, text: str | None = None, snap_polarity: bool = False
+    ) -> None:
+        if self._text_view is None:
+            return
+        if text is None:
+            text = getattr(self, "_typewriter_displayed", "")
+        base_color, ontology_color = self._preview_text_colors(
+            snap_polarity=snap_polarity
+        )
+        self._set_text_view_content(
+            text,
+            base_color=base_color,
+            ontology_color=ontology_color,
+        )
+
     def _set_text_view_content(
         self,
         text: str,
@@ -987,6 +1245,7 @@ class TranscriptionOverlay(NSObject):
             return
 
         self._typewriter_target = text
+        self._refresh_preview_text_style(snap_polarity=True)
 
         # If the new text doesn't start with what we've displayed,
         # the transcription revised earlier words.
@@ -1061,10 +1320,10 @@ class TranscriptionOverlay(NSObject):
         layer.setBackgroundColor_(None)
 
     def _apply_text_compositing_mode(self, brightness: float) -> None:
-        """Flip preview text into cutout mode on dark backgrounds."""
+        """Flip preview text into cutout mode on bright backgrounds."""
         if self._preview_surface_uses_metal():
             self._metal_preview_renderer.set_compositing_filter(
-                _DARK_TEXT_CUTOUT_FILTER if brightness <= 0.15 else None
+                _DARK_TEXT_CUTOUT_FILTER if brightness > 0.15 else None
             )
             return
         text_view = getattr(self, "_text_view", None)
@@ -1075,7 +1334,7 @@ class TranscriptionOverlay(NSObject):
         layer = text_view.layer() if hasattr(text_view, "layer") else None
         if layer is None or not hasattr(layer, "setCompositingFilter_"):
             return
-        filter_name = _DARK_TEXT_CUTOUT_FILTER if brightness <= 0.15 else None
+        filter_name = _DARK_TEXT_CUTOUT_FILTER if brightness > 0.15 else None
         layer.setCompositingFilter_(filter_name)
 
     # ── amplitude-reactive text ──────────────────────────────
@@ -1111,20 +1370,21 @@ class TranscriptionOverlay(NSObject):
         scaled = min(self._text_amplitude / _TEXT_AMP_SATURATION, 1.0)
 
         t = getattr(self, "_brightness", 0.0)
-        self._apply_text_compositing_mode(t)
+        mode_t = getattr(self, "_brightness_target", t)
+        self._apply_text_compositing_mode(mode_t)
 
         # Text: anchored near-opaque.  Dark on white backgrounds, white on
         # dark backgrounds.  Text does NOT breathe with amplitude — it stays
         # legible and stable.  The SDF fill breathes instead.
         # Text alpha: on dark backgrounds, anchored at 0.88 (no RMS link).
         # On light backgrounds, keep the preview fully legible for smoking.
-        if t > 0.15:
+        if mode_t > 0.15:
             _TEXT_ANCHOR_ALPHA = 1.0
         else:
             _TEXT_ANCHOR_ALPHA = 0.88
         # Text contrasts against the fill: light fill (dark bg) → dark text,
         # dark fill (light bg) → white text.
-        bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
+        bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, mode_t)
         bg_lum = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b
         target_text_lum = 0.0 if bg_lum > 0.5 else 1.0
 
@@ -1171,15 +1431,21 @@ class TranscriptionOverlay(NSObject):
             last_t = getattr(self, '_fill_image_brightness', -1.0)
             if abs(t - last_t) > 0.03:
                 self._fill_image_brightness = t
-                # Recompute the full SDF + fill image at the current overlay
-                # size.  Using _update_fill_image with a stale SDF caused
-                # corner distortion when the overlay had resized since the
-                # SDF was last computed.
                 content = getattr(self, '_content_view', None)
                 if content:
                     try:
                         cf = content.frame()
-                        self._apply_ridge_masks(cf.size.width, cf.size.height)
+                        if getattr(self, "_fill_renderer", None) is not None:
+                            self._update_fill_image(
+                                cf.size.width + 2 * _OUTER_FEATHER,
+                                cf.size.height + 2 * _OUTER_FEATHER,
+                            )
+                        else:
+                            # Recompute the full SDF + fill image at the current overlay
+                            # size. Using _update_fill_image with a stale SDF caused
+                            # corner distortion when the overlay had resized since the
+                            # SDF was last computed.
+                            self._apply_ridge_masks(cf.size.width, cf.size.height)
                     except Exception:
                         pass
         self._apply_direct_fill_backstop(t, fill_rgb, fill_opacity)
@@ -1274,7 +1540,6 @@ class TranscriptionOverlay(NSObject):
             scale = getattr(self, '_fill_scale', 2.0)
             t = getattr(self, '_brightness', 0.0)
             width, floor, _opacity_min, _opacity_max = _fill_profile_for_brightness(t)
-            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=width * scale, interior_floor=floor)
 
             fill_override_rgb = getattr(self, "_fill_override_rgb", None)
             if fill_override_rgb is None:
@@ -1282,6 +1547,34 @@ class TranscriptionOverlay(NSObject):
                 bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
             else:
                 bg_r, bg_g, bg_b = fill_override_rgb
+            fill_opacity = getattr(self, "_fill_override_opacity", None)
+            if fill_opacity is None:
+                if hasattr(self._fill_layer, "opacity"):
+                    try:
+                        fill_opacity = self._fill_layer.opacity()
+                    except Exception:
+                        fill_opacity = _BG_ALPHA_MIN
+                else:
+                    fill_opacity = _BG_ALPHA_MIN
+            renderer = getattr(self, "_fill_renderer", None)
+            if renderer is not None:
+                renderer.set_geometry(total_w, total_h, self._fill_sdf, scale)
+                renderer.set_fill_state(
+                    (bg_r, bg_g, bg_b),
+                    float(fill_opacity),
+                    floor,
+                    fill_width=width * scale,
+                )
+                renderer.draw_frame()
+                if hasattr(self._fill_layer, "setCompositingFilter_"):
+                    filter_name = (
+                        None
+                        if fill_override_rgb is not None
+                        else _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
+                    )
+                    self._fill_layer.setCompositingFilter_(filter_name)
+                return
+            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=width * scale, interior_floor=floor)
             # Scale color to 0-255
             fill_image, self._fill_payload = _fill_field_to_image(
                 fill_alpha,
@@ -1315,7 +1608,13 @@ class TranscriptionOverlay(NSObject):
             self._fill_layer.setOpacity_(opacity)
         if getattr(self, "_content_view", None) is not None:
             content_frame = self._content_view.frame()
-            self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
+            if getattr(self, "_fill_renderer", None) is not None:
+                self._update_fill_image(
+                    content_frame.size.width + 2 * _OUTER_FEATHER,
+                    content_frame.size.height + 2 * _OUTER_FEATHER,
+                )
+            else:
+                self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
 
     def _clear_fill_override(self, *, opacity: float | None = None) -> None:
         self._fill_override_rgb = None
@@ -1324,7 +1623,13 @@ class TranscriptionOverlay(NSObject):
             self._fill_layer.setOpacity_(opacity)
         if getattr(self, "_content_view", None) is not None:
             content_frame = self._content_view.frame()
-            self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
+            if getattr(self, "_fill_renderer", None) is not None:
+                self._update_fill_image(
+                    content_frame.size.width + 2 * _OUTER_FEATHER,
+                    content_frame.size.height + 2 * _OUTER_FEATHER,
+                )
+            else:
+                self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
 
     def _update_layout(self) -> None:
         """Resize window and scroll to bottom after text change."""
