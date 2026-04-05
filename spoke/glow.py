@@ -570,7 +570,7 @@ def _continuous_vignette_pass_specs():
             "alpha": 1.0,
             "color_scale": 0.00375,
             "floor_gain": 1.0,
-            "peak_gain": 1.0,
+            "peak_gain": 0.7,
         },
         {
             "name": "tail",
@@ -579,8 +579,8 @@ def _continuous_vignette_pass_specs():
             "power": 1.15,
             "alpha": 0.9,
             "color_scale": 0.015,
-            "floor_gain": 1.0,
-            "peak_gain": 1.0,
+            "floor_gain": 0.75,
+            "peak_gain": 0.5,
         },
     ]
 

@@ -254,6 +254,10 @@ class TestGlowTuning:
             assert tail["alpha"] == pytest.approx(0.9)
             assert core["floor_gain"] == pytest.approx(2.0)
             assert core["peak_gain"] == pytest.approx(4.0)
+            assert mid["floor_gain"] == pytest.approx(1.0)
+            assert mid["peak_gain"] == pytest.approx(0.7)
+            assert tail["floor_gain"] == pytest.approx(0.75)
+            assert tail["peak_gain"] == pytest.approx(0.5)
             assert core["power"] == pytest.approx(0.95)
             assert mid["power"] == pytest.approx(1.05)
             assert tail["power"] == pytest.approx(1.15)
@@ -280,10 +284,28 @@ class TestGlowTuning:
                 {"floor_gain": 2.0, "peak_gain": 4.0},
             )
             quiet_tail = mod._vignette_pass_opacity(base_opacity, 0.0, {})
+            loud_mid = mod._vignette_pass_opacity(
+                base_opacity,
+                1.0,
+                {"floor_gain": 1.0, "peak_gain": 0.7},
+            )
+            quiet_tail_tuned = mod._vignette_pass_opacity(
+                base_opacity,
+                0.0,
+                {"floor_gain": 0.75, "peak_gain": 0.5},
+            )
+            loud_tail_tuned = mod._vignette_pass_opacity(
+                base_opacity,
+                1.0,
+                {"floor_gain": 0.75, "peak_gain": 0.5},
+            )
 
             assert quiet_core == pytest.approx(0.4)
             assert loud_core == pytest.approx(0.8)
             assert quiet_core > quiet_tail
+            assert loud_mid == pytest.approx(0.14)
+            assert quiet_tail_tuned == pytest.approx(0.15)
+            assert loud_tail_tuned == pytest.approx(0.10)
         finally:
             sys.modules.pop("spoke.glow", None)
 
