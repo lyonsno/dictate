@@ -1,6 +1,6 @@
 """Tests for the Terraform epistaxis topoi parser."""
 
-from spoke.terraform import Topos, parse_topoi, format_topos_summary
+from spoke.terraform import Topos, parse_topoi, format_topos_summary, sort_topoi, filter_topoi
 
 
 _SAMPLE_NOTE = """\
@@ -147,3 +147,70 @@ def test_parse_no_scoped_state_section():
     text = "# Spoke Epistaxis\n\n## Decisions\n\n- stuff\n"
     topoi = parse_topoi(text)
     assert topoi == []
+
+
+# -- Sorting tests --
+
+def _make_topoi():
+    return [
+        Topos(id="a", semeion="Alpha", temperature="warm", machine="box-1", tool="Claude Code"),
+        Topos(id="b", semeion="Beta", temperature="hot", machine="box-2", tool="Codex"),
+        Topos(id="c", semeion="Gamma", temperature="katástasis", machine="box-1", tool="Gemini CLI"),
+        Topos(id="d", semeion="Delta", temperature="cool", machine="box-2", tool="Claude Code"),
+        Topos(id="e", temperature="cold", machine="box-1"),
+    ]
+
+
+def test_sort_by_temperature():
+    topoi = sort_topoi(_make_topoi(), key="temperature")
+    temps = [t.temperature for t in topoi]
+    assert temps == ["hot", "warm", "cool", "cold", "katástasis"]
+
+
+def test_sort_by_semeion():
+    topoi = sort_topoi(_make_topoi(), key="semeion")
+    names = [t.semeion or t.id for t in topoi]
+    assert names == ["Alpha", "Beta", "Delta", "e", "Gamma"]
+
+
+def test_sort_by_machine():
+    topoi = sort_topoi(_make_topoi(), key="machine")
+    # box-1 group first (alphabetical), then box-2, sorted by temp within
+    machines = [(t.machine, t.temperature) for t in topoi]
+    assert machines[0] == ("box-1", "warm")
+    assert machines[1] == ("box-1", "cold")
+    assert machines[2] == ("box-1", "katástasis")
+    assert machines[3][0] == "box-2"
+
+
+# -- Filtering tests --
+
+def test_filter_hide_katastasis():
+    result = filter_topoi(_make_topoi(), hide_katastasis=True)
+    assert all(t.temperature != "katástasis" for t in result)
+    assert len(result) == 4
+
+
+def test_filter_by_machine():
+    result = filter_topoi(_make_topoi(), machine="box-1")
+    assert all("box-1" in t.machine for t in result)
+    assert len(result) == 3
+
+
+def test_filter_by_tool():
+    result = filter_topoi(_make_topoi(), tool="claude")
+    assert len(result) == 2
+    assert all("Claude" in t.tool for t in result)
+
+
+def test_filter_by_temperature():
+    result = filter_topoi(_make_topoi(), temperature="hot")
+    assert len(result) == 1
+    assert result[0].id == "b"
+
+
+def test_filter_combined():
+    result = filter_topoi(_make_topoi(), machine="box-1", hide_katastasis=True)
+    assert len(result) == 2
+    assert all(t.machine == "box-1" for t in result)
+    assert all(t.temperature != "katástasis" for t in result)

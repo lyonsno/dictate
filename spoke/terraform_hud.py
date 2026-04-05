@@ -43,7 +43,7 @@ from Foundation import (
     NSTimer,
 )
 
-from .terraform import Topos, load_topoi, format_topos_summary
+from .terraform import Topos, load_topoi, filter_topoi, sort_topoi, format_topos_summary
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +268,10 @@ class TerraformHUD(NSObject):
         self._timer: NSTimer | None = None
         self._anim_timer: NSTimer | None = None
         self._visible = False
+        self._sort_key = "temperature"
+        self._hide_katastasis = True
+        self._filter_machine: str | None = None
+        self._filter_tool: str | None = None
         return self
 
     def setup(self) -> None:
@@ -415,8 +419,15 @@ class TerraformHUD(NSObject):
                     sublayer.setOpacity_(card_opacity)
 
     def _refresh(self) -> None:
-        """Reload topoi from epistaxis and rebuild the view."""
-        self._topoi = load_topoi()
+        """Reload topoi from epistaxis, filter, sort, and rebuild the view."""
+        raw = load_topoi()
+        filtered = filter_topoi(
+            raw,
+            hide_katastasis=self._hide_katastasis,
+            machine=self._filter_machine,
+            tool=self._filter_tool,
+        )
+        self._topoi = sort_topoi(filtered, key=self._sort_key)
         self._rebuild_content()
         # Re-assert window ordering in case glow used orderFrontRegardless
         if self._panel is not None and self._visible:

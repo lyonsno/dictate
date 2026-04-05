@@ -168,6 +168,92 @@ def load_topoi(
     return parse_topoi(text)
 
 
+# Temperature sort order: hot first, then warm, cool, cold, katastasis last.
+# Unknown temperatures sort between cold and katastasis.
+_TEMP_SORT_ORDER = {
+    "hot": 0,
+    "warm": 1,
+    "cool": 2,
+    "cold": 3,
+    "katástasis": 5,
+}
+_TEMP_UNKNOWN = 4
+
+
+def sort_topoi(
+    topoi: list[Topos],
+    key: str = "temperature",
+) -> list[Topos]:
+    """Sort topoi by the given key.
+
+    Supported keys:
+
+    - ``"temperature"`` (default): hot → warm → cool → cold → unknown → katastasis
+    - ``"semeion"``: alphabetical by display name (semeion or id)
+    - ``"machine"``: group by machine, then by temperature within each group
+    """
+    if key == "temperature":
+        return sorted(
+            topoi,
+            key=lambda t: _TEMP_SORT_ORDER.get(t.temperature or "", _TEMP_UNKNOWN),
+        )
+    elif key == "semeion":
+        return sorted(
+            topoi,
+            key=lambda t: (t.semeion or t.id).lower(),
+        )
+    elif key == "machine":
+        return sorted(
+            topoi,
+            key=lambda t: (
+                t.machine or "zzz-unknown",
+                _TEMP_SORT_ORDER.get(t.temperature or "", _TEMP_UNKNOWN),
+            ),
+        )
+    return topoi
+
+
+def filter_topoi(
+    topoi: list[Topos],
+    *,
+    hide_katastasis: bool = False,
+    machine: str | None = None,
+    tool: str | None = None,
+    temperature: str | None = None,
+) -> list[Topos]:
+    """Filter topoi by criteria.
+
+    Parameters
+    ----------
+    hide_katastasis : bool
+        If True, exclude topoi with temperature "katástasis".
+    machine : str, optional
+        If set, only include topoi from this machine (substring match).
+    tool : str, optional
+        If set, only include topoi using this tool (substring match, case-insensitive).
+    temperature : str, optional
+        If set, only include topoi with this exact temperature.
+    """
+    result = topoi
+    if hide_katastasis:
+        result = [t for t in result if t.temperature != "katástasis"]
+    if machine:
+        machine_lower = machine.lower()
+        result = [
+            t for t in result
+            if t.machine and machine_lower in t.machine.lower()
+        ]
+    if tool:
+        tool_lower = tool.lower()
+        result = [
+            t for t in result
+            if t.tool and tool_lower in t.tool.lower()
+        ]
+    if temperature:
+        result = [t for t in result if t.temperature == temperature]
+    return result
+
+
 def format_topos_summary(topos: Topos) -> str:
     """One-line summary for display."""
     name = topos.semeion or topos.id
