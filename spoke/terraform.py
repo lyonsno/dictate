@@ -260,6 +260,7 @@ class AttractorStats:
 
     total: int = 0
     active: int = 0
+    unclassified: int = 0
     soak: int = 0
     smoke: int = 0
     katastasis: int = 0
@@ -296,7 +297,7 @@ def count_attractors(
             stats.total += 1
 
             # Try to read status from frontmatter
-            status = "active"  # default if no frontmatter
+            status = None  # None means no frontmatter status found
             try:
                 head = f.read_text(encoding="utf-8", errors="replace")[:500]
                 if head.startswith("---"):
@@ -309,7 +310,9 @@ def count_attractors(
             except OSError:
                 pass
 
-            if status in ("soak", "soaking"):
+            if status is None:
+                stats.unclassified += 1
+            elif status in ("soak", "soaking"):
                 stats.soak += 1
             elif status in ("smoke", "smoking"):
                 stats.smoke += 1

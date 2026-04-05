@@ -475,6 +475,8 @@ class TerraformHUD(NSObject):
             att_parts.append(f"{att.smoke} smoke")
         if att.katastasis:
             att_parts.append(f"{att.katastasis} settled")
+        if att.unclassified:
+            att_parts.append(f"{att.unclassified} unclassified")
         att_line = " · ".join(att_parts) if att_parts else ""
         att_summary = f"  ⫶  {att.total} attractors ({att_line})" if att.total else ""
 
