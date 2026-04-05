@@ -28,8 +28,9 @@ class TestOverlayTiming:
 
             overlay.update_text_amplitude(10.0)
 
-            _, _, _, applied_alpha = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args[0]
-            # Text is anchored at a fixed high alpha, not driven by amplitude
+            overlay._text_view.setAlphaValue_.assert_called_once()
+            applied_alpha = overlay._text_view.setAlphaValue_.call_args[0][0]
+            # Text alpha now rides the view/layer seam rather than forcing a payload rebuild.
             assert applied_alpha == pytest.approx(0.88)
         finally:
             sys.modules.pop("spoke.overlay", None)
@@ -520,5 +521,135 @@ class TestAdaptiveOverlayCompositing:
                 overlay.update_text_amplitude(10.0)
             text_r = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args_list[0][0][0]
             assert text_r > 0.9  # white text
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+
+class TestPreviewTextPayloadInvalidation:
+    """Preview text should only rebuild its CPU payload when the seam actually changes."""
+
+    def _make_overlay(self, mod):
+        overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
+        overlay._visible = True
+        overlay._text_view = MagicMock()
+        overlay._text_view.layer.return_value = MagicMock()
+        overlay._scroll_view = MagicMock()
+        overlay._content_view = MagicMock()
+        overlay._fill_layer = MagicMock()
+        overlay._brightness = 0.0
+        overlay._brightness_target = 0.0
+        overlay._text_amplitude = 0.0
+        overlay._typewriter_displayed = "Epistaxis"
+        overlay._typewriter_target = "Epistaxis"
+        overlay._set_text_view_content = MagicMock()
+        return overlay
+
+    def test_animation_ticks_reuse_text_payload_when_palette_stays_stable(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+
+            overlay.update_text_amplitude(0.0)
+            overlay.update_text_amplitude(0.0)
+
+            assert overlay._set_text_view_content.call_count == 1
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+
+class TestMetalPreviewSurfaceSync:
+    """The Metal preview surface should only resnapshot when the payload actually changes."""
+
+    def _make_overlay(self, mod):
+        overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
+        overlay._visible = True
+        overlay._text_view = MagicMock()
+        overlay._text_view.layer.return_value = MagicMock()
+        overlay._scroll_view = MagicMock()
+        overlay._content_view = MagicMock()
+        overlay._fill_layer = MagicMock()
+        overlay._brightness = 0.0
+        overlay._brightness_target = 0.0
+        overlay._text_amplitude = 0.0
+        overlay._typewriter_displayed = "Epistaxis"
+        overlay._typewriter_target = "Epistaxis"
+        overlay._set_text_view_content = MagicMock()
+        overlay._sync_preview_surface = MagicMock()
+        overlay._metal_preview_renderer = MagicMock()
+        overlay._metal_preview_active = True
+        return overlay
+
+    def test_animation_ticks_do_not_resnapshot_metal_preview_when_payload_is_stable(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+
+            overlay.update_text_amplitude(0.0)
+            overlay.update_text_amplitude(0.0)
+
+            assert overlay._sync_preview_surface.call_count == 1
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_palette_boundary_resnapshots_metal_preview(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+
+            overlay.update_text_amplitude(0.0)
+            overlay.set_brightness(1.0, immediate=True)
+            overlay.update_text_amplitude(0.0)
+
+            assert overlay._sync_preview_surface.call_count == 2
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_palette_boundary_still_rebuilds_text_payload(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+
+            overlay.update_text_amplitude(0.0)
+            overlay.set_brightness(1.0, immediate=True)
+            overlay.update_text_amplitude(0.0)
+
+            assert overlay._set_text_view_content.call_count == 2
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_typewriter_steps_resnapshot_metal_preview_surface(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay._typewriter_displayed = "Epi"
+            overlay._typewriter_target = "Epistaxis"
+            overlay._typewriter_hwm = len(overlay._typewriter_displayed)
+            overlay._update_layout = MagicMock()
+
+            overlay.typewriterStep_(None)
+
+            overlay._sync_preview_surface.assert_called_once_with(force=True)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_snap_text_update_resnapshots_metal_preview_surface(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay._typewriter_displayed = "Hello brave"
+            overlay._typewriter_target = overlay._typewriter_displayed
+            overlay._typewriter_hwm = len(overlay._typewriter_displayed)
+            overlay._cancel_typewriter = MagicMock()
+            overlay._update_layout = MagicMock()
+
+            overlay.set_text("Completely different partial")
+
+            overlay._sync_preview_surface.assert_called_once_with(force=True)
         finally:
             sys.modules.pop("spoke.overlay", None)

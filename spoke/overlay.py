@@ -64,6 +64,7 @@ _FADE_IN_S = 0.75  # slow ease-in — overlay materializes gradually
 _FADE_OUT_S = 0.315  # 75% longer fade keeps the preview legible through fast handoff
 _FADE_STEPS = 12  # number of steps for manual fade animation
 _TYPEWRITER_INTERVAL = 0.02  # seconds between characters (~50 chars/sec)
+_PREVIEW_TEXT_METAL_ENABLED = os.environ.get("SPOKE_PREVIEW_TEXT_METAL", "0") == "1"
 
 
 def _scale_color_saturation(
@@ -378,6 +379,12 @@ class TranscriptionOverlay(NSObject):
 
         # Text breathing — separate heavy smoothing so text doesn't flicker
         self._text_amplitude = 0.0
+        self._text_payload_signature = None
+        self._text_payload_dirty = True
+        self._text_palette_mode = "light-text"
+        self._preview_surface_signature = None
+        self._metal_preview_renderer = None
+        self._metal_preview_active = False
 
         # Adaptive compositing defaults dark until we get a brightness sample.
         self._brightness = 0.0
@@ -499,6 +506,8 @@ class TranscriptionOverlay(NSObject):
         self._scroll_view.setDrawsBackground_(False)
         self._scroll_view.setBorderType_(0)
         self._scroll_view.setAutoresizingMask_(18)
+        if hasattr(self._scroll_view, "setWantsLayer_"):
+            self._scroll_view.setWantsLayer_(True)
         # Explicitly clear the clip view's background — NSClipView can
         # draw its own background even when the scroll view doesn't.
         clip_view = self._scroll_view.contentView()
@@ -514,13 +523,15 @@ class TranscriptionOverlay(NSObject):
         self._text_view.setSelectable_(False)
         self._text_view.setDrawsBackground_(False)
         self._current_text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            1.0, 1.0, 1.0, _TEXT_ALPHA_MIN
+            1.0, 1.0, 1.0, 1.0
         )
         ontology_r, ontology_g, ontology_b = _ontology_text_rgb(1.0)
         self._current_ontology_text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            ontology_r, ontology_g, ontology_b, _TEXT_ALPHA_MIN
+            ontology_r, ontology_g, ontology_b, 1.0
         )
         self._text_view.setTextColor_(self._current_text_color)
+        if hasattr(self._text_view, "setAlphaValue_"):
+            self._text_view.setAlphaValue_(_TEXT_ALPHA_MIN)
         self._text_view.setFont_(NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0))
         self._text_view.setString_("")
         self._text_view.textContainer().setWidthTracksTextView_(True)
@@ -530,6 +541,24 @@ class TranscriptionOverlay(NSObject):
         self._scroll_view.setDocumentView_(self._text_view)
         content.addSubview_(self._scroll_view)
         self._window.setContentView_(wrapper)
+
+        if _PREVIEW_TEXT_METAL_ENABLED:
+            try:
+                from .metal_preview import maybe_create_metal_textured_layer
+
+                contents_scale = (
+                    self._screen.backingScaleFactor()
+                    if hasattr(self._screen, "backingScaleFactor")
+                    else 2.0
+                )
+                self._metal_preview_renderer = maybe_create_metal_textured_layer(
+                    content.layer(),
+                    scroll_frame,
+                    contents_scale,
+                )
+            except Exception:
+                logger.exception("Failed to prepare Metal preview renderer; keeping AppKit preview")
+                self._metal_preview_renderer = None
 
         self._window.setAlphaValue_(0.0)
 
@@ -557,7 +586,12 @@ class TranscriptionOverlay(NSObject):
         self._typewriter_target = ""
         self._typewriter_displayed = ""
         self._typewriter_hwm = 0  # furthest position typewriter has reached
-        self._set_text_view_content("")
+        self._text_payload_signature = None
+        self._text_payload_dirty = True
+        self._preview_surface_signature = None
+        self._set_preview_surface_mode(self._metal_preview_renderer is not None)
+        self._apply_preview_surface_alpha(_TEXT_ALPHA_MIN)
+        self._refresh_text_payload(force=True)
         self._content_view.layer().setBackgroundColor_(None)
         self._clear_fill_override(opacity=_BG_ALPHA_MIN)
         self._window.setAlphaValue_(0.0)
@@ -581,6 +615,7 @@ class TranscriptionOverlay(NSObject):
         self._reset_text_geometry(_OVERLAY_HEIGHT - 16, scroll_to_top=True)
 
         self._window.orderFrontRegardless()
+        self._sync_preview_surface(force=True)
 
         # Fade in using stepped timer
         self._fade_step = 0
@@ -667,6 +702,178 @@ class TranscriptionOverlay(NSObject):
             self._fade_timer.invalidate()
             self._fade_timer = None
 
+    def _text_payload_size_key(self) -> tuple[float, float] | None:
+        text_view = getattr(self, "_text_view", None)
+        if text_view is None or not hasattr(text_view, "frame"):
+            return None
+        try:
+            frame = text_view.frame()
+        except Exception:
+            return None
+        size = getattr(frame, "size", None)
+        width = getattr(size, "width", None)
+        height = getattr(size, "height", None)
+        if not isinstance(width, (int, float)) or not isinstance(height, (int, float)):
+            return None
+        return (round(float(width), 3), round(float(height), 3))
+
+    def _text_payload_signature_for(self, text: str) -> tuple[str, str, tuple[float, float] | None]:
+        return (
+            text,
+            getattr(self, "_text_palette_mode", "light-text"),
+            self._text_payload_size_key(),
+        )
+
+    def _mark_text_payload_dirty(self) -> None:
+        self._text_payload_dirty = True
+
+    def _set_view_alpha(self, view, alpha: float) -> None:
+        if view is None:
+            return
+        if hasattr(view, "setAlphaValue_"):
+            view.setAlphaValue_(alpha)
+            return
+        if hasattr(view, "setWantsLayer_"):
+            view.setWantsLayer_(True)
+        layer = view.layer() if hasattr(view, "layer") else None
+        if layer is not None and hasattr(layer, "setOpacity_"):
+            layer.setOpacity_(alpha)
+
+    def _apply_text_view_alpha(self, alpha: float) -> None:
+        text_view = getattr(self, "_text_view", None)
+        if text_view is None:
+            return
+        self._set_view_alpha(text_view, alpha)
+
+    def _set_preview_surface_mode(self, use_metal: bool) -> None:
+        renderer = getattr(self, "_metal_preview_renderer", None)
+        active = bool(use_metal and renderer is not None)
+        self._metal_preview_active = active
+        self._preview_surface_signature = None
+        if renderer is not None:
+            renderer.set_hidden(not active)
+        self._set_view_alpha(getattr(self, "_scroll_view", None), 0.0 if active else 1.0)
+
+    def _preview_surface_uses_metal(self) -> bool:
+        return bool(
+            getattr(self, "_metal_preview_active", False)
+            and getattr(self, "_metal_preview_renderer", None) is not None
+        )
+
+    def _preview_surface_bounds_key(self) -> tuple[tuple[float, float], tuple[float, float] | None]:
+        scroll_view = getattr(self, "_scroll_view", None)
+        if scroll_view is None or not hasattr(scroll_view, "frame"):
+            return ((0.0, 0.0), None)
+        frame = scroll_view.frame()
+        frame_size = getattr(frame, "size", None)
+        width = float(getattr(frame_size, "width", 0.0))
+        height = float(getattr(frame_size, "height", 0.0))
+        clip_view = scroll_view.contentView() if hasattr(scroll_view, "contentView") else None
+        if clip_view is None or not hasattr(clip_view, "bounds"):
+            return ((round(width, 3), round(height, 3)), None)
+        bounds = clip_view.bounds()
+        origin = getattr(bounds, "origin", None)
+        offset_y = float(getattr(origin, "y", 0.0))
+        return ((round(width, 3), round(height, 3)), (0.0, round(offset_y, 3)))
+
+    def _preview_surface_signature_for_current_state(self):
+        return (
+            getattr(self, "_text_payload_signature", None),
+            self._preview_surface_bounds_key(),
+        )
+
+    def _snapshot_preview_surface_image(self):
+        scroll_view = getattr(self, "_scroll_view", None)
+        if scroll_view is None or not hasattr(scroll_view, "bounds"):
+            return None
+        if hasattr(scroll_view, "displayIfNeeded"):
+            scroll_view.displayIfNeeded()
+        bounds = scroll_view.bounds()
+        cache = getattr(scroll_view, "bitmapImageRepForCachingDisplayInRect_", None)
+        render = getattr(scroll_view, "cacheDisplayInRect_toBitmapImageRep_", None)
+        if cache is None or render is None:
+            return None
+        rep = cache(bounds)
+        if rep is None:
+            return None
+        render(bounds, rep)
+        if hasattr(rep, "CGImage"):
+            return rep.CGImage()
+        return None
+
+    def _sync_preview_surface(self, *, force: bool = False) -> bool:
+        if not self._preview_surface_uses_metal():
+            return False
+        renderer = getattr(self, "_metal_preview_renderer", None)
+        scroll_view = getattr(self, "_scroll_view", None)
+        if renderer is None or scroll_view is None:
+            return False
+        signature = self._preview_surface_signature_for_current_state()
+        if not force and signature == getattr(self, "_preview_surface_signature", None):
+            return False
+        contents_scale = (
+            self._screen.backingScaleFactor()
+            if hasattr(self._screen, "backingScaleFactor")
+            else 2.0
+        )
+        renderer.set_frame(scroll_view.frame(), contents_scale)
+        image = self._snapshot_preview_surface_image()
+        if image is None:
+            return False
+        renderer.update_cgimage(image)
+        self._preview_surface_signature = signature
+        return True
+
+    def _apply_preview_surface_alpha(self, alpha: float) -> None:
+        if self._preview_surface_uses_metal():
+            self._set_view_alpha(getattr(self, "_scroll_view", None), 0.0)
+            self._metal_preview_renderer.set_opacity(alpha)
+            return
+        self._set_view_alpha(getattr(self, "_scroll_view", None), 1.0)
+        self._apply_text_view_alpha(alpha)
+
+    def _set_text_palette_mode(self, palette_mode: str) -> None:
+        if palette_mode == getattr(self, "_text_palette_mode", None):
+            return
+        self._text_palette_mode = palette_mode
+        text_lum = 1.0 if palette_mode == "light-text" else 0.0
+        self._current_text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            text_lum, text_lum, text_lum, 1.0
+        )
+        ontology_r, ontology_g, ontology_b = _ontology_text_rgb(text_lum)
+        self._current_ontology_text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            ontology_r, ontology_g, ontology_b, 1.0
+        )
+        self._mark_text_payload_dirty()
+
+    def _refresh_text_payload(
+        self,
+        text: str | None = None,
+        *,
+        force: bool = False,
+        base_color: NSColor | None = None,
+        ontology_color: NSColor | None = None,
+    ) -> bool:
+        text_view = getattr(self, "_text_view", None)
+        if text_view is None:
+            return False
+        payload_text = getattr(self, "_typewriter_displayed", "") if text is None else text
+        signature = self._text_payload_signature_for(payload_text)
+        if (
+            not force
+            and not getattr(self, "_text_payload_dirty", True)
+            and signature == getattr(self, "_text_payload_signature", None)
+        ):
+            return False
+        self._set_text_view_content(
+            payload_text,
+            base_color=base_color,
+            ontology_color=ontology_color,
+        )
+        self._text_payload_signature = signature
+        self._text_payload_dirty = False
+        return True
+
     def _set_text_view_content(
         self,
         text: str,
@@ -682,14 +889,14 @@ class TranscriptionOverlay(NSObject):
             self._current_text_color = base_color
         elif not hasattr(self, "_current_text_color"):
             self._current_text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-                1.0, 1.0, 1.0, _TEXT_ALPHA_MIN
+                1.0, 1.0, 1.0, 1.0
             )
         if ontology_color is not None:
             self._current_ontology_text_color = ontology_color
         elif not hasattr(self, "_current_ontology_text_color"):
             ontology_r, ontology_g, ontology_b = _ontology_text_rgb(1.0)
             self._current_ontology_text_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-                ontology_r, ontology_g, ontology_b, _TEXT_ALPHA_MIN
+                ontology_r, ontology_g, ontology_b, 1.0
             )
 
         if not text:
@@ -751,12 +958,18 @@ class TranscriptionOverlay(NSObject):
                 self._cancel_typewriter()
                 self._typewriter_displayed = text
                 self._typewriter_hwm = len(text)
-                self._set_text_view_content(text)
+                self._mark_text_payload_dirty()
+                self._refresh_text_payload(text)
+                if self._preview_surface_uses_metal():
+                    self._sync_preview_surface(force=True)
                 self._update_layout()
                 return
             else:
                 self._typewriter_displayed = text[:common]
-                self._set_text_view_content(self._typewriter_displayed)
+                self._mark_text_payload_dirty()
+                self._refresh_text_payload(self._typewriter_displayed)
+                if self._preview_surface_uses_metal():
+                    self._sync_preview_surface(force=True)
 
         # Start typing if not already
         if self._typewriter_timer is None and len(self._typewriter_displayed) < len(self._typewriter_target):
@@ -769,7 +982,10 @@ class TranscriptionOverlay(NSObject):
         if len(self._typewriter_displayed) < len(self._typewriter_target):
             self._typewriter_displayed = self._typewriter_target[:len(self._typewriter_displayed) + 1]
             self._typewriter_hwm = max(self._typewriter_hwm, len(self._typewriter_displayed))
-            self._set_text_view_content(self._typewriter_displayed)
+            self._mark_text_payload_dirty()
+            self._refresh_text_payload(self._typewriter_displayed)
+            if self._preview_surface_uses_metal():
+                self._sync_preview_surface(force=True)
             self._update_layout()
         else:
             self._cancel_typewriter()
@@ -795,6 +1011,11 @@ class TranscriptionOverlay(NSObject):
 
     def _apply_text_compositing_mode(self, brightness: float) -> None:
         """Flip preview text into cutout mode on dark backgrounds."""
+        if self._preview_surface_uses_metal():
+            self._metal_preview_renderer.set_compositing_filter(
+                _DARK_TEXT_CUTOUT_FILTER if brightness <= 0.15 else None
+            )
+            return
         text_view = getattr(self, "_text_view", None)
         if text_view is None:
             return
@@ -871,11 +1092,12 @@ class TranscriptionOverlay(NSObject):
             ontology_b,
             _TEXT_ANCHOR_ALPHA,
         )
-        self._set_text_view_content(
-            getattr(self, "_typewriter_displayed", ""),
-            base_color=base_color,
-            ontology_color=ontology_color,
-        )
+        palette_mode = "light-text" if target_text_lum >= 0.5 else "dark-text"
+        self._set_text_palette_mode(palette_mode)
+        self._apply_preview_surface_alpha(_TEXT_ANCHOR_ALPHA)
+        payload_updated = self._refresh_text_payload()
+        if payload_updated:
+            self._sync_preview_surface(force=True)
 
         # SDF fill breathes with amplitude.  On light backgrounds the fill
         # is relatively MORE assertive (because the glow is dimming the same
@@ -1084,6 +1306,7 @@ class TranscriptionOverlay(NSObject):
             self._reset_text_geometry(max(new_height - 16, text_height))
             end = self._text_view.string().length() if hasattr(self._text_view.string(), 'length') else len(self._typewriter_displayed)
             self._text_view.scrollRangeToVisible_((end, 0))
+            self._sync_preview_surface(force=True)
         except Exception:
             pass
 
@@ -1108,6 +1331,7 @@ class TranscriptionOverlay(NSObject):
 
         self._cancel_fade()
         self._cancel_typewriter()
+        self._set_preview_surface_mode(False)
 
         # Show normal scroll view
         if self._scroll_view is not None:
@@ -1156,8 +1380,12 @@ class TranscriptionOverlay(NSObject):
                 ontology_r, ontology_g, ontology_b, _RECOVERY_TEXT_ALPHA
             )
         if self._text_view is not None:
-            self._set_text_view_content(
+            self._text_payload_signature = None
+            self._text_payload_dirty = True
+            self._apply_preview_surface_alpha(_RECOVERY_TEXT_ALPHA)
+            self._refresh_text_payload(
                 text,
+                force=True,
                 base_color=text_color,
                 ontology_color=ontology_color,
             )
@@ -1247,6 +1475,7 @@ class TranscriptionOverlay(NSObject):
         self._teardown_recovery_views()
         self._cancel_fade()
         self._cancel_typewriter()
+        self._set_preview_surface_mode(False)
 
         self._recovery_mode = True
         self._on_dismiss_callback = on_dismiss
@@ -1400,6 +1629,7 @@ class TranscriptionOverlay(NSObject):
         # Restore normal overlay state
         if self._scroll_view is not None:
             self._scroll_view.setHidden_(False)
+        self._set_preview_surface_mode(self._metal_preview_renderer is not None)
         self._window.setIgnoresMouseEvents_(True)
 
         # Restore the standard preview fill and clear any recovery-specific tint.
