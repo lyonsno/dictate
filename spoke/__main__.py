@@ -156,9 +156,37 @@ _TTS_MODELS = [
     ("k2-fsa/OmniVoice", "OmniVoice"),
 ]
 
+_OMNIVOICE_PROMPT_PRESETS = [
+    ("", "Auto voice"),
+    ("female, low pitch, british accent", "Female, low pitch, British"),
+    ("male, british accent", "Male, British"),
+    ("female, whisper, british accent", "Female whisper, British"),
+    ("female, high pitch, american accent", "Female, high pitch, American"),
+    ("male, low pitch, american accent", "Male, low pitch, American"),
+]
+
 
 def _is_omnivoice_tts_model(model_id: str | None) -> bool:
     return isinstance(model_id, str) and model_id.strip().lower() == "k2-fsa/omnivoice"
+
+
+def _omnivoice_prompt_label(prompt: str) -> str:
+    for preset_prompt, label in _OMNIVOICE_PROMPT_PRESETS:
+        if prompt == preset_prompt:
+            return label
+    return prompt or "Auto voice"
+
+
+def _omnivoice_prompt_choices(current_prompt: str) -> list[tuple[str, str, bool]]:
+    choices = [
+        (prompt, label, True) for prompt, label in _OMNIVOICE_PROMPT_PRESETS
+    ]
+    if current_prompt and all(
+        prompt != current_prompt for prompt, _label in _OMNIVOICE_PROMPT_PRESETS
+    ):
+        choices.insert(1, (current_prompt, f"Custom: {current_prompt}", True))
+    choices.append(("configure_voice", "Set Custom TTS Prompt…", True))
+    return choices
 
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
 _PROCESS_LAUNCH_ID = os.environ.get("SPOKE_LAUNCH_ID") or f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
@@ -2661,6 +2689,13 @@ class SpokeAppDelegate(NSObject):
                         "selected": current_voice,
                         "models": voice_models,
                     }
+                elif prompt_mode:
+                    state["tts_voice"] = {
+                        "type": "choice",
+                        "title": f"TTS Prompt: {_omnivoice_prompt_label(current_voice)}",
+                        "selected": current_voice,
+                        "models": _omnivoice_prompt_choices(current_voice),
+                    }
                 else:
                     title = f"TTS Voice: {current_voice or '(not set)'}"
                     items = [
@@ -2679,15 +2714,9 @@ class SpokeAppDelegate(NSObject):
                         ]
                     state["tts_voice"] = {
                         "type": "toggle",
-                        "title": (
-                            f"TTS Prompt: {current_voice or '(not set)'}"
-                            if prompt_mode
-                            else title
-                        ),
+                        "title": title,
                         "items": (
-                            [("configure_voice", "Set TTS Prompt\u2026", False, True)]
-                            if prompt_mode
-                            else items
+                            items
                         ),
                     }
             return state

@@ -998,10 +998,17 @@ class TestDualModelConfiguration:
         assert model_state["tts_backend"]["title"] == "TTS Backend: Local"
         assert model_state["tts"]["selected"] == "k2-fsa/OmniVoice"
         assert model_state["tts_voice"] == {
-            "type": "toggle",
-            "title": "TTS Prompt: (not set)",
-            "items": [
-                ("configure_voice", "Set TTS Prompt…", False, True),
+            "type": "choice",
+            "title": "TTS Prompt: Auto voice",
+            "selected": "",
+            "models": [
+                ("", "Auto voice", True),
+                ("female, low pitch, british accent", "Female, low pitch, British", True),
+                ("male, british accent", "Male, British", True),
+                ("female, whisper, british accent", "Female whisper, British", True),
+                ("female, high pitch, american accent", "Female, high pitch, American", True),
+                ("male, low pitch, american accent", "Male, low pitch, American", True),
+                ("configure_voice", "Set Custom TTS Prompt…", True),
             ],
         }
 
@@ -1023,10 +1030,47 @@ class TestDualModelConfiguration:
         model_state = d._handle_model_menu_action(None)
 
         assert model_state["tts_voice"] == {
-            "type": "toggle",
+            "type": "choice",
             "title": "TTS Prompt: female, british accent",
-            "items": [
-                ("configure_voice", "Set TTS Prompt…", False, True),
+            "selected": "female, british accent",
+            "models": [
+                ("", "Auto voice", True),
+                ("female, british accent", "Custom: female, british accent", True),
+                ("female, low pitch, british accent", "Female, low pitch, British", True),
+                ("male, british accent", "Male, British", True),
+                ("female, whisper, british accent", "Female whisper, British", True),
+                ("female, high pitch, american accent", "Female, high pitch, American", True),
+                ("male, low pitch, american accent", "Male, low pitch, American", True),
+                ("configure_voice", "Set Custom TTS Prompt…", True),
+            ],
+        }
+
+    def test_handle_model_menu_none_surfaces_local_omnivoice_prompt_presets(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_backend = "local"
+        d._tts_sidecar_url = ""
+        d._tts_client = None
+        saved = {"tts_model": "k2-fsa/OmniVoice"}
+        d._load_preference = lambda key: saved.get(key)
+        monkeypatch.delenv("SPOKE_TTS_VOICE", raising=False)
+        monkeypatch.delenv("SPOKE_TTS_MODEL", raising=False)
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["tts_voice"] == {
+            "type": "choice",
+            "title": "TTS Prompt: Auto voice",
+            "selected": "",
+            "models": [
+                ("", "Auto voice", True),
+                ("female, low pitch, british accent", "Female, low pitch, British", True),
+                ("male, british accent", "Male, British", True),
+                ("female, whisper, british accent", "Female whisper, British", True),
+                ("female, high pitch, american accent", "Female, high pitch, American", True),
+                ("male, low pitch, american accent", "Male, low pitch, American", True),
+                ("configure_voice", "Set Custom TTS Prompt…", True),
             ],
         }
 
@@ -1716,6 +1760,20 @@ class TestDualModelConfiguration:
         )
         d._menubar.set_status_text.assert_called_with("Assistant sidecar URL saved")
         d._relaunch.assert_not_called()
+
+    def test_selecting_tts_voice_auto_clears_local_omnivoice_prompt(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = MagicMock()
+        d._tts_client._voice = "female, british accent"
+        d._save_preference = MagicMock(return_value=True)
+        d._relaunch = MagicMock()
+
+        d._handle_model_menu_action(("tts_voice", ""))
+
+        d._save_preference.assert_called_once_with("tts_voice", "")
+        d._relaunch.assert_called_once_with()
 
     def test_init_prefers_persisted_sidecar_backend_over_launcher_default_local_url(
         self, main_module, monkeypatch
