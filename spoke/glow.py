@@ -7,9 +7,11 @@ microphone input, with fast rise and slow decay for a breathing effect.
 
 from __future__ import annotations
 import colorsys
+import ctypes
 import logging
 import math
 import os
+import struct
 import time
 
 import objc
@@ -30,6 +32,111 @@ from Quartz import (
 
 logger = logging.getLogger(__name__)
 
+_METAL_WIDE_BLOOM_ENABLED = os.environ.get("SPOKE_METAL_WIDE_BLOOM", "0") == "1"
+_METAL_FRAME_INTERVAL_S = 1.0 / 60.0
+_MECHA_VISOR_SINE_BOOST = float(os.environ.get("SPOKE_MECHA_VISOR_SINE_BOOST", "0.0"))
+_MECHA_VISOR_SINE_HZ = float(os.environ.get("SPOKE_MECHA_VISOR_SINE_HZ", "0.25"))
+_MECHA_VISOR_WIDE_BLOOM_FALLOFF_SCALE = float(
+    os.environ.get("SPOKE_MECHA_VISOR_WIDE_BLOOM_FALLOFF_SCALE", "1.0")
+)
+_MECHA_VISOR_WIDE_BLOOM_ALPHA_SCALE = float(
+    os.environ.get("SPOKE_MECHA_VISOR_WIDE_BLOOM_ALPHA_SCALE", "1.0")
+)
+_MECHA_VISOR_WIDE_BLOOM_POWER_SCALE = float(
+    os.environ.get("SPOKE_MECHA_VISOR_WIDE_BLOOM_POWER_SCALE", "1.0")
+)
+_MECHA_VISOR_DISABLE_CORE_PASS = os.environ.get("SPOKE_MECHA_VISOR_DISABLE_CORE_PASS", "0") == "1"
+_MTL_PIXEL_FORMAT_BGRA8_UNORM = 80
+_MTL_LOAD_ACTION_CLEAR = 2
+_MTL_STORE_ACTION_STORE = 1
+_MTL_PRIMITIVE_TYPE_TRIANGLE_STRIP = 4
+_MTL_BUFFER_LAYOUT = "<" + "f" * 28
+_MTL_BUFFER_SIZE = struct.calcsize(_MTL_BUFFER_LAYOUT)
+_METAL_SHADER_SOURCE = """
+#include <metal_stdlib>
+using namespace metal;
+
+struct VSOut {
+    float4 position [[position]];
+    float2 uv;
+};
+
+struct Uniforms {
+    float4 viewport_time_mix;
+    float4 inner_params;
+    float4 tight_params;
+    float4 wide_params;
+    float4 inner_color;
+    float4 middle_color;
+    float4 outer_color;
+};
+
+vertex VSOut vs_main(uint vid [[vertex_id]]) {
+    float2 positions[4] = {
+        float2(-1.0, -1.0),
+        float2( 1.0, -1.0),
+        float2(-1.0,  1.0),
+        float2( 1.0,  1.0),
+    };
+    float2 uvs[4] = {
+        float2(0.0, 1.0),
+        float2(1.0, 1.0),
+        float2(0.0, 0.0),
+        float2(1.0, 0.0),
+    };
+
+    VSOut out;
+    out.position = float4(positions[vid], 0.0, 1.0);
+    out.uv = uvs[vid];
+    return out;
+}
+
+inline float pass_alpha(float signed_distance, float falloff, float power) {
+    if (signed_distance >= 0.0) {
+        return 0.0;
+    }
+    float distance = -signed_distance;
+    return exp(-pow(distance / max(falloff, 1e-6), power));
+}
+
+inline float4 source_over(float4 dst, float3 rgb, float alpha) {
+    float clamped = clamp(alpha, 0.0, 1.0);
+    float4 src = float4(rgb * clamped, clamped);
+    float one_minus_src = 1.0 - src.a;
+    return float4(src.rgb + dst.rgb * one_minus_src, src.a + dst.a * one_minus_src);
+}
+
+fragment float4 fs_main(
+    VSOut in [[stage_in]],
+    constant Uniforms& u [[buffer(0)]],
+    constant float* signed_field [[buffer(1)]]
+) {
+    uint width = max(uint(u.viewport_time_mix.x), 1u);
+    uint height = max(uint(u.viewport_time_mix.y), 1u);
+    uint x = min(uint(in.uv.x * float(width - 1u)), width - 1u);
+    uint y = min(uint(in.uv.y * float(height - 1u)), height - 1u);
+    float signed_distance = signed_field[y * width + x];
+
+    float inner_alpha = pass_alpha(signed_distance, u.inner_params.x, u.inner_params.y) * u.inner_params.z;
+    float tight_alpha = pass_alpha(signed_distance, u.tight_params.x, u.tight_params.y) * u.tight_params.z;
+    float wide_alpha = pass_alpha(signed_distance, u.wide_params.x, u.wide_params.y) * u.wide_params.z;
+
+    float noise = fract(sin(dot(float2(x, y), float2(12.9898, 78.233))) * 43758.5453);
+    float wave = 0.5 + 0.5 * sin(u.viewport_time_mix.z * 3.1 + noise * 6.2831853 + signed_distance * 0.03);
+    wide_alpha *= mix(0.72, 1.28, wave);
+
+    float4 rgba = float4(0.0);
+    rgba = source_over(rgba, u.inner_color.rgb, inner_alpha);
+    rgba = source_over(rgba, u.middle_color.rgb, tight_alpha);
+    rgba = source_over(rgba, u.outer_color.rgb, wide_alpha);
+    rgba *= clamp(u.viewport_time_mix.w, 0.0, 1.0);
+    return rgba;
+}
+"""
+
+_metal_bundle_loaded = False
+_metal_bundle_error = None
+
 
 def _scale_color_saturation(
     color: tuple[float, float, float], factor: float
@@ -37,6 +144,66 @@ def _scale_color_saturation(
     """Scale an RGB color's saturation while keeping its hue and value stable."""
     hue, saturation, value = colorsys.rgb_to_hsv(*color)
     return colorsys.hsv_to_rgb(hue, min(max(saturation * factor, 0.0), 1.0), value)
+
+
+def _load_metal_symbols():
+    global _metal_bundle_loaded, _metal_bundle_error
+    if _metal_bundle_loaded:
+        return
+    if _metal_bundle_error is not None:
+        raise _metal_bundle_error
+    try:
+        metal_bundle = objc.loadBundle(
+            "Metal",
+            globals(),
+            bundle_path="/System/Library/Frameworks/Metal.framework",
+        )
+        objc.loadBundle(
+            "QuartzCore",
+            globals(),
+            bundle_path="/System/Library/Frameworks/QuartzCore.framework",
+        )
+        objc.loadBundleFunctions(
+            metal_bundle,
+            globals(),
+            [("MTLCreateSystemDefaultDevice", b"@")],
+        )
+        _metal_bundle_loaded = True
+    except Exception as exc:
+        _metal_bundle_error = exc
+        raise
+
+
+def _metal_device_available() -> bool:
+    try:
+        _load_metal_symbols()
+        return MTLCreateSystemDefaultDevice() is not None
+    except Exception:
+        return False
+
+
+def _copy_bytes_to_metal_buffer(buffer, payload: bytes) -> None:
+    ctypes.memmove(int(buffer.contents()), payload, len(payload))
+
+
+def _build_metal_pipeline(device):
+    _load_metal_symbols()
+    pipeline_descriptor = objc.lookUpClass("MTLRenderPipelineDescriptor").alloc().init()
+    library = device.newLibraryWithSource_options_error_(_METAL_SHADER_SOURCE, None, None)
+    pipeline_descriptor.setVertexFunction_(library.newFunctionWithName_("vs_main"))
+    pipeline_descriptor.setFragmentFunction_(library.newFunctionWithName_("fs_main"))
+    attachment = pipeline_descriptor.colorAttachments().objectAtIndexedSubscript_(0)
+    attachment.setPixelFormat_(_MTL_PIXEL_FORMAT_BGRA8_UNORM)
+    return device.newRenderPipelineStateWithDescriptor_error_(pipeline_descriptor, None)
+
+
+def _mecha_visor_signal_boost(signal: float, now: float | None = None) -> float:
+    if _MECHA_VISOR_SINE_BOOST <= 0.0:
+        return min(max(signal, 0.0), 1.0)
+
+    now = time.monotonic() if now is None else now
+    phase = 0.5 + 0.5 * math.sin(now * math.tau * _MECHA_VISOR_SINE_HZ)
+    return min(max(signal + (_MECHA_VISOR_SINE_BOOST * phase), 0.0), 1.0)
 
 # Glow appearance
 _GLOW_COLOR = (0.38, 0.52, 1.0)  # saturated cornflower — SC2 Protoss energy field
@@ -439,7 +606,7 @@ def _distance_field_masks_for_specs(geometry: dict, specs: list[dict]) -> list[d
 
 def _continuous_glow_pass_specs():
     """Procedural additive passes driven from one shared distance field."""
-    return [
+    specs = [
         {
             "name": "core",
             "path_kind": "distance_field",
@@ -465,6 +632,15 @@ def _continuous_glow_pass_specs():
             "fill_alpha": 0.12,
         },
     ]
+    for spec in specs:
+        if spec["name"] == "core" and _MECHA_VISOR_DISABLE_CORE_PASS:
+            spec["fill_alpha"] = 0.0
+        if spec["name"] != "wide_bloom":
+            continue
+        spec["falloff"] *= _MECHA_VISOR_WIDE_BLOOM_FALLOFF_SCALE
+        spec["fill_alpha"] = min(spec["fill_alpha"] * _MECHA_VISOR_WIDE_BLOOM_ALPHA_SCALE, 1.0)
+        spec["power"] *= _MECHA_VISOR_WIDE_BLOOM_POWER_SCALE
+    return specs
 
 
 def _continuous_vignette_pass_specs():
@@ -512,6 +688,15 @@ def _glow_role_colors(base_color: tuple[float, float, float]) -> dict[str, NSCol
     }
 
 
+def _glow_role_rgbs(base_color: tuple[float, float, float]) -> dict[str, tuple[float, float, float]]:
+    inner_rgb, middle_rgb, outer_rgb = _edge_band_colors(base_color)
+    return {
+        "inner": inner_rgb,
+        "middle": middle_rgb,
+        "outer": outer_rgb,
+    }
+
+
 def _vignette_pass_color(base_color: tuple[float, float, float], spec: dict) -> NSColor:
     """Build a tinted subtractive vignette color for a single pass."""
     r, g, b = base_color
@@ -522,6 +707,120 @@ def _vignette_pass_color(base_color: tuple[float, float, float], spec: dict) -> 
         b * scale,
         spec["alpha"],
     )
+
+
+class _MetalWideBloomRenderer:
+    def __init__(self, parent_layer, geometry: dict, frame_size: tuple[float, float]):
+        import numpy as np
+
+        _load_metal_symbols()
+        device = MTLCreateSystemDefaultDevice()
+        if device is None:
+            raise RuntimeError("Metal default device unavailable")
+
+        width_pt, height_pt = frame_size
+        self._geometry = geometry
+        self._device = device
+        self._queue = device.newCommandQueue()
+        self._pipeline = _build_metal_pipeline(device)
+        self._field_buffer = device.newBufferWithLength_options_(
+            int(geometry["pixel_width"] * geometry["pixel_height"] * 4),
+            0,
+        )
+        signed_distance = _display_signed_distance_field(geometry).astype(np.float32, copy=False)
+        _copy_bytes_to_metal_buffer(self._field_buffer, signed_distance.tobytes())
+        self._uniform_buffer = device.newBufferWithLength_options_(_MTL_BUFFER_SIZE, 0)
+        self._layer = objc.lookUpClass("CAMetalLayer").layer()
+        self._layer.setDevice_(device)
+        self._layer.setPixelFormat_(_MTL_PIXEL_FORMAT_BGRA8_UNORM)
+        self._layer.setFramebufferOnly_(True)
+        self._layer.setOpaque_(False)
+        self._layer.setFrame_(((0, 0), (width_pt, height_pt)))
+        self._layer.setContentsScale_(geometry["scale"])
+        self._layer.setDrawableSize_((float(geometry["pixel_width"]), float(geometry["pixel_height"])))
+        parent_layer.addSublayer_(self._layer)
+        self._base_color = _GLOW_COLOR
+        self._additive_mix = 1.0
+        self._start_time = time.monotonic()
+
+    def set_base_color(self, base_color: tuple[float, float, float]) -> None:
+        self._base_color = base_color
+
+    def set_additive_mix(self, additive_mix: float) -> None:
+        self._additive_mix = additive_mix
+
+    def draw_frame(self, now: float | None = None) -> bool:
+        drawable = self._layer.nextDrawable()
+        if drawable is None:
+            return False
+
+        now = time.monotonic() if now is None else now
+        t = max(now - self._start_time, 0.0)
+        glow_rgbs = _glow_role_rgbs(self._base_color)
+        core, tight, wide = _continuous_glow_pass_specs()
+        uniforms = struct.pack(
+            _MTL_BUFFER_LAYOUT,
+            float(self._geometry["pixel_width"]),
+            float(self._geometry["pixel_height"]),
+            float(t),
+            float(self._additive_mix),
+            core["falloff"] * self._geometry["scale"],
+            core["power"],
+            core["fill_alpha"],
+            0.0,
+            tight["falloff"] * self._geometry["scale"],
+            tight["power"],
+            tight["fill_alpha"],
+            0.0,
+            wide["falloff"] * self._geometry["scale"],
+            wide["power"],
+            wide["fill_alpha"],
+            0.0,
+            glow_rgbs["inner"][0],
+            glow_rgbs["inner"][1],
+            glow_rgbs["inner"][2],
+            0.0,
+            glow_rgbs["middle"][0],
+            glow_rgbs["middle"][1],
+            glow_rgbs["middle"][2],
+            0.0,
+            glow_rgbs["outer"][0],
+            glow_rgbs["outer"][1],
+            glow_rgbs["outer"][2],
+            0.0,
+        )
+        _copy_bytes_to_metal_buffer(self._uniform_buffer, uniforms)
+
+        render_pass_descriptor = objc.lookUpClass("MTLRenderPassDescriptor").renderPassDescriptor()
+        attachment = render_pass_descriptor.colorAttachments().objectAtIndexedSubscript_(0)
+        attachment.setTexture_(drawable.texture())
+        attachment.setLoadAction_(_MTL_LOAD_ACTION_CLEAR)
+        attachment.setStoreAction_(_MTL_STORE_ACTION_STORE)
+        attachment.setClearColor_((0.0, 0.0, 0.0, 0.0))
+
+        command_buffer = self._queue.commandBuffer()
+        encoder = command_buffer.renderCommandEncoderWithDescriptor_(render_pass_descriptor)
+        encoder.setRenderPipelineState_(self._pipeline)
+        encoder.setFragmentBuffer_offset_atIndex_(self._uniform_buffer, 0, 0)
+        encoder.setFragmentBuffer_offset_atIndex_(self._field_buffer, 0, 1)
+        encoder.drawPrimitives_vertexStart_vertexCount_(_MTL_PRIMITIVE_TYPE_TRIANGLE_STRIP, 0, 4)
+        encoder.endEncoding()
+        command_buffer.presentDrawable_(drawable)
+        command_buffer.commit()
+        return True
+
+
+def _maybe_create_metal_wide_bloom_renderer(parent_layer, geometry: dict, frame_size: tuple[float, float]):
+    if not _METAL_WIDE_BLOOM_ENABLED:
+        return None
+    if not _metal_device_available():
+        logger.warning("Mecha Visor smoke requested but Metal is unavailable; falling back")
+        return None
+    try:
+        return _MetalWideBloomRenderer(parent_layer, geometry, frame_size)
+    except Exception:
+        logger.exception("Failed to initialize Mecha Visor Metal renderer; falling back")
+        return None
 
 
 class GlowOverlay(NSObject):
@@ -548,6 +847,8 @@ class GlowOverlay(NSObject):
         self._glow_peak_target = _GLOW_PEAK_TARGET
         self._brightness_timer = None
         self._brightness = 0.5
+        self._additive_renderer = None
+        self._metal_frame_timer = None
         return self
 
     def _cancel_pending_hide(self) -> None:
@@ -583,8 +884,6 @@ class GlowOverlay(NSObject):
         geometry = _display_shape_geometry(self._screen, w, h, mask_scale)
         geometry["scale"] = mask_scale
 
-        glow_colors = _glow_role_colors(_GLOW_COLOR)
-
         # ── Optional screen dim: subtle dark backdrop for glow contrast ──
         self._dim_layer = None
         if _DIM_SCREEN:
@@ -601,22 +900,28 @@ class GlowOverlay(NSObject):
         self._glow_layer = CALayer.alloc().init()
         self._glow_layer.setFrame_(((0, 0), (w, h)))
         self._glow_layer.setOpacity_(0.0)
+        self._additive_renderer = _maybe_create_metal_wide_bloom_renderer(
+            self._glow_layer,
+            geometry,
+            (w, h),
+        )
 
-        # Procedural additive passes: one continuous field, different falloff curves.
         glow_pass_layers = []
         self._mask_payloads = []
-        for entry in _distance_field_masks_for_specs(geometry, _continuous_glow_pass_specs()):
-            spec = entry["spec"]
-            layer = CALayer.alloc().init()
-            layer.setFrame_(((0, 0), (w, h)))
-            mask_layer = CALayer.alloc().init()
-            mask_layer.setFrame_(((0, 0), (w, h)))
-            mask_layer.setContents_(entry["image"])
-            mask_layer.setContentsScale_(mask_scale)
-            layer.setMask_(mask_layer)
-            self._glow_layer.addSublayer_(layer)
-            self._mask_payloads.append(entry["payload"])
-            glow_pass_layers.append({"layer": layer, "spec": spec})
+        if self._additive_renderer is None:
+            # Procedural additive passes: one continuous field, different falloff curves.
+            for entry in _distance_field_masks_for_specs(geometry, _continuous_glow_pass_specs()):
+                spec = entry["spec"]
+                layer = CALayer.alloc().init()
+                layer.setFrame_(((0, 0), (w, h)))
+                mask_layer = CALayer.alloc().init()
+                mask_layer.setFrame_(((0, 0), (w, h)))
+                mask_layer.setContents_(entry["image"])
+                mask_layer.setContentsScale_(mask_scale)
+                layer.setMask_(mask_layer)
+                self._glow_layer.addSublayer_(layer)
+                self._mask_payloads.append(entry["payload"])
+                glow_pass_layers.append({"layer": layer, "spec": spec})
 
         self._glow_pass_layers = glow_pass_layers
         self._shadow_shape = glow_pass_layers[-1]["layer"] if glow_pass_layers else None
@@ -650,8 +955,14 @@ class GlowOverlay(NSObject):
 
     def _apply_glow_color(self, base_color: tuple[float, float, float]) -> None:
         """Push the current glow color through the procedural glow/vignette passes."""
+        additive_renderer = getattr(self, "_additive_renderer", None)
+        if additive_renderer is not None:
+            additive_renderer.set_base_color(base_color)
+            if self._visible:
+                additive_renderer.draw_frame(time.monotonic())
+
         glow_colors = _glow_role_colors(base_color)
-        if hasattr(self, "_glow_pass_layers"):
+        if additive_renderer is None and hasattr(self, "_glow_pass_layers"):
             for entry in self._glow_pass_layers:
                 layer = entry["layer"]
                 spec = entry["spec"]
@@ -665,6 +976,32 @@ class GlowOverlay(NSObject):
                 layer = entry["layer"]
                 spec = entry["spec"]
                 layer.setBackgroundColor_(_vignette_pass_color(base_color, spec).CGColor())
+
+    def _start_metal_frame_timer(self) -> None:
+        if getattr(self, "_additive_renderer", None) is None:
+            return
+        if getattr(self, "_metal_frame_timer", None) is not None:
+            return
+        self._metal_frame_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _METAL_FRAME_INTERVAL_S,
+            self,
+            "metalFrameTick:",
+            None,
+            True,
+        )
+
+    def _stop_metal_frame_timer(self) -> None:
+        if getattr(self, "_metal_frame_timer", None) is not None:
+            self._metal_frame_timer.invalidate()
+            self._metal_frame_timer = None
+
+    def metalFrameTick_(self, timer) -> None:
+        if not self._visible:
+            return
+        renderer = getattr(self, "_additive_renderer", None)
+        if renderer is None:
+            return
+        renderer.draw_frame(time.monotonic())
 
     def show(self) -> None:
         """Fade the glow window in to base opacity."""
@@ -685,6 +1022,10 @@ class GlowOverlay(NSObject):
         # as brightness increases. Fully additive at black, fully subtractive
         # at white, blended in between.
         self._additive_mix, self._subtractive_mix = _edge_mix_for_brightness(brightness)
+        if getattr(self, "_additive_renderer", None) is not None:
+            self._additive_renderer.set_additive_mix(self._additive_mix)
+            self._additive_renderer.draw_frame(time.monotonic())
+            self._start_metal_frame_timer()
         self._fade_in_until = time.monotonic() + 0.2  # let fade-in finish undisturbed
         self._window.orderFrontRegardless()
 
@@ -747,6 +1088,8 @@ class GlowOverlay(NSObject):
 
         # Update cross-fade mix
         self._additive_mix, self._subtractive_mix = _edge_mix_for_brightness(new_brightness)
+        if getattr(self, "_additive_renderer", None) is not None:
+            self._additive_renderer.set_additive_mix(self._additive_mix)
 
         # Smoothly adjust dim opacity
         if self._dim_layer is not None:
@@ -772,6 +1115,7 @@ class GlowOverlay(NSObject):
         if bt is not None:
             bt.invalidate()
             self._brightness_timer = None
+        self._stop_metal_frame_timer()
         self._visible = False
         self._hide_generation += 1
         hide_generation = self._hide_generation
@@ -876,6 +1220,7 @@ class GlowOverlay(NSObject):
         # Map smoothed amplitude to opacity range [base, max]
         # Fixed multiplier — ceiling is absolute, floor is adaptive
         amplitude_linear = min(self._smoothed_amplitude * _GLOW_MULTIPLIER, 1.0)
+        amplitude_linear = _mecha_visor_signal_boost(amplitude_linear)
         # Perceptual correction: log curve so glow tracks perceived loudness.
         # All smoothing math above stays linear; this is the last step
         # before "rendering" — the display gamma, essentially.
