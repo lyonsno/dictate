@@ -755,18 +755,14 @@ class TerraformHUD(NSObject):
         self._timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             _REFRESH_INTERVAL, self, "_timerFired:", None, True
         )
-        # Brightness sample: every 1.5s, async — doesn't block main thread
-        self._brightness_sample_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            1.5, self, "_brightnessSample:", None, True
+        # Brightness sample: every 2s, async — result delivered via
+        # performSelectorOnMainThread so the redraw happens on main thread
+        self._brightness_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            2.0, self, "_brightnessSample:", None, True
         )
-        # Brightness chase: 10fps, just math — no screen capture
-        self._brightness_chase_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            0.1, self, "_brightnessChase:", None, True
-        )
-        self._brightness_target = getattr(self, '_brightness', 0.0)
 
     def _stop_timer(self) -> None:
-        for attr in ('_timer', '_brightness_sample_timer', '_brightness_chase_timer'):
+        for attr in ('_timer', '_brightness_timer'):
             t = getattr(self, attr, None)
             if t is not None:
                 t.invalidate()
@@ -776,35 +772,29 @@ class TerraformHUD(NSObject):
         self._refresh()
 
     def _brightnessSample_(self, timer) -> None:
-        """Kick off async screen brightness sample — never blocks main thread."""
+        """Async screen brightness sample — capture off main thread,
+        deliver result back to main thread for one redraw."""
         import threading
         screen = NSScreen.mainScreen()
         if screen is None:
             return
-        # Capture the screen frame on the main thread (cheap),
-        # then do the expensive CGWindowListCreateImage on a background thread
-        frame = screen.frame()
         def _sample():
             try:
                 from .glow import _sample_screen_brightness
                 val = _sample_screen_brightness(screen)
-                self._brightness_target = val
+                # Deliver to main thread
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "_brightnessArrived:", val, False
+                )
             except Exception:
                 pass
         threading.Thread(target=_sample, daemon=True).start()
 
-    def _brightnessChase_(self, timer) -> None:
-        """Smooth-chase toward brightness target (cheap — runs at 10fps)."""
-        current = getattr(self, '_brightness', 0.0)
-        target = getattr(self, '_brightness_target', current)
-        diff = target - current
-
-        if abs(diff) < 0.003:
-            return  # close enough, skip redraw
-
-        # Exponential chase: fast attack, slow decay
-        alpha = 0.25 if abs(diff) > 0.05 else 0.08
-        self.set_brightness(current + diff * alpha)
+    def _brightnessArrived_(self, val) -> None:
+        """Main-thread callback: apply new brightness with one redraw."""
+        if val is None:
+            return
+        self.set_brightness(float(val))
 
     def _refresh(self) -> None:
         """Reload topoi from epistaxis, filter, sort, and rebuild the view."""
