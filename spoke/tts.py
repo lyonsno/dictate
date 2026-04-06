@@ -675,37 +675,17 @@ class TTSClient:
                         if results_iter is None:
                             continue
                         chunk_count = 0
-                        last_chunk = None
                         for materialized in results_iter:
                             if self._cancelled:
-                                if last_chunk:
-                                    playback_queue.put(last_chunk)
                                 return
-
-                            if last_chunk:
-                                playback_queue.put(last_chunk)
-
-                            # Apply fade-in to first chunk.
+                            # Apply fade-in to first chunk of each sentence
                             if chunk_count == 0:
                                 materialized.audio = _apply_sentence_fades(
-                                    materialized.audio,
-                                    materialized.sample_rate,
-                                    fade_in=True,
-                                    fade_out=False,
+                                    materialized.audio, materialized.sample_rate,
+                                    fade_in=True, fade_out=False,
                                 )
-
-                            last_chunk = materialized
+                            playback_queue.put(materialized)
                             chunk_count += 1
-
-                        # The final chunk is in last_chunk; apply fade-out.
-                        if last_chunk:
-                            last_chunk.audio = _apply_sentence_fades(
-                                last_chunk.audio,
-                                last_chunk.sample_rate,
-                                fade_in=False,  # Already applied if it was the first.
-                                fade_out=True,
-                            )
-                            playback_queue.put(last_chunk)
                         # Signal sentence boundary (playback reopens stream
                         # here to follow device changes)
                         if chunk_count > 0:
@@ -735,8 +715,13 @@ class TTSClient:
                     if item is _SENTENCE_BOUNDARY:
                         # Reopen stream at sentence boundary to follow
                         # the current default output device (e.g. Bluetooth
-                        # connected mid-playback).
+                        # connected mid-playback).  Wait for the buffer to
+                        # drain before closing to avoid truncation.
                         if stream is not None:
+                            try:
+                                stream.wait()
+                            except Exception:
+                                pass
                             stream.stop()
                             stream.close()
                             stream = None
@@ -794,7 +779,7 @@ class TTSClient:
             finally:
                 # Fade out on cancel
                 if self._cancelled and stream is not None and self._last_chunk is not None:
-                    fade_samples = int(24000 * 0.05)
+                    fade_samples = int(stream.samplerate * 0.05)
                     last_amp = float(np.mean(np.abs(self._last_chunk[-1:])))
                     fade_ramp = np.linspace(last_amp, 0.0, fade_samples, dtype=np.float32).reshape(-1, 1)
                     try:
