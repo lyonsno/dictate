@@ -537,28 +537,25 @@ class TerraformHUD(NSObject):
     def set_brightness(self, brightness: float) -> None:
         """Update screen brightness for adaptive compositing.
 
-        Adapts three things (matching overlay.py):
-        1. Compositing filter: plusL (additive) on dark, None on light
-        2. Fill color: desaturated blue-white on dark, near-black on light
-        3. Interior floor: 0.55 on dark (more transparent), 0.775 on light (more material)
-
-        Triggers a Metal redraw with updated card colors.
+        Only changes layer properties — no Metal redraw. The window
+        server handles compositing filter and opacity changes for free,
+        same as the overlay.
         """
         new_brightness = min(max(brightness, 0.0), 1.0)
-        if new_brightness == getattr(self, '_brightness', -1.0):
+        if abs(new_brightness - getattr(self, '_brightness', -1.0)) < 0.01:
             return
         self._brightness = new_brightness
         if self._metal_renderer is None:
             return
 
-        # 1. Compositing filter
         metal_layer = self._metal_renderer.layer()
+        # Compositing filter: additive glow on dark, normal on light
         if hasattr(metal_layer, "setCompositingFilter_"):
             metal_layer.setCompositingFilter_("plusL" if self._brightness < 0.15 else None)
-
-        # 2+3. Update fill color, floor, and redraw Metal (no NSView rebuild)
-        self._metal_renderer._interior_floor = _lerp(0.55, 0.775, self._brightness)
-        self._redraw_metal_cards()
+        # Opacity: modulate presence — more opaque on light backgrounds
+        # where cards need to read as material, lighter on dark where
+        # additive blending does the work
+        metal_layer.setOpacity_(_lerp(0.85, 1.0, self._brightness))
 
     def restore_visibility(self) -> None:
         """Restore last saved visibility state (default: visible)."""
