@@ -462,7 +462,7 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_tray_delete = self._on_tray_delete_gesture
         self._detector._on_cancel_spring_start = self._on_cancel_spring_start
         self._detector._on_cancel_spring_release = self._on_cancel_spring_release
-        self._detector._on_double_tap_enter = self._toggle_command_overlay
+        self._detector._on_double_enter_during_hold = self._on_double_enter_during_hold
         self._detector._on_double_tap_shift = self._toggle_terraform_hud
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
@@ -1794,8 +1794,25 @@ class SpokeAppDelegate(NSObject):
             self._acknowledge_tray_entry(self._tray_index)
             self._dismiss_tray()
 
+    def _on_double_enter_during_hold(self) -> None:
+        """Double-Enter during spacebar hold — toggle overlay, discard recording."""
+        logger.info("Double-Enter during hold — silently discarding recording")
+        # Stop recording without transcribing
+        if self._capture is not None:
+            try:
+                self._capture.stop()
+            except Exception:
+                pass
+        if self._overlay is not None and self._overlay._visible:
+            self._overlay.hide()
+        if self._glow is not None:
+            self._glow.hide()
+        if self._menubar is not None:
+            self._menubar.set_recording(False)
+        self._toggle_command_overlay()
+
     def _toggle_command_overlay(self) -> None:
-        """Toggle command overlay visibility — called from double-tap Enter."""
+        """Toggle command overlay visibility."""
         if self._command_client is None:
             return
         overlay_visible = (
