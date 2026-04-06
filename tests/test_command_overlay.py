@@ -402,11 +402,11 @@ class TestAdaptiveCompositing:
             sys.modules.pop("spoke.command_overlay", None)
             sys.modules.pop("spoke.overlay", None)
 
-    def test_dark_background_fill_stays_non_additive(self, mock_pyobjc):
+    def test_dark_background_fill_uses_additive_experiment(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")
         try:
-            assert mod._fill_compositing_filter_for_brightness(0.0) is None
+            assert mod._fill_compositing_filter_for_brightness(0.0) == "plusL"
             assert mod._fill_compositing_filter_for_brightness(1.0) is None
         finally:
             sys.modules.pop("spoke.command_overlay", None)
@@ -417,7 +417,7 @@ class TestAdaptiveCompositing:
 
         overlay._brightness = 0.0
         overlay._apply_surface_theme()
-        overlay._fill_layer.setCompositingFilter_.assert_called_with(None)
+        overlay._fill_layer.setCompositingFilter_.assert_called_with("plusL")
 
         overlay._fill_layer.setCompositingFilter_.reset_mock()
         overlay._brightness = 1.0

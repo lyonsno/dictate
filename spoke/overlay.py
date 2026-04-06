@@ -364,6 +364,9 @@ def _lerp_color(
 
 
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
+    clamped = min(max(brightness, 0.0), 1.0)
+    if clamped < _DARK_FILL_ADDITIVE_THRESHOLD:
+        return _DARK_FILL_ADDITIVE_FILTER
     return None
 
 

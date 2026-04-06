@@ -266,11 +266,11 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_preview_fill_stays_non_additive_even_on_dark_backgrounds(self, mock_pyobjc):
+    def test_dark_background_fill_uses_additive_experiment(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
-            assert mod._fill_compositing_filter_for_brightness(0.0) is None
+            assert mod._fill_compositing_filter_for_brightness(0.0) == "plusL"
             assert mod._fill_compositing_filter_for_brightness(1.0) is None
         finally:
             sys.modules.pop("spoke.overlay", None)
