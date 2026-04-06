@@ -167,13 +167,26 @@ fragment float4 fs_fill(
 
     uint count = min(uint(u.card_count_f), uint(MAX_CARDS));
 
+    // Chromatic aberration: pixel-space offset for gold/blue rings.
+    // All in one pass — no separate layers, no timing mismatch.
+    float2 chroma_offset = float2(3.0, 1.5);  // pixels
+    float ring_width = u.fill_width * 6.0;
+    float ring_peak_dist = u.fill_width * 4.0;
+    float gold_strength = 0.06;
+    float blue_strength = 0.035;
+    float3 gold_rgb = float3(1.0, 0.82, 0.45);
+    float3 blue_rgb = float3(0.55, 0.65, 0.85);
+
     float best_alpha = 0.0;
     float3 best_rgb = float3(0.0);
+    float best_gold = 0.0;
+    float best_blue = 0.0;
 
     for (uint i = 0; i < count; i++) {
         float4 rect = u.cards[i].rect;
         rect.y -= u.scroll_offset_y;
 
+        // Main fill
         float sd = card_sdf(pixel, rect, u.corner_radius);
         float a = fill_alpha(sd, u.fill_width, u.interior_floor)
                   * u.cards[i].color.a;
@@ -186,48 +199,33 @@ fragment float4 fs_fill(
             float t = a / (best_alpha + a + 1e-6);
             best_rgb = mix(best_rgb, u.cards[i].color.rgb, t);
         }
+
+        // Gold ring — offset one direction (pixel space)
+        float sd_gold = card_sdf(pixel - chroma_offset, rect, u.corner_radius);
+        best_gold = max(best_gold, ring_alpha(sd_gold, ring_width, ring_peak_dist));
+
+        // Blue ring — offset opposite direction
+        float sd_blue = card_sdf(pixel + chroma_offset, rect, u.corner_radius);
+        best_blue = max(best_blue, ring_alpha(sd_blue, ring_width, ring_peak_dist));
     }
 
-    return float4(best_rgb * best_alpha, best_alpha);
-}
+    // Additive chromatic rings behind the fill
+    float3 chroma = gold_rgb * (best_gold * gold_strength)
+                  + blue_rgb * (best_blue * blue_strength);
+    float chroma_a = max(best_gold * gold_strength, best_blue * blue_strength);
 
-// Chromatic ring pass — renders a single-color ring around each card.
-// The ring_color is baked into the uniforms' card colors by the Python side.
-fragment float4 fs_ring(
-    VSOut in [[stage_in]],
-    constant Uniforms& u [[buffer(0)]]
-) {
-    float2 pixel = float2(in.uv.x * u.viewport_w,
-                          in.uv.y * u.viewport_h);
+    // Fill over chroma
+    float final_alpha = best_alpha + chroma_a * (1.0 - best_alpha);
+    float3 final_rgb = best_rgb * best_alpha + chroma * (1.0 - best_alpha);
 
-    uint count = min(uint(u.card_count_f), uint(MAX_CARDS));
-
-    float ring_width = u.fill_width * 6.0;     // wide diffuse halo, not a border
-    float ring_peak_dist = u.fill_width * 4.0; // peak well outside the card edge
-
-    float best_ring = 0.0;
-
-    for (uint i = 0; i < count; i++) {
-        float4 rect = u.cards[i].rect;
-        rect.y -= u.scroll_offset_y;
-
-        float sd = card_sdf(pixel, rect, u.corner_radius);
-        float r = ring_alpha(sd, ring_width, ring_peak_dist);
-        best_ring = max(best_ring, r);
-    }
-
-    // card colors carry the ring tint (set by Python: gold or blue)
-    float3 ring_color = u.cards[0].color.rgb;
-    float ring_a = best_ring * u.cards[0].color.a;  // alpha = ring strength
-
-    return float4(ring_color * ring_a, ring_a);
+    return float4(final_rgb, final_alpha);
 }
 """
 
 
 # ── Pipeline builder ─────────────────────────────────────────────────
-def _build_terraform_pipelines(device):
-    """Build fill and ring pipelines from the shared shader source."""
+def _build_terraform_pipeline(device):
+    """Build the single fill+chroma pipeline."""
     _load_metal_symbols()
     result = device.newLibraryWithSource_options_error_(
         _TERRAFORM_SHADER_SOURCE, None, None,
@@ -237,26 +235,22 @@ def _build_terraform_pipelines(device):
         error = result[1] if isinstance(result, tuple) else None
         raise RuntimeError(f"Metal shader compilation failed: {error}")
 
-    vs = library.newFunctionWithName_("vs_main")
-    pipelines = {}
-    for fs_name in ("fs_fill", "fs_ring"):
-        desc = objc.lookUpClass("MTLRenderPipelineDescriptor").alloc().init()
-        desc.setVertexFunction_(vs)
-        desc.setFragmentFunction_(library.newFunctionWithName_(fs_name))
-        attachment = desc.colorAttachments().objectAtIndexedSubscript_(0)
-        attachment.setPixelFormat_(_MTL_PIXEL_FORMAT_BGRA8_UNORM)
-        attachment.setBlendingEnabled_(True)
-        attachment.setSourceRGBBlendFactor_(1)        # One (premultiplied)
-        attachment.setDestinationRGBBlendFactor_(5)    # OneMinusSourceAlpha
-        attachment.setSourceAlphaBlendFactor_(1)        # One
-        attachment.setDestinationAlphaBlendFactor_(5)   # OneMinusSourceAlpha
-        result = device.newRenderPipelineStateWithDescriptor_error_(desc, None)
-        pipeline = result[0] if isinstance(result, tuple) else result
-        if pipeline is None:
-            error = result[1] if isinstance(result, tuple) else None
-            raise RuntimeError(f"Pipeline creation failed for {fs_name}: {error}")
-        pipelines[fs_name] = pipeline
-    return pipelines
+    desc = objc.lookUpClass("MTLRenderPipelineDescriptor").alloc().init()
+    desc.setVertexFunction_(library.newFunctionWithName_("vs_main"))
+    desc.setFragmentFunction_(library.newFunctionWithName_("fs_fill"))
+    attachment = desc.colorAttachments().objectAtIndexedSubscript_(0)
+    attachment.setPixelFormat_(_MTL_PIXEL_FORMAT_BGRA8_UNORM)
+    attachment.setBlendingEnabled_(True)
+    attachment.setSourceRGBBlendFactor_(1)        # One (premultiplied)
+    attachment.setDestinationRGBBlendFactor_(5)    # OneMinusSourceAlpha
+    attachment.setSourceAlphaBlendFactor_(1)        # One
+    attachment.setDestinationAlphaBlendFactor_(5)   # OneMinusSourceAlpha
+    result = device.newRenderPipelineStateWithDescriptor_error_(desc, None)
+    pipeline = result[0] if isinstance(result, tuple) else result
+    if pipeline is None:
+        error = result[1] if isinstance(result, tuple) else None
+        raise RuntimeError(f"Pipeline creation failed: {error}")
+    return pipeline
 
 
 # ── Data ─────────────────────────────────────────────────────────────
@@ -274,22 +268,11 @@ class CardInfo:
 
 
 # ── Renderer ─────────────────────────────────────────────────────────
-# Chromatic aberration config
-# Chromatic aberration: beneficent prismatic light — warm gold present,
-# cool blue recessive. Asymmetric: gold stronger than blue.
-_GOLD_RGB = (1.0, 0.82, 0.45)
-_GOLD_STRENGTH = 0.06
-_BLUE_RGB = (0.55, 0.65, 0.85)   # desaturated, recessive
-_BLUE_STRENGTH = 0.035            # half the gold — blue recedes
-_CHROMA_OFFSET_PT = 1.5           # point offset for chromatic split
-
-
 class TerraformCardRenderer:
     """GPU-accelerated SDF card renderer for the Terror Form HUD.
 
-    Three CAMetalLayers: fill (main cards), gold ring, blue ring.
-    The ring layers are offset in opposite directions for chromatic
-    aberration. All share the same pipeline and uniform buffer format.
+    Single CAMetalLayer. Fill + chromatic aberration rings rendered in
+    one shader pass — no separate layers, no timing mismatch on scroll.
     """
 
     def __init__(self, frame_size: tuple[float, float], scale: float):
@@ -300,9 +283,8 @@ class TerraformCardRenderer:
 
         self._device = device
         self._queue = device.newCommandQueue()
-        self._pipelines = _build_terraform_pipelines(device)
+        self._pipeline = _build_terraform_pipeline(device)
         self._uniform_buffer = device.newBufferWithLength_options_(_UNIFORM_SIZE, 0)
-        self._ring_uniform_buffer = device.newBufferWithLength_options_(_UNIFORM_SIZE, 0)
 
         self._cards: list[CardInfo] = []
         self._scroll_offset_y: float = 0.0
@@ -311,89 +293,47 @@ class TerraformCardRenderer:
         self._interior_floor: float = 0.45
         self._pixel_width: int = 1
         self._pixel_height: int = 1
-        self._scale: float = scale
 
-        # Three CAMetalLayers: gold ring (back), blue ring (middle), fill (front)
-        CAMetalLayerClass = objc.lookUpClass("CAMetalLayer")
-        self._fill_layer = self._make_layer(CAMetalLayerClass, device)
-        self._gold_layer = self._make_layer(CAMetalLayerClass, device)
-        self._blue_layer = self._make_layer(CAMetalLayerClass, device)
+        self._layer = objc.lookUpClass("CAMetalLayer").layer()
+        self._layer.setDevice_(device)
+        self._layer.setPixelFormat_(_MTL_PIXEL_FORMAT_BGRA8_UNORM)
+        self._layer.setFramebufferOnly_(True)
+        self._layer.setOpaque_(False)
         self._set_layer_geometry(frame_size, scale)
 
-    def _make_layer(self, cls, device):
-        layer = cls.layer()
-        layer.setDevice_(device)
-        layer.setPixelFormat_(_MTL_PIXEL_FORMAT_BGRA8_UNORM)
-        layer.setFramebufferOnly_(True)
-        layer.setOpaque_(False)
-        return layer
-
-    def layers(self):
-        """Return (gold_layer, blue_layer, fill_layer) for insertion.
-
-        Insert in this order so fill is on top, rings behind.
-        """
-        return (self._gold_layer, self._blue_layer, self._fill_layer)
-
     def layer(self):
-        """Return the fill layer (primary, for compositing filter)."""
-        return self._fill_layer
+        """Return the CAMetalLayer for insertion into the view hierarchy."""
+        return self._layer
 
     def set_geometry(self, width_pt: float, height_pt: float, scale: float) -> None:
-        """Update layer size (called on resize or content height change)."""
         self._set_layer_geometry((width_pt, height_pt), scale)
 
     def set_cards(self, cards: list[CardInfo]) -> None:
-        """Update the card list. Clamped to MAX_CARDS."""
         self._cards = cards[:_MAX_CARDS]
 
     def set_scroll_offset(self, offset_px: float) -> None:
-        """Update the vertical scroll offset in pixels."""
         self._scroll_offset_y = offset_px
 
     def draw_frame(self) -> bool:
-        """Render one frame across all three layers."""
-        # Pack fill uniforms
-        fill_payload = self._pack_uniforms(self._cards)
-        _copy_bytes_to_metal_buffer(self._uniform_buffer, fill_payload)
+        drawable = self._layer.nextDrawable()
+        if drawable is None:
+            return False
 
-        # Pack ring uniforms — same card positions but with ring color/strength
-        ring_payload = self._pack_uniforms(self._cards)  # positions shared
-        _copy_bytes_to_metal_buffer(self._ring_uniform_buffer, ring_payload)
-
-        ok = True
-        # Draw fill layer
-        ok = self._draw_layer(self._fill_layer, self._pipelines["fs_fill"],
-                              self._uniform_buffer) and ok
-        # Draw gold ring layer — warm, present
-        ok = self._draw_ring_layer(self._gold_layer, _GOLD_RGB, _GOLD_STRENGTH) and ok
-        # Draw blue ring layer — cool, recessive
-        ok = self._draw_ring_layer(self._blue_layer, _BLUE_RGB, _BLUE_STRENGTH) and ok
-        return ok
-
-    def _pack_uniforms(self, cards: list[CardInfo]) -> bytes:
         values = [
-            float(self._pixel_width),
-            float(self._pixel_height),
-            float(self._corner_radius),
-            float(self._fill_width),
-            float(self._interior_floor),
-            float(self._scroll_offset_y),
-            float(time.monotonic() % 1000.0),
-            float(len(cards)),
+            float(self._pixel_width), float(self._pixel_height),
+            float(self._corner_radius), float(self._fill_width),
+            float(self._interior_floor), float(self._scroll_offset_y),
+            float(time.monotonic() % 1000.0), float(len(self._cards)),
         ]
         for i in range(_MAX_CARDS):
-            if i < len(cards):
-                c = cards[i]
+            if i < len(self._cards):
+                c = self._cards[i]
                 values.extend([c.x, c.y, c.width, c.height, c.r, c.g, c.b, c.alpha])
             else:
                 values.extend([0.0] * _CARD_FLOATS)
-        return struct.pack(_UNIFORM_LAYOUT, *values)
 
-    def _draw_layer(self, layer, pipeline, uniform_buffer) -> bool:
-        drawable = layer.nextDrawable()
-        if drawable is None:
-            return False
+        payload = struct.pack(_UNIFORM_LAYOUT, *values)
+        _copy_bytes_to_metal_buffer(self._uniform_buffer, payload)
 
         rpd = objc.lookUpClass("MTLRenderPassDescriptor").renderPassDescriptor()
         att = rpd.colorAttachments().objectAtIndexedSubscript_(0)
@@ -404,53 +344,25 @@ class TerraformCardRenderer:
 
         cmd = self._queue.commandBuffer()
         enc = cmd.renderCommandEncoderWithDescriptor_(rpd)
-        enc.setRenderPipelineState_(pipeline)
-        enc.setFragmentBuffer_offset_atIndex_(uniform_buffer, 0, 0)
+        enc.setRenderPipelineState_(self._pipeline)
+        enc.setFragmentBuffer_offset_atIndex_(self._uniform_buffer, 0, 0)
         enc.drawPrimitives_vertexStart_vertexCount_(_MTL_PRIMITIVE_TYPE_TRIANGLE_STRIP, 0, 4)
         enc.endEncoding()
         cmd.presentDrawable_(drawable)
         cmd.commit()
         return True
 
-    def _draw_ring_layer(self, layer, ring_rgb: tuple, strength: float = 0.05) -> bool:
-        """Draw a chromatic ring layer with the given tint color and strength."""
-        ring_cards = []
-        for c in self._cards:
-            ring_cards.append(CardInfo(
-                x=c.x, y=c.y, width=c.width, height=c.height,
-                r=ring_rgb[0], g=ring_rgb[1], b=ring_rgb[2],
-                alpha=strength,
-            ))
-        payload = self._pack_uniforms(ring_cards)
-
-        # Use a temporary buffer (reuse ring buffer)
-        _copy_bytes_to_metal_buffer(self._ring_uniform_buffer, payload)
-        return self._draw_layer(layer, self._pipelines["fs_ring"],
-                                self._ring_uniform_buffer)
-
     # ── private ──
 
     def _set_layer_geometry(self, frame_size: tuple[float, float], scale: float) -> None:
         w_pt, h_pt = frame_size
+        self._layer.setFrame_(((0, 0), (w_pt, h_pt)))
+        self._layer.setContentsScale_(scale)
         self._pixel_width = max(int(round(w_pt * scale)), 1)
         self._pixel_height = max(int(round(h_pt * scale)), 1)
-        drawable_size = (float(self._pixel_width), float(self._pixel_height))
-        offset = _CHROMA_OFFSET_PT
-
-        for layer in (self._fill_layer, self._gold_layer, self._blue_layer):
-            layer.setContentsScale_(scale)
-            layer.setDrawableSize_(drawable_size)
-
-        # Fill: centered
-        self._fill_layer.setFrame_(((0, 0), (w_pt, h_pt)))
-        # Gold: offset one direction
-        self._gold_layer.setFrame_(((-offset, -offset * 0.5), (w_pt, h_pt)))
-        # Blue: offset opposite direction
-        self._blue_layer.setFrame_(((offset, offset * 0.5), (w_pt, h_pt)))
-
+        self._layer.setDrawableSize_((float(self._pixel_width), float(self._pixel_height)))
         self._fill_width = 2.5 * scale
         self._corner_radius = 10.0 * scale
-        self._scale = scale
 
 
 def metal_available() -> bool:
