@@ -660,3 +660,139 @@ class TestVADSlicing:
             cap._audio_callback(speech_chunk, 1024, None, 0)
         # Loud audio should be classified as speech
         assert cap._is_speech
+
+
+class TestTailBuffer:
+    """Test get_tail_buffer() and flushed_segment_count for segment-accelerated transcription."""
+
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
+    @patch("spoke.capture.sd")
+    def test_tail_buffer_returns_full_buffer_without_segment_callback(self, mock_sd):
+        """Without segment_callback, get_tail_buffer falls back to get_buffer."""
+        cap = AudioCapture()
+        cap.start()  # no segment_callback
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+
+        speech_chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+        for _ in range(5):
+            cap._audio_callback(speech_chunk, 1024, None, 0)
+
+        tail = cap.get_tail_buffer()
+        full = cap.get_buffer()
+        assert tail == full
+
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
+    @patch("spoke.capture.sd")
+    def test_tail_buffer_returns_only_current_segment(self, mock_sd):
+        """With segment_callback, get_tail_buffer returns only unflushed audio."""
+        cap = AudioCapture()
+        segments = []
+        cap.start(segment_callback=segments.append)
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+
+        silence = np.zeros((1024, 1), dtype=np.float32)
+        speech = np.full((1024, 1), 0.5, dtype=np.float32)
+
+        # Prime silence
+        for _ in range(50):
+            cap._audio_callback(silence, 1024, None, 0)
+
+        # First speech segment
+        for _ in range(5):
+            cap._audio_callback(speech, 1024, None, 0)
+        # Silence to flush
+        for _ in range(12):
+            cap._audio_callback(silence, 1024, None, 0)
+
+        # Wait for segment callback
+        cap.stop()
+        assert len(segments) == 1
+        assert cap.flushed_segment_count == 1
+
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
+    @patch("spoke.capture.sd")
+    def test_tail_buffer_smaller_than_full_buffer_after_segment(self, mock_sd):
+        """After flushing a segment, tail should be smaller than full buffer."""
+        cap = AudioCapture()
+        segments = []
+        cap.start(segment_callback=segments.append)
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+
+        silence = np.zeros((1024, 1), dtype=np.float32)
+        speech = np.full((1024, 1), 0.5, dtype=np.float32)
+
+        # Prime silence
+        for _ in range(50):
+            cap._audio_callback(silence, 1024, None, 0)
+
+        # First segment: speech then silence to flush
+        for _ in range(5):
+            cap._audio_callback(speech, 1024, None, 0)
+        for _ in range(12):
+            cap._audio_callback(silence, 1024, None, 0)
+
+        # Second segment in progress
+        for _ in range(3):
+            cap._audio_callback(speech, 1024, None, 0)
+
+        full = cap.get_buffer()
+        tail = cap.get_tail_buffer()
+        # tail should be substantially smaller than full
+        assert len(tail) < len(full)
+        assert len(tail) > 0
+
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
+    @patch("spoke.capture.sd")
+    def test_flushed_segment_count_increments(self, mock_sd):
+        """flushed_segment_count should track the number of segments flushed."""
+        cap = AudioCapture()
+        cap.start(segment_callback=MagicMock())
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+
+        silence = np.zeros((1024, 1), dtype=np.float32)
+        speech = np.full((1024, 1), 0.5, dtype=np.float32)
+
+        assert cap.flushed_segment_count == 0
+
+        # Prime silence
+        for _ in range(50):
+            cap._audio_callback(silence, 1024, None, 0)
+
+        # Segment 1
+        for _ in range(5):
+            cap._audio_callback(speech, 1024, None, 0)
+        for _ in range(12):
+            cap._audio_callback(silence, 1024, None, 0)
+        assert cap.flushed_segment_count == 1
+
+        # Segment 2
+        for _ in range(5):
+            cap._audio_callback(speech, 1024, None, 0)
+        for _ in range(12):
+            cap._audio_callback(silence, 1024, None, 0)
+        assert cap.flushed_segment_count == 2
+
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
+    @patch("spoke.capture.sd")
+    def test_flushed_segment_count_includes_final_on_stop(self, mock_sd):
+        """Stopping while in speech should flush and count the final segment."""
+        cap = AudioCapture()
+        cap.start(segment_callback=MagicMock())
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+
+        silence = np.zeros((1024, 1), dtype=np.float32)
+        speech = np.full((1024, 1), 0.5, dtype=np.float32)
+
+        for _ in range(50):
+            cap._audio_callback(silence, 1024, None, 0)
+        for _ in range(5):
+            cap._audio_callback(speech, 1024, None, 0)
+
+        assert cap._is_speech
+        cap.stop()
+        assert cap.flushed_segment_count == 1

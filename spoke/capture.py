@@ -258,6 +258,7 @@ class AudioCapture:
         self._current_segment_chunks = []
         self._speech_chunks = []
         self._ring_buffer.clear()
+        self._flushed_segment_count = 0
         self._grace_chunks_remaining = int(VAD_GRACE_PERIOD_SECS * SAMPLE_RATE / BLOCKSIZE)
         if self._silero_model is not None:
             self._silero_model.reset_states()
@@ -340,6 +341,7 @@ class AudioCapture:
                 segment_samples = np.concatenate(self._current_segment_chunks)
                 if self._encode_queue is not None:
                     self._encode_queue.put(segment_samples)
+                    self._flushed_segment_count += 1
                     
             if self._encode_queue is not None:
                 self._encode_queue.put(None)  # Sentinel to stop thread
@@ -405,6 +407,31 @@ class AudioCapture:
             new = self._frames[self._read_cursor:]
             self._read_cursor = len(self._frames)
         return np.concatenate(new)
+
+    def get_tail_buffer(self) -> bytes:
+        """Return WAV bytes for audio since the last segment boundary.
+
+        When segments are being accumulated via segment_callback, this returns
+        only the unflushed tail — the current in-progress segment plus any
+        silence/ring-buffer audio since the last flush.  Returns the full
+        buffer if no segment callback is active (i.e. falls back to
+        get_buffer behaviour).
+        """
+        if self._segment_cb is None:
+            return self.get_buffer()
+        chunks = list(self._current_segment_chunks)
+        if not chunks:
+            # Between segments (silence) — return ring buffer contents
+            rb = list(self._ring_buffer)
+            if not rb:
+                return b""
+            return self._encode_wav(np.concatenate(rb))
+        return self._encode_wav(np.concatenate(chunks))
+
+    @property
+    def flushed_segment_count(self) -> int:
+        """Number of segments flushed to segment_callback so far."""
+        return getattr(self, "_flushed_segment_count", 0)
 
     @property
     def is_recording(self) -> bool:
@@ -523,6 +550,7 @@ class AudioCapture:
                     if self._encode_queue is not None:
                         segment_samples = np.concatenate(self._current_segment_chunks)
                         self._encode_queue.put(segment_samples)
+                        self._flushed_segment_count += 1
 
                     self._current_segment_chunks = []
             elif is_speech_now:

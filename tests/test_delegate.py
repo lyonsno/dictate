@@ -60,6 +60,9 @@ def _make_delegate(main_module, monkeypatch):
     delegate._recovery_pending_insert = None
     delegate._recovery_hold_active = False
     delegate._recovery_retry_pending = False
+    delegate._whisper_backend = "local"
+    delegate._preview_backend = "local"
+    delegate._segment_accumulator = main_module.SegmentAccumulator()
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
@@ -4034,3 +4037,155 @@ class TestVADPreviewGating:
             d._preview_loop_streaming()
 
         d._preview_client.feed.assert_not_called()
+
+
+class TestSegmentAccumulator:
+    """Test the SegmentAccumulator for opportunistic segment transcription."""
+
+    def test_empty_accumulator(self, main_module, monkeypatch):
+        acc = main_module.SegmentAccumulator()
+        assert acc.count == 0
+        assert acc.text == ""
+        assert not acc.has_results
+
+    def test_dispatch_accumulates_results(self, main_module, monkeypatch):
+        acc = main_module.SegmentAccumulator()
+        client = MagicMock()
+        client.transcribe.side_effect = ["hello", "world"]
+
+        acc.dispatch(b"seg1", client)
+        acc.dispatch(b"seg2", client)
+        acc.wait(timeout=5.0)
+
+        assert acc.count == 2
+        assert acc.text == "hello world"
+        assert acc.has_results
+
+    def test_dispatch_handles_failure_gracefully(self, main_module, monkeypatch):
+        acc = main_module.SegmentAccumulator()
+        client = MagicMock()
+        client.transcribe.side_effect = [Exception("server down"), "world"]
+
+        acc.dispatch(b"seg1", client)
+        acc.dispatch(b"seg2", client)
+        acc.wait(timeout=5.0)
+
+        assert acc.count == 2
+        assert acc.text == "world"  # first segment failed, second succeeded
+
+    def test_reset_clears_state(self, main_module, monkeypatch):
+        acc = main_module.SegmentAccumulator()
+        client = MagicMock()
+        client.transcribe.return_value = "hello"
+
+        acc.dispatch(b"seg1", client)
+        acc.wait(timeout=5.0)
+        assert acc.count == 1
+
+        acc.reset()
+        assert acc.count == 0
+        assert acc.text == ""
+
+
+class TestSegmentAcceleratedTranscription:
+    """Test the segment-accelerated final transcription path."""
+
+    def test_transcribe_worker_uses_segments_when_available(self, main_module, monkeypatch):
+        """When segments are cached, _transcribe_worker should use them + tail."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "sidecar"
+        d._transcribe_start = time.monotonic()
+
+        # Pre-populate the segment accumulator with cached results.
+        acc = main_module.SegmentAccumulator()
+        d._segment_accumulator = acc
+        # Simulate two already-completed segments.
+        d._client.transcribe.side_effect = ["seg one", "seg two", "tail text"]
+        acc.dispatch(b"s1", d._client)
+        acc.dispatch(b"s2", d._client)
+        acc.wait(timeout=5.0)
+
+        # The tail transcription call.
+        d._capture.get_tail_buffer.return_value = b"tail_wav"
+        d._client.transcribe.side_effect = ["tail text"]
+
+        d._transcribe_worker(b"full_wav_unused", token=1)
+
+        # The final client.transcribe call should be for the tail only.
+        last_call = d._client.transcribe.call_args
+        assert last_call[0][0] == b"tail_wav"
+
+        # Result should be segments + tail joined.
+        result_call = d.performSelectorOnMainThread_withObject_waitUntilDone_
+        payload = result_call.call_args[0][1]
+        assert "seg one" in payload["text"]
+        assert "seg two" in payload["text"]
+        assert "tail text" in payload["text"]
+
+    def test_transcribe_worker_falls_back_without_segments(self, main_module, monkeypatch):
+        """Without segments, _transcribe_worker should use full buffer."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._transcribe_start = time.monotonic()
+        d._segment_accumulator = main_module.SegmentAccumulator()  # empty
+
+        d._client.transcribe.return_value = "full buffer text"
+
+        d._transcribe_worker(b"full_wav", token=1)
+
+        d._client.transcribe.assert_called_once_with(b"full_wav")
+
+    def test_hold_start_wires_segment_callback_for_sidecar(self, main_module, monkeypatch):
+        """_on_hold_start should wire segment_callback when backend is sidecar."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "sidecar"
+
+        d._on_hold_start()
+
+        # capture.start should have been called with a segment_callback.
+        call_kwargs = d._capture.start.call_args[1]
+        assert call_kwargs.get("segment_callback") is not None
+
+    def test_hold_start_no_segment_callback_for_local(self, main_module, monkeypatch):
+        """_on_hold_start should not wire segment_callback for local backend."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+
+        d._on_hold_start()
+
+        call_kwargs = d._capture.start.call_args[1]
+        assert call_kwargs.get("segment_callback") is None
+
+    def test_preview_batch_uses_cached_segments_plus_tail(self, main_module, monkeypatch):
+        """Preview loop should use cached segment text + tail when segments exist."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "sidecar"
+        d._preview_active = True
+        d._is_speech = True
+        d._force_preview_update = False
+        d._preview_done = threading.Event()
+
+        # Pre-populate segment accumulator.
+        acc = main_module.SegmentAccumulator()
+        client = MagicMock()
+        client.transcribe.return_value = "cached segment"
+        acc.dispatch(b"s1", client)
+        acc.wait(timeout=5.0)
+        d._segment_accumulator = acc
+
+        d._capture.get_tail_buffer.return_value = b"tail_wav"
+        d._preview_client.transcribe.return_value = "tail preview"
+
+        call_count = [0]
+        def _sleep(*args):
+            call_count[0] += 1
+            if call_count[0] > 1:
+                d._preview_active = False
+
+        with patch.object(main_module.time, "sleep", side_effect=_sleep):
+            d._preview_loop_batch()
+
+        # Preview client should have been called with tail, not full buffer.
+        d._preview_client.transcribe.assert_called_with(b"tail_wav")
+        # Full buffer should NOT have been requested.
+        d._capture.get_buffer.assert_not_called()

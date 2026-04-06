@@ -586,6 +586,74 @@ class TrayEntry:
         return "user"
 
 
+class SegmentAccumulator:
+    """Thread-safe accumulator for opportunistic segment transcriptions.
+
+    During recording, silence-bounded audio segments are dispatched to a remote
+    transcription backend as they arrive.  Results are stored in order so that
+    on release the final transcription only needs to cover the tail audio since
+    the last segment boundary.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._results: list[str] = []  # transcription text per segment, in order
+        self._pending: int = 0  # segments dispatched but not yet returned
+        self._done = threading.Event()
+        self._done.set()  # nothing pending initially
+
+    def dispatch(self, wav_bytes: bytes, client: object) -> None:
+        """Transcribe *wav_bytes* on a background thread and store the result."""
+        with self._lock:
+            idx = len(self._results)
+            self._results.append("")  # placeholder
+            self._pending += 1
+            self._done.clear()
+
+        def _work():
+            try:
+                text = client.transcribe(wav_bytes)
+            except Exception:
+                logger.exception("Segment %d transcription failed", idx)
+                text = ""
+            with self._lock:
+                self._results[idx] = text
+                self._pending -= 1
+                if self._pending <= 0:
+                    self._done.set()
+
+        t = threading.Thread(target=_work, daemon=True)
+        t.start()
+
+    def wait(self, timeout: float = 10.0) -> bool:
+        """Block until all pending segments are transcribed."""
+        return self._done.wait(timeout=timeout)
+
+    @property
+    def text(self) -> str:
+        """Concatenated transcription of all completed segments."""
+        with self._lock:
+            parts = [r for r in self._results if r]
+        return " ".join(parts)
+
+    @property
+    def count(self) -> int:
+        """Number of segments dispatched (completed + pending)."""
+        with self._lock:
+            return len(self._results)
+
+    @property
+    def has_results(self) -> bool:
+        with self._lock:
+            return any(self._results)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._results.clear()
+            self._pending = 0
+            self._done.set()
+
+
 class SpokeAppDelegate(NSObject):
     """Main application delegate — wires input → capture → transcribe → inject."""
 
@@ -1275,13 +1343,27 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
+        # Set up opportunistic segment transcription for remote backends.
+        # Each silence-bounded segment is dispatched to the final client as it
+        # arrives, so that on release we only need to transcribe the tail.
+        self._segment_accumulator = SegmentAccumulator()
+        use_segments = getattr(self, "_whisper_backend", "local") in ("sidecar", "cloud")
+        segment_cb = None
+        if use_segments:
+            def segment_cb(wav_bytes: bytes):
+                self._segment_accumulator.dispatch(wav_bytes, self._client)
+
         try:
             def on_vad_state(is_speech: bool):
                 if self._menubar is not None:
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "updateVadState:", is_speech, False
                     )
-            self._capture.start(amplitude_callback=self._on_amplitude, vad_state_callback=on_vad_state)
+            self._capture.start(
+                amplitude_callback=self._on_amplitude,
+                vad_state_callback=on_vad_state,
+                segment_callback=segment_cb,
+            )
         except Exception:
             logger.exception("Audio capture failed to start")
             if self._glow is not None:
@@ -1483,7 +1565,12 @@ class SpokeAppDelegate(NSObject):
         return (0.2, 0.15)
 
     def _preview_loop_batch(self, token: int | None = None) -> None:
-        """Batch preview: re-transcribe the full buffer each tick."""
+        """Batch preview: re-transcribe the full buffer each tick.
+
+        When the segment accumulator is active, only the tail audio (since the
+        last segment boundary) is sent to the preview client; cached segment
+        text is prepended to the result.
+        """
         _MIN_INTERVAL, _INITIAL_DELAY = self._preview_batch_intervals()
         token = getattr(self, "_preview_session_token", 0) if token is None else token
 
@@ -1493,8 +1580,17 @@ class SpokeAppDelegate(NSObject):
             while self._preview_active:
                 loop_start = time.monotonic()
 
-                wav_bytes = self._capture.get_buffer()
-                if not wav_bytes:
+                acc = getattr(self, "_segment_accumulator", None)
+                use_segments = acc is not None and acc.count > 0
+
+                if use_segments:
+                    wav_bytes = self._capture.get_tail_buffer()
+                    cached_prefix = acc.text
+                else:
+                    wav_bytes = self._capture.get_buffer()
+                    cached_prefix = ""
+
+                if not wav_bytes and not cached_prefix:
                     time.sleep(min(_MIN_INTERVAL, 0.2))
                     continue
 
@@ -1509,12 +1605,21 @@ class SpokeAppDelegate(NSObject):
                 self._force_preview_update = False
 
                 try:
-                    with self._local_inference_context(self._preview_client):
-                        text = self._preview_client.transcribe(wav_bytes)
+                    if wav_bytes:
+                        with self._local_inference_context(self._preview_client):
+                            tail_text = self._preview_client.transcribe(wav_bytes)
+                    else:
+                        tail_text = ""
                 except Exception:
                     logger.debug("Preview transcription failed", exc_info=True)
                     time.sleep(0.5)
                     continue
+
+                if use_segments:
+                    parts = [p for p in (cached_prefix, tail_text) if p]
+                    text = " ".join(parts)
+                else:
+                    text = tail_text
 
                 if text and self._preview_active:
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1682,6 +1787,35 @@ class SpokeAppDelegate(NSObject):
             )
         thread.start()
 
+    def _transcribe_segments_and_tail(self, wav_bytes: bytes) -> str | None:
+        """Try segment-accelerated transcription.  Returns final text, or None
+        to signal the caller should fall back to full-buffer transcription."""
+        acc = getattr(self, "_segment_accumulator", None)
+        if acc is None or acc.count == 0:
+            return None
+
+        # Wait for any in-flight segment transcriptions to land.
+        acc.wait(timeout=10.0)
+        cached = acc.text
+
+        # Transcribe the tail — audio recorded after the last segment boundary.
+        tail_wav = self._capture.get_tail_buffer()
+        tail_text = ""
+        if tail_wav:
+            try:
+                tail_text = self._client.transcribe(tail_wav)
+            except Exception:
+                logger.exception("Tail transcription failed — falling back to full buffer")
+                return None
+
+        parts = [p for p in (cached, tail_text) if p]
+        text = " ".join(parts)
+        logger.info(
+            "Segment-accelerated transcription: %d segments cached, tail=%d bytes, result=%r",
+            acc.count, len(tail_wav) if tail_wav else 0, text[:80],
+        )
+        return text
+
     def _transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: finalize transcription and marshal result to main thread."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
@@ -1696,27 +1830,31 @@ class SpokeAppDelegate(NSObject):
             self._preview_thread = None
 
         try:
-            with self._local_inference_context(self._client):
-                # If the preview client was streaming, finalize it for the final text
-                # (this runs the tail refinement pass with the existing KV cache).
-                if (
-                    release_cutover
-                    and getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    cancel_stream = getattr(self._client, "cancel_stream", None)
-                    if callable(cancel_stream):
-                        cancel_stream()
-                    text = self._client.transcribe(wav_bytes)
-                elif (
-                    getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    text = self._client.finish_stream()
-                else:
-                    text = self._client.transcribe(wav_bytes)
+            # Fast path: use cached segment transcriptions + tail only.
+            text = self._transcribe_segments_and_tail(wav_bytes)
+            if text is None:
+                # Slow path: full-buffer transcription.
+                with self._local_inference_context(self._client):
+                    # If the preview client was streaming, finalize it for the final text
+                    # (this runs the tail refinement pass with the existing KV cache).
+                    if (
+                        release_cutover
+                        and getattr(self._client, 'supports_streaming', False)
+                        and self._client is self._preview_client
+                        and getattr(self._client, "has_active_stream", False)
+                    ):
+                        cancel_stream = getattr(self._client, "cancel_stream", None)
+                        if callable(cancel_stream):
+                            cancel_stream()
+                        text = self._client.transcribe(wav_bytes)
+                    elif (
+                        getattr(self._client, 'supports_streaming', False)
+                        and self._client is self._preview_client
+                        and getattr(self._client, "has_active_stream", False)
+                    ):
+                        text = self._client.finish_stream()
+                    else:
+                        text = self._client.transcribe(wav_bytes)
         except Exception:
             logger.exception("Transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1877,25 +2015,28 @@ class SpokeAppDelegate(NSObject):
             self._preview_thread = None
 
         try:
-            with self._local_inference_context(self._client):
-                if (
-                    release_cutover
-                    and getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    cancel_stream = getattr(self._client, "cancel_stream", None)
-                    if callable(cancel_stream):
-                        cancel_stream()
-                    text = self._client.transcribe(wav_bytes)
-                elif (
-                    getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    text = self._client.finish_stream()
-                else:
-                    text = self._client.transcribe(wav_bytes)
+            # Fast path: use cached segment transcriptions + tail only.
+            text = self._transcribe_segments_and_tail(wav_bytes)
+            if text is None:
+                with self._local_inference_context(self._client):
+                    if (
+                        release_cutover
+                        and getattr(self._client, 'supports_streaming', False)
+                        and self._client is self._preview_client
+                        and getattr(self._client, "has_active_stream", False)
+                    ):
+                        cancel_stream = getattr(self._client, "cancel_stream", None)
+                        if callable(cancel_stream):
+                            cancel_stream()
+                        text = self._client.transcribe(wav_bytes)
+                    elif (
+                        getattr(self._client, 'supports_streaming', False)
+                        and self._client is self._preview_client
+                        and getattr(self._client, "has_active_stream", False)
+                    ):
+                        text = self._client.finish_stream()
+                    else:
+                        text = self._client.transcribe(wav_bytes)
         except Exception:
             logger.exception("Tray transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -2430,15 +2571,18 @@ class SpokeAppDelegate(NSObject):
 
         # Step 1: Transcribe the audio
         try:
-            with self._local_inference_context(self._client):
-                if (
-                    getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    utterance = self._client.finish_stream()
-                else:
-                    utterance = self._client.transcribe(wav_bytes)
+            # Fast path: use cached segment transcriptions + tail only.
+            utterance = self._transcribe_segments_and_tail(wav_bytes)
+            if utterance is None:
+                with self._local_inference_context(self._client):
+                    if (
+                        getattr(self._client, 'supports_streaming', False)
+                        and self._client is self._preview_client
+                        and getattr(self._client, "has_active_stream", False)
+                    ):
+                        utterance = self._client.finish_stream()
+                    else:
+                        utterance = self._client.transcribe(wav_bytes)
         except Exception:
             logger.exception("Command transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
