@@ -158,12 +158,26 @@ _TTS_MODELS = [
 
 _OMNIVOICE_PROMPT_PRESETS = [
     ("", "Auto voice"),
+    ("female, child", "Female, child"),
+    ("male, high pitch, indian accent", "Male, high pitch, Indian"),
+    ("female, elderly, british accent", "Female, elderly, British"),
+    ("female, young adult, whisper", "Female, young adult, whisper"),
+    ("male, middle-aged, very low pitch", "Male, middle-aged, very low pitch"),
     ("female, low pitch, british accent", "Female, low pitch, British"),
     ("male, british accent", "Male, British"),
     ("female, whisper, british accent", "Female whisper, British"),
     ("female, high pitch, american accent", "Female, high pitch, American"),
     ("male, low pitch, american accent", "Male, low pitch, American"),
 ]
+
+_OMNIVOICE_PROMPT_LEXICON = {
+    "Gender": ("female", "male"),
+    "Age": ("child", "young adult", "middle-aged", "elderly"),
+    "Pitch": ("very low pitch", "low pitch", "high pitch", "very high pitch"),
+    "Style": ("whisper",),
+    "English accent": ("american accent", "british accent", "indian accent"),
+    "Chinese dialect examples": ("sichuan dialect", "shaanxi dialect"),
+}
 
 
 def _is_omnivoice_tts_model(model_id: str | None) -> bool:
@@ -187,6 +201,18 @@ def _omnivoice_prompt_choices(current_prompt: str) -> list[tuple[str, str, bool]
         choices.insert(1, (current_prompt, f"Custom: {current_prompt}", True))
     choices.append(("configure_voice", "Set Custom TTS Prompt…", True))
     return choices
+
+
+def _omnivoice_prompt_lexicon_text() -> str:
+    parts = []
+    for heading, values in _OMNIVOICE_PROMPT_LEXICON.items():
+        parts.append(f"{heading}: {', '.join(values)}")
+    return (
+        "Combine OmniVoice prompt keywords with commas.\n\n"
+        + "\n".join(parts)
+        + "\n\nExamples: female, low pitch, british accent; "
+        "male, middle-aged, very low pitch; female, young adult, whisper."
+    )
 
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
 _PROCESS_LAUNCH_ID = os.environ.get("SPOKE_LAUNCH_ID") or f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
@@ -3759,7 +3785,7 @@ class SpokeAppDelegate(NSObject):
         alert = NSAlert.new()
         alert.setMessageText_("TTS Prompt" if prompt_mode else "TTS Voice")
         alert.setInformativeText_(
-            "Enter the OmniVoice prompt to use for TTS synthesis."
+            _omnivoice_prompt_lexicon_text()
             if prompt_mode
             else "Enter the voice name to use for TTS synthesis."
         )

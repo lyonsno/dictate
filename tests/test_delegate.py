@@ -1003,6 +1003,11 @@ class TestDualModelConfiguration:
             "selected": "",
             "models": [
                 ("", "Auto voice", True),
+                ("female, child", "Female, child", True),
+                ("male, high pitch, indian accent", "Male, high pitch, Indian", True),
+                ("female, elderly, british accent", "Female, elderly, British", True),
+                ("female, young adult, whisper", "Female, young adult, whisper", True),
+                ("male, middle-aged, very low pitch", "Male, middle-aged, very low pitch", True),
                 ("female, low pitch, british accent", "Female, low pitch, British", True),
                 ("male, british accent", "Male, British", True),
                 ("female, whisper, british accent", "Female whisper, British", True),
@@ -1036,6 +1041,11 @@ class TestDualModelConfiguration:
             "models": [
                 ("", "Auto voice", True),
                 ("female, british accent", "Custom: female, british accent", True),
+                ("female, child", "Female, child", True),
+                ("male, high pitch, indian accent", "Male, high pitch, Indian", True),
+                ("female, elderly, british accent", "Female, elderly, British", True),
+                ("female, young adult, whisper", "Female, young adult, whisper", True),
+                ("male, middle-aged, very low pitch", "Male, middle-aged, very low pitch", True),
                 ("female, low pitch, british accent", "Female, low pitch, British", True),
                 ("male, british accent", "Male, British", True),
                 ("female, whisper, british accent", "Female whisper, British", True),
@@ -1065,6 +1075,11 @@ class TestDualModelConfiguration:
             "selected": "",
             "models": [
                 ("", "Auto voice", True),
+                ("female, child", "Female, child", True),
+                ("male, high pitch, indian accent", "Male, high pitch, Indian", True),
+                ("female, elderly, british accent", "Female, elderly, British", True),
+                ("female, young adult, whisper", "Female, young adult, whisper", True),
+                ("male, middle-aged, very low pitch", "Male, middle-aged, very low pitch", True),
                 ("female, low pitch, british accent", "Female, low pitch, British", True),
                 ("male, british accent", "Male, British", True),
                 ("female, whisper, british accent", "Female whisper, British", True),
@@ -1774,6 +1789,32 @@ class TestDualModelConfiguration:
 
         d._save_preference.assert_called_once_with("tts_voice", "")
         d._relaunch.assert_called_once_with()
+
+    def test_configuring_local_omnivoice_prompt_surfaces_upstream_lexicon_help(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._tts_client = None
+        d._tts_backend = "local"
+        d._load_preference = lambda key: {"tts_model": "k2-fsa/OmniVoice"}.get(key)
+
+        alert = MagicMock()
+        alert.runModal.return_value = 1001
+        field = MagicMock()
+        field.stringValue.return_value = ""
+        main_module.NSAlert.new.return_value = alert
+        main_module.NSTextField.alloc.return_value.initWithFrame_.return_value = field
+
+        d._configure_tts_voice()
+
+        alert.setMessageText_.assert_called_once_with("TTS Prompt")
+        informative_text = alert.setInformativeText_.call_args.args[0]
+        assert "Gender: female, male" in informative_text
+        assert "Age: child, young adult, middle-aged, elderly" in informative_text
+        assert "Pitch: very low pitch, low pitch, high pitch, very high pitch" in informative_text
+        assert "Style: whisper" in informative_text
+        assert "English accent: american accent, british accent, indian accent" in informative_text
+        assert "female, low pitch, british accent" in informative_text
 
     def test_init_prefers_persisted_sidecar_backend_over_launcher_default_local_url(
         self, main_module, monkeypatch
