@@ -165,6 +165,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 _OVERLAY_WIDTH = 600.0
+_OVERLAY_MIN_WIDTH = 320.0
 _OVERLAY_HEIGHT = 80.0
 _OVERLAY_BOTTOM_MARGIN = _env("SPOKE_PREVIEW_OVERLAY_BOTTOM_MARGIN", 80.0)
 _OVERLAY_CORNER_RADIUS = 16.0
@@ -364,9 +365,6 @@ def _lerp_color(
 
 
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
-    clamped = min(max(brightness, 0.0), 1.0)
-    if clamped < _DARK_FILL_ADDITIVE_THRESHOLD:
-        return _DARK_FILL_ADDITIVE_FILTER
     return None
 
 
@@ -389,6 +387,14 @@ def _max_overlay_height(screen_height: float) -> float:
     assistant_gap_cap = _COMMAND_OVERLAY_BOTTOM_MARGIN - _OVERLAY_BOTTOM_MARGIN
     capped_height = min(_OVERLAY_MAX_HEIGHT, assistant_gap_cap)
     return max(_OVERLAY_HEIGHT, capped_height)
+
+
+def _overlay_content_width_for_text_bounds(text_width: float) -> float:
+    """Return a content width that fits short preview text without shrinking to nothing."""
+    if text_width <= 0.0:
+        return _OVERLAY_WIDTH
+    desired = float(text_width) + 48.0
+    return min(max(desired, _OVERLAY_MIN_WIDTH), _OVERLAY_WIDTH)
 
 
 # ── distance-field ridge ────────────────────────────────────
@@ -1099,8 +1105,8 @@ class TranscriptionOverlay(NSObject):
         )
         scroll_frame = NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
         self._scroll_view.setFrame_(scroll_frame)
-        self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
-        self._reset_text_geometry(_OVERLAY_HEIGHT - 16, scroll_to_top=True)
+        self._reset_overlay_chrome_geometry(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
+        self._reset_text_geometry(_OVERLAY_WIDTH, _OVERLAY_HEIGHT - 16, scroll_to_top=True)
 
         self._window.orderFrontRegardless()
 
@@ -1526,17 +1532,22 @@ class TranscriptionOverlay(NSObject):
 
     # ── layout helpers ───────────────────────────────────────
 
-    def _reset_text_geometry(self, visible_height: float, scroll_to_top: bool = False) -> None:
+    def _reset_text_geometry(
+        self,
+        visible_width: float,
+        visible_height: float,
+        scroll_to_top: bool = False,
+    ) -> None:
         """Keep the document view and clip view in sync with the current overlay size."""
         if self._text_view is None or self._scroll_view is None:
             return
 
-        doc_frame = NSMakeRect(0, 0, _OVERLAY_WIDTH - 24, visible_height)
+        doc_frame = NSMakeRect(0, 0, visible_width - 24, visible_height)
         self._text_view.setFrame_(doc_frame)
 
         container = self._text_view.textContainer()
         if container is not None and hasattr(container, "setContainerSize_"):
-            container.setContainerSize_((_OVERLAY_WIDTH - 24, 1.0e7))
+            container.setContainerSize_((visible_width - 24, 1.0e7))
 
         clip_view = self._scroll_view.contentView() if hasattr(self._scroll_view, "contentView") else None
         if clip_view is not None and scroll_to_top:
@@ -1707,10 +1718,9 @@ class TranscriptionOverlay(NSObject):
         except (ImportError, Exception):
             pass
 
-    def _reset_overlay_chrome_geometry(self, visible_height: float) -> None:
+    def _reset_overlay_chrome_geometry(self, visible_width: float, visible_height: float) -> None:
         """Keep height-dependent overlay layers in sync with the current overlay size."""
-        w = _OVERLAY_WIDTH
-        self._apply_ridge_masks(w, visible_height)
+        self._apply_ridge_masks(visible_width, visible_height)
 
     def _set_fill_override(
         self,
@@ -1759,21 +1769,29 @@ class TranscriptionOverlay(NSObject):
 
             max_height = _max_overlay_height(self._screen.frame().size.height)
             new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), max_height)
+            new_width = _overlay_content_width_for_text_bounds(text_rect.size.width)
 
             f = _OUTER_FEATHER
             win_frame = self._window.frame()
+            new_win_w = new_width + 2 * f
             new_win_h = new_height + 2 * f
-            if abs(win_frame.size.height - new_win_h) > 4:
+            if (
+                abs(win_frame.size.width - new_win_w) > 4
+                or abs(win_frame.size.height - new_win_h) > 4
+            ):
+                screen_frame = self._screen.frame()
+                win_frame.origin.x = (screen_frame.size.width - new_width) / 2 - f
                 win_frame.origin.y = _window_origin_y(new_height)
+                win_frame.size.width = new_win_w
                 win_frame.size.height = new_win_h
                 self._window.setFrame_display_animate_(win_frame, True, False)
                 self._content_view.setFrame_(
-                    NSMakeRect(f, f, _OVERLAY_WIDTH, new_height)
+                    NSMakeRect(f, f, new_width, new_height)
                 )
-                self._scroll_view.setFrame_(NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16))
-                self._reset_overlay_chrome_geometry(new_height)
+                self._scroll_view.setFrame_(NSMakeRect(12, 8, new_width - 24, new_height - 16))
+                self._reset_overlay_chrome_geometry(new_width, new_height)
 
-            self._reset_text_geometry(max(new_height - 16, text_height))
+            self._reset_text_geometry(new_width, max(new_height - 16, text_height))
             end = self._text_view.string().length() if hasattr(self._text_view.string(), 'length') else len(self._typewriter_displayed)
             self._text_view.scrollRangeToVisible_((end, 0))
         except Exception:
@@ -1831,7 +1849,7 @@ class TranscriptionOverlay(NSObject):
         self._content_view.setFrame_(
             NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         )
-        self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
+        self._reset_overlay_chrome_geometry(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         self._set_fill_override(fill_rgb, _RECOVERY_BG_ALPHA)
 
         # Set text immediately (no typewriter)
@@ -1965,7 +1983,7 @@ class TranscriptionOverlay(NSObject):
         self._content_view.setFrame_(
             NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         )
-        self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
+        self._reset_overlay_chrome_geometry(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
 
         # Keep the content view transparent and tint the existing SDF fill instead.
         self._content_view.layer().setBackgroundColor_(None)

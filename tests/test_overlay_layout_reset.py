@@ -113,21 +113,25 @@ class _FakeTextView:
         return self._layout_manager
 
     def set_layout_height(self, height):
-        self._layout_manager = _FakeLayoutManager(height)
+        self._layout_manager = _FakeLayoutManager(0.0, height)
+
+    def set_layout_rect(self, width, height):
+        self._layout_manager = _FakeLayoutManager(width, height)
 
     def scrollRangeToVisible_(self, visible_range):
         self.scrolled_range = visible_range
 
 
 class _FakeLayoutManager:
-    def __init__(self, height):
+    def __init__(self, width, height):
+        self.width = width
         self.height = height
 
     def ensureLayoutForTextContainer_(self, container):
         self._container = container
 
     def usedRectForTextContainer_(self, container):
-        return _make_rect(0.0, 0.0, 0.0, self.height)
+        return _make_rect(0.0, 0.0, self.width, self.height)
 
 
 class _FakeLayer:
@@ -386,3 +390,33 @@ def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, 
     expected_height = 220.0
     assert overlay._content_view.frame().size.height == pytest.approx(expected_height)
     assert overlay._window.frame().size.height == pytest.approx(expected_height + 2 * f)
+
+
+def test_update_layout_contracts_short_preview_width_to_text_extent(mock_pyobjc, monkeypatch):
+    overlay_module = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay._window = _FakeWindow()
+    overlay._content_view = _FakeView(
+        _make_rect(40.0, 40.0, overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)
+    )
+    overlay._text_view = _FakeTextView(
+        _make_rect(0.0, 0.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        "short preview",
+    )
+    overlay._text_view.set_layout_rect(320.0, 24.0)
+    overlay._scroll_view = _FakeScrollView(
+        _make_rect(12.0, 8.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        overlay._text_view,
+        y_offset=0.0,
+    )
+
+    overlay._update_layout()
+
+    expected_width = 368.0
+    f = overlay_module._OUTER_FEATHER
+    assert overlay._content_view.frame().size.width == pytest.approx(expected_width)
+    assert overlay._window.frame().size.width == pytest.approx(expected_width + 2 * f)
+    assert overlay._scroll_view.frame().size.width == pytest.approx(expected_width - 24)
+    assert overlay._text_view.frame().size.width == pytest.approx(expected_width - 24)
