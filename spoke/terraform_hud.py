@@ -280,9 +280,9 @@ class TerraformHUD(NSObject):
         screen_frame = screen.visibleFrame()
 
         # Restore saved position or default to left side of screen
-        saved = self._load_position()
-        if saved:
-            x, y = saved
+        prefs = self._load_prefs()
+        if prefs and "x" in prefs:
+            x, y = float(prefs["x"]), float(prefs["y"])
         else:
             x = screen_frame.origin.x + 20
             y = screen_frame.origin.y + screen_frame.size.height - _PANEL_HEIGHT - 40
@@ -342,6 +342,7 @@ class TerraformHUD(NSObject):
         self._panel.setAlphaValue_(0.0)
         self._panel.orderFront_(None)
         self._visible = True
+        self._save_position()
         self._start_timer()
 
         # Animate: fade in + subtle scale pop (0.92 → 1.0)
@@ -409,6 +410,14 @@ class TerraformHUD(NSObject):
         else:
             self.show()
 
+    def restore_visibility(self) -> None:
+        """Restore last saved visibility state (default: visible)."""
+        prefs = self._load_prefs()
+        if prefs and prefs.get("visible") is False:
+            logger.info("Terror Form HUD: restoring hidden state")
+        else:
+            self.show()
+
     def cleanup(self) -> None:
         """Clean up resources."""
         self._save_position()
@@ -429,16 +438,16 @@ class TerraformHUD(NSObject):
             _PREFS_PATH.write_text(json.dumps({
                 "x": frame.origin.x,
                 "y": frame.origin.y,
+                "visible": self._visible,
             }))
         except Exception:
             logger.debug("Failed to save HUD position", exc_info=True)
 
     @staticmethod
-    def _load_position() -> tuple[float, float] | None:
-        """Load saved panel position, or None for default."""
+    def _load_prefs() -> dict | None:
+        """Load saved HUD prefs (position + visibility), or None."""
         try:
-            data = json.loads(_PREFS_PATH.read_text())
-            return (float(data["x"]), float(data["y"]))
+            return json.loads(_PREFS_PATH.read_text())
         except Exception:
             return None
 
