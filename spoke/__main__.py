@@ -1854,12 +1854,12 @@ class SpokeAppDelegate(NSObject):
         self._show_tray_current()
 
     def _tray_navigate_up(self) -> None:
-        """Navigate up toward more recent entries. Dismiss at top."""
+        """Navigate up toward more recent entries. Stop at top."""
         if not self._tray_active:
             return
         if self._tray_index >= len(self._tray_stack) - 1:
-            # Already at the top — dismiss
-            self._dismiss_tray()
+            # Already at the top — stay put (don't dismiss mid-hold)
+            return
         else:
             self._tray_index += 1
             self._show_tray_current(acknowledge=True)
