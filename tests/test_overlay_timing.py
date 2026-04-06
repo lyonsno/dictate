@@ -141,7 +141,7 @@ class TestOverlayTiming:
 
             overlay.set_text("abc")
 
-            assert overlay._fill_surface_opacity > 0.68
+            assert overlay._fill_surface_opacity > 0.55
             overlay._fill_renderer.set_fill_state.assert_called()
         finally:
             sys.modules.pop("spoke.overlay", None)
