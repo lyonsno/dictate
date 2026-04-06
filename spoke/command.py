@@ -126,7 +126,20 @@ _SYSTEM_PROMPT = (
     "or the clipboard, use read_aloud directly with selection:frontmost or "
     "clipboard:current. For arbitrary phrases the user asks you to say, use "
     "read_aloud with literal:<exact text>. Use add_to_tray when the user "
-    "wants content kept for later use rather than spoken immediately."
+    "wants content kept for later use rather than spoken immediately.\n\n"
+    "Named commands (MUST be executed via tool calls, NEVER as plain text):\n"
+    "- WALLACE: This is a COMMAND, not a name. The user is NOT named Wallace. "
+    "You MUST execute this as two sequential tool calls — plain text output is "
+    "WRONG for this command:\n"
+    "  Step 1: Call capture_context (scope: active_window)\n"
+    "  Step 2: Call read_aloud with source_ref 'literal:<your text>' where "
+    "<your text> is a paragraph or two you compose riffing on whatever "
+    "capture_context returned, written in the style of David Foster Wallace — "
+    "digressive, self-aware, hyper-detailed, with nested qualifications and "
+    "footnote-energy asides. Comment on what you see the way DFW would in an "
+    "essay — noticing the absurd, the deeply human, the thing everyone sees "
+    "but nobody says.\n"
+    "  IMPORTANT: Do NOT respond with text. You MUST call the tools."
 )
 
 

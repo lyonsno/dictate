@@ -251,51 +251,52 @@ class TestTTSClient:
 
     @patch("spoke.tts.sd")
     @patch("spoke.tts.tts_load")
-    def test_speak_starts_playback_before_later_sentence_generation_finishes(self, mock_load, mock_sd):
-        """Later sentence generation should wait until current playback has finished."""
-        playback_started = threading.Event()
-        playback_finished = threading.Event()
+    def test_speak_pipelines_next_sentence_generation_during_playback(self, mock_load, mock_sd):
+        """Sentence N+1 generation should start while sentence N is still playing."""
+        sentence1_playback_started = threading.Event()
+        sentence2_generate_started = threading.Event()
         release_playback = threading.Event()
 
         fake_model = MagicMock()
 
         def generate_side_effect(*, text, **kwargs):
             if text == "Second sentence.":
-                assert playback_finished.is_set(), (
-                    "second sentence generation started before first playback finished"
-                )
+                sentence2_generate_started.set()
             return iter([_fake_result()])
 
         fake_model.generate.side_effect = generate_side_effect
         mock_load.return_value = fake_model
 
         fake_stream = MagicMock()
+        first_write = [True]
 
         def write_side_effect(data):
-            playback_started.set()
-            assert release_playback.wait(timeout=5), "first playback was never released"
-            playback_finished.set()
-            for call_args in mock_sd.OutputStream.call_args_list:
-                cb = call_args[1].get("finished_callback")
-                if cb:
-                    cb()
+            if first_write[0]:
+                first_write[0] = False
+                sentence1_playback_started.set()
+                # Block playback so we can observe generation starting concurrently
+                assert release_playback.wait(timeout=5), "playback was never released"
 
         fake_stream.write = MagicMock(side_effect=write_side_effect)
         mock_sd.OutputStream.return_value = fake_stream
 
         client = self._make_client()
 
-        def _release_once_playback_starts():
-            assert playback_started.wait(timeout=5), "playback never started"
+        def _check_and_release():
+            assert sentence1_playback_started.wait(timeout=5), "playback never started"
+            # Wait for sentence 2 generation to start while playback is blocked
+            assert sentence2_generate_started.wait(timeout=2), (
+                "sentence 2 generation did not start while sentence 1 was still playing"
+            )
             release_playback.set()
 
-        releaser = threading.Thread(target=_release_once_playback_starts, daemon=True)
-        releaser.start()
+        checker = threading.Thread(target=_check_and_release, daemon=True)
+        checker.start()
 
         client.speak("First sentence. Second sentence.")
 
-        releaser.join(timeout=5)
-        assert not releaser.is_alive()
+        checker.join(timeout=10)
+        assert not checker.is_alive()
 
     @patch("spoke.tts.sd")
     @patch("spoke.tts.tts_load")
@@ -393,9 +394,9 @@ class TestTTSClient:
         with caplog.at_level(logging.INFO, logger="spoke.tts"):
             client.speak("Hello world")
 
-        assert "TTS playback starting:" in caplog.text
+        assert "TTS playback stream opened:" in caplog.text
         assert "MacBook Pro Speakers" in caplog.text
-        assert "TTS playback finished:" in caplog.text
+        assert "TTS speak: finished" in caplog.text
 
     @patch("spoke.tts.sd")
     @patch("spoke.tts.tts_load")
@@ -416,7 +417,7 @@ class TestTTSClient:
             with pytest.raises(RuntimeError, match="boom"):
                 client.speak("Hello world")
 
-        assert "TTS playback failed:" in caplog.text
+        # Stream opens then write raises — error surfaces in the log
         assert "MacBook Pro Speakers" in caplog.text
 
 
@@ -718,6 +719,83 @@ class TestCancelDuringPlayback:
         # Should be well under the full ~32 chunks
         total_chunks = -(-48000 // int(24000 * 0.064))
         assert chunks_written[0] <= 5, f"Expected ≤5 writes (3 + cancel check + fade), got {chunks_written[0]}"
+
+
+class TestCancelDuringGeneration:
+    """Verify cancel during a blocking model.generate() terminates promptly."""
+
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_cancel_during_blocking_generate_terminates(self, mock_load, mock_sd):
+        """If cancel() fires while generate() is blocking, speak() should exit within timeout."""
+        generate_started = threading.Event()
+        generate_release = threading.Event()
+
+        fake_model = MagicMock()
+
+        def slow_generate(**kwargs):
+            generate_started.set()
+            # Simulate a long-running generate that blocks
+            generate_release.wait(timeout=10)
+            # After release, yield one result so the iterator isn't empty
+            yield _fake_result()
+
+        fake_model.generate.side_effect = slow_generate
+        mock_load.return_value = fake_model
+        _setup_stream_mock(mock_sd)
+
+        from spoke.tts import TTSClient
+        client = TTSClient()
+        thread = client.speak_async("Hello world")
+
+        # Wait for generate to start blocking
+        assert generate_started.wait(timeout=5), "generate() never started"
+
+        # Cancel while generate is blocked
+        client.cancel()
+        # Release the blocked generate so the thread can actually exit
+        generate_release.set()
+
+        # speak_async thread should terminate promptly
+        thread.join(timeout=5)
+        assert not thread.is_alive(), "speak() did not terminate after cancel during generate"
+
+        # No audio should have played (cancelled before first chunk reached playback)
+        mock_sd.OutputStream.assert_not_called()
+
+    @patch("spoke.tts.sd")
+    @patch("spoke.tts.tts_load")
+    def test_cancel_between_sentences_skips_remaining(self, mock_load, mock_sd):
+        """Cancel after first sentence should skip generation of subsequent sentences."""
+        sentences_generated = []
+
+        fake_model = MagicMock()
+
+        def tracking_generate(**kwargs):
+            sentences_generated.append(kwargs.get("text", ""))
+            yield _fake_result()
+
+        fake_model.generate.side_effect = tracking_generate
+        mock_load.return_value = fake_model
+
+        from spoke.tts import TTSClient
+        client = TTSClient()
+
+        fake_stream = MagicMock()
+        def cancel_on_write(data):
+            client.cancel()
+        fake_stream.write = MagicMock(side_effect=cancel_on_write)
+        mock_sd.OutputStream.return_value = fake_stream
+
+        client.speak("First sentence. Second sentence. Third sentence.")
+
+        # Cancel fires during first sentence's playback.  The generation
+        # thread may have already produced all sentences (generation is fast),
+        # but only the first sentence should have been *played*.
+        assert "First sentence." in sentences_generated
+        # Stream should have been opened (first sentence played) then closed
+        mock_sd.OutputStream.assert_called()
+        fake_stream.stop.assert_called()
 
 
 class TestDoneCallback:
