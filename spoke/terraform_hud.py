@@ -96,6 +96,21 @@ class ToposRowView(NSView):
         frost.setWantsLayer_(True)
         frost.layer().setCornerRadius_(10.0)
         frost.layer().setMasksToBounds_(True)
+
+        # Soft edge falloff — gradient mask fades the frost from opaque center
+        # to transparent at edges, mimicking the SDF rounded-rect falloff.
+        edge_mask = Quartz.CAGradientLayer.layer()
+        edge_mask.setFrame_(((0, 0), (width, _ROW_HEIGHT)))
+        edge_mask.setType_("radial")
+        opaque = Quartz.CGColorCreateGenericRGB(0, 0, 0, 1)
+        clear = Quartz.CGColorCreateGenericRGB(0, 0, 0, 0)
+        edge_mask.setColors_([opaque, opaque, clear])
+        edge_mask.setLocations_([0.0, 0.75, 1.0])  # solid center, fade at edges
+        edge_mask.setStartPoint_((0.5, 0.5))
+        edge_mask.setEndPoint_((1.0, 1.0))
+        edge_mask.setCornerRadius_(10.0)
+        frost.layer().setMask_(edge_mask)
+
         view.addSubview_(frost)
 
         # Text — primary matches overlay _TEXT_COLOR_DARK, secondary tinted by temperature
