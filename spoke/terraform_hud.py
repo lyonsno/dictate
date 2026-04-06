@@ -755,9 +755,9 @@ class TerraformHUD(NSObject):
         self._timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             _REFRESH_INTERVAL, self, "_timerFired:", None, True
         )
-        # Brightness sample: every 3s (CGWindowListCreateImage is expensive)
+        # Brightness sample: every 1.5s, async — doesn't block main thread
         self._brightness_sample_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            3.0, self, "_brightnessSample:", None, True
+            1.5, self, "_brightnessSample:", None, True
         )
         # Brightness chase: 10fps, just math — no screen capture
         self._brightness_chase_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
@@ -776,14 +776,22 @@ class TerraformHUD(NSObject):
         self._refresh()
 
     def _brightnessSample_(self, timer) -> None:
-        """Sample screen brightness (expensive — runs every 3s)."""
-        try:
-            from .glow import _sample_screen_brightness
-            screen = NSScreen.mainScreen()
-            if screen is not None:
-                self._brightness_target = _sample_screen_brightness(screen)
-        except Exception:
-            pass
+        """Kick off async screen brightness sample — never blocks main thread."""
+        import threading
+        screen = NSScreen.mainScreen()
+        if screen is None:
+            return
+        # Capture the screen frame on the main thread (cheap),
+        # then do the expensive CGWindowListCreateImage on a background thread
+        frame = screen.frame()
+        def _sample():
+            try:
+                from .glow import _sample_screen_brightness
+                val = _sample_screen_brightness(screen)
+                self._brightness_target = val
+            except Exception:
+                pass
+        threading.Thread(target=_sample, daemon=True).start()
 
     def _brightnessChase_(self, timer) -> None:
         """Smooth-chase toward brightness target (cheap — runs at 10fps)."""
