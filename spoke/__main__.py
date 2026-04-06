@@ -3757,6 +3757,18 @@ class SpokeAppDelegate(NSObject):
             payload["tts_sidecar_model"] = model_id
         else:
             payload["tts_model"] = model_id
+            # Reset voice when switching between incompatible model families
+            # (e.g. OmniVoice prompts are not valid Voxtral voice names and
+            # vice versa).
+            was_omnivoice = _is_omnivoice_tts_model(current_model)
+            now_omnivoice = _is_omnivoice_tts_model(model_id)
+            if was_omnivoice != now_omnivoice:
+                payload.pop("tts_voice", None)
+                logger.info(
+                    "Cleared tts_voice on model family switch (%s -> %s)",
+                    "omnivoice" if was_omnivoice else "standard",
+                    "omnivoice" if now_omnivoice else "standard",
+                )
         if not self._save_preferences(payload):
             logger.warning(
                 "Skipping relaunch because the TTS model selection could not be persisted"
