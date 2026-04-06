@@ -10,7 +10,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Callable
+
+# Filesystem tools resolve relative paths against ~/dev so the model
+# can use short paths like "epistaxis/projects/spoke/epistaxis.md"
+# regardless of which launcher target started the process.
+_TOOLS_HOME = os.path.expanduser("~/dev")
 
 from spoke.epistaxis_operator import (
     EpistaxisOperator,
@@ -427,14 +433,23 @@ def _execute_add_to_tray(
 
 
 
+def _resolve_tool_path(p: str) -> str:
+    """Resolve a path for filesystem tools.
+
+    Expands ``~``, and resolves relative paths against ``_TOOLS_HOME``
+    (~/dev) so the model can use short paths like ``epistaxis/...``.
+    """
+    expanded = os.path.expanduser(p)
+    if os.path.isabs(expanded):
+        return expanded
+    return os.path.join(_TOOLS_HOME, expanded)
+
+
 def _execute_list_directory(arguments: dict) -> dict[str, Any]:
     import fnmatch
-    import os
     from datetime import datetime, timezone
 
-    dir_path = arguments.get("dir_path")
-    if dir_path is None:
-        dir_path = "."
+    dir_path = _resolve_tool_path(arguments.get("dir_path") or ".")
     pattern = arguments.get("pattern")
     try:
         if not os.path.isdir(dir_path):
@@ -466,14 +481,14 @@ def _execute_list_directory(arguments: dict) -> dict[str, Any]:
         return {"error": str(e)}
 
 def _execute_read_file(arguments: dict) -> dict[str, Any]:
-    import os
     import ast
     import re
     from itertools import islice
 
-    file_path = arguments.get("file_path")
-    if not file_path:
+    raw_path = arguments.get("file_path")
+    if not raw_path:
         return {"error": "file_path is required"}
+    file_path = _resolve_tool_path(raw_path)
 
     start_line = arguments.get("start_line")
     end_line = arguments.get("end_line")
@@ -548,8 +563,10 @@ def _execute_read_file(arguments: dict) -> dict[str, Any]:
         return {"error": str(e)}
 
 def _execute_write_file(arguments: dict) -> dict[str, Any]:
-    import os
-    file_path = arguments.get("file_path", "")
+    raw_path = arguments.get("file_path")
+    if not raw_path:
+        return {"error": "file_path is required"}
+    file_path = _resolve_tool_path(raw_path)
     content = arguments.get("content", "")
     if not file_path:
         return {"error": "file_path is required"}
@@ -576,7 +593,7 @@ def _execute_write_file(arguments: dict) -> dict[str, Any]:
 def _execute_search_file(arguments: dict) -> dict[str, Any]:
     import subprocess
     pattern = arguments.get("pattern", "")
-    dir_path = arguments.get("dir_path", ".")
+    dir_path = _resolve_tool_path(arguments.get("dir_path", "."))
     if not pattern:
         return {"error": "pattern is required"}
     try:
@@ -595,12 +612,11 @@ def _execute_search_file(arguments: dict) -> dict[str, Any]:
 
 
 def _execute_find_file(arguments: dict) -> dict[str, Any]:
-    import os
     from datetime import datetime, timezone
     from pathlib import Path
 
     pattern = arguments.get("pattern", "")
-    dir_path = arguments.get("dir_path", ".")
+    dir_path = _resolve_tool_path(arguments.get("dir_path", "."))
     if not pattern:
         return {"error": "pattern is required"}
     try:

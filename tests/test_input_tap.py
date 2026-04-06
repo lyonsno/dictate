@@ -1029,12 +1029,14 @@ class TestTrayAwareness:
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
         on_end.assert_called_once_with(shift_held=False, enter_held=True)
 
-    def test_enter_tap_before_waiting_release_routes_assistant(self, input_tap_module):
-        """A brief Enter tap during WAITING should win if Enter releases before Space."""
+    def test_enter_during_waiting_toggles_overlay_not_assistant(self, input_tap_module):
+        """Enter during WAITING (before hold threshold) should toggle overlay
+        and return to IDLE, not route as enter_held to the assistant."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
-        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        det, _, on_end, on_enter_toggle, _, _ = self._make_detector(input_tap_module)
+        det._on_enter_during_waiting = on_enter_toggle
         mod._active_detector = det
         event = MagicMock()
 
@@ -1044,14 +1046,11 @@ class TestTrayAwareness:
         Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
         Quartz.CGEventGetFlags.return_value = 0
         result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
-        result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
 
         assert result_down is None, "Enter keyDown must be suppressed during waiting"
-        assert result_up is None, "Enter keyUp must be suppressed during waiting"
-
-        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
-
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
+        assert det._state == mod._State.IDLE, "Should return to IDLE after toggle"
+        on_enter_toggle.assert_called_once()
+        on_end.assert_not_called()
 
     def test_enter_keyup_after_space_release_stays_suppressed(self, input_tap_module):
         """If Space releases first, the trailing Enter keyUp must still be swallowed."""
@@ -1316,33 +1315,28 @@ class TestCommandOverlayFlags:
         on_dismiss.assert_not_called()
         assert det.command_overlay_active is True
 
-    def test_enter_quick_tap_routes_to_hold_end_in_waiting_state(self, input_tap_module):
-        """If Enter releases first in WAITING, the chord should route as assistant."""
+    def test_enter_during_waiting_toggles_overlay(self, input_tap_module):
+        """Enter during WAITING should toggle overlay and return to IDLE,
+        not route as enter_held to the assistant."""
         mod = input_tap_module
         Quartz = __import__("Quartz")
 
-        det, _, on_end, _ = self._make_detector(input_tap_module)
+        det, _, on_end, on_dismiss = self._make_detector(input_tap_module)
+        on_toggle = MagicMock()
+        det._on_enter_during_waiting = on_toggle
         mod._active_detector = det
         event = MagicMock()
 
-        # Press Enter while WAITING.
         det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
         assert det._state == mod._State.WAITING
 
-        # Enter keyDown while WAITING should mark Enter as currently held.
         Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
         Quartz.CGEventGetFlags.return_value = 0
-        mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
-        assert det._enter_held is True
-
-        # Enter releases before Space.
-        result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
-        assert result_up is None
-
-        # Should route through on_hold_end with enter_held=True
-        on_end.assert_called_once_with(shift_held=False, enter_held=True)
-        assert det._awaiting_space_release is True
-        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+        result = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        assert result is None
+        assert det._state == mod._State.IDLE
+        on_toggle.assert_called_once()
+        on_end.assert_not_called()
 
 
 class TestDoubleTapGestures:
@@ -1395,10 +1389,10 @@ class TestDoubleTapGestures:
         det.cancel_spring_active = False
         det._on_cancel_spring_start = None
         det._on_cancel_spring_release = None
-        det._on_double_enter_during_hold = on_double_enter
+        det._on_enter_during_waiting = on_double_enter
         det._on_double_tap_shift = on_double_shift
-        det._last_held_enter_down = 0.0
         det._last_idle_shift_up = 0.0
+        det._shift_single_tap_timer = None
         return det, on_start, on_end, on_double_enter, on_double_shift
 
     def _enter_tap(self, mod, event):
@@ -1435,11 +1429,11 @@ class TestDoubleTapGestures:
         Quartz.CGEventGetFlags.return_value = 0
         mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
 
-    def test_double_enter_during_hold_fires_callback(self, input_tap_module, monkeypatch):
-        """Two Enter key-downs within 300ms during spacebar hold should fire."""
+    def test_enter_during_waiting_fires_toggle(self, input_tap_module, monkeypatch):
+        """Enter key-down during WAITING (before hold threshold) should fire toggle."""
         import time as _time
         mod = input_tap_module
-        det, _, _, on_double_enter, _ = self._make_detector(mod)
+        det, on_start, _, on_enter_toggle, _ = self._make_detector(mod)
         mod._active_detector = det
         event = MagicMock()
 
@@ -1447,58 +1441,23 @@ class TestDoubleTapGestures:
         now = 1000.0
         monkeypatch.setattr(_time, "monotonic", lambda: now)
         self._space_down(mod, event)
+        assert det._state == mod._State.WAITING
 
-        # First Enter
-        now = 1000.1
-        monkeypatch.setattr(_time, "monotonic", lambda: now)
+        # Enter during WAITING — should toggle and return to IDLE
         self._enter_down(mod, event)
-        on_double_enter.assert_not_called()
+        on_enter_toggle.assert_called_once()
+        assert det._state == mod._State.IDLE
+        on_start.assert_not_called()  # recording never started
 
-        # Second Enter within window
-        now = 1000.35
-        monkeypatch.setattr(_time, "monotonic", lambda: now)
-        self._enter_down(mod, event)
-        on_double_enter.assert_called_once()
-
-    def test_slow_double_enter_during_hold_does_not_fire(self, input_tap_module, monkeypatch):
-        """Two Enter key-downs more than 300ms apart during hold should NOT fire."""
-        import time as _time
+    def test_enter_idle_passes_through(self, input_tap_module, monkeypatch):
+        """Enter in IDLE (no spacebar held) should pass through — no toggle."""
         mod = input_tap_module
-        det, _, _, on_double_enter, _ = self._make_detector(mod)
+        det, _, _, on_enter_toggle, _ = self._make_detector(mod)
         mod._active_detector = det
         event = MagicMock()
 
-        # Hold spacebar
-        now = 1000.0
-        monkeypatch.setattr(_time, "monotonic", lambda: now)
-        self._space_down(mod, event)
-
-        now = 1000.1
-        monkeypatch.setattr(_time, "monotonic", lambda: now)
-        self._enter_down(mod, event)
-
-        now = 1000.5  # 400ms — outside window
-        monkeypatch.setattr(_time, "monotonic", lambda: now)
-        self._enter_down(mod, event)
-        on_double_enter.assert_not_called()
-
-    def test_double_enter_idle_does_not_fire(self, input_tap_module, monkeypatch):
-        """Double-tap Enter in IDLE (no spacebar held) should NOT fire — Enter
-        passes through to the app normally."""
-        import time as _time
-        mod = input_tap_module
-        det, _, _, on_double_enter, _ = self._make_detector(mod)
-        mod._active_detector = det
-        event = MagicMock()
-
-        now = 1000.0
-        monkeypatch.setattr(_time, "monotonic", lambda: now)
         self._enter_tap(mod, event)
-
-        now = 1000.2
-        monkeypatch.setattr(_time, "monotonic", lambda: now)
-        self._enter_tap(mod, event)
-        on_double_enter.assert_not_called()
+        on_enter_toggle.assert_not_called()
 
     def test_double_tap_shift_fires_callback(self, input_tap_module, monkeypatch):
         """Two Shift taps within 300ms should fire _on_double_tap_shift."""
