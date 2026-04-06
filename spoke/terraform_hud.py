@@ -123,6 +123,7 @@ class ToposRowView(NSView):
         view = cls.alloc().initWithFrame_(NSMakeRect(0, 0, width, _ROW_HEIGHT))
         view._topos = topos
         view.setWantsLayer_(True)
+        view.layer().setBackgroundColor_(Quartz.CGColorCreateGenericRGB(0, 0, 0, 0))
 
         rgba = _TEMP_COLORS.get(topos.temperature or "", (0.5, 0.5, 0.5, 0.08))
         r, g, b, _a = rgba
