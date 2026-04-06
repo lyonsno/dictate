@@ -1166,6 +1166,8 @@ class TestDualModelConfiguration:
         d = _make_delegate(main_module, monkeypatch)
         d._whisper_backend = "local"
         d._whisper_sidecar_url = ""
+        d._whisper_cloud_url = ""
+        d._whisper_cloud_api_key = ""
 
         model_state = d._handle_model_menu_action(None)
 
@@ -1174,7 +1176,9 @@ class TestDualModelConfiguration:
             "items": [
                 ("local", "Local Whisper", True),
                 ("sidecar", "Sidecar (not configured)", False, False),
+                ("cloud", "Cloud (not configured)", False, False),
                 ("configure_whisper", "Set Whisper Sidecar URL\u2026", False, True),
+                ("configure_whisper_cloud", "Set Cloud API Key\u2026", False, True),
             ],
         }
 
@@ -1184,6 +1188,8 @@ class TestDualModelConfiguration:
         d = _make_delegate(main_module, monkeypatch)
         d._whisper_backend = "sidecar"
         d._whisper_sidecar_url = "http://my-server:8080"
+        d._whisper_cloud_url = ""
+        d._whisper_cloud_api_key = ""
 
         model_state = d._handle_model_menu_action(None)
 
@@ -1192,6 +1198,21 @@ class TestDualModelConfiguration:
         assert items[0] == ("local", "Local Whisper", False)
         assert items[1][0] == "sidecar"
         assert items[1][2] is True  # selected
+
+    def test_handle_model_menu_none_surfaces_transcription_backend_cloud(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "cloud"
+        d._whisper_sidecar_url = ""
+        d._whisper_cloud_url = "https://api.openai.com"
+        d._whisper_cloud_api_key = "sk-test"
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["transcription_backend"]["title"] == "Transcription: Cloud (OpenAI)"
+        items = model_state["transcription_backend"]["items"]
+        assert items[2] == ("cloud", "Cloud (OpenAI)", True, True)
 
     def test_selecting_transcription_backend_sidecar_persists_and_relaunches(
         self, main_module, monkeypatch
@@ -1221,6 +1242,22 @@ class TestDualModelConfiguration:
         d._save_preference.assert_not_called()
         d._menubar.set_status_text.assert_called_once_with(
             "No Whisper sidecar URL configured"
+        )
+
+    def test_selecting_transcription_backend_cloud_blocked_without_key(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._whisper_cloud_api_key = ""
+        d._menubar = MagicMock()
+        d._save_preference = MagicMock()
+
+        d._handle_model_menu_action(("transcription_backend", "cloud"))
+
+        d._save_preference.assert_not_called()
+        d._menubar.set_status_text.assert_called_once_with(
+            "No cloud API key configured"
         )
 
     def test_selecting_transcription_backend_noop_when_already_selected(

@@ -35,10 +35,14 @@ class TranscriptionClient:
         base_url: str,
         model: str = _DEFAULT_MODEL,
         timeout: float = 60.0,
+        api_key: str = "",
     ) -> None:
         self._url = f"{base_url.rstrip('/')}/v1/audio/transcriptions"
         self._model = model
-        self._client = httpx.Client(timeout=timeout)
+        headers = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        self._client = httpx.Client(timeout=timeout, headers=headers)
 
     def transcribe(self, wav_bytes: bytes) -> str:
         """Send WAV audio and return transcribed text.

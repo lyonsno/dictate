@@ -133,6 +133,8 @@ _DEFAULT_CLOUD_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 _DEFAULT_CLOUD_MODEL = "gemini-2.5-flash"
 _DEFAULT_TTS_SIDECAR_URL = "http://MacBook-Pro-2.local:9001"
 _DEFAULT_WHISPER_SIDECAR_URL = ""
+_DEFAULT_WHISPER_CLOUD_URL = "https://api.openai.com"
+_DEFAULT_WHISPER_CLOUD_MODEL = "whisper-1"
 
 
 def _url_host(url: str) -> str:
@@ -584,6 +586,17 @@ class SpokeAppDelegate(NSObject):
             or os.environ.get("SPOKE_WHISPER_URL", "")
             or _DEFAULT_WHISPER_SIDECAR_URL
         )
+        self._whisper_cloud_url = (
+            self._load_preference("whisper_cloud_url")
+            or _DEFAULT_WHISPER_CLOUD_URL
+        )
+        self._whisper_cloud_api_key = (
+            self._load_preference("whisper_cloud_api_key") or ""
+        )
+        self._whisper_cloud_model = (
+            self._load_preference("whisper_cloud_model")
+            or _DEFAULT_WHISPER_CLOUD_MODEL
+        )
         saved_whisper_backend = self._load_preference("whisper_backend")
         if saved_whisper_backend:
             self._whisper_backend = saved_whisper_backend
@@ -595,12 +608,21 @@ class SpokeAppDelegate(NSObject):
         if whisper_url and not self._load_preference("whisper_sidecar_url"):
             self._whisper_sidecar_url = whisper_url
         # Resolve effective whisper URL from backend choice.
+        whisper_api_key = ""
         if self._whisper_backend == "sidecar" and self._whisper_sidecar_url:
             whisper_url = self._whisper_sidecar_url
+        elif self._whisper_backend == "cloud" and self._whisper_cloud_url:
+            whisper_url = self._whisper_cloud_url
+            whisper_api_key = self._whisper_cloud_api_key
         elif self._whisper_backend == "local":
             whisper_url = ""
         self._whisper_url = whisper_url
+        self._whisper_api_key = whisper_api_key
         self._preview_model_id, self._transcription_model_id = self._resolve_model_ids()
+        # Cloud backend uses its own model ID for both roles.
+        if self._whisper_backend == "cloud":
+            self._preview_model_id = self._whisper_cloud_model
+            self._transcription_model_id = self._whisper_cloud_model
         self._client_cache: dict[tuple[str, str], object] = {}
         self._capture = AudioCapture()
         self._capture.warmup()
@@ -2835,8 +2857,17 @@ class SpokeAppDelegate(NSObject):
             whisper_backend = getattr(self, "_whisper_backend", "local")
             whisper_sidecar_url = getattr(self, "_whisper_sidecar_url", "")
             has_whisper_sidecar_url = bool(whisper_sidecar_url)
+            whisper_cloud_url = getattr(self, "_whisper_cloud_url", "")
+            has_whisper_cloud = bool(
+                whisper_cloud_url and getattr(self, "_whisper_cloud_api_key", "")
+            )
+            backend_labels = {
+                "local": "Local",
+                "sidecar": "Sidecar",
+                "cloud": "Cloud (OpenAI)",
+            }
             state["transcription_backend"] = {
-                "title": f"Transcription: {'Sidecar' if whisper_backend == 'sidecar' else 'Local'}",
+                "title": f"Transcription: {backend_labels.get(whisper_backend, whisper_backend)}",
                 "items": [
                     ("local", "Local Whisper", whisper_backend == "local"),
                     ("sidecar", (
@@ -2844,7 +2875,13 @@ class SpokeAppDelegate(NSObject):
                         if has_whisper_sidecar_url
                         else "Sidecar (not configured)"
                     ), whisper_backend == "sidecar", has_whisper_sidecar_url),
+                    ("cloud", (
+                        "Cloud (OpenAI)"
+                        if has_whisper_cloud
+                        else "Cloud (not configured)"
+                    ), whisper_backend == "cloud", has_whisper_cloud),
                     ("configure_whisper", "Set Whisper Sidecar URL\u2026", False, True),
+                    ("configure_whisper_cloud", "Set Cloud API Key\u2026", False, True),
                 ],
             }
             if self._local_whisper_controls_available():
@@ -3542,9 +3579,12 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_status_text("TTS sidecar URL saved")
 
     def _apply_transcription_backend_selection(self, backend: str) -> None:
-        """Switch Whisper transcription backend between 'local' and 'sidecar', then relaunch."""
+        """Switch Whisper transcription backend between local/sidecar/cloud, then relaunch."""
         if backend == "configure_whisper":
             self._configure_whisper_sidecar_url()
+            return
+        if backend == "configure_whisper_cloud":
+            self._configure_whisper_cloud()
             return
         if backend == getattr(self, "_whisper_backend", "local"):
             return
@@ -3552,6 +3592,11 @@ class SpokeAppDelegate(NSObject):
             logger.warning("Cannot switch to sidecar: no Whisper sidecar URL configured")
             if self._menubar is not None:
                 self._menubar.set_status_text("No Whisper sidecar URL configured")
+            return
+        if backend == "cloud" and not getattr(self, "_whisper_cloud_api_key", ""):
+            logger.warning("Cannot switch to cloud: no API key configured")
+            if self._menubar is not None:
+                self._menubar.set_status_text("No cloud API key configured")
             return
         logger.info("Switching Whisper backend: %s -> %s", self._whisper_backend, backend)
         self._save_preference("whisper_backend", backend)
@@ -3590,6 +3635,44 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text("Whisper sidecar URL saved")
 
+    def _configure_whisper_cloud(self) -> None:
+        """Show a dialog to set or change the OpenAI Whisper cloud API key."""
+        current_key = getattr(self, "_whisper_cloud_api_key", "") or ""
+
+        alert = NSAlert.new()
+        alert.setMessageText_("Cloud Whisper (OpenAI)")
+        alert.setInformativeText_(
+            "Enter your OpenAI API key for cloud transcription.\n"
+            "Uses the whisper-1 model at api.openai.com."
+        )
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
+        field.setStringValue_(current_key)
+        field.setPlaceholderString_("sk-...")
+        alert.setAccessoryView_(field)
+        alert.addButtonWithTitle_("Save")
+        alert.addButtonWithTitle_("Cancel")
+        response = alert.runModal()
+        if response != 1000:
+            return
+        value = field.stringValue()
+        if not isinstance(value, str):
+            return
+        value = value.strip()
+        if not value:
+            return
+        self._save_preference("whisper_cloud_api_key", value)
+        self._save_preference("whisper_cloud_url", _DEFAULT_WHISPER_CLOUD_URL)
+        self._save_preference("whisper_cloud_model", _DEFAULT_WHISPER_CLOUD_MODEL)
+        self._whisper_cloud_api_key = value
+        self._whisper_cloud_url = _DEFAULT_WHISPER_CLOUD_URL
+        self._whisper_cloud_model = _DEFAULT_WHISPER_CLOUD_MODEL
+        logger.info("Whisper cloud API key saved")
+        # Auto-switch to cloud if not already on it.
+        if self._whisper_backend != "cloud":
+            self._save_preference("whisper_backend", "cloud")
+            self._whisper_backend = "cloud"
+        self._relaunch()
+
     def _get_client(self, whisper_url: str, model_id: str):
         cache_key = (whisper_url, model_id)
         if cache_key in self._client_cache:
@@ -3600,8 +3683,11 @@ class SpokeAppDelegate(NSObject):
 
     def _build_client(self, whisper_url: str, model_id: str):
         if whisper_url:
-            logger.info("Using sidecar transcription: %s (%s)", whisper_url, model_id)
-            return TranscriptionClient(base_url=whisper_url, model=model_id)
+            api_key = getattr(self, "_whisper_api_key", "")
+            logger.info("Using remote transcription: %s (%s)", whisper_url, model_id)
+            return TranscriptionClient(
+                base_url=whisper_url, model=model_id, api_key=api_key,
+            )
         if model_id == _PARAKEET_MODEL_ID:
             model_dir = self._resolve_parakeet_model_dir()
             logger.info("Using Parakeet CoreML: %s", model_dir)
