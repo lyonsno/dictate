@@ -280,8 +280,19 @@ class _ManualScrollView(NSView):
 
     def mouseDown_(self, event):
         self._drag_origin = event.locationInWindow()
+        self._drag_moved = False
+
+    def mouseUp_(self, event):
+        if getattr(self, '_drag_moved', False):
+            return
+        # Click (not drag) — resolve which card was hit
+        loc = self.convertPoint_fromView_(event.locationInWindow(), None)
+        hud = getattr(self, '_hud_ref', None)
+        if hud is not None:
+            hud._handle_card_click(loc.x, loc.y, self._scroll_offset)
 
     def mouseDragged_(self, event):
+        self._drag_moved = True
         origin = getattr(self, '_drag_origin', None)
         if origin is None:
             return
@@ -338,6 +349,12 @@ class TerraformHUD(NSObject):
         self._hide_katastasis = True
         self._filter_machine: str | None = None
         self._filter_tool: str | None = None
+        # Detail panel expansion state
+        self._expanded_index: int | None = None  # which card is expanded
+        self._expand_progress: float = 0.0  # 0→1 animation progress
+        self._expand_phase: str = "idle"  # idle, extend, drop, open
+        self._expand_timer: NSTimer | None = None
+        self._detail_labels: list = []  # NSTextFields for detail content
         return self
 
     def setup(self) -> None:
@@ -404,6 +421,7 @@ class TerraformHUD(NSObject):
                                    content_frame.size.height - _STATS_HEIGHT)
         self._scroll_view = _ManualScrollView.alloc().initWithFrame_(scroll_frame)
         self._scroll_view.setAutoresizingMask_(18)  # width + height flex
+        self._scroll_view._hud_ref = self  # for click routing
         self._panel.contentView().addSubview_(self._scroll_view)
 
         # Metal SDF card renderer — replaces NSVisualEffectView frost
@@ -538,6 +556,154 @@ class TerraformHUD(NSObject):
         if self._panel is not None:
             self._panel.close()
             self._panel = None
+
+    # -- detail panel --
+
+    _DETAIL_WIDTH = 400  # expanded detail panel width (pt)
+    _DETAIL_DROP_HEIGHT = 200  # how far the panel drops (pt)
+    _EXTEND_DURATION = 0.2  # seconds for horizontal extension
+    _DROP_DURATION = 0.15  # seconds for vertical drop
+
+    def _handle_card_click(self, x: float, y: float, scroll_offset: float) -> None:
+        """Map a click in scroll-view coordinates to a card index."""
+        if not self._topoi:
+            return
+        inset = _GLOW_MARGIN if self._metal_renderer is not None else 0
+        scroll_bounds = self._scroll_view.bounds() if self._scroll_view else None
+        if scroll_bounds is None:
+            return
+
+        row_stride = _ROW_HEIGHT + _ROW_GAP
+        total_height = max(
+            len(self._topoi) * row_stride + _PADDING,
+            scroll_bounds.size.height,
+        )
+
+        # Convert click y to content coordinates (accounting for scroll)
+        content_y = y + scroll_offset
+
+        for i in range(len(self._topoi)):
+            card_y = total_height - (i + 1) * row_stride
+            if card_y <= content_y <= card_y + _ROW_HEIGHT:
+                self._toggle_detail(i)
+                return
+
+        # Clicked outside any card — collapse
+        if self._expanded_index is not None:
+            self._collapse_detail()
+
+    def _toggle_detail(self, index: int) -> None:
+        """Toggle detail panel for the given card index."""
+        if self._expanded_index == index:
+            self._collapse_detail()
+            return
+
+        self._expanded_index = index
+        self._expand_progress = 0.0
+        self._expand_phase = "extend"
+        self._cancel_expand_timer()
+        self._expand_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0 / 60.0, self, "_expandTick:", None, True
+        )
+        logger.info("Detail panel expanding for card %d: %s",
+                     index, self._topoi[index].id if index < len(self._topoi) else "?")
+
+    def _collapse_detail(self) -> None:
+        """Collapse the detail panel."""
+        self._cancel_expand_timer()
+        self._expanded_index = None
+        self._expand_progress = 0.0
+        self._expand_phase = "idle"
+        self._clear_detail_labels()
+        self._force_rebuild()
+
+    def _expandTick_(self, timer) -> None:
+        """Animate the two-phase detail expansion."""
+        dt = 1.0 / 60.0
+
+        if self._expand_phase == "extend":
+            self._expand_progress += dt / self._EXTEND_DURATION
+            if self._expand_progress >= 1.0:
+                self._expand_progress = 0.0
+                self._expand_phase = "drop"
+            self._force_rebuild()
+
+        elif self._expand_phase == "drop":
+            self._expand_progress += dt / self._DROP_DURATION
+            if self._expand_progress >= 1.0:
+                self._expand_progress = 1.0
+                self._expand_phase = "open"
+                self._cancel_expand_timer()
+                self._show_detail_labels()
+            self._force_rebuild()
+
+    def _cancel_expand_timer(self) -> None:
+        if self._expand_timer is not None:
+            self._expand_timer.invalidate()
+            self._expand_timer = None
+
+    def _force_rebuild(self) -> None:
+        """Force a content rebuild including the expanded card geometry."""
+        self._last_topos_keys = None  # invalidate cache
+        self._rebuild_content()
+
+    def _show_detail_labels(self) -> None:
+        """Create text labels for the expanded detail panel."""
+        self._clear_detail_labels()
+        if self._expanded_index is None or self._expanded_index >= len(self._topoi):
+            return
+        topos = self._topoi[self._expanded_index]
+
+        # Position: left of the card column, below the card
+        scroll_bounds = self._scroll_view.bounds() if self._scroll_view else None
+        if scroll_bounds is None or self._content_view is None:
+            return
+
+        inset = _GLOW_MARGIN if self._metal_renderer is not None else 0
+        row_stride = _ROW_HEIGHT + _ROW_GAP
+        total_height = max(
+            len(self._topoi) * row_stride + _PADDING,
+            scroll_bounds.size.height,
+        )
+        card_y = total_height - (self._expanded_index + 1) * row_stride
+        card_x = inset + 4.0
+        detail_x = card_x - self._DETAIL_WIDTH
+        detail_y = card_y - self._DETAIL_DROP_HEIGHT
+
+        # Build detail text
+        lines = []
+        if topos.status:
+            lines.append(("Status", topos.status))
+        if topos.branch:
+            lines.append(("Branch", topos.branch))
+        if topos.machine:
+            lines.append(("Machine", topos.machine))
+        if topos.tool:
+            lines.append(("Tool", topos.tool))
+        if topos.observed:
+            lines.append(("Observed", topos.observed))
+        if topos.resume_cmd:
+            lines.append(("Resume", topos.resume_cmd))
+        if topos.attractors:
+            lines.append(("Attractors", ", ".join(topos.attractors)))
+
+        y_cursor = detail_y + self._DETAIL_DROP_HEIGHT - 8
+        for field_name, value in lines:
+            text = f"{field_name}: {value}"
+            label = _make_label(
+                text,
+                NSMakeRect(detail_x + 8, y_cursor - 14, self._DETAIL_WIDTH - 16, 14),
+                size=10.0, bold=False,
+                color=NSColor.colorWithWhite_alpha_(0.85, 1.0),
+            )
+            self._content_view.addSubview_(label)
+            self._detail_labels.append(label)
+            y_cursor -= 16
+
+    def _clear_detail_labels(self) -> None:
+        for label in self._detail_labels:
+            label.removeFromSuperview()
+        self._detail_labels = []
 
     # -- private --
 
@@ -677,6 +843,43 @@ class TerraformHUD(NSObject):
                     r=cr, g=cg, b=cb,
                     alpha=_SDF_CARD_ALPHA,
                 ))
+            # Add expanded detail card if active
+            if (self._expanded_index is not None
+                    and self._expanded_index < len(self._topoi)
+                    and self._expand_phase != "idle"):
+                ei = self._expanded_index
+                ey = total_height - (ei + 1) * row_stride
+                ecr, ecg, ecb = _temp_fill_color(
+                    self._topoi[ei].temperature,
+                    getattr(self, '_brightness', 0.0),
+                )
+                card_x = (inset + 4.0)
+                card_right = card_x + card_width
+
+                # Phase 1: extend left (progress 0→1 = width 0→DETAIL_WIDTH)
+                if self._expand_phase == "extend":
+                    ext_w = self._DETAIL_WIDTH * self._expand_progress
+                    cards.append(CardInfo(
+                        x=(card_x - ext_w) * scale,
+                        y=ey * scale,
+                        width=(card_width + ext_w) * scale,
+                        height=_ROW_HEIGHT * scale,
+                        r=ecr, g=ecg, b=ecb,
+                        alpha=_SDF_CARD_ALPHA,
+                    ))
+                # Phase 2: drop down (progress 0→1 = height ROW→ROW+DROP)
+                elif self._expand_phase in ("drop", "open"):
+                    drop_h = self._DETAIL_DROP_HEIGHT * min(self._expand_progress, 1.0)
+                    full_w = card_width + self._DETAIL_WIDTH
+                    cards.append(CardInfo(
+                        x=(card_x - self._DETAIL_WIDTH) * scale,
+                        y=(ey - drop_h) * scale,
+                        width=full_w * scale,
+                        height=(_ROW_HEIGHT + drop_h) * scale,
+                        r=ecr, g=ecg, b=ecb,
+                        alpha=_SDF_CARD_ALPHA,
+                    ))
+
             self._metal_renderer.set_cards(cards)
             self._metal_renderer.set_scroll_offset(
                 self._scroll_view._scroll_offset * scale,

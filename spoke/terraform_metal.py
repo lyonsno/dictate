@@ -148,8 +148,11 @@ inline float fill_alpha(float sd, float width, float floor_val) {
     return floor_val * exp(-normalized * normalized);
 }
 
-// Ring profile: peaks near the card boundary, fades both inward and outward.
+// Ring profile: only visible outside the card (sd > 0).
+// Peaks at ring_offset distance from boundary, fades with Gaussian.
+// Zero inside the card — no bumper at the edge.
 inline float ring_alpha(float sd, float ring_width, float ring_offset) {
+    if (sd <= 0.0) return 0.0;  // nothing inside the card
     float shifted = sd - ring_offset;
     float normalized = shifted / max(ring_width, 1e-6);
     return exp(-normalized * normalized);
@@ -272,10 +275,13 @@ class CardInfo:
 
 # ── Renderer ─────────────────────────────────────────────────────────
 # Chromatic aberration config
-_GOLD_RGB = (1.0, 0.85, 0.4)
-_BLUE_RGB = (0.4, 0.6, 1.0)
-_RING_STRENGTH = 0.07        # per-ring opacity
-_CHROMA_OFFSET_PT = 1.5      # point offset for chromatic split
+# Chromatic aberration: beneficent prismatic light — warm gold present,
+# cool blue recessive. Asymmetric: gold stronger than blue.
+_GOLD_RGB = (1.0, 0.82, 0.45)
+_GOLD_STRENGTH = 0.06
+_BLUE_RGB = (0.55, 0.65, 0.85)   # desaturated, recessive
+_BLUE_STRENGTH = 0.035            # half the gold — blue recedes
+_CHROMA_OFFSET_PT = 1.5           # point offset for chromatic split
 
 
 class TerraformCardRenderer:
@@ -359,10 +365,10 @@ class TerraformCardRenderer:
         # Draw fill layer
         ok = self._draw_layer(self._fill_layer, self._pipelines["fs_fill"],
                               self._uniform_buffer) and ok
-        # Draw gold ring layer
-        ok = self._draw_ring_layer(self._gold_layer, _GOLD_RGB) and ok
-        # Draw blue ring layer
-        ok = self._draw_ring_layer(self._blue_layer, _BLUE_RGB) and ok
+        # Draw gold ring layer — warm, present
+        ok = self._draw_ring_layer(self._gold_layer, _GOLD_RGB, _GOLD_STRENGTH) and ok
+        # Draw blue ring layer — cool, recessive
+        ok = self._draw_ring_layer(self._blue_layer, _BLUE_RGB, _BLUE_STRENGTH) and ok
         return ok
 
     def _pack_uniforms(self, cards: list[CardInfo]) -> bytes:
@@ -406,16 +412,14 @@ class TerraformCardRenderer:
         cmd.commit()
         return True
 
-    def _draw_ring_layer(self, layer, ring_rgb: tuple) -> bool:
-        """Draw a chromatic ring layer with the given tint color."""
-        # Build ring uniforms: same card positions, but color = ring tint,
-        # alpha = ring strength. Only card[0] color is used by fs_ring.
+    def _draw_ring_layer(self, layer, ring_rgb: tuple, strength: float = 0.05) -> bool:
+        """Draw a chromatic ring layer with the given tint color and strength."""
         ring_cards = []
         for c in self._cards:
             ring_cards.append(CardInfo(
                 x=c.x, y=c.y, width=c.width, height=c.height,
                 r=ring_rgb[0], g=ring_rgb[1], b=ring_rgb[2],
-                alpha=_RING_STRENGTH,
+                alpha=strength,
             ))
         payload = self._pack_uniforms(ring_cards)
 
