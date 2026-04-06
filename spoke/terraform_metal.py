@@ -135,19 +135,17 @@ inline float card_sdf(float2 pixel, float4 rect, float corner_radius) {
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - corner_radius;
 }
 
-// Card fill: crisp edge with fast outer scoop, floored interior.
-// Inside: smoothstep ramp to floor — uniform material interior.
-// Outside: Gaussian-like exp(-(d/w)^2) — drops to near-zero fast,
-// no murky haze between adjacent cards.
+// Card fill: flat interior at floor, fast Gaussian outer scoop.
+// No bright peak at the boundary — uniform material throughout,
+// fading to zero outside.
 inline float fill_alpha(float sd, float width, float floor_val) {
     if (sd <= 0.0) {
-        // Interior: smooth ramp from 1.0 at boundary toward floor
-        float t = clamp(-sd / max(width * 3.0, 1e-6), 0.0, 1.0);
-        return mix(1.0, floor_val, t * t);
+        // Interior: flat at floor level — no edge highlight
+        return floor_val;
     }
-    // Outside: fast Gaussian scoop
+    // Outside: fast Gaussian scoop from floor to zero
     float normalized = sd / max(width, 1e-6);
-    return exp(-normalized * normalized);
+    return floor_val * exp(-normalized * normalized);
 }
 
 // Outer glow: slightly wider Gaussian tail for subtle aura
