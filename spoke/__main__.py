@@ -643,11 +643,16 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay._on_cancel_spring_threshold = self._on_cancel_spring_threshold
             self._refresh_command_model_options_async()
 
-        # Terraform topoi HUD — starts open
-        from .terraform_hud import TerraformHUD
-        self._terraform_hud = TerraformHUD.alloc().init()
-        self._terraform_hud.show()
-        self._menubar._on_toggle_terraform = self._terraform_hud.toggle
+        # Terraform topoi HUD — starts open when the host AppKit surface supports it.
+        try:
+            from .terraform_hud import TerraformHUD
+        except Exception:
+            logger.exception("Terraform HUD unavailable; continuing without HUD")
+            self._terraform_hud = None
+        else:
+            self._terraform_hud = TerraformHUD.alloc().init()
+            self._terraform_hud.show()
+            self._menubar._on_toggle_terraform = self._terraform_hud.toggle
 
         # Step 1: Request mic permission with a test recording.
         # This triggers the system prompt before we start listening for spacebar.
@@ -3259,7 +3264,9 @@ class SpokeAppDelegate(NSObject):
     def _build_tts_client(self, *, allow_default_voice: bool = False):
         """Build a TTS client based on backend preference and env vars."""
         voice = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE")
-        if self._tts_backend == "sidecar" and self._tts_sidecar_url:
+        tts_backend = getattr(self, "_tts_backend", "local")
+        tts_sidecar_url = getattr(self, "_tts_sidecar_url", None)
+        if tts_backend == "sidecar" and tts_sidecar_url:
             if not voice:
                 return None
             model_id = (
@@ -3267,7 +3274,7 @@ class SpokeAppDelegate(NSObject):
                 or os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
             )
             return RemoteTTSClient(
-                base_url=self._tts_sidecar_url,
+                base_url=tts_sidecar_url,
                 model_id=model_id,
                 voice=voice,
             )
@@ -3280,7 +3287,7 @@ class SpokeAppDelegate(NSObject):
         return TTSClient(
             model_id=model_id,
             voice=voice or None,
-            gpu_lock=self._local_inference_lock,
+            gpu_lock=getattr(self, "_local_inference_lock", None),
         )
 
     def _discover_tts_sidecar_models(self) -> list[tuple[str, str, bool]]:

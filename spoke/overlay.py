@@ -1662,7 +1662,7 @@ class TranscriptionOverlay(NSObject):
             scale = getattr(self, '_fill_scale', 2.0)
             t = getattr(self, '_brightness', 0.0)
             width, floor, _opacity_min, _opacity_max = _fill_profile_for_brightness(t)
-
+            width, floor, _opacity_min, _opacity_max = _fill_profile_for_brightness(t)
             fill_override_rgb = getattr(self, "_fill_override_rgb", None)
             if fill_override_rgb is None:
                 t = getattr(self, '_brightness', 0.0)

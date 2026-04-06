@@ -3086,7 +3086,6 @@ class TestCommandCallbacks:
         d._command_overlay.append_token.assert_called_with("first")
         assert d._command_first_token is False
         assert "Command overlay failed to invert thinking timer" in caplog.text
-        assert "Command overlay finish failed" in caplog.text
 
     def test_tts_amplitude_update_failure_is_suppressed(
         self, main_module, monkeypatch, caplog

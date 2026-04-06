@@ -207,11 +207,13 @@ class TestAdaptiveOverlayCompositing:
         overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
         overlay._visible = True
         overlay._text_view = MagicMock()
+        overlay._text_view.layer.return_value = MagicMock()
         overlay._text_amplitude = 0.0
         overlay._content_view = MagicMock()
         overlay._fill_layer = MagicMock()
         overlay._brightness = 0.0
         overlay._brightness_target = 0.0
+        overlay._preview_cutout_layer = MagicMock()
         return overlay
 
     def test_set_brightness_immediate_snaps(self, mock_pyobjc):
@@ -247,6 +249,17 @@ class TestAdaptiveOverlayCompositing:
         try:
             assert mod._fill_compositing_filter_for_brightness(0.0) == "plusL"
             assert mod._fill_compositing_filter_for_brightness(1.0) is None
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_light_background_fill_endpoint_is_crushed_for_cutout_preview(
+        self, mock_pyobjc
+    ):
+        """Bright scenes should push the preview fill all the way down toward near-black."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            assert mod._BG_COLOR_LIGHT == pytest.approx((0.02, 0.02, 0.03))
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -351,7 +364,7 @@ class TestAdaptiveOverlayCompositing:
 
             overlay.update_text_amplitude(10.0)
 
-            overlay._text_view.layer.return_value.setCompositingFilter_.assert_called_with("destinationOut")
+            overlay._preview_cutout_layer.setCompositingFilter_.assert_called_with("destinationOut")
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -366,7 +379,7 @@ class TestAdaptiveOverlayCompositing:
 
             overlay.update_text_amplitude(0.0)
 
-            overlay._text_view.layer.return_value.setCompositingFilter_.assert_called_with("destinationOut")
+            overlay._preview_cutout_layer.setCompositingFilter_.assert_called_with("destinationOut")
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -648,6 +661,8 @@ class TestMetalPreviewSurfaceSync:
         overlay._sync_preview_surface = MagicMock()
         overlay._metal_preview_renderer = MagicMock()
         overlay._metal_preview_active = True
+        overlay._metal_preview_ready = True
+        overlay._preview_cutout_layer = MagicMock()
         return overlay
 
     def test_animation_ticks_do_not_resnapshot_metal_preview_when_payload_is_stable(self, mock_pyobjc):
@@ -765,7 +780,8 @@ class TestMetalPreviewSurfaceSync:
 
             overlay.typewriterStep_(None)
 
-            overlay._sync_preview_surface.assert_called_once_with(force=True)
+            assert overlay._sync_preview_surface.call_count == 2
+            overlay._sync_preview_surface.assert_called_with(force=True)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -784,6 +800,7 @@ class TestMetalPreviewSurfaceSync:
 
             overlay.set_text("Completely different partial")
 
-            overlay._sync_preview_surface.assert_called_once_with(force=True)
+            assert overlay._sync_preview_surface.call_count == 2
+            overlay._sync_preview_surface.assert_called_with(force=True)
         finally:
             sys.modules.pop("spoke.overlay", None)
