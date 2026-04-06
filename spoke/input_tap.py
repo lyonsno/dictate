@@ -152,9 +152,8 @@ class SpacebarHoldDetector(NSObject):
         self._last_idle_shift_up: float = 0.0
         self._shift_single_tap_timer: NSTimer | None = None
 
-        # Double-Enter during spacebar hold = toggle command overlay + discard recording
-        self._on_double_enter_during_hold: Callable[[], None] | None = None
-        self._last_held_enter_down: float = 0.0
+        # Enter during WAITING = toggle command overlay (before hold threshold fires)
+        self._on_enter_during_waiting: Callable[[], None] | None = None
 
         return self
 
@@ -278,7 +277,6 @@ class SpacebarHoldDetector(NSObject):
             self._shift_latched = self._shift_at_press
             self._tray_gesture_consumed = False
             self._shift_down_during_hold = False
-            self._last_held_enter_down = 0.0
             self._start_hold_timer()
             return True  # suppress the space
 
@@ -586,17 +584,21 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             if getattr(det, "_pending_release_active", False):
                 det._finish_pending_release(enter_held=True)
                 return None
-            if det._state in (_State.WAITING, _State.RECORDING):
-                # Double-Enter during hold = toggle overlay + discard recording
-                now = time.monotonic()
-                if (now - det._last_held_enter_down) < _DOUBLE_TAP_WINDOW_S:
-                    det._last_held_enter_down = 0.0
-                    cb = getattr(det, '_on_double_enter_during_hold', None)
+            if det._state == _State.WAITING:
+                if not getattr(det, 'tray_active', False):
+                    # Enter during WAITING (before hold threshold) = toggle
+                    # assistant overlay. Cancel the hold timer and return to
+                    # IDLE so no recording starts.
+                    det._cancel_hold_timer()
+                    det._state = _State.IDLE
+                    det._enter_held = False
+                    det._suppress_enter_keyup = True
+                    cb = getattr(det, '_on_enter_during_waiting', None)
                     if cb is not None:
-                        logger.info("Double-Enter during hold — toggling command overlay")
+                        logger.info("Enter during WAITING — toggling command overlay")
                         cb()
-                    return None
-                det._last_held_enter_down = now
+                return None  # suppress enter during WAITING regardless
+            if det._state == _State.RECORDING:
                 # Fire cancel spring callback if the command overlay is active
                 # (generation in progress and user is adding enter to the hold)
                 if getattr(det, 'command_overlay_active', False):
