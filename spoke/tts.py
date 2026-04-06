@@ -370,12 +370,50 @@ class TTSClient:
         if amplitude_callback is not None:
             amplitude_callback(0.0)
 
+    def _start_generation(self, sentence: str):
+        """Start generation for a sentence, returning the chunk iterator.
+
+        Holds gpu_lock during model.generate() call but NOT during chunk
+        iteration (the iterator does Metal work internally but holding the
+        lock deadlocks with Whisper transcription on another thread).
+
+        Returns None if the model fails to load or generation is cancelled.
+        """
+        from contextlib import nullcontext
+        lock_ctx = self._gpu_lock if self._gpu_lock is not None else nullcontext()
+
+        with lock_ctx:
+            try:
+                self._ensure_model()
+            except Exception:
+                logger.warning("TTS model load failed — cannot speak", exc_info=True)
+                return None
+            if self._cancelled:
+                logger.info("TTS speak: cancelled after model load")
+                return None
+            gen_kwargs = _generate_kwargs(
+                self._model,
+                text=sentence,
+                voice=self._voice,
+                temperature=self._temperature,
+                top_k=self._top_k,
+                top_p=self._top_p,
+            )
+            results = self._model.generate(**gen_kwargs)
+            logger.info("TTS speak: generate() returned for: %s", sentence[:40])
+        return results
+
     def speak(
         self,
         text: str,
         amplitude_callback: Callable[[float], None] | None = None,
     ) -> None:
         """Generate speech and play it synchronously.  Blocks until done.
+
+        Pipelines sentence generation: while sentence N plays, sentence N+1's
+        generate() call runs on a background thread so iteration can begin
+        immediately when N finishes.  Within each sentence, chunks are still
+        streamed one-at-a-time for low first-chunk latency.
 
         Holds gpu_lock during model.generate() to prevent concurrent MLX
         inference (which crashes Metal).  Releases the lock before audio
@@ -389,8 +427,6 @@ class TTSClient:
             logger.info("TTS speak: empty text, skipping")
             return
 
-        from contextlib import nullcontext
-
         sentences = _split_sentences(text)
         if not sentences:
             logger.info("TTS speak: no sentences after split, skipping")
@@ -398,46 +434,55 @@ class TTSClient:
 
         logger.info("TTS speak: %d sentences, %d chars, model=%s, cancelled=%s",
                      len(sentences), len(text), self._model_id, self._cancelled)
-        lock_ctx = self._gpu_lock if self._gpu_lock is not None else nullcontext()
         with self._speak_lock:
             self._cancelled = False
             with self._audio_fade_lock:
                 self._playback_active = True
             try:
-                for sentence in sentences:
+                prefetch_thread: threading.Thread | None = None
+                prefetch_iter = [None]  # mutable container for thread result
+
+                def _prefetch(sentence: str) -> None:
+                    prefetch_iter[0] = self._start_generation(sentence)
+
+                # Start first sentence synchronously
+                current_iter = self._start_generation(sentences[0])
+
+                for idx in range(len(sentences)):
                     if self._cancelled:
                         return
 
-                    with lock_ctx:
-                        try:
-                            self._ensure_model()
-                        except Exception:
-                            logger.warning("TTS model load failed — cannot speak", exc_info=True)
-                            return
-                        if self._cancelled:
-                            logger.info("TTS speak: cancelled after model load")
-                            return
-                        gen_kwargs = _generate_kwargs(
-                            self._model,
-                            text=sentence,
-                            voice=self._voice,
-                            temperature=self._temperature,
-                            top_k=self._top_k,
-                            top_p=self._top_p,
-                        )
-                        results = self._model.generate(**gen_kwargs)
-                        logger.info("TTS speak: generate() returned, iterating results")
+                    if idx > 0:
+                        # Collect prefetched iterator from background thread
+                        if prefetch_thread is not None:
+                            prefetch_thread.join()
+                            prefetch_thread = None
+                        current_iter = prefetch_iter[0]
+                        prefetch_iter[0] = None
 
+                    if current_iter is None:
+                        continue
+
+                    # Kick off next sentence's generate() while we play this one
+                    if idx + 1 < len(sentences):
+                        prefetch_iter[0] = None
+                        prefetch_thread = threading.Thread(
+                            target=_prefetch,
+                            args=(sentences[idx + 1],),
+                            daemon=True,
+                        )
+                        prefetch_thread.start()
+
+                    # Stream and play chunks for the current sentence
                     chunk_count = 0
                     while True:
                         if self._cancelled:
                             logger.info("TTS speak: cancelled during playback (after %d chunks)", chunk_count)
+                            if prefetch_thread is not None:
+                                prefetch_thread.join()
                             return
-                        # Don't hold GPU lock for next() — the generate iterator
-                        # does Metal work internally but holding the lock here
-                        # deadlocks with Whisper transcription on another thread.
                         try:
-                            result = next(results)
+                            result = next(current_iter)
                         except StopIteration:
                             break
                         materialized = _PlaybackResult(
@@ -449,7 +494,12 @@ class TTSClient:
                             logger.info("TTS speak: first audio chunk: %d samples @ %dHz",
                                        len(materialized.audio), materialized.sample_rate)
                         self._play_result(materialized, amplitude_callback=amplitude_callback)
-                    logger.info("TTS speak: finished sentence (%d chunks played)", chunk_count)
+                    logger.info("TTS speak: finished sentence %d/%d (%d chunks played)",
+                               idx + 1, len(sentences), chunk_count)
+
+                # Wait for any trailing prefetch
+                if prefetch_thread is not None:
+                    prefetch_thread.join()
             finally:
                 with self._audio_fade_lock:
                     self._playback_active = False
