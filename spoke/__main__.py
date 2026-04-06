@@ -731,6 +731,7 @@ class SpokeAppDelegate(NSObject):
             if command_backend == "cloud":
                 self._command_model_id = (
                     self._load_cloud_model_preference()
+                    or self._load_command_model_preference()
                     or _DEFAULT_CLOUD_MODEL
                 )
                 cloud_api_key = (
@@ -4011,6 +4012,12 @@ class SpokeAppDelegate(NSObject):
             if self._menubar is not None:
                 self._menubar.set_status_text("Couldn't save model selection")
             return
+        # Cloud backend reads command_cloud_model on startup — keep both keys
+        # in sync so the selection survives relaunch.
+        if getattr(self, "_command_backend", None) == "cloud":
+            payload = self._load_preferences()
+            payload["command_cloud_model"] = model_id
+            self._save_preferences(payload)
         self._command_model_id = model_id
         self._relaunch()
 
