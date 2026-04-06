@@ -1452,10 +1452,18 @@ class SpokeAppDelegate(NSObject):
                 if getattr(self, "_preview_done", None) is not None:
                     self._preview_done.set()
 
+    def _preview_batch_intervals(self) -> tuple[float, float]:
+        """Return (min_interval, initial_delay) for batch preview by backend."""
+        backend = getattr(self, "_whisper_backend", "local")
+        if backend == "cloud":
+            return (3.0, 1.0)
+        if backend == "sidecar":
+            return (0.75, 0.3)
+        return (0.2, 0.15)
+
     def _preview_loop_batch(self, token: int | None = None) -> None:
         """Batch preview: re-transcribe the full buffer each tick."""
-        _MIN_INTERVAL = 0.2 if self._local_mode else 0.75
-        _INITIAL_DELAY = 0.15 if self._local_mode else 0.3
+        _MIN_INTERVAL, _INITIAL_DELAY = self._preview_batch_intervals()
         token = getattr(self, "_preview_session_token", 0) if token is None else token
 
         try:
@@ -1466,7 +1474,7 @@ class SpokeAppDelegate(NSObject):
 
                 wav_bytes = self._capture.get_buffer()
                 if not wav_bytes:
-                    time.sleep(0.1 if self._local_mode else 0.2)
+                    time.sleep(min(_MIN_INTERVAL, 0.2))
                     continue
 
                 is_speech = getattr(self, "_is_speech", True)

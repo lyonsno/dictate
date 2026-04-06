@@ -776,6 +776,12 @@ class TestDualModelConfiguration:
             lambda self: {},
             raising=False,
         )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_preferences",
+            lambda self: {},
+            raising=False,
+        )
         monkeypatch.setenv(
             "SPOKE_PREVIEW_MODEL", "mlx-community/whisper-medium.en-mlx-8bit"
         )
@@ -811,6 +817,12 @@ class TestDualModelConfiguration:
         monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
         monkeypatch.setenv("SPOKE_PREVIEW_MODEL", "mlx-community/whisper-small.en-mlx")
         monkeypatch.setenv("SPOKE_TRANSCRIPTION_MODEL", "mlx-community/whisper-tiny.en-mlx")
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_preferences",
+            lambda self: {},
+            raising=False,
+        )
 
         with patch.object(main_module, "LocalTranscriptionClient") as MockLocal:
             final_client = MagicMock(name="final_client")
@@ -847,6 +859,12 @@ class TestDualModelConfiguration:
                 "decode_timeout": None,
                 "eager_eval": True,
             },
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_preferences",
+            lambda self: {},
             raising=False,
         )
 
@@ -1633,6 +1651,12 @@ class TestDualModelConfiguration:
             lambda self: {},
             raising=False,
         )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_preferences",
+            lambda self: {},
+            raising=False,
+        )
         monkeypatch.setenv(
             "SPOKE_PREVIEW_MODEL", "mlx-community/whisper-medium.en-mlx-8bit"
         )
@@ -1667,6 +1691,12 @@ class TestDualModelConfiguration:
         monkeypatch.setattr(
             main_module.SpokeAppDelegate,
             "_load_local_whisper_preferences",
+            lambda self: {},
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_preferences",
             lambda self: {},
             raising=False,
         )
@@ -2628,6 +2658,12 @@ class TestEnvValidation:
         monkeypatch.setattr(
             main_module.SpokeAppDelegate,
             "_load_model_preferences",
+            lambda self: {},
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_preferences",
             lambda self: {},
             raising=False,
         )
