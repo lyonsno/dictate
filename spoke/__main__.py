@@ -59,14 +59,11 @@ def _run_modal_with_paste(alert) -> int:
 
     def _handle(event):
         try:
-            mods = event.modifierFlags()
-            if mods & _NS_COMMAND_KEY_MASK:
+            if event.modifierFlags() & _NS_COMMAND_KEY_MASK:
                 chars = event.charactersIgnoringModifiers()
-                logger.info("Alert event monitor: Cmd+%s (flags=0x%x)", chars, mods)
                 win = alert.window()
                 if win is not None:
                     fr = win.firstResponder()
-                    logger.info("Alert event monitor: firstResponder=%s", type(fr).__name__)
                     if chars in ("v", "c", "x", "a") and fr is not None:
                         if chars == "v":
                             fr.paste_(None)
@@ -76,7 +73,6 @@ def _run_modal_with_paste(alert) -> int:
                             fr.cut_(None)
                         elif chars == "a":
                             fr.selectAll_(None)
-                        logger.info("Alert event monitor: routed Cmd+%s to %s", chars, type(fr).__name__)
                 # Swallow all Cmd+key so nothing dismisses the dialog.
                 return None
         except Exception:
