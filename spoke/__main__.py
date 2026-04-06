@@ -43,34 +43,34 @@ _NS_COMMAND_KEY_MASK = 1 << 20
 
 
 class _PastableTextField(NSTextField):
-    """NSTextField subclass that handles Cmd+V/C/X/A in modal alerts.
+    """NSTextField subclass that handles Cmd+key in modal alerts.
 
-    NSAlert modals lack an Edit menu, so standard key equivalents for
-    paste/copy/cut/select-all don't dispatch.  This override routes them
-    to the field editor directly.
+    NSAlert modals lack an Edit menu, so Cmd+V/C/X/A don't dispatch and
+    other Cmd+key combos leak through to the alert's button dispatch,
+    dismissing the dialog.  This override routes editing commands to the
+    field editor and swallows all other Cmd+key events so nothing
+    accidentally closes the alert.
     """
 
     def performKeyEquivalent_(self, event) -> bool:
         if event.modifierFlags() & _NS_COMMAND_KEY_MASK:
             chars = event.charactersIgnoringModifiers()
-            if chars in ("v", "c", "x", "a"):
-                editor = self.currentEditor()
-                if editor is None:
-                    # Field isn't focused — grab focus so the field editor exists.
-                    self.window().makeFirstResponder_(self)
-                    editor = self.currentEditor()
-                if editor is not None:
-                    if chars == "v":
-                        editor.paste_(self)
-                    elif chars == "c":
-                        editor.copy_(self)
-                    elif chars == "x":
-                        editor.cut_(self)
-                    elif chars == "a":
-                        editor.selectAll_(self)
-                # Swallow the event even if editor setup failed, so
-                # the alert doesn't dismiss on Cmd+V/C/X/A.
+            # Only handle editing keys if *this* field already has focus.
+            # Otherwise another field in the same alert owns the editor.
+            editor = self.currentEditor()
+            if editor is not None and chars in ("v", "c", "x", "a"):
+                if chars == "v":
+                    editor.paste_(self)
+                elif chars == "c":
+                    editor.copy_(self)
+                elif chars == "x":
+                    editor.cut_(self)
+                elif chars == "a":
+                    editor.selectAll_(self)
                 return True
+            # Swallow all Cmd+key events so they never bubble up to the
+            # alert's button dispatch (which would dismiss the dialog).
+            return True
         return super().performKeyEquivalent_(event)
 
 from .capture import AudioCapture
