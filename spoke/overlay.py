@@ -140,8 +140,8 @@ def _fill_profile_for_brightness(brightness: float) -> tuple[float, float, float
     t = min(max(brightness, 0.0), 1.0)
     width = _lerp(3.6, 14.5, t)
     interior_floor = _lerp(0.72, 0.9997, t)
-    opacity_min = _lerp(0.06, 0.48, t)
-    opacity_max = _lerp(0.98, 0.98, t)
+    opacity_min = _lerp(0.06, 0.84, t)
+    opacity_max = _lerp(0.98, 0.99, t)
     return width, interior_floor, opacity_min, opacity_max
 
 
@@ -806,8 +806,7 @@ class TranscriptionOverlay(NSObject):
             text_alpha = _lerp(text_alpha, 0.0, cutout_t)
 
         bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
-        bg_lum = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b
-        target_text_lum = 0.0 if bg_lum > 0.5 else 1.0
+        target_text_lum = 0.0
 
         current_text_lum = getattr(self, "_text_lum", target_text_lum)
         _TEXT_SNAP_SPEED = 0.35
