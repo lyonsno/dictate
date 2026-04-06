@@ -21,6 +21,7 @@ from AppKit import (
     NSScreen,
     NSTextField,
     NSView,
+    NSVisualEffectView,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowCollectionBehaviorStationary,
@@ -83,10 +84,19 @@ class ToposRowView(NSView):
         layer = view.layer()
         layer.setCornerRadius_(10.0)
         layer.setMasksToBounds_(True)
-        # Match overlay bg: desaturated blue-white fill
-        layer.setBackgroundColor_(
-            Quartz.CGColorCreateGenericRGB(0.38, 0.42, 0.56, 0.82)
+
+        # Frosted glass effect — NSVisualEffectView gives the milky,
+        # behind-window blur that makes the overlay bubbles look luminous.
+        frost = NSVisualEffectView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, width, _ROW_HEIGHT)
         )
+        frost.setMaterial_(4)  # NSVisualEffectMaterialDark (behind-window dark)
+        frost.setBlendingMode_(1)  # NSVisualEffectBlendingModeBehindWindow
+        frost.setState_(1)  # NSVisualEffectStateActive — always frosted
+        frost.setWantsLayer_(True)
+        frost.layer().setCornerRadius_(10.0)
+        frost.layer().setMasksToBounds_(True)
+        view.addSubview_(frost)
 
         # Text — primary matches overlay _TEXT_COLOR_DARK, secondary tinted by temperature
         _text_color = NSColor.colorWithRed_green_blue_alpha_(0.0, 0.0, 0.0, 0.85)
