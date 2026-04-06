@@ -1350,11 +1350,17 @@ class SpokeAppDelegate(NSObject):
         self._arm_live_mode()
 
     def _arm_live_mode(self) -> None:
-        """Start the live mode arm timer with visual feedback."""
+        """Start the live mode arm timer with visual feedback.
+
+        No-op if a timer is already running — key repeat must not
+        restart the countdown.
+        """
+        if getattr(self, "_live_arm_timer", None) is not None:
+            return
         try:
             with open("/tmp/spoke-chord-diag.log", "a") as f:
                 import time as _t
-                f.write(f"ARM_LIVE_MODE called at {_t.time()}\n")
+                f.write(f"ARM_LIVE_MODE called (NEW timer) at {_t.time()}\n")
         except Exception:
             pass
         logger.info("Arming live mode timer (2600ms)")
