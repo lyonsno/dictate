@@ -574,6 +574,7 @@ class TranscriptionOverlay(NSObject):
         self._brightness_target = min(max(brightness, 0.0), 1.0)
         if immediate:
             self._brightness = self._brightness_target
+            self._refresh_visible_brightness_state()
 
     def hide(self, *, fade_duration: float | None = None) -> None:
         """Fade the overlay out smoothly."""
@@ -727,12 +728,12 @@ class TranscriptionOverlay(NSObject):
                 self._cancel_typewriter()
                 self._typewriter_displayed = text
                 self._typewriter_hwm = len(text)
-                self._set_text_view_content(text)
+                self._refresh_visible_brightness_state()
                 self._update_layout()
                 return
             else:
                 self._typewriter_displayed = text[:common]
-                self._set_text_view_content(self._typewriter_displayed)
+                self._refresh_visible_brightness_state()
 
         # Start typing if not already
         if self._typewriter_timer is None and len(self._typewriter_displayed) < len(self._typewriter_target):
@@ -745,7 +746,7 @@ class TranscriptionOverlay(NSObject):
         if len(self._typewriter_displayed) < len(self._typewriter_target):
             self._typewriter_displayed = self._typewriter_target[:len(self._typewriter_displayed) + 1]
             self._typewriter_hwm = max(self._typewriter_hwm, len(self._typewriter_displayed))
-            self._set_text_view_content(self._typewriter_displayed)
+            self._refresh_visible_brightness_state()
             self._update_layout()
         else:
             self._cancel_typewriter()
@@ -785,40 +786,41 @@ class TranscriptionOverlay(NSObject):
         if abs(target - current) > 0.001:
             self._brightness = current + (target - current) * _BRIGHTNESS_CHASE
 
-        scaled = min(self._text_amplitude / _TEXT_AMP_SATURATION, 1.0)
+        self._refresh_visible_brightness_state()
 
+    def _refresh_visible_brightness_state(self) -> None:
+        """Re-render text and fill for the current brightness without waiting for a new RMS tick."""
+        if self._text_view is None or not self._visible:
+            return
+
+        scaled = min(self._text_amplitude / _TEXT_AMP_SATURATION, 1.0)
         t = getattr(self, "_brightness", 0.0)
 
-        # Text: anchored near-opaque.  Dark on white backgrounds, white on
-        # dark backgrounds.  Text does NOT breathe with amplitude — it stays
-        # legible and stable.  The SDF fill breathes instead.
-        # Text alpha: on dark backgrounds, anchored at 0.88 (no RMS link).
-        # On light backgrounds, slight RMS waiver: floor 0.80, ceiling 1.0.
         if t > 0.15:
-            _TEXT_ANCHOR_ALPHA = _lerp(0.80, 1.0, scaled)
+            text_alpha = _lerp(0.80, 1.0, scaled)
         else:
-            _TEXT_ANCHOR_ALPHA = 0.88
-        # Text contrasts against the fill: light fill (dark bg) → dark text,
-        # dark fill (light bg) → white text.
+            text_alpha = 0.88
+
+        if t > 0.35:
+            cutout_t = min((t - 0.35) / 0.45, 1.0)
+            text_alpha = _lerp(text_alpha, 0.0, cutout_t)
+
         bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
         bg_lum = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b
         target_text_lum = 0.0 if bg_lum > 0.5 else 1.0
 
-        # Ease-out snap: chase the target with a fast-start, slow-finish curve.
-        # ~200ms at 60Hz = ~12 frames.  The ease-out makes the snap feel
-        # satisfying — it commits immediately then settles.
-        current_text_lum = getattr(self, '_text_lum', target_text_lum)
-        _TEXT_SNAP_SPEED = 0.35  # ease-out: big initial jump, then settles
+        current_text_lum = getattr(self, "_text_lum", target_text_lum)
+        _TEXT_SNAP_SPEED = 0.35
         current_text_lum += (target_text_lum - current_text_lum) * _TEXT_SNAP_SPEED
         self._text_lum = current_text_lum
         tr = tg = tb = current_text_lum
-        base_color = NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, _TEXT_ANCHOR_ALPHA)
+        base_color = NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, text_alpha)
         ontology_r, ontology_g, ontology_b = _ontology_text_rgb(current_text_lum)
         ontology_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
             ontology_r,
             ontology_g,
             ontology_b,
-            _TEXT_ANCHOR_ALPHA,
+            text_alpha,
         )
         self._set_text_view_content(
             getattr(self, "_typewriter_displayed", ""),
@@ -829,18 +831,12 @@ class TranscriptionOverlay(NSObject):
         fill_drive = _lerp(scaled, scaled * scaled, t)
         _fill_width, _fill_floor, fill_min, fill_max = _fill_profile_for_brightness(t)
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
-        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+        if hasattr(self, "_fill_layer") and self._fill_layer is not None:
             self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
-            # Rebuild the fill image when brightness changes enough to
-            # affect the baked color.
-            last_t = getattr(self, '_fill_image_brightness', -1.0)
+            last_t = getattr(self, "_fill_image_brightness", -1.0)
             if abs(t - last_t) > 0.03:
                 self._fill_image_brightness = t
-                # Recompute the full SDF + fill image at the current overlay
-                # size.  Using _update_fill_image with a stale SDF caused
-                # corner distortion when the overlay had resized since the
-                # SDF was last computed.
-                content = getattr(self, '_content_view', None)
+                content = getattr(self, "_content_view", None)
                 if content:
                     try:
                         cf = content.frame()
