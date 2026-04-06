@@ -1319,12 +1319,25 @@ class SpokeAppDelegate(NSObject):
 
         Must marshal to main thread since NSTimer needs the main runloop.
         """
+        # Diagnostic: write to temp file so we can verify this fires
+        try:
+            with open("/tmp/spoke-chord-diag.log", "a") as f:
+                import time as _t
+                f.write(f"chord fired at {_t.time()}\n")
+        except Exception:
+            pass
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
             "_spaceEnterChordOnMain:", None, False
         )
 
     def _spaceEnterChordOnMain_(self, _) -> None:
         """Main thread: handle space+enter chord."""
+        try:
+            with open("/tmp/spoke-chord-diag.log", "a") as f:
+                import time as _t
+                f.write(f"mainThread: live={getattr(self, '_live_mode', 'MISSING')} transcribing={getattr(self, '_transcribing', 'MISSING')} timer={getattr(self, '_live_arm_timer', 'MISSING')} at {_t.time()}\n")
+        except Exception:
+            pass
         if getattr(self, "_live_mode", False):
             logger.info("Space+enter chord in live mode — arming exit timer")
             self._start_live_exit_timer()
@@ -1338,6 +1351,12 @@ class SpokeAppDelegate(NSObject):
 
     def _arm_live_mode(self) -> None:
         """Start the live mode arm timer with visual feedback."""
+        try:
+            with open("/tmp/spoke-chord-diag.log", "a") as f:
+                import time as _t
+                f.write(f"ARM_LIVE_MODE called at {_t.time()}\n")
+        except Exception:
+            pass
         logger.info("Arming live mode timer (2600ms)")
         if self._menubar is not None:
             self._menubar.set_status_text("Live mode arming…")
@@ -1359,11 +1378,11 @@ class SpokeAppDelegate(NSObject):
         )
 
     def _start_live_arm_timer_full(self) -> None:
-        """Arm from Enter press during recording (full 3s countdown)."""
+        """Arm from Enter press during recording (2.6s remaining after 400ms hold threshold)."""
         self._cancel_live_arm_timer()
         from Foundation import NSTimer
         self._live_arm_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            self._LIVE_EXIT_DELAY, self, "_liveArmFired:", None, False
+            self._LIVE_ARM_DELAY, self, "_liveArmFired:", None, False
         )
 
     def _cancel_live_arm_timer(self) -> None:
