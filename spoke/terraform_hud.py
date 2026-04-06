@@ -27,6 +27,11 @@ from AppKit import (
     NSWindowCollectionBehaviorStationary,
     NSWindowStyleMaskNonactivatingPanel,
 )
+try:
+    from .terraform_metal import metal_available, TerraformCardRenderer, CardInfo
+    _METAL_OK = metal_available()
+except Exception:
+    _METAL_OK = False
 import Quartz
 
 # Style mask constants not always available via PyObjC — use numeric values
@@ -64,6 +69,23 @@ _TEMP_COLORS = {
     "cold": (0.5, 0.5, 0.6, 0.08),      # gray
     "katástasis": (0.3, 0.8, 0.4, 0.10), # settled green
 }
+
+# Base SDF fill color — matches overlay _BG_COLOR_DARK desaturated cornflower
+_SDF_BASE_RGB = (0.50 * 0.6 + 0.5 * 0.4,
+                 0.59 * 0.6 + 0.5 * 0.4,
+                 0.84 * 0.6 + 0.5 * 0.4)  # ~40% saturation of (0.50, 0.59, 0.84)
+_SDF_CARD_ALPHA = 0.75  # per-card opacity
+
+
+def _temp_fill_color(temperature: str | None) -> tuple[float, float, float]:
+    """Blend overlay base color with temperature tint for SDF card fill."""
+    rgba = _TEMP_COLORS.get(temperature or "", (0.5, 0.5, 0.5, 0.08))
+    tr, tg, tb, ta = rgba
+    # Mix: base * (1 - ta) + temp_color * ta  (ta is small, 0.08-0.15)
+    br, bg, bb = _SDF_BASE_RGB
+    return (br * (1.0 - ta) + tr * ta,
+            bg * (1.0 - ta) + tg * ta,
+            bb * (1.0 - ta) + tb * ta)
 
 
 def _temp_color(temperature: str | None) -> NSColor:
@@ -181,6 +203,8 @@ class _ManualScrollView(NSView):
             return None
         self._scroll_offset = 0.0  # how far the content is scrolled (positive = scrolled down)
         self._content: NSView | None = None
+        self._metal_renderer = None  # set by TerraformHUD.setup()
+        self._backing_scale = 2.0
         self.setWantsLayer_(True)
         # No masksToBounds — the gradient mask handles vertical clipping,
         # and we need horizontal frost bleed to extend past the scroll bounds.
@@ -253,6 +277,10 @@ class _ManualScrollView(NSView):
         # when scroll_offset is 0.
         y = -(content_h - visible_h) + self._scroll_offset
         self._content.setFrameOrigin_((0, y))
+        # Redraw Metal cards at new scroll position
+        if self._metal_renderer is not None:
+            self._metal_renderer.set_scroll_offset(self._scroll_offset * self._backing_scale)
+            self._metal_renderer.draw_frame()
 
 
 class TerraformHUD(NSObject):
@@ -265,6 +293,7 @@ class TerraformHUD(NSObject):
         self._panel: NSPanel | None = None
         self._content_view: NSView | None = None
         self._scroll_view: _ManualScrollView | None = None
+        self._metal_renderer = None
         self._topoi: list[Topos] = []
         self._timer: NSTimer | None = None
         self._visible = False
@@ -331,6 +360,23 @@ class TerraformHUD(NSObject):
         self._scroll_view = _ManualScrollView.alloc().initWithFrame_(scroll_frame)
         self._scroll_view.setAutoresizingMask_(18)  # width + height flex
         self._panel.contentView().addSubview_(self._scroll_view)
+
+        # Metal SDF card renderer — replaces NSVisualEffectView frost
+        if _METAL_OK:
+            try:
+                scale = screen.backingScaleFactor() if hasattr(screen, 'backingScaleFactor') else 2.0
+                self._metal_renderer = TerraformCardRenderer(
+                    (scroll_frame.size.width, scroll_frame.size.height), scale,
+                )
+                self._scroll_view._metal_renderer = self._metal_renderer
+                self._scroll_view._backing_scale = scale
+                # Insert Metal layer at bottom of scroll view's layer stack
+                self._scroll_view.layer().insertSublayer_atIndex_(
+                    self._metal_renderer.layer(), 0,
+                )
+            except Exception:
+                logger.debug("Metal card renderer init failed, using frost fallback", exc_info=True)
+                self._metal_renderer = None
 
         # Initial load
         self._refresh()
@@ -526,15 +572,40 @@ class TerraformHUD(NSObject):
             NSMakeRect(0, 0, scroll_bounds.size.width, total_height)
         )
 
-        # Single frost layer behind all cards — no per-card frost,
-        # no doubling where cards overlap.
-        frost = NSVisualEffectView.alloc().initWithFrame_(
-            NSMakeRect(0, 0, scroll_bounds.size.width, total_height)
-        )
-        frost.setMaterial_(4)  # NSVisualEffectMaterialDark
-        frost.setBlendingMode_(1)  # NSVisualEffectBlendingModeBehindWindow
-        frost.setState_(1)  # NSVisualEffectStateActive
-        new_content.addSubview_(frost)
+        if self._metal_renderer is not None:
+            # Metal SDF card surfaces — resize layer to match content
+            scale = getattr(self._scroll_view, '_backing_scale', 2.0)
+            self._metal_renderer.set_geometry(
+                scroll_bounds.size.width, scroll_bounds.size.height, scale,
+            )
+
+            # Build card info list with positions in pixel coordinates
+            cards = []
+            for i, topos in enumerate(self._topoi):
+                y = total_height - (i + 1) * row_stride
+                cr, cg, cb = _temp_fill_color(topos.temperature)
+                cards.append(CardInfo(
+                    x=4.0 * scale,
+                    y=y * scale,
+                    width=width * scale,
+                    height=_ROW_HEIGHT * scale,
+                    r=cr, g=cg, b=cb,
+                    alpha=_SDF_CARD_ALPHA,
+                ))
+            self._metal_renderer.set_cards(cards)
+            self._metal_renderer.set_scroll_offset(
+                self._scroll_view._scroll_offset * scale,
+            )
+            self._metal_renderer.draw_frame()
+        else:
+            # Fallback: single frost layer behind all cards
+            frost = NSVisualEffectView.alloc().initWithFrame_(
+                NSMakeRect(0, 0, scroll_bounds.size.width, total_height)
+            )
+            frost.setMaterial_(4)  # NSVisualEffectMaterialDark
+            frost.setBlendingMode_(1)  # NSVisualEffectBlendingModeBehindWindow
+            frost.setState_(1)  # NSVisualEffectStateActive
+            new_content.addSubview_(frost)
 
         for i, topos in enumerate(self._topoi):
             y = total_height - (i + 1) * row_stride
