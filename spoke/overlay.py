@@ -302,7 +302,7 @@ def _preview_text_present_fill_drive_floor(brightness: float) -> float:
     growth pass to become materially present.
     """
     t = min(max(brightness, 0.0), 1.0)
-    return _lerp(0.82, 0.0, t)
+    return _lerp(1.0, 0.0, t)
 
 
 def _boundary_peak_weight(
