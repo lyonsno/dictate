@@ -212,8 +212,8 @@ _TRAY_CAPTURE_FLASH_FADE_OUT_S = 0.30
 def _fill_profile_for_brightness(brightness: float) -> tuple[float, float]:
     """Return width/floor controls for the preview fill across scene brightness."""
     t = min(max(brightness, 0.0), 1.0)
-    width = _lerp(3.6, 14.5, t)
-    interior_floor = _lerp(0.72, 0.9997, t)
+    width = _lerp(2.45, 14.5, t)
+    interior_floor = _lerp(0.58, 0.9997, t)
     return width, interior_floor
 
 
@@ -1191,8 +1191,8 @@ class TranscriptionOverlay(NSObject):
         # On dark backgrounds use linear response so soft sounds register.
         # On light backgrounds use squared so the fill leads the glow.
         fill_drive = _lerp(scaled, scaled * scaled, t)
-        fill_min = _lerp(0.06, 0.84, t)   # light: 2x rest presence — much more material
-        fill_max = _lerp(0.92, 0.99, t)   # saturates near-full on both backgrounds
+        fill_min = _lerp(0.04, 0.84, t)   # light: 2x rest presence — much more material
+        fill_max = _lerp(0.80, 0.99, t)   # dark side stays ghosted; light side still saturates
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             effective_fill_opacity = fill_opacity

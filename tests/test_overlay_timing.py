@@ -284,6 +284,17 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_dark_background_fill_profile_stays_ghosted(self, mock_pyobjc):
+        """Dark-scene preview fill should stay light and airy rather than becoming a heavy slab."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            width, interior_floor = mod._fill_profile_for_brightness(0.0)
+            assert width < 3.0
+            assert interior_floor < 0.65
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_set_brightness_without_immediate_chases_target(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
@@ -324,6 +335,21 @@ class TestAdaptiveOverlayCompositing:
 
             # Fill layer opacity should be set
             assert overlay._fill_layer.setOpacity_.called
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_dark_background_fill_opacity_stays_below_heavy_slab_range(self, mock_pyobjc):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay.set_brightness(0.0, immediate=True)
+
+            overlay._fill_layer.reset_mock()
+            overlay.update_text_amplitude(10.0)
+
+            fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
+            assert fill_opacity < 0.84
         finally:
             sys.modules.pop("spoke.overlay", None)
 

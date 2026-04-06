@@ -157,3 +157,24 @@ def test_metal_fill_keeps_layer_opaque_and_passes_surface_opacity_in_shader(
         assert overlay._fill_renderer.set_fill_state.call_args.args[1] > 0.8
     finally:
         sys.modules.pop("spoke.overlay", None)
+
+
+def test_dark_scene_metal_fill_stays_ghosted_not_slabby(
+    mock_pyobjc, monkeypatch
+):
+    mod = _import_overlay(mock_pyobjc, monkeypatch)
+    try:
+        overlay = _make_overlay(mod)
+        overlay._brightness = 0.0
+        overlay._brightness_target = 0.0
+        overlay._fill_renderer.reset_mock()
+
+        overlay.update_text_amplitude(10.0)
+
+        overlay._fill_renderer.set_fill_state.assert_called()
+        rgb, opacity, floor = overlay._fill_renderer.set_fill_state.call_args.args[:3]
+        assert opacity < 0.84
+        assert floor < 0.65
+        assert rgb[0] > 0.45
+    finally:
+        sys.modules.pop("spoke.overlay", None)
