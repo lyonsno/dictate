@@ -40,36 +40,49 @@ from AppKit import (
 from Foundation import NSMakeRect, NSObject
 
 _NS_COMMAND_KEY_MASK = 1 << 20
+_NS_KEY_DOWN_MASK = 1 << 10
+
+# Keep _PastableTextField as an alias so existing alloc() calls don't break.
+_PastableTextField = NSTextField
 
 
-class _PastableTextField(NSTextField):
-    """NSTextField subclass that handles Cmd+key in modal alerts.
+def _run_modal_with_paste(alert) -> int:
+    """Run an NSAlert modally with Cmd+V/C/X/A support.
 
-    NSAlert modals lack an Edit menu, so Cmd+V/C/X/A don't dispatch and
-    other Cmd+key combos leak through to the alert's button dispatch,
-    dismissing the dialog.  This override routes editing commands to the
-    field editor and swallows all other Cmd+key events so nothing
-    accidentally closes the alert.
+    NSAlert modals lack an Edit menu, so standard editing key equivalents
+    don't work.  This installs a local event monitor that intercepts
+    Cmd+V/C/X/A keyDown events, routes them to the alert window's field
+    editor, and swallows all other Cmd+key events so nothing accidentally
+    dismisses the dialog.
     """
+    from AppKit import NSEvent
 
-    def performKeyEquivalent_(self, event) -> bool:
+    def _handle(event):
         if event.modifierFlags() & _NS_COMMAND_KEY_MASK:
             chars = event.charactersIgnoringModifiers()
-            editor = self.currentEditor()
-            if editor is not None and chars in ("v", "c", "x", "a"):
-                if chars == "v":
-                    editor.paste_(self)
-                elif chars == "c":
-                    editor.copy_(self)
-                elif chars == "x":
-                    editor.cut_(self)
-                elif chars == "a":
-                    editor.selectAll_(self)
-                return True
-            # Swallow all Cmd+key events so they never bubble up to the
-            # alert's button dispatch (which would dismiss the dialog).
-            return True
-        return super().performKeyEquivalent_(event)
+            win = alert.window()
+            if win is not None:
+                fr = win.firstResponder()
+                if chars in ("v", "c", "x", "a") and fr is not None:
+                    if chars == "v":
+                        fr.paste_(None)
+                    elif chars == "c":
+                        fr.copy_(None)
+                    elif chars == "x":
+                        fr.cut_(None)
+                    elif chars == "a":
+                        fr.selectAll_(None)
+                # Swallow all Cmd+key so nothing dismisses the dialog.
+                return None
+        return event
+
+    monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+        _NS_KEY_DOWN_MASK, _handle
+    )
+    try:
+        return alert.runModal()
+    finally:
+        NSEvent.removeMonitor_(monitor)
 
 from .capture import AudioCapture
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
@@ -3170,7 +3183,7 @@ class SpokeAppDelegate(NSObject):
         alert.addButtonWithTitle_("Cancel")
         alert.layout()
         alert.window().makeFirstResponder_(field)
-        response = alert.runModal()
+        response = _run_modal_with_paste(alert)
         if response != 1000:
             return
         value = field.stringValue()
@@ -3521,7 +3534,7 @@ class SpokeAppDelegate(NSObject):
         alert.addButtonWithTitle_("Cancel")
         alert.layout()
         alert.window().makeFirstResponder_(field)
-        response = alert.runModal()
+        response = _run_modal_with_paste(alert)
         if response != 1000:
             return None
         value = field.stringValue()
@@ -3564,7 +3577,7 @@ class SpokeAppDelegate(NSObject):
         alert.addButtonWithTitle_("Cancel")
         alert.layout()
         alert.window().makeFirstResponder_(url_field)
-        response = alert.runModal()
+        response = _run_modal_with_paste(alert)
         if response != 1000:
             return
 
@@ -3652,7 +3665,7 @@ class SpokeAppDelegate(NSObject):
         alert.addButtonWithTitle_("Cancel")
         alert.layout()
         alert.window().makeFirstResponder_(field)
-        response = alert.runModal()
+        response = _run_modal_with_paste(alert)
         if response != 1000:
             return
         value = field.stringValue()
