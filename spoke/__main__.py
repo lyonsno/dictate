@@ -58,22 +58,29 @@ def _run_modal_with_paste(alert) -> int:
     from AppKit import NSEvent
 
     def _handle(event):
-        if event.modifierFlags() & _NS_COMMAND_KEY_MASK:
-            chars = event.charactersIgnoringModifiers()
-            win = alert.window()
-            if win is not None:
-                fr = win.firstResponder()
-                if chars in ("v", "c", "x", "a") and fr is not None:
-                    if chars == "v":
-                        fr.paste_(None)
-                    elif chars == "c":
-                        fr.copy_(None)
-                    elif chars == "x":
-                        fr.cut_(None)
-                    elif chars == "a":
-                        fr.selectAll_(None)
+        try:
+            mods = event.modifierFlags()
+            if mods & _NS_COMMAND_KEY_MASK:
+                chars = event.charactersIgnoringModifiers()
+                logger.info("Alert event monitor: Cmd+%s (flags=0x%x)", chars, mods)
+                win = alert.window()
+                if win is not None:
+                    fr = win.firstResponder()
+                    logger.info("Alert event monitor: firstResponder=%s", type(fr).__name__)
+                    if chars in ("v", "c", "x", "a") and fr is not None:
+                        if chars == "v":
+                            fr.paste_(None)
+                        elif chars == "c":
+                            fr.copy_(None)
+                        elif chars == "x":
+                            fr.cut_(None)
+                        elif chars == "a":
+                            fr.selectAll_(None)
+                        logger.info("Alert event monitor: routed Cmd+%s to %s", chars, type(fr).__name__)
                 # Swallow all Cmd+key so nothing dismisses the dialog.
                 return None
+        except Exception:
+            logger.exception("Alert event monitor handler error")
         return event
 
     monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
