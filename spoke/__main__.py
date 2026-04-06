@@ -55,21 +55,32 @@ class _PastableTextField(NSTextField):
     def performKeyEquivalent_(self, event) -> bool:
         if event.modifierFlags() & _NS_COMMAND_KEY_MASK:
             chars = event.charactersIgnoringModifiers()
-            # Only handle editing keys if *this* field already has focus.
-            # Otherwise another field in the same alert owns the editor.
-            editor = self.currentEditor()
-            if editor is not None and chars in ("v", "c", "x", "a"):
-                if chars == "v":
-                    editor.paste_(self)
-                elif chars == "c":
-                    editor.copy_(self)
-                elif chars == "x":
-                    editor.cut_(self)
-                elif chars == "a":
-                    editor.selectAll_(self)
+            if chars in ("v", "c", "x", "a"):
+                editor = self.currentEditor()
+                if editor is None:
+                    # No field focused yet. Check if any sibling field owns
+                    # the editor — if so, let that field handle it.
+                    win = self.window()
+                    if win is not None:
+                        fr = win.firstResponder()
+                        # NSText (field editor) means some field has focus
+                        from AppKit import NSText
+                        if not isinstance(fr, NSText):
+                            # Nobody focused — grab focus on this field.
+                            win.makeFirstResponder_(self)
+                            editor = self.currentEditor()
+                if editor is not None:
+                    if chars == "v":
+                        editor.paste_(self)
+                    elif chars == "c":
+                        editor.copy_(self)
+                    elif chars == "x":
+                        editor.cut_(self)
+                    elif chars == "a":
+                        editor.selectAll_(self)
                 return True
-            # Swallow all Cmd+key events so they never bubble up to the
-            # alert's button dispatch (which would dismiss the dialog).
+            # Swallow all other Cmd+key events so they never bubble up to
+            # the alert's button dispatch (which would dismiss the dialog).
             return True
         return super().performKeyEquivalent_(event)
 
