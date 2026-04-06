@@ -295,6 +295,21 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_dark_background_fill_curve_has_interior_scoop_then_body(self, mock_pyobjc):
+        """The dark-scene fill should dip inward after the edge, then recover some body nearer the text."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            edge = mod._preview_fill_alpha_for_signed_distance(-0.1, 0.0)
+            scoop = mod._preview_fill_alpha_for_signed_distance(-7.0, 0.0)
+            body = mod._preview_fill_alpha_for_signed_distance(-18.0, 0.0)
+
+            assert edge > scoop
+            assert body > scoop
+            assert scoop < 0.30
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_set_brightness_without_immediate_chases_target(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
@@ -349,7 +364,7 @@ class TestAdaptiveOverlayCompositing:
             overlay.update_text_amplitude(10.0)
 
             fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
-            assert fill_opacity < 0.84
+            assert fill_opacity < 0.76
         finally:
             sys.modules.pop("spoke.overlay", None)
 

@@ -173,8 +173,25 @@ def test_dark_scene_metal_fill_stays_ghosted_not_slabby(
 
         overlay._fill_renderer.set_fill_state.assert_called()
         rgb, opacity, floor = overlay._fill_renderer.set_fill_state.call_args.args[:3]
-        assert opacity < 0.84
+        assert opacity < 0.76
         assert floor < 0.65
         assert rgb[0] > 0.45
+    finally:
+        sys.modules.pop("spoke.overlay", None)
+
+
+def test_dark_scene_metal_fill_receives_interior_scoop_profile(
+    mock_pyobjc, monkeypatch
+):
+    mod = _import_overlay(mock_pyobjc, monkeypatch)
+    try:
+        overlay = _make_overlay(mod)
+        overlay._brightness = 0.0
+
+        overlay._update_fill_image(680.0, 160.0)
+
+        kwargs = overlay._fill_renderer.set_fill_state.call_args.kwargs
+        assert kwargs["scoop_strength"] > 0.0
+        assert kwargs["body_strength"] > 0.0
     finally:
         sys.modules.pop("spoke.overlay", None)

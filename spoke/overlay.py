@@ -46,7 +46,7 @@ _MTL_PIXEL_FORMAT_BGRA8_UNORM = 80
 _MTL_LOAD_ACTION_CLEAR = 2
 _MTL_STORE_ACTION_STORE = 1
 _MTL_PRIMITIVE_TYPE_TRIANGLE_STRIP = 4
-_PREVIEW_FILL_MTL_BUFFER_LAYOUT = "<" + "f" * 14
+_PREVIEW_FILL_MTL_BUFFER_LAYOUT = "<" + "f" * 22
 _PREVIEW_FILL_MTL_BUFFER_SIZE = struct.calcsize(_PREVIEW_FILL_MTL_BUFFER_LAYOUT)
 _PREVIEW_FILL_SHADER_SOURCE = """
 #include <metal_stdlib>
@@ -62,6 +62,8 @@ struct Uniforms {
     float4 color_floor;
     float4 peak_rgb_alpha;
     float2 peak_shape;
+    float4 scoop_profile;
+    float4 body_profile;
 };
 
 vertex VSOut vs_main(uint vid [[vertex_id]]) {
@@ -97,6 +99,14 @@ inline float boundary_peak_weight(float signed_distance, float peak_width, float
     return exp(-pow(normalized, peak_power));
 }
 
+inline float interior_curve_weight(float inside_distance, float center, float width, float strength) {
+    if (strength <= 0.0) {
+        return 0.0;
+    }
+    float delta = (inside_distance - center) / max(width, 1e-6);
+    return strength * exp(-(delta * delta));
+}
+
 fragment float4 fs_main(
     VSOut in [[stage_in]],
     constant Uniforms& u [[buffer(0)]],
@@ -109,6 +119,22 @@ fragment float4 fs_main(
     float signed_distance = signed_field[y * width + x];
     float base_alpha = fill_alpha(signed_distance, u.viewport_fill.w, u.color_floor.w) *
         clamp(u.viewport_fill.z, 0.0, 1.0);
+    if (signed_distance <= 0.0) {
+        float inside_distance = fabs(signed_distance);
+        float scoop = interior_curve_weight(
+            inside_distance,
+            u.scoop_profile.x,
+            u.scoop_profile.y,
+            u.scoop_profile.z
+        );
+        float body = interior_curve_weight(
+            inside_distance,
+            u.body_profile.x,
+            u.body_profile.y,
+            u.body_profile.z
+        );
+        base_alpha *= clamp(1.0 - scoop + body, 0.0, 1.35);
+    }
     float peak_mix = boundary_peak_weight(
         signed_distance,
         u.peak_shape.x,
@@ -241,6 +267,27 @@ def _fill_boundary_peak_profile_for_brightness(
     return peak_rgb, peak_alpha, peak_width, peak_power
 
 
+def _fill_curve_profile_for_brightness(
+    brightness: float,
+) -> tuple[float, float, float, float, float, float]:
+    """Return interior scoop/body shape for the preview fill."""
+    t = min(max(brightness, 0.0), 1.0)
+    scoop_center = _lerp(6.0, 0.0, t)
+    scoop_width = _lerp(4.25, 1.0, t)
+    scoop_strength = _lerp(0.62, 0.0, t)
+    body_center = _lerp(18.0, 0.0, t)
+    body_width = _lerp(7.0, 1.0, t)
+    body_strength = _lerp(0.10, 0.0, t)
+    return (
+        scoop_center,
+        scoop_width,
+        scoop_strength,
+        body_center,
+        body_width,
+        body_strength,
+    )
+
+
 def _boundary_peak_weight(
     signed_distance: float,
     peak_width: float,
@@ -248,6 +295,43 @@ def _boundary_peak_weight(
 ) -> float:
     normalized = abs(float(signed_distance)) / max(float(peak_width), 1e-6)
     return math.exp(-(normalized ** float(peak_power)))
+
+
+def _fill_curve_factor_for_signed_distance(
+    signed_distance: float,
+    brightness: float,
+) -> float:
+    if signed_distance > 0.0:
+        return 1.0
+    (
+        scoop_center,
+        scoop_width,
+        scoop_strength,
+        body_center,
+        body_width,
+        body_strength,
+    ) = _fill_curve_profile_for_brightness(brightness)
+    inside = abs(float(signed_distance))
+    scoop = 0.0
+    body = 0.0
+    if scoop_strength > 0.0:
+        scoop_delta = (inside - scoop_center) / max(scoop_width, 1e-6)
+        scoop = scoop_strength * math.exp(-(scoop_delta * scoop_delta))
+    if body_strength > 0.0:
+        body_delta = (inside - body_center) / max(body_width, 1e-6)
+        body = body_strength * math.exp(-(body_delta * body_delta))
+    return min(max(1.0 - scoop + body, 0.0), 1.35)
+
+
+def _preview_fill_alpha_for_signed_distance(
+    signed_distance: float,
+    brightness: float,
+) -> float:
+    width, interior_floor = _fill_profile_for_brightness(brightness)
+    base_alpha = math.exp(-math.sqrt(abs(float(signed_distance)) / max(width, 1e-6)))
+    if signed_distance <= 0.0:
+        base_alpha = interior_floor + (1.0 - interior_floor) * base_alpha
+    return base_alpha * _fill_curve_factor_for_signed_distance(signed_distance, brightness)
 
 
 def _truncate_preview(text: str | None) -> str:
@@ -450,6 +534,12 @@ def _fill_field_to_image_with_boundary_peak(
     peak_alpha: float,
     peak_width: float,
     peak_power: float,
+    scoop_center: float,
+    scoop_width: float,
+    scoop_strength: float,
+    body_center: float,
+    body_width: float,
+    body_strength: float,
 ):
     """Convert a fill field into a premultiplied image with a hard border peak."""
     import numpy as np
@@ -463,6 +553,21 @@ def _fill_field_to_image_with_boundary_peak(
     from Foundation import NSData
 
     base_alpha = np.clip(alpha, 0.0, 1.0).astype(np.float32)
+    if scoop_strength > 0.0 or body_strength > 0.0:
+        inside = np.maximum(-signed_distance, 0.0)
+        curve_factor = np.ones_like(base_alpha, dtype=np.float32)
+        if scoop_strength > 0.0:
+            scoop_delta = (inside - scoop_center) / max(scoop_width, 1e-6)
+            curve_factor -= np.float32(scoop_strength) * np.exp(
+                -np.square(scoop_delta, dtype=np.float32)
+            ).astype(np.float32)
+        if body_strength > 0.0:
+            body_delta = (inside - body_center) / max(body_width, 1e-6)
+            curve_factor += np.float32(body_strength) * np.exp(
+                -np.square(body_delta, dtype=np.float32)
+            ).astype(np.float32)
+        curve_factor = np.clip(curve_factor, 0.0, 1.35)
+        base_alpha = base_alpha * curve_factor
     normalized = np.abs(signed_distance) / max(peak_width, 1e-6)
     peak_mix = np.exp(
         -np.power(normalized, peak_power, dtype=np.float32)
@@ -538,6 +643,12 @@ class _MetalPreviewFillRenderer:
         self._peak_alpha = 0.0
         self._peak_width = 1.0
         self._peak_power = 2.0
+        self._scoop_center = 0.0
+        self._scoop_width = 1.0
+        self._scoop_strength = 0.0
+        self._body_center = 0.0
+        self._body_width = 1.0
+        self._body_strength = 0.0
         self._layer = objc.lookUpClass("CAMetalLayer").layer()
         self._layer.setDevice_(device)
         self._layer.setPixelFormat_(_MTL_PIXEL_FORMAT_BGRA8_UNORM)
@@ -579,6 +690,12 @@ class _MetalPreviewFillRenderer:
         peak_alpha: float | None = None,
         peak_width: float | None = None,
         peak_power: float | None = None,
+        scoop_center: float | None = None,
+        scoop_width: float | None = None,
+        scoop_strength: float | None = None,
+        body_center: float | None = None,
+        body_width: float | None = None,
+        body_strength: float | None = None,
     ) -> None:
         self._rgb = rgb
         self._opacity = opacity
@@ -593,6 +710,18 @@ class _MetalPreviewFillRenderer:
             self._peak_width = peak_width
         if peak_power is not None:
             self._peak_power = peak_power
+        if scoop_center is not None:
+            self._scoop_center = scoop_center
+        if scoop_width is not None:
+            self._scoop_width = scoop_width
+        if scoop_strength is not None:
+            self._scoop_strength = scoop_strength
+        if body_center is not None:
+            self._body_center = body_center
+        if body_width is not None:
+            self._body_width = body_width
+        if body_strength is not None:
+            self._body_strength = body_strength
 
     def draw_frame(self) -> bool:
         from . import glow as glow_module
@@ -619,6 +748,14 @@ class _MetalPreviewFillRenderer:
             float(self._peak_alpha),
             float(self._peak_width),
             float(self._peak_power),
+            float(self._scoop_center),
+            float(self._scoop_width),
+            float(self._scoop_strength),
+            0.0,
+            float(self._body_center),
+            float(self._body_width),
+            float(self._body_strength),
+            0.0,
         )
         glow_module._copy_bytes_to_metal_buffer(self._uniform_buffer, uniforms)
 
@@ -1192,7 +1329,7 @@ class TranscriptionOverlay(NSObject):
         # On light backgrounds use squared so the fill leads the glow.
         fill_drive = _lerp(scaled, scaled * scaled, t)
         fill_min = _lerp(0.04, 0.84, t)   # light: 2x rest presence — much more material
-        fill_max = _lerp(0.80, 0.99, t)   # dark side stays ghosted; light side still saturates
+        fill_max = _lerp(0.72, 0.99, t)   # dark side stays ghosted; light side still saturates
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             effective_fill_opacity = fill_opacity
@@ -1339,6 +1476,14 @@ class TranscriptionOverlay(NSObject):
             t = getattr(self, '_brightness', 0.0)
             fill_width, floor = _fill_profile_for_brightness(t)
             peak_rgb, peak_alpha, peak_width, peak_power = _fill_boundary_peak_profile_for_brightness(t)
+            (
+                scoop_center,
+                scoop_width,
+                scoop_strength,
+                body_center,
+                body_width,
+                body_strength,
+            ) = _fill_curve_profile_for_brightness(t)
             fill_override_rgb = getattr(self, "_fill_override_rgb", None)
             if fill_override_rgb is None:
                 t = getattr(self, '_brightness', 0.0)
@@ -1358,6 +1503,12 @@ class TranscriptionOverlay(NSObject):
                     peak_alpha=peak_alpha,
                     peak_width=peak_width * scale,
                     peak_power=peak_power,
+                    scoop_center=scoop_center * scale,
+                    scoop_width=scoop_width * scale,
+                    scoop_strength=scoop_strength,
+                    body_center=body_center * scale,
+                    body_width=body_width * scale,
+                    body_strength=body_strength,
                 )
                 renderer.draw_frame()
                 if hasattr(self._fill_layer, "setCompositingFilter_"):
@@ -1386,6 +1537,12 @@ class TranscriptionOverlay(NSObject):
                 peak_alpha=peak_alpha,
                 peak_width=peak_width * scale,
                 peak_power=peak_power,
+                scoop_center=scoop_center * scale,
+                scoop_width=scoop_width * scale,
+                scoop_strength=scoop_strength,
+                body_center=body_center * scale,
+                body_width=body_width * scale,
+                body_strength=body_strength,
             )
             self._fill_layer.setContents_(fill_image)
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
