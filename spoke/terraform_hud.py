@@ -285,11 +285,26 @@ class _ManualScrollView(NSView):
     def mouseUp_(self, event):
         if getattr(self, '_drag_moved', False):
             return
-        # Click (not drag) — resolve which card was hit
-        loc = self.convertPoint_fromView_(event.locationInWindow(), None)
+        # Click (not drag) — find which card subview was hit
         hud = getattr(self, '_hud_ref', None)
-        if hud is not None:
-            hud._handle_card_click(loc.x, loc.y, self._scroll_offset)
+        if hud is None or self._content is None:
+            return
+        # Convert click to content view coordinates
+        win_pt = event.locationInWindow()
+        content_pt = self._content.convertPoint_fromView_(win_pt, None)
+        # Check each subview (ToposRowView) — they store their index
+        for subview in self._content.subviews():
+            idx = getattr(subview, '_card_index', None)
+            if idx is None:
+                continue
+            frame = subview.frame()
+            if (frame.origin.x <= content_pt.x <= frame.origin.x + frame.size.width
+                    and frame.origin.y <= content_pt.y <= frame.origin.y + frame.size.height):
+                hud._toggle_detail(idx)
+                return
+        # Clicked outside any card — collapse
+        if hud._expanded_index is not None:
+            hud._collapse_detail()
 
     def mouseDragged_(self, event):
         self._drag_moved = True
@@ -557,38 +572,6 @@ class TerraformHUD(NSObject):
     _DETAIL_DROP_HEIGHT = 200  # how far the panel drops (pt)
     _EXTEND_DURATION = 0.2  # seconds for horizontal extension
     _DROP_DURATION = 0.15  # seconds for vertical drop
-
-    def _handle_card_click(self, x: float, y: float, scroll_offset: float) -> None:
-        """Map a click in scroll-view coordinates to a card index."""
-        if not self._topoi:
-            return
-        inset = _GLOW_MARGIN if self._metal_renderer is not None else 0
-        scroll_bounds = self._scroll_view.bounds() if self._scroll_view else None
-        if scroll_bounds is None:
-            return
-
-        row_stride = _ROW_HEIGHT + _ROW_GAP
-        total_height = max(
-            len(self._topoi) * row_stride + _PADDING,
-            scroll_bounds.size.height,
-        )
-
-        # Convert click y (in scroll view coords) to content coordinates.
-        # The content view's origin.y = -(content_h - visible_h) + scroll_offset
-        # so content_y = click_y - origin_y
-        visible_h = scroll_bounds.size.height
-        content_origin_y = -(total_height - visible_h) + scroll_offset
-        content_y = y - content_origin_y
-
-        for i in range(len(self._topoi)):
-            card_y = total_height - (i + 1) * row_stride
-            if card_y <= content_y <= card_y + _ROW_HEIGHT:
-                self._toggle_detail(i)
-                return
-
-        # Clicked outside any card — collapse
-        if self._expanded_index is not None:
-            self._collapse_detail()
 
     def _toggle_detail(self, index: int) -> None:
         """Toggle detail panel for the given card index."""
@@ -896,6 +879,7 @@ class TerraformHUD(NSObject):
         for i, topos in enumerate(self._topoi):
             y = total_height - (i + 1) * row_stride
             row = ToposRowView.createWithTopos_width_(topos, card_width)
+            row._card_index = i  # for click detection
             row.setFrameOrigin_((inset + 4, y))
             new_content.addSubview_(row)
 
