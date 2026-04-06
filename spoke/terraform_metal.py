@@ -148,14 +148,18 @@ inline float fill_alpha(float sd, float width, float floor_val) {
     return floor_val * exp(-normalized * normalized);
 }
 
-// Ring profile: only visible outside the card (sd > 0).
-// Peaks at ring_offset distance from boundary, fades with Gaussian.
-// Zero inside the card — no bumper at the edge.
-inline float ring_alpha(float sd, float ring_width, float ring_offset) {
-    if (sd <= 0.0) return 0.0;  // nothing inside the card
-    float shifted = sd - ring_offset;
-    float normalized = shifted / max(ring_width, 1e-6);
+// Diffuse outer glow: very faint, only outside (sd > 0).
+inline float glow_alpha(float sd, float glow_width) {
+    if (sd <= 0.0) return 0.0;
+    float normalized = sd / max(glow_width, 1e-6);
     return exp(-normalized * normalized);
+}
+
+// Hairline highlight ridge: ~1px sharp peak at the card boundary.
+// Uses high-power exponential for extreme sharpness.
+inline float highlight_ridge(float sd, float ridge_width) {
+    float normalized = abs(sd) / max(ridge_width, 1e-6);
+    return exp(-normalized * normalized * normalized);  // cubic Gaussian — very sharp
 }
 
 fragment float4 fs_fill(
@@ -167,20 +171,26 @@ fragment float4 fs_fill(
 
     uint count = min(uint(u.card_count_f), uint(MAX_CARDS));
 
-    // Chromatic aberration: pixel-space offset for gold/blue rings.
-    // All in one pass — no separate layers, no timing mismatch.
-    float2 chroma_offset = float2(3.0, 1.5);  // pixels
-    float ring_width = u.fill_width * 6.0;
-    float ring_peak_dist = u.fill_width * 4.0;
-    float gold_strength = 0.06;
-    float blue_strength = 0.035;
+    // === Background chromatic glow (very faint) ===
+    float2 bg_offset = float2(3.0, 1.5);      // pixel offset
+    float bg_width = u.fill_width * 6.0;       // wide diffuse
+    float bg_gold_str = 0.015;                 // barely visible
+    float bg_blue_str = 0.008;
     float3 gold_rgb = float3(1.0, 0.82, 0.45);
     float3 blue_rgb = float3(0.55, 0.65, 0.85);
 
+    // === Highlight ridge (hairline, 1-2px) ===
+    float2 hl_offset = float2(1.0, 0.5);      // tight chromatic split
+    float hl_width = 1.5;                      // ~1px ridge + AA
+    float hl_gold_str = 0.18;                  // punchy but thin
+    float hl_blue_str = 0.10;                  // blue recedes
+
     float best_alpha = 0.0;
     float3 best_rgb = float3(0.0);
-    float best_gold = 0.0;
-    float best_blue = 0.0;
+    float best_bg_gold = 0.0;
+    float best_bg_blue = 0.0;
+    float best_hl_gold = 0.0;
+    float best_hl_blue = 0.0;
 
     for (uint i = 0; i < count; i++) {
         float4 rect = u.cards[i].rect;
@@ -200,23 +210,34 @@ fragment float4 fs_fill(
             best_rgb = mix(best_rgb, u.cards[i].color.rgb, t);
         }
 
-        // Gold ring — offset one direction (pixel space)
-        float sd_gold = card_sdf(pixel - chroma_offset, rect, u.corner_radius);
-        best_gold = max(best_gold, ring_alpha(sd_gold, ring_width, ring_peak_dist));
+        // Background glow — diffuse, faint
+        float sd_bg_gold = card_sdf(pixel - bg_offset, rect, u.corner_radius);
+        best_bg_gold = max(best_bg_gold, glow_alpha(sd_bg_gold, bg_width));
+        float sd_bg_blue = card_sdf(pixel + bg_offset, rect, u.corner_radius);
+        best_bg_blue = max(best_bg_blue, glow_alpha(sd_bg_blue, bg_width));
 
-        // Blue ring — offset opposite direction
-        float sd_blue = card_sdf(pixel + chroma_offset, rect, u.corner_radius);
-        best_blue = max(best_blue, ring_alpha(sd_blue, ring_width, ring_peak_dist));
+        // Highlight ridge — hairline, right at the boundary
+        float sd_hl_gold = card_sdf(pixel - hl_offset, rect, u.corner_radius);
+        best_hl_gold = max(best_hl_gold, highlight_ridge(sd_hl_gold, hl_width));
+        float sd_hl_blue = card_sdf(pixel + hl_offset, rect, u.corner_radius);
+        best_hl_blue = max(best_hl_blue, highlight_ridge(sd_hl_blue, hl_width));
     }
 
-    // Additive chromatic rings behind the fill
-    float3 chroma = gold_rgb * (best_gold * gold_strength)
-                  + blue_rgb * (best_blue * blue_strength);
-    float chroma_a = max(best_gold * gold_strength, best_blue * blue_strength);
+    // Composite: fill + background glow + highlight ridge
+    float3 bg_chroma = gold_rgb * (best_bg_gold * bg_gold_str)
+                     + blue_rgb * (best_bg_blue * bg_blue_str);
+    float3 hl_chroma = gold_rgb * (best_hl_gold * hl_gold_str)
+                     + blue_rgb * (best_hl_blue * hl_blue_str);
+
+    float3 total_chroma = bg_chroma + hl_chroma;
+    float chroma_a = max(
+        max(best_bg_gold * bg_gold_str, best_bg_blue * bg_blue_str),
+        max(best_hl_gold * hl_gold_str, best_hl_blue * hl_blue_str)
+    );
 
     // Fill over chroma
     float final_alpha = best_alpha + chroma_a * (1.0 - best_alpha);
-    float3 final_rgb = best_rgb * best_alpha + chroma * (1.0 - best_alpha);
+    float3 final_rgb = best_rgb * best_alpha + total_chroma * (1.0 - best_alpha);
 
     return float4(final_rgb, final_alpha);
 }
