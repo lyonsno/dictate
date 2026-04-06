@@ -122,7 +122,14 @@ if repo_root is None:
     repo_root = fallback_repo_root
     target_source = f"fallback:{fallback_repo_root}"
 
-# Source per-worktree env overrides
+# Build child env: clear inherited overrides, then apply per-worktree
+# .spoke-smoke-env so the worktree's own values win (matches launch-target.sh).
+child_env = os.environ.copy()
+child_env.pop("SPOKE_PREVIEW_MODEL", None)
+child_env.pop("SPOKE_TRANSCRIPTION_MODEL", None)
+child_env.pop("SPOKE_WHISPER_MODEL", None)
+child_env.pop("SPOKE_VENV_PYTHON", None)
+child_env.pop("PYTHONPATH", None)
 smoke_env = repo_root / ".spoke-smoke-env"
 if smoke_env.is_file():
     try:
@@ -136,16 +143,9 @@ if smoke_env.is_file():
             key = key.strip()
             val = val.strip().strip('"').strip("'")
             if key:
-                os.environ[key] = val
+                child_env[key] = val
     except Exception:
         pass
-
-child_env = os.environ.copy()
-child_env.pop("SPOKE_PREVIEW_MODEL", None)
-child_env.pop("SPOKE_TRANSCRIPTION_MODEL", None)
-child_env.pop("SPOKE_WHISPER_MODEL", None)
-child_env.pop("SPOKE_VENV_PYTHON", None)
-child_env.pop("PYTHONPATH", None)
 if target is not None:
     child_env["SPOKE_LAUNCH_TARGET_ID"] = target.get("id", "")
 
