@@ -27,6 +27,22 @@ from spoke.scene_capture import SceneCaptureCache
 logger = logging.getLogger(__name__)
 
 
+def _is_local_omnivoice_cold_tts(tts_client: Any) -> bool:
+    """Whether the active TTS client is a cold local OmniVoice instance."""
+    model_id = getattr(tts_client, "_model_id", "")
+    if not isinstance(model_id, str) or model_id.strip().lower() != "k2-fsa/omnivoice":
+        return False
+    if getattr(tts_client, "_model", None) is not None:
+        return False
+    base_url = getattr(tts_client, "_base_url", "")
+    return not bool(base_url)
+
+
+def _omnivoice_warmup_inflight(tts_client: Any) -> bool:
+    warming = getattr(tts_client, "is_warming", False)
+    return warming if isinstance(warming, bool) else False
+
+
 # ── Tool schemas (OpenAI function calling format) ────────────────
 
 
@@ -314,6 +330,49 @@ def _execute_read_aloud(
         model_loaded = getattr(tts_client, "_model", None) is not None
         logger.info("read_aloud: tts_client present, model=%s, model_loaded=%s, cancelled=%s, text=%d chars",
                      model_id, model_loaded, cancelled, len(text))
+        if _is_local_omnivoice_cold_tts(tts_client):
+            wait_until_ready = getattr(tts_client, "wait_until_ready", None)
+            if _omnivoice_warmup_inflight(tts_client) and callable(wait_until_ready):
+                logger.info(
+                    "read_aloud: waiting for local OmniVoice warmup to finish"
+                )
+                if wait_until_ready(timeout=15.0):
+                    model_loaded = getattr(tts_client, "_model", None) is not None
+                    logger.info(
+                        "read_aloud: local OmniVoice warmup finished during command turn"
+                    )
+                else:
+                    logger.warning(
+                        "read_aloud: local OmniVoice warmup still in flight after timeout"
+                    )
+                    return (
+                        "Error speaking text: Local OmniVoice TTS is still warming. "
+                        "Retry in a moment once the background load finishes."
+                    )
+            if _is_local_omnivoice_cold_tts(tts_client):
+                warm = getattr(tts_client, "warm", None)
+                if callable(warm):
+                    logger.info(
+                        "read_aloud: starting background warmup for local OmniVoice"
+                    )
+                    warm()
+                if callable(wait_until_ready) and wait_until_ready(timeout=5.0):
+                    model_loaded = getattr(tts_client, "_model", None) is not None
+                    logger.info(
+                        "read_aloud: local OmniVoice warmup completed after cold start"
+                    )
+                if not _is_local_omnivoice_cold_tts(tts_client):
+                    logger.info(
+                        "read_aloud: local OmniVoice became ready after cold warm start"
+                    )
+                else:
+                    logger.warning(
+                        "read_aloud: local OmniVoice still cold after background warm start"
+                    )
+                    return (
+                        "Error speaking text: Local OmniVoice TTS is loading in the background. "
+                        "Try read_aloud again in a moment."
+                    )
         try:
             logger.info("read_aloud: calling speak (blocking)")
             tts_client.speak(text)
@@ -338,7 +397,7 @@ def _execute_read_aloud(
         logger.warning("read_aloud: no tts_client available")
         return (
             "Error: TTS client is not available. "
-            "This means SPOKE_TTS_VOICE is not set in the environment, "
+            "This usually means no TTS voice/backend is configured, "
             "or the TTS client failed to initialize at startup. "
             "Tell the user: TTS is not configured."
         )

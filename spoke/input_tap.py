@@ -51,7 +51,10 @@ from Quartz import (
 logger = logging.getLogger(__name__)
 
 SPACEBAR_KEYCODE = 49
-ENTER_KEYCODE = 36
+RETURN_KEYCODE = 36
+ENTER_KEYCODE = RETURN_KEYCODE
+KEYPAD_ENTER_KEYCODE = 76
+ENTER_KEYCODES = frozenset({ENTER_KEYCODE, KEYPAD_ENTER_KEYCODE})
 # Modifiers that prevent recording when held during spacebar press.
 # Shift is intentionally excluded — shift+space starts recording normally,
 # and shift is detected at release to route to the tray.
@@ -144,11 +147,14 @@ class SpacebarHoldDetector(NSObject):
         # Double-tap detection for delete gesture (shift held + double-tap spacebar)
         self._tray_last_shift_space_up: float = 0.0
 
-        # Double-tap detection for Enter (toggle command overlay) and Shift (toggle HUD)
-        self._on_double_tap_enter: Callable[[], None] | None = None
+        # Double-tap detection for Shift (toggle HUD)
         self._on_double_tap_shift: Callable[[], None] | None = None
-        self._last_idle_enter_up: float = 0.0
         self._last_idle_shift_up: float = 0.0
+        self._shift_single_tap_timer: NSTimer | None = None
+
+        # Double-Enter during spacebar hold = toggle command overlay + discard recording
+        self._on_double_enter_during_hold: Callable[[], None] | None = None
+        self._last_held_enter_down: float = 0.0
 
         return self
 
@@ -230,6 +236,7 @@ class SpacebarHoldDetector(NSObject):
         self._cancel_safety_timer()
         self._cancel_forwarding_timer()
         self._cancel_release_decision_timer()
+        self._cancel_shift_single_tap_timer()
         self._forwarding = False
         self._enter_held = False
         self._enter_latched = False
@@ -271,6 +278,7 @@ class SpacebarHoldDetector(NSObject):
             self._shift_latched = self._shift_at_press
             self._tray_gesture_consumed = False
             self._shift_down_during_hold = False
+            self._last_held_enter_down = 0.0
             self._start_hold_timer()
             return True  # suppress the space
 
@@ -525,6 +533,18 @@ class SpacebarHoldDetector(NSObject):
             self._release_decision_timer.invalidate()
             self._release_decision_timer = None
 
+    def _cancel_shift_single_tap_timer(self) -> None:
+        if getattr(self, "_shift_single_tap_timer", None) is not None:
+            self._shift_single_tap_timer.invalidate()
+            self._shift_single_tap_timer = None
+
+    def _shiftSingleTapFired_(self, timer: NSTimer) -> None:
+        """Double-tap window expired — fire the deferred single-tap action."""
+        self._shift_single_tap_timer = None
+        on_shift_tap_idle = getattr(self, '_on_shift_tap_idle', None)
+        if on_shift_tap_idle is not None:
+            on_shift_tap_idle()
+
     def _finish_pending_release(self, enter_held: bool) -> None:
         if not getattr(self, "_pending_release_active", False):
             return
@@ -561,12 +581,22 @@ def _event_tap_callback(proxy, event_type, event, refcon):
     if event_type == kCGEventKeyDown:
         flags = CGEventGetFlags(event)
         # Track enter key state for command fast path
-        if keycode == ENTER_KEYCODE:
+        if keycode in ENTER_KEYCODES:
             det._enter_held = True
             if getattr(det, "_pending_release_active", False):
                 det._finish_pending_release(enter_held=True)
                 return None
             if det._state in (_State.WAITING, _State.RECORDING):
+                # Double-Enter during hold = toggle overlay + discard recording
+                now = time.monotonic()
+                if (now - det._last_held_enter_down) < _DOUBLE_TAP_WINDOW_S:
+                    det._last_held_enter_down = 0.0
+                    cb = getattr(det, '_on_double_enter_during_hold', None)
+                    if cb is not None:
+                        logger.info("Double-Enter during hold — toggling command overlay")
+                        cb()
+                    return None
+                det._last_held_enter_down = now
                 # Fire cancel spring callback if the command overlay is active
                 # (generation in progress and user is adding enter to the hold)
                 if getattr(det, 'command_overlay_active', False):
@@ -590,7 +620,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
     elif event_type == kCGEventKeyUp:
         flags = CGEventGetFlags(event)
         # Track enter key release
-        if keycode == ENTER_KEYCODE:
+        if keycode in ENTER_KEYCODES:
             # Cancel spring capture: either key releasing evaluates the spring
             if getattr(det, 'cancel_spring_active', False):
                 det._enter_held = False
@@ -617,18 +647,6 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 det._finish_enter_release(shift_held=shift_held)
                 return None
             det._enter_held = False
-            # Double-tap Enter detection in IDLE (not during tray)
-            if det._state == _State.IDLE and not getattr(det, 'tray_active', False):
-                now = time.monotonic()
-                last = getattr(det, '_last_idle_enter_up', 0.0)
-                if (now - last) < _DOUBLE_TAP_WINDOW_S:
-                    det._last_idle_enter_up = 0.0  # reset
-                    cb = getattr(det, '_on_double_tap_enter', None)
-                    if cb is not None:
-                        logger.info("Double-tap Enter — toggling command overlay")
-                        cb()
-                else:
-                    det._last_idle_enter_up = now
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:
@@ -699,15 +717,22 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                     last = getattr(det, '_last_idle_shift_up', 0.0)
                     if (now - last) < _DOUBLE_TAP_WINDOW_S:
                         det._last_idle_shift_up = 0.0  # reset
+                        # Cancel the deferred single-tap from the first tap
+                        det._cancel_shift_single_tap_timer()
                         cb = getattr(det, '_on_double_tap_shift', None)
                         if cb is not None:
                             logger.info("Double-tap Shift — toggling HUD")
                             cb()
                     else:
                         det._last_idle_shift_up = now
-                        on_shift_tap_idle = getattr(det, '_on_shift_tap_idle', None)
-                        if on_shift_tap_idle is not None:
-                            on_shift_tap_idle()
+                        # Defer single-tap action until double-tap window expires.
+                        # If a second tap arrives, the timer is cancelled.
+                        det._cancel_shift_single_tap_timer()
+                        det._shift_single_tap_timer = (
+                            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                                _DOUBLE_TAP_WINDOW_S, det, "_shiftSingleTapFired:", None, False
+                            )
+                        )
                 det._idle_shift_interrupted = False
 
     return event

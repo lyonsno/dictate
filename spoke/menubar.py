@@ -286,7 +286,7 @@ class MenuBarIcon(NSObject):
                     if tts_voice.get("type") == "choice":
                         menu.addItem_(
                             self._build_choice_submenu_item(
-                                "TTS Voice",
+                                tts_voice.get("title", "TTS Voice"),
                                 "tts_voice",
                                 tts_voice["selected"],
                                 tts_voice["models"],

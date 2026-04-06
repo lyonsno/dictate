@@ -58,22 +58,25 @@ def _run_modal_with_paste(alert) -> int:
     from AppKit import NSEvent
 
     def _handle(event):
-        if event.modifierFlags() & _NS_COMMAND_KEY_MASK:
-            chars = event.charactersIgnoringModifiers()
-            win = alert.window()
-            if win is not None:
-                fr = win.firstResponder()
-                if chars in ("v", "c", "x", "a") and fr is not None:
-                    if chars == "v":
-                        fr.paste_(None)
-                    elif chars == "c":
-                        fr.copy_(None)
-                    elif chars == "x":
-                        fr.cut_(None)
-                    elif chars == "a":
-                        fr.selectAll_(None)
+        try:
+            if event.modifierFlags() & _NS_COMMAND_KEY_MASK:
+                chars = event.charactersIgnoringModifiers()
+                win = alert.window()
+                if win is not None:
+                    fr = win.firstResponder()
+                    if chars in ("v", "c", "x", "a") and fr is not None:
+                        if chars == "v":
+                            fr.paste_(None)
+                        elif chars == "c":
+                            fr.copy_(None)
+                        elif chars == "x":
+                            fr.cut_(None)
+                        elif chars == "a":
+                            fr.selectAll_(None)
                 # Swallow all Cmd+key so nothing dismisses the dialog.
                 return None
+        except Exception:
+            logger.exception("Alert event monitor handler error")
         return event
 
     monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
@@ -104,8 +107,13 @@ from .transcribe import TranscriptionClient
 from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
 from .transcribe_parakeet import ParakeetCoreMLClient, _PARAKEET_MODEL_ID
 from .transcribe_qwen import LocalQwenClient
-from .tts import TTSClient, RemoteTTSClient
-from .heartbeat import HeartbeatManager, zombie_sweep, HEARTBEAT_INTERVAL_S, _is_process_alive
+from .tts import TTSClient, RemoteTTSClient, _DEFAULT_VOICE
+from .heartbeat import (
+    HeartbeatManager,
+    zombie_sweep,
+    HEARTBEAT_INTERVAL_S,
+    _is_process_alive,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +153,66 @@ _TTS_MODELS = [
     ("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit", "Qwen3-TTS 0.6B CustomVoice (8-bit)"),
     ("mlx-community/VibeVoice-Realtime-0.5B-fp16", "VibeVoice 0.5B Realtime (fp16)"),
     ("mlx-community/Kokoro-82M-bf16", "Kokoro 82M (bf16)"),
+    ("k2-fsa/OmniVoice", "OmniVoice"),
 ]
+
+_OMNIVOICE_PROMPT_PRESETS = [
+    ("", "Auto voice"),
+    ("female, child", "Female, child"),
+    ("male, high pitch, indian accent", "Male, high pitch, Indian"),
+    ("female, elderly, british accent", "Female, elderly, British"),
+    ("female, young adult, whisper", "Female, young adult, whisper"),
+    ("male, middle-aged, very low pitch", "Male, middle-aged, very low pitch"),
+    ("female, low pitch, british accent", "Female, low pitch, British"),
+    ("male, british accent", "Male, British"),
+    ("female, whisper, british accent", "Female whisper, British"),
+    ("female, high pitch, american accent", "Female, high pitch, American"),
+    ("male, low pitch, american accent", "Male, low pitch, American"),
+]
+
+_OMNIVOICE_PROMPT_LEXICON = {
+    "Gender": ("female", "male"),
+    "Age": ("child", "young adult", "middle-aged", "elderly"),
+    "Pitch": ("very low pitch", "low pitch", "high pitch", "very high pitch"),
+    "Style": ("whisper",),
+    "English accent": ("american accent", "british accent", "indian accent"),
+    "Chinese dialect examples": ("sichuan dialect", "shaanxi dialect"),
+}
+
+
+def _is_omnivoice_tts_model(model_id: str | None) -> bool:
+    return isinstance(model_id, str) and model_id.strip().lower() == "k2-fsa/omnivoice"
+
+
+def _omnivoice_prompt_label(prompt: str) -> str:
+    for preset_prompt, label in _OMNIVOICE_PROMPT_PRESETS:
+        if prompt == preset_prompt:
+            return label
+    return prompt or "Auto voice"
+
+
+def _omnivoice_prompt_choices(current_prompt: str) -> list[tuple[str, str, bool]]:
+    choices = [
+        (prompt, label, True) for prompt, label in _OMNIVOICE_PROMPT_PRESETS
+    ]
+    if current_prompt and all(
+        prompt != current_prompt for prompt, _label in _OMNIVOICE_PROMPT_PRESETS
+    ):
+        choices.insert(1, (current_prompt, f"Custom: {current_prompt}", True))
+    choices.append(("configure_voice", "Set Custom TTS Prompt…", True))
+    return choices
+
+
+def _omnivoice_prompt_lexicon_text() -> str:
+    parts = []
+    for heading, values in _OMNIVOICE_PROMPT_LEXICON.items():
+        parts.append(f"{heading}: {', '.join(values)}")
+    return (
+        "Combine OmniVoice prompt keywords with commas.\n\n"
+        + "\n".join(parts)
+        + "\n\nExamples: female, low pitch, british accent; "
+        "male, middle-aged, very low pitch; female, young adult, whisper."
+    )
 
 _NOT_CAPTURED = object()  # sentinel for _pre_paste_clipboard
 _PROCESS_LAUNCH_ID = os.environ.get("SPOKE_LAUNCH_ID") or f"{os.getpid()}-{uuid.uuid4().hex[:8]}"
@@ -395,7 +462,7 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_tray_delete = self._on_tray_delete_gesture
         self._detector._on_cancel_spring_start = self._on_cancel_spring_start
         self._detector._on_cancel_spring_release = self._on_cancel_spring_release
-        self._detector._on_double_tap_enter = self._toggle_command_overlay
+        self._detector._on_double_enter_during_hold = self._on_double_enter_during_hold
         self._detector._on_double_tap_shift = self._toggle_terraform_hud
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
@@ -490,7 +557,7 @@ class SpokeAppDelegate(NSObject):
         self._heartbeat.set_evict_callback(self._evict_model)
         self._heartbeat_timer = None
 
-        # TTS autoplay — initialized if SPOKE_TTS_VOICE is set.
+        # TTS autoplay — initialized if a voice is configured via preferences or env.
         # Preference-based model override takes priority over env var.
         tts_model_pref = self._load_preferences().get("tts_model")
         if tts_model_pref:
@@ -766,14 +833,9 @@ class SpokeAppDelegate(NSObject):
         self._register_loaded_models()
         self._start_heartbeat_timer()
 
-        # Warm TTS after Whisper is loaded, but keep it off the main thread.
-        tts = getattr(self, "_tts_client", None)
-        if tts is not None:
-            threading.Thread(
-                target=self._warm_tts_in_background,
-                daemon=True,
-                name="tts-warmup",
-            ).start()
+        # Keep TTS lazy. Startup-time local TTS warmup can monopolize the same
+        # MLX lock transcription uses, which starves preview/final text on
+        # OmniVoice surfaces until the TTS model finishes loading.
 
     def clientWarmupFailed_(self, _sender) -> None:
         self._warmup_in_flight = False
@@ -1732,8 +1794,25 @@ class SpokeAppDelegate(NSObject):
             self._acknowledge_tray_entry(self._tray_index)
             self._dismiss_tray()
 
+    def _on_double_enter_during_hold(self) -> None:
+        """Double-Enter during spacebar hold — toggle overlay, discard recording."""
+        logger.info("Double-Enter during hold — silently discarding recording")
+        # Stop recording without transcribing
+        if self._capture is not None:
+            try:
+                self._capture.stop()
+            except Exception:
+                pass
+        if self._overlay is not None and self._overlay._visible:
+            self._overlay.hide()
+        if self._glow is not None:
+            self._glow.hide()
+        if self._menubar is not None:
+            self._menubar.set_recording(False)
+        self._toggle_command_overlay()
+
     def _toggle_command_overlay(self) -> None:
-        """Toggle command overlay visibility — called from double-tap Enter."""
+        """Toggle command overlay visibility."""
         if self._command_client is None:
             return
         overlay_visible = (
@@ -2024,7 +2103,7 @@ class SpokeAppDelegate(NSObject):
     def _make_tool_executor(self):
         """Build a tool executor closure with current app state."""
         scene_cache = self._scene_cache
-        raw_tts_client = getattr(self, "_tts_client", None)
+        raw_tts_client = self._ensure_tts_client(allow_default_voice=True)
         tts_client = raw_tts_client
         # Get last assistant response for last_response refs
         last_response = None
@@ -2534,20 +2613,26 @@ class SpokeAppDelegate(NSObject):
                     ],
                 }
             tts_client = getattr(self, "_tts_client", None)
-            if tts_client is not None or os.environ.get("SPOKE_TTS_VOICE"):
-                tts_sidecar_url = getattr(self, "_tts_sidecar_url", "")
-                tts_backend = getattr(self, "_tts_backend", "local")
+            tts_backend = getattr(self, "_tts_backend", "local")
+            tts_sidecar_url = getattr(self, "_tts_sidecar_url", "")
+            tts_voice_pref = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE", "")
+            saved_tts_model = (
+                self._load_preference("tts_sidecar_model")
+                if tts_backend == "sidecar"
+                else self._load_preference("tts_model")
+            ) or os.environ.get("SPOKE_TTS_MODEL", "")
+            if tts_client is not None or tts_voice_pref or saved_tts_model or tts_backend == "sidecar":
                 has_tts_sidecar_url = bool(tts_sidecar_url)
                 tts_target = "not active"
                 if tts_client is not None:
                     if isinstance(tts_client, RemoteTTSClient):
                         tts_target = _url_host(getattr(tts_client, "_base_url", ""))
                     else:
-                        tts_target = "local MLX"
+                        tts_target = "local runtime"
                 state["tts_backend"] = {
                     "title": f"TTS Backend: {'Sidecar' if tts_backend == 'sidecar' else 'Local'}",
                     "items": [
-                        ("local", "Local (Voxtral MLX)", tts_backend == "local"),
+                        ("local", "Local runtime", tts_backend == "local"),
                         ("sidecar", (
                             f"Sidecar ({_url_host(tts_sidecar_url)})"
                             if has_tts_sidecar_url
@@ -2561,7 +2646,7 @@ class SpokeAppDelegate(NSObject):
                     "note": (
                         "Routing source: saved sidecar URL"
                         if tts_backend == "sidecar" and has_tts_sidecar_url
-                        else "Routing source: local MLX"
+                        else "Routing source: local runtime"
                     ),
                 }
             if self._local_whisper_controls_available():
@@ -2601,11 +2686,14 @@ class SpokeAppDelegate(NSObject):
                     ],
                 }
             tts = getattr(self, "_tts_client", None)
-            tts_backend = getattr(self, "_tts_backend", "local")
-            tts_voice_pref = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE", "")
-            show_tts_menus = tts is not None or tts_backend == "sidecar" or tts_voice_pref
+            show_tts_menus = (
+                tts is not None
+                or tts_backend == "sidecar"
+                or bool(tts_voice_pref)
+                or bool(saved_tts_model)
+            )
             if show_tts_menus:
-                current_tts_model = getattr(tts, "_model_id", "") if tts else ""
+                current_tts_model = getattr(tts, "_model_id", "") if tts else saved_tts_model
                 if tts_backend == "sidecar":
                     sidecar_models = self._discover_tts_sidecar_models()
                     if sidecar_models:
@@ -2630,6 +2718,7 @@ class SpokeAppDelegate(NSObject):
                         "models": tts_models,
                     }
                 current_voice = getattr(tts, "_voice", "") if tts else tts_voice_pref
+                prompt_mode = tts_backend != "sidecar" and _is_omnivoice_tts_model(current_tts_model)
                 if tts_backend == "sidecar":
                     sidecar_voices = self._discover_tts_sidecar_voices(current_tts_model)
                 else:
@@ -2643,13 +2732,35 @@ class SpokeAppDelegate(NSObject):
                         "selected": current_voice,
                         "models": voice_models,
                     }
+                elif prompt_mode:
+                    state["tts_voice"] = {
+                        "type": "choice",
+                        "title": f"TTS Prompt: {_omnivoice_prompt_label(current_voice)}",
+                        "selected": current_voice,
+                        "models": _omnivoice_prompt_choices(current_voice),
+                    }
                 else:
+                    title = f"TTS Voice: {current_voice or '(not set)'}"
+                    items = [
+                        ("configure_voice", "Set TTS Voice\u2026", False, True),
+                    ]
+                    if tts_backend == "sidecar":
+                        title += " [sidecar /v1/voices needed]"
+                        items = [
+                            (
+                                "voice_discovery_unavailable",
+                                "Voice discovery unavailable on this sidecar",
+                                False,
+                                False,
+                            ),
+                            *items,
+                        ]
                     state["tts_voice"] = {
                         "type": "toggle",
-                        "title": f"TTS Voice: {current_voice or '(not set)'}",
-                        "items": [
-                            ("configure_voice", "Set TTS Voice\u2026", False, True),
-                        ],
+                        "title": title,
+                        "items": (
+                            items
+                        ),
                     }
             return state
         if not isinstance(selection, tuple) or len(selection) != 2:
@@ -3079,12 +3190,24 @@ class SpokeAppDelegate(NSObject):
             return "cloud", cloud_url
         return "local", _DEFAULT_COMMAND_URL
 
-    def _build_tts_client(self):
+    def _ensure_tts_client(self, *, allow_default_voice: bool = False):
+        """Return the active TTS client, building it lazily when appropriate."""
+        tts = getattr(self, "_tts_client", None)
+        if tts is not None:
+            return tts
+        tts = self._build_tts_client(allow_default_voice=allow_default_voice)
+        if tts is not None:
+            self._tts_client = tts
+            backend_label = "sidecar" if isinstance(tts, RemoteTTSClient) else "local"
+            logger.info("TTS enabled: backend=%s voice=%s", backend_label, getattr(tts, "_voice", ""))
+        return tts
+
+    def _build_tts_client(self, *, allow_default_voice: bool = False):
         """Build a TTS client based on backend preference and env vars."""
         voice = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE")
-        if not voice:
-            return None
         if self._tts_backend == "sidecar" and self._tts_sidecar_url:
+            if not voice:
+                return None
             model_id = (
                 self._load_preference("tts_sidecar_model")
                 or os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
@@ -3094,7 +3217,17 @@ class SpokeAppDelegate(NSObject):
                 model_id=model_id,
                 voice=voice,
             )
-        return TTSClient.from_env(gpu_lock=self._local_inference_lock)
+        model_id = (
+            self._load_preference("tts_model")
+            or os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
+        )
+        if not voice and not allow_default_voice:
+            return None
+        return TTSClient(
+            model_id=model_id,
+            voice=voice or None,
+            gpu_lock=self._local_inference_lock,
+        )
 
     def _discover_tts_sidecar_models(self) -> list[tuple[str, str, bool]]:
         """Fetch available models from the TTS sidecar's /v1/models endpoint."""
@@ -3653,10 +3786,25 @@ class SpokeAppDelegate(NSObject):
         current_voice = getattr(tts, "_voice", "") if tts else ""
         if not current_voice:
             current_voice = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE", "")
+        if tts is not None:
+            current_model = getattr(tts, "_model_id", "")
+        elif getattr(self, "_tts_backend", "local") == "sidecar":
+            current_model = (
+                self._load_preference("tts_sidecar_model")
+                or os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
+            )
+        else:
+            current_model = (
+                self._load_preference("tts_model")
+                or os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
+            )
+        prompt_mode = getattr(self, "_tts_backend", "local") != "sidecar" and _is_omnivoice_tts_model(current_model)
         alert = NSAlert.new()
-        alert.setMessageText_("TTS Voice")
+        alert.setMessageText_("TTS Prompt" if prompt_mode else "TTS Voice")
         alert.setInformativeText_(
-            "Enter the voice name to use for TTS synthesis."
+            _omnivoice_prompt_lexicon_text()
+            if prompt_mode
+            else "Enter the voice name to use for TTS synthesis."
         )
         field = _PastableTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
         field.setStringValue_(current_voice)
