@@ -244,12 +244,22 @@ def _build_metal_pipeline(device):
     return device.newRenderPipelineStateWithDescriptor_error_(pipeline_descriptor, None)
 
 
+def _smoothstep(value: float) -> float:
+    value = min(max(value, 0.0), 1.0)
+    return value * value * (3.0 - 2.0 * value)
+
+
+def _mecha_visor_pulse_phase(now: float | None = None) -> float:
+    now = time.monotonic() if now is None else now
+    phase = 0.5 + 0.5 * math.sin(now * math.tau * _MECHA_VISOR_SINE_HZ)
+    return _smoothstep(_smoothstep(phase))
+
+
 def _mecha_visor_signal_boost(signal: float, now: float | None = None) -> float:
     if _MECHA_VISOR_SINE_BOOST <= 0.0:
         return min(max(signal, 0.0), 1.0)
 
-    now = time.monotonic() if now is None else now
-    phase = 0.5 + 0.5 * math.sin(now * math.tau * _MECHA_VISOR_SINE_HZ)
+    phase = _mecha_visor_pulse_phase(now)
     return min(max(signal + (_MECHA_VISOR_SINE_BOOST * phase), 0.0), 1.0)
 
 # Glow appearance
@@ -1592,6 +1602,7 @@ class GlowOverlay(NSObject):
         opacity = self._glow_base_opacity + amplitude_opacity * (_GLOW_MAX_OPACITY - self._glow_base_opacity)
         opacity = min(opacity, self._glow_peak_target)
         vignette_amplitude_linear = min(self._vignette_smoothed_amplitude * _GLOW_MULTIPLIER, 1.0)
+        vignette_amplitude_linear = _mecha_visor_signal_boost(vignette_amplitude_linear)
         vignette_amplitude_opacity = math.log1p(vignette_amplitude_linear * 20.0) / math.log1p(20.0)
         vignette_opacity = self._glow_base_opacity + vignette_amplitude_opacity * (
             _GLOW_MAX_OPACITY - self._glow_base_opacity

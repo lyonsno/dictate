@@ -500,6 +500,37 @@ class TestGlowTuning:
         finally:
             sys.modules.pop("spoke.glow", None)
 
+    def test_mecha_visor_pulse_boost_reaches_vignette_too(self, mock_pyobjc, monkeypatch):
+        """The synthetic mecha pulse should animate the subtractive vignette, not just the additive glow."""
+        monkeypatch.setenv("SPOKE_MECHA_VISOR_SINE_BOOST", "0.8")
+        monkeypatch.setenv("SPOKE_MECHA_VISOR_SINE_HZ", "0.5")
+        sys.modules.pop("spoke.glow", None)
+        mod = importlib.import_module("spoke.glow")
+        try:
+            glow = self._make_glow(mod)
+            glow._visible = True
+            glow._fade_in_until = 0.0
+            glow._noise_floor = 0.0
+            glow._smoothed_amplitude = 0.0
+            glow._vignette_smoothed_amplitude = 0.0
+            glow._glow_base_opacity = mod._GLOW_BASE_OPACITY_LIGHT
+            glow._glow_peak_target = mod._GLOW_MAX_OPACITY
+            glow._additive_mix = 0.0
+            glow._subtractive_mix = mod._edge_mix_for_brightness(1.0)[1]
+            glow._vignette_layer = MagicMock()
+            glow._vignette_pass_layers = [
+                {"layer": MagicMock(), "spec": spec}
+                for spec in mod._continuous_vignette_pass_specs()
+            ]
+            monkeypatch.setattr(mod.time, "monotonic", lambda: 0.5)
+
+            glow.update_amplitude(0.0)
+
+            core_opacity = glow._vignette_pass_layers[0]["layer"].setOpacity_.call_args[0][0]
+            assert core_opacity > 0.7
+        finally:
+            sys.modules.pop("spoke.glow", None)
+
     def test_show_applies_brightness_adaptive_glow_style(self, mock_pyobjc, monkeypatch):
         """Show should snapshot brightness and cache the active glow style for the session."""
         sys.modules.pop("spoke.glow", None)

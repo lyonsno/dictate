@@ -57,6 +57,17 @@ def test_apply_glow_color_routes_additive_surface_to_metal_renderer(mock_pyobjc,
         sys.modules.pop("spoke.glow", None)
 
 
+def test_glow_module_can_be_reimported_without_objc_class_collision(mock_pyobjc, monkeypatch):
+    first = _import_glow(mock_pyobjc, monkeypatch)
+    first_name = first.GlowOverlay.__objc_name__
+    try:
+        second = _import_glow(mock_pyobjc, monkeypatch)
+
+        assert second.GlowOverlay.__objc_name__ != first_name
+    finally:
+        sys.modules.pop("spoke.glow", None)
+
+
 def test_show_starts_metal_frame_timer_when_renderer_present(mock_pyobjc, monkeypatch):
     mod = _import_glow(mock_pyobjc, monkeypatch)
     try:
@@ -122,7 +133,7 @@ def test_hide_invalidates_metal_frame_timer(mock_pyobjc, monkeypatch):
         sys.modules.pop("spoke.glow", None)
 
 
-def test_mecha_visor_sine_boost_can_raise_idle_signal_without_rms(mock_pyobjc, monkeypatch):
+def test_mecha_visor_pulse_boost_can_raise_idle_signal_without_rms(mock_pyobjc, monkeypatch):
     monkeypatch.setenv("SPOKE_METAL_WIDE_BLOOM", "1")
     monkeypatch.setenv("SPOKE_MECHA_VISOR_SINE_BOOST", "0.8")
     monkeypatch.setenv("SPOKE_MECHA_VISOR_SINE_HZ", "0.5")
@@ -131,9 +142,11 @@ def test_mecha_visor_sine_boost_can_raise_idle_signal_without_rms(mock_pyobjc, m
     try:
         boosted = mod._mecha_visor_signal_boost(0.0, now=0.5)
         trough = mod._mecha_visor_signal_boost(0.0, now=1.5)
+        midrise = mod._mecha_visor_pulse_phase(now=0.25)
 
         assert boosted == pytest.approx(0.8, rel=0.01)
         assert trough == pytest.approx(0.0, abs=1e-6)
+        assert 0.5 < midrise < 1.0
     finally:
         sys.modules.pop("spoke.glow", None)
 
@@ -150,7 +163,7 @@ def test_mecha_visor_wide_bloom_tuning_pushes_tail_farther_into_screen(mock_pyob
         wide = next(spec for spec in specs if spec["name"] == "wide_bloom")
 
         assert wide["falloff"] == pytest.approx(57.6)
-        assert wide["fill_alpha"] == pytest.approx(0.72)
+        assert wide["fill_alpha"] == pytest.approx(0.072)
         assert wide["power"] == pytest.approx(2.32)
     finally:
         sys.modules.pop("spoke.glow", None)
