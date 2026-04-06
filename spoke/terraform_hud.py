@@ -165,6 +165,15 @@ def _make_label(
     return label
 
 
+def _animate_alpha(panel, target: float, duration: float) -> None:
+    """Animate an NSPanel's alpha value using NSAnimationContext."""
+    from AppKit import NSAnimationContext
+    NSAnimationContext.beginGrouping()
+    NSAnimationContext.currentContext().setDuration_(duration)
+    panel.animator().setAlphaValue_(target)
+    NSAnimationContext.endGrouping()
+
+
 class _ManualScrollView(NSView):
     """Plain NSView that scrolls its content by adjusting frame origin.
 
@@ -308,7 +317,8 @@ class TerraformHUD(NSObject):
         self._panel.setFloatingPanel_(True)
         self._panel.setBecomesKeyOnlyIfNeeded_(True)
 
-        # Manual scroll view — no NSScrollView/NSClipView layer caching
+        # Layer-back the content view for scale animations
+        self._panel.contentView().setWantsLayer_(True)
         content_frame = self._panel.contentView().bounds()
 
         # Stats label at the top of the panel
@@ -332,20 +342,71 @@ class TerraformHUD(NSObject):
         self._refresh()
 
     def show(self) -> None:
-        """Show the HUD panel and start auto-refresh."""
+        """Show the HUD panel with fade+scale pop and start auto-refresh."""
         if self._panel is None:
             self.setup()
+        self._panel.setAlphaValue_(0.0)
         self._panel.orderFront_(None)
         self._visible = True
         self._start_timer()
 
+        # Animate: fade in + subtle scale pop (0.92 → 1.0)
+        content_layer = self._panel.contentView().layer()
+        if content_layer is not None:
+            content_layer.setAnchorPoint_((0.5, 0.5))
+            bounds = self._panel.contentView().bounds()
+            content_layer.setPosition_((bounds.size.width / 2, bounds.size.height / 2))
+
+            scale_anim = Quartz.CABasicAnimation.animationWithKeyPath_("transform.scale")
+            scale_anim.setFromValue_(0.92)
+            scale_anim.setToValue_(1.0)
+            scale_anim.setDuration_(0.2)
+            scale_anim.setTimingFunction_(
+                Quartz.CAMediaTimingFunction.functionWithName_("easeOut")
+            )
+            content_layer.addAnimation_forKey_(scale_anim, "show_scale")
+
+        # Window-level fade
+        _animate_alpha(self._panel, 1.0, 0.2)
+
     def hide(self) -> None:
-        """Hide the HUD panel and stop auto-refresh."""
+        """Hide the HUD panel with fade-out and stop auto-refresh."""
         if self._panel is not None:
             self._save_position()
-            self._panel.orderOut_(None)
+            self._visible = False
+            self._stop_timer()
+
+            # Animate: fade out + scale down (1.0 → 0.92)
+            content_layer = self._panel.contentView().layer()
+            if content_layer is not None:
+                scale_anim = Quartz.CABasicAnimation.animationWithKeyPath_("transform.scale")
+                scale_anim.setFromValue_(1.0)
+                scale_anim.setToValue_(0.92)
+                scale_anim.setDuration_(0.15)
+                scale_anim.setTimingFunction_(
+                    Quartz.CAMediaTimingFunction.functionWithName_("easeIn")
+                )
+                scale_anim.setFillMode_("forwards")
+                scale_anim.setRemovedOnCompletion_(False)
+                content_layer.addAnimation_forKey_(scale_anim, "hide_scale")
+
+            # Fade out then hide
+            _animate_alpha(self._panel, 0.0, 0.15)
+            # Defer orderOut until animation finishes
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.16, self, "_hideComplete:", None, False
+            )
+            return
         self._visible = False
         self._stop_timer()
+
+    def _hideComplete_(self, timer) -> None:
+        if self._panel is not None and not self._visible:
+            self._panel.orderOut_(None)
+            # Reset scale for next show
+            content_layer = self._panel.contentView().layer()
+            if content_layer is not None:
+                content_layer.removeAllAnimations()
 
     def toggle(self) -> None:
         """Toggle HUD visibility."""
