@@ -314,12 +314,19 @@ class TerraformCardRenderer:
         self._scroll_offset_y = offset_px
 
     def set_brightness(self, brightness: float) -> None:
-        """Crossfade between dark and light layers — no redraw."""
+        """Crossfade between dark and light layers — no redraw.
+
+        Cranked to extremes so the shift is unmissable:
+        Dark layer: full opacity on dark bg, completely gone on light
+        Light layer: invisible on dark bg, full opacity on light
+        """
         t = min(max(brightness, 0.0), 1.0)
-        # Dark layer: full at 0, fades out by 0.5
-        self._dark_layer.setOpacity_(max(1.0 - t * 2.0, 0.0))
-        # Light layer: invisible at 0, fades in from 0.15, full by 0.6
-        self._light_layer.setOpacity_(min(max((t - 0.15) / 0.45, 0.0), 1.0))
+        dark_opacity = max(1.0 - t * 3.0, 0.0)   # gone by brightness=0.33
+        light_opacity = min(t * 3.0, 1.0)          # full by brightness=0.33
+        self._dark_layer.setOpacity_(dark_opacity)
+        self._light_layer.setOpacity_(light_opacity)
+        logger.debug("HUD brightness=%.2f dark_op=%.2f light_op=%.2f",
+                     brightness, dark_opacity, light_opacity)
 
     def draw_frame(self) -> bool:
         """Render both layers in one call. Only called on data/scroll changes."""

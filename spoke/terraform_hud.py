@@ -542,7 +542,7 @@ class TerraformHUD(NSObject):
         same as the overlay.
         """
         new_brightness = min(max(brightness, 0.0), 1.0)
-        if abs(new_brightness - getattr(self, '_brightness', -1.0)) < 0.01:
+        if abs(new_brightness - getattr(self, '_brightness', -1.0)) < 0.001:
             return
         self._brightness = new_brightness
         if self._metal_renderer is None:
