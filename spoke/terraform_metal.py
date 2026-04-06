@@ -268,47 +268,79 @@ class TerraformCardRenderer:
         self._uniform_buffer = device.newBufferWithLength_options_(_UNIFORM_SIZE, 0)
 
         self._cards: list[CardInfo] = []
+        self._cards_dark: list[CardInfo] = []  # dark-bg fill colors (cached)
+        self._cards_light: list[CardInfo] = []  # light-bg fill colors (cached)
         self._scroll_offset_y: float = 0.0
         self._corner_radius: float = 10.0
-        self._fill_width: float = 2.5   # matches overlay width param
-        self._interior_floor: float = 0.55  # matches overlay dark-bg floor
+        self._fill_width: float = 2.5
         self._pixel_width: int = 1
         self._pixel_height: int = 1
 
-        self._layer = objc.lookUpClass("CAMetalLayer").layer()
-        self._layer.setDevice_(device)
-        self._layer.setPixelFormat_(_MTL_PIXEL_FORMAT_BGRA8_UNORM)
-        self._layer.setFramebufferOnly_(True)
-        self._layer.setOpaque_(False)
+        # Two layers: additive (dark bg) and normal (light bg)
+        CAMetalLayerClass = objc.lookUpClass("CAMetalLayer")
+        self._dark_layer = self._make_metal_layer(CAMetalLayerClass, device)
+        self._light_layer = self._make_metal_layer(CAMetalLayerClass, device)
+        # Dark layer: additive compositing
+        if hasattr(self._dark_layer, "setCompositingFilter_"):
+            self._dark_layer.setCompositingFilter_("plusL")
         self._set_layer_geometry(frame_size, scale)
 
+    @staticmethod
+    def _make_metal_layer(cls, device):
+        layer = cls.layer()
+        layer.setDevice_(device)
+        layer.setPixelFormat_(_MTL_PIXEL_FORMAT_BGRA8_UNORM)
+        layer.setFramebufferOnly_(True)
+        layer.setOpaque_(False)
+        return layer
+
+    def layers(self):
+        """Return (dark_layer, light_layer) for insertion. Dark behind light."""
+        return (self._dark_layer, self._light_layer)
+
     def layer(self):
-        """Return the CAMetalLayer for insertion into the view hierarchy."""
-        return self._layer
+        """Return the dark layer (primary, for backwards compat)."""
+        return self._dark_layer
 
     def set_geometry(self, width_pt: float, height_pt: float, scale: float) -> None:
         self._set_layer_geometry((width_pt, height_pt), scale)
 
-    def set_cards(self, cards: list[CardInfo]) -> None:
-        self._cards = cards[:_MAX_CARDS]
+    def set_cards(self, cards_dark: list[CardInfo], cards_light: list[CardInfo]) -> None:
+        """Set both dark-bg and light-bg card lists. Cached until next call."""
+        self._cards_dark = cards_dark[:_MAX_CARDS]
+        self._cards_light = cards_light[:_MAX_CARDS]
 
     def set_scroll_offset(self, offset_px: float) -> None:
         self._scroll_offset_y = offset_px
 
+    def set_brightness(self, brightness: float) -> None:
+        """Crossfade between dark and light layers — no redraw."""
+        t = min(max(brightness, 0.0), 1.0)
+        # Dark layer: full at 0, fades out by 0.5
+        self._dark_layer.setOpacity_(max(1.0 - t * 2.0, 0.0))
+        # Light layer: invisible at 0, fades in from 0.15, full by 0.6
+        self._light_layer.setOpacity_(min(max((t - 0.15) / 0.45, 0.0), 1.0))
+
     def draw_frame(self) -> bool:
-        drawable = self._layer.nextDrawable()
+        """Render both layers in one call. Only called on data/scroll changes."""
+        ok = self._draw_to_layer(self._dark_layer, self._cards_dark, 0.55)
+        ok = self._draw_to_layer(self._light_layer, self._cards_light, 0.775) and ok
+        return ok
+
+    def _draw_to_layer(self, layer, cards: list[CardInfo], interior_floor: float) -> bool:
+        drawable = layer.nextDrawable()
         if drawable is None:
             return False
 
         values = [
             float(self._pixel_width), float(self._pixel_height),
             float(self._corner_radius), float(self._fill_width),
-            float(self._interior_floor), float(self._scroll_offset_y),
-            float(time.monotonic() % 1000.0), float(len(self._cards)),
+            float(interior_floor), float(self._scroll_offset_y),
+            float(time.monotonic() % 1000.0), float(len(cards)),
         ]
         for i in range(_MAX_CARDS):
-            if i < len(self._cards):
-                c = self._cards[i]
+            if i < len(cards):
+                c = cards[i]
                 values.extend([c.x, c.y, c.width, c.height, c.r, c.g, c.b, c.alpha])
             else:
                 values.extend([0.0] * _CARD_FLOATS)
@@ -337,11 +369,13 @@ class TerraformCardRenderer:
 
     def _set_layer_geometry(self, frame_size: tuple[float, float], scale: float) -> None:
         w_pt, h_pt = frame_size
-        self._layer.setFrame_(((0, 0), (w_pt, h_pt)))
-        self._layer.setContentsScale_(scale)
         self._pixel_width = max(int(round(w_pt * scale)), 1)
         self._pixel_height = max(int(round(h_pt * scale)), 1)
-        self._layer.setDrawableSize_((float(self._pixel_width), float(self._pixel_height)))
+        drawable_size = (float(self._pixel_width), float(self._pixel_height))
+        for layer in (self._dark_layer, self._light_layer):
+            layer.setFrame_(((0, 0), (w_pt, h_pt)))
+            layer.setContentsScale_(scale)
+            layer.setDrawableSize_(drawable_size)
         self._fill_width = 2.5 * scale
         self._corner_radius = 10.0 * scale
 

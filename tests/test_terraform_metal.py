@@ -80,8 +80,9 @@ def test_max_cards_clamped():
                  r=0.5, g=0.5, b=0.5, alpha=0.5)
         for i in range(50)
     ]
-    renderer.set_cards(big_list)
-    assert len(renderer._cards) == _MAX_CARDS
+    renderer.set_cards(big_list, big_list)
+    assert len(renderer._cards_dark) == _MAX_CARDS
+    assert len(renderer._cards_light) == _MAX_CARDS
 
 
 def test_metal_available_returns_bool():

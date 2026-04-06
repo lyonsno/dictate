@@ -447,11 +447,11 @@ class TerraformHUD(NSObject):
                 )
                 self._scroll_view._metal_renderer = self._metal_renderer
                 self._scroll_view._backing_scale = scale
-                # Single Metal layer — fill + chromatic rings in one pass
-                metal_layer = self._metal_renderer.layer()
-                self._scroll_view.layer().insertSublayer_atIndex_(metal_layer, 0)
-                if hasattr(metal_layer, "setCompositingFilter_"):
-                    metal_layer.setCompositingFilter_("plusL")
+                # Two Metal layers: dark (additive) behind, light (normal) in front
+                dark_layer, light_layer = self._metal_renderer.layers()
+                scroll_layer = self._scroll_view.layer()
+                scroll_layer.insertSublayer_atIndex_(dark_layer, 0)
+                scroll_layer.insertSublayer_atIndex_(light_layer, 1)
             except Exception:
                 logger.debug("Metal card renderer init failed, using frost fallback", exc_info=True)
                 self._metal_renderer = None
@@ -547,15 +547,9 @@ class TerraformHUD(NSObject):
         self._brightness = new_brightness
         if self._metal_renderer is None:
             return
-
-        metal_layer = self._metal_renderer.layer()
-        # Compositing filter: additive glow on dark, normal on light
-        if hasattr(metal_layer, "setCompositingFilter_"):
-            metal_layer.setCompositingFilter_("plusL" if self._brightness < 0.15 else None)
-        # Opacity: modulate presence — more opaque on light backgrounds
-        # where cards need to read as material, lighter on dark where
-        # additive blending does the work
-        metal_layer.setOpacity_(_lerp(0.85, 1.0, self._brightness))
+        # Crossfade between dark (additive glow) and light (subtractive material)
+        # — just layer opacity changes, no Metal redraw
+        self._metal_renderer.set_brightness(self._brightness)
 
     def restore_visibility(self) -> None:
         """Restore last saved visibility state (default: visible)."""
@@ -565,10 +559,8 @@ class TerraformHUD(NSObject):
         else:
             self.show()
 
-    def _redraw_metal_cards(self) -> None:
-        """Redraw Metal cards with current brightness — no NSView rebuild."""
-        if self._metal_renderer is None or not self._topoi:
-            return
+    def _build_card_list(self, brightness: float) -> list[CardInfo]:
+        """Build card info list for a given brightness level."""
         scroll_bounds = self._scroll_view.bounds()
         inset = _GLOW_MARGIN
         card_width = scroll_bounds.size.width - inset * 2 - 8
@@ -581,7 +573,7 @@ class TerraformHUD(NSObject):
         cards = []
         for i, topos in enumerate(self._topoi):
             y = total_height - (i + 1) * row_stride
-            cr, cg, cb = _temp_fill_color(topos.temperature, self._brightness)
+            cr, cg, cb = _temp_fill_color(topos.temperature, brightness)
             cards.append(CardInfo(
                 x=(inset + 4.0) * scale,
                 y=y * scale,
@@ -590,7 +582,16 @@ class TerraformHUD(NSObject):
                 r=cr, g=cg, b=cb,
                 alpha=_SDF_CARD_ALPHA,
             ))
-        self._metal_renderer.set_cards(cards)
+        return cards
+
+    def _redraw_metal_cards(self) -> None:
+        """Render both dark and light card layers. Only on data/scroll changes."""
+        if self._metal_renderer is None or not self._topoi:
+            return
+        self._metal_renderer.set_cards(
+            self._build_card_list(brightness=0.0),   # dark bg: light fill
+            self._build_card_list(brightness=1.0),   # light bg: dark fill
+        )
         self._metal_renderer.draw_frame()
 
     def cleanup(self) -> None:
@@ -873,67 +874,14 @@ class TerraformHUD(NSObject):
         )
 
         if self._metal_renderer is not None:
-            # Metal SDF card surfaces — layer covers full scroll area
             scale = getattr(self._scroll_view, '_backing_scale', 2.0)
             self._metal_renderer.set_geometry(
                 scroll_bounds.size.width, scroll_bounds.size.height, scale,
             )
-
-            # Build card info list — inset by glow margin
-            cards = []
-            for i, topos in enumerate(self._topoi):
-                y = total_height - (i + 1) * row_stride
-                cr, cg, cb = _temp_fill_color(topos.temperature, getattr(self, '_brightness', 0.0))
-                cards.append(CardInfo(
-                    x=(inset + 4.0) * scale,
-                    y=y * scale,
-                    width=card_width * scale,
-                    height=_ROW_HEIGHT * scale,
-                    r=cr, g=cg, b=cb,
-                    alpha=_SDF_CARD_ALPHA,
-                ))
-            # Add expanded detail card if active
-            if (self._expanded_index is not None
-                    and self._expanded_index < len(self._topoi)
-                    and self._expand_phase != "idle"):
-                ei = self._expanded_index
-                ey = total_height - (ei + 1) * row_stride
-                ecr, ecg, ecb = _temp_fill_color(
-                    self._topoi[ei].temperature,
-                    getattr(self, '_brightness', 0.0),
-                )
-                card_x = (inset + 4.0)
-                card_right = card_x + card_width
-
-                # Phase 1: extend left (progress 0→1 = width 0→DETAIL_WIDTH)
-                if self._expand_phase == "extend":
-                    ext_w = self._DETAIL_WIDTH * self._expand_progress
-                    cards.append(CardInfo(
-                        x=(card_x - ext_w) * scale,
-                        y=ey * scale,
-                        width=(card_width + ext_w) * scale,
-                        height=_ROW_HEIGHT * scale,
-                        r=ecr, g=ecg, b=ecb,
-                        alpha=_SDF_CARD_ALPHA,
-                    ))
-                # Phase 2: drop down (progress 0→1 = height ROW→ROW+DROP)
-                elif self._expand_phase in ("drop", "open"):
-                    drop_h = self._DETAIL_DROP_HEIGHT * min(self._expand_progress, 1.0)
-                    full_w = card_width + self._DETAIL_WIDTH
-                    cards.append(CardInfo(
-                        x=(card_x - self._DETAIL_WIDTH) * scale,
-                        y=(ey - drop_h) * scale,
-                        width=full_w * scale,
-                        height=(_ROW_HEIGHT + drop_h) * scale,
-                        r=ecr, g=ecg, b=ecb,
-                        alpha=_SDF_CARD_ALPHA,
-                    ))
-
-            self._metal_renderer.set_cards(cards)
             self._metal_renderer.set_scroll_offset(
                 self._scroll_view._scroll_offset * scale,
             )
-            self._metal_renderer.draw_frame()
+            self._redraw_metal_cards()
         else:
             # Fallback: single frost layer behind all cards
             frost = NSVisualEffectView.alloc().initWithFrame_(
