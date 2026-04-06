@@ -1795,7 +1795,13 @@ class SpokeAppDelegate(NSObject):
             return None
 
         # Wait for any in-flight segment transcriptions to land.
-        acc.wait(timeout=10.0)
+        # Cloud endpoints can take >10s on congested connections.
+        if not acc.wait(timeout=30.0):
+            logger.warning(
+                "Segment accumulator timed out with %d pending — falling back to full buffer",
+                acc._pending,
+            )
+            return None
         cached = acc.text
 
         # Transcribe the tail — audio recorded after the last segment boundary.
