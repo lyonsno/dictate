@@ -16,6 +16,7 @@ import inspect
 import logging
 import os
 import platform
+import queue
 import sys
 import threading
 import time
@@ -34,6 +35,7 @@ _DEFAULT_TEMPERATURE = 0.5
 _DEFAULT_TOP_K = 50
 _DEFAULT_TOP_P = 0.95
 _AUDIO_TOGGLE_FADE_S = 0.5
+_SENTENCE_FADE_S = 0.015  # 15ms fade-in/fade-out at sentence boundaries
 _OMNIVOICE_SAMPLE_RATE = 24000
 _ABBREVIATION_SUFFIXES = (
     "dr.",
@@ -58,6 +60,28 @@ class _PlaybackResult:
 
     audio: np.ndarray
     sample_rate: int
+
+
+def _resolve_output_device() -> int | None:
+    """Return the current system default output device index.
+
+    Queries PortAudio each time so the stream follows device changes
+    (e.g. Bluetooth connect/disconnect).  Returns None on failure,
+    which lets sounddevice fall back to its own default.
+    """
+    try:
+        default_device = getattr(sd.default, "device", None)
+        if isinstance(default_device, (list, tuple)) and len(default_device) > 1:
+            return int(default_device[1])
+        if isinstance(default_device, int):
+            return default_device
+        # Ask PortAudio directly
+        info = sd.query_devices(kind="output")
+        if isinstance(info, dict):
+            return info.get("index")
+    except Exception:
+        pass
+    return None
 
 
 def _playback_device_summary() -> str:
@@ -301,6 +325,29 @@ def _iter_playback_results(results, sample_rate_hint: int | None):
         yield _materialize_generation_result(result, sample_rate_hint)
 
 
+def _apply_sentence_fades(audio: np.ndarray, sample_rate: int,
+                          fade_in: bool = True, fade_out: bool = True) -> np.ndarray:
+    """Apply short fade-in/fade-out ramps to smooth sentence boundaries."""
+    fade_samples = int(sample_rate * _SENTENCE_FADE_S)
+    if fade_samples < 2 or len(audio) < fade_samples * 2:
+        return audio
+    audio = audio.copy()
+    if fade_in:
+        ramp = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
+        if audio.ndim == 2:
+            ramp = ramp.reshape(-1, 1)
+        audio[:fade_samples] *= ramp
+    if fade_out:
+        ramp = np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+        if audio.ndim == 2:
+            ramp = ramp.reshape(-1, 1)
+        audio[-fade_samples:] *= ramp
+    return audio
+
+
+_SENTENCE_BOUNDARY = object()  # sentinel pushed into queue between sentences
+
+
 class TTSClient:
     """Lazy-loading TTS client with cancellation support."""
 
@@ -533,12 +580,55 @@ class TTSClient:
         if amplitude_callback is not None:
             amplitude_callback(0.0)
 
+    def _start_generation(self, sentence: str):
+        """Start generation for a sentence, returning the chunk iterator.
+
+        Holds gpu_lock during model.generate() call but NOT during chunk
+        iteration (the iterator does Metal work internally but holding the
+        lock deadlocks with Whisper transcription on another thread).
+
+        Returns None if the model fails to load or generation is cancelled.
+        """
+        from contextlib import nullcontext
+        lock_ctx = self._gpu_lock if self._gpu_lock is not None else nullcontext()
+
+        with lock_ctx:
+            try:
+                self._ensure_model()
+            except Exception:
+                logger.warning("TTS model load failed — cannot speak", exc_info=True)
+                return None
+            if self._cancelled:
+                logger.info("TTS speak: cancelled after model load")
+                return None
+            gen_kwargs = _generate_kwargs(
+                self._model,
+                text=sentence,
+                voice=self._voice,
+                temperature=self._temperature,
+                top_k=self._top_k,
+                top_p=self._top_p,
+                model_id=self._model_id,
+            )
+            results = self._model.generate(**gen_kwargs)
+            sample_rate_hint = getattr(self._model, "sample_rate", None)
+            logger.info("TTS speak: generate() returned for: %s", sentence[:40])
+        return _iter_playback_results(results, sample_rate_hint)
+
     def speak(
         self,
         text: str,
         amplitude_callback: Callable[[float], None] | None = None,
     ) -> None:
         """Generate speech and play it synchronously.  Blocks until done.
+
+        Uses a producer/consumer pipeline: a generation thread produces
+        _PlaybackResults into a queue while a playback thread (this thread)
+        drains and plays them.  Generation runs ahead of playback so the
+        next sentence is ready when the current one finishes.
+
+        Short fade-in/fade-out ramps are applied at sentence boundaries to
+        smooth the transition between sentences.
 
         Holds gpu_lock during model.generate() to prevent concurrent MLX
         inference (which crashes Metal).  Releases the lock before audio
@@ -552,8 +642,6 @@ class TTSClient:
             logger.info("TTS speak: empty text, skipping")
             return
 
-        from contextlib import nullcontext
-
         sentences = _split_sentences(text)
         if not sentences:
             logger.info("TTS speak: no sentences after split, skipping")
@@ -561,50 +649,159 @@ class TTSClient:
 
         logger.info("TTS speak: %d sentences, %d chars, model=%s, cancelled=%s",
                      len(sentences), len(text), self._model_id, self._cancelled)
-        lock_ctx = self._gpu_lock if self._gpu_lock is not None else nullcontext()
         with self._speak_lock:
             self._cancelled = False
             with self._audio_fade_lock:
                 self._playback_active = True
+
+            # Queue connects generation → playback.  None sentinel = done.
+            playback_queue: queue.Queue[_PlaybackResult | None] = queue.Queue(maxsize=4)
+
+            def _generate_all() -> None:
+                """Generate all sentences, pushing results into the queue.
+
+                Streams chunks as they arrive — each chunk is enqueued
+                immediately so playback can start before the full sentence
+                is generated.  Sentence-boundary fades are applied to the
+                first chunk of each sentence (fade-in) and a deferred
+                fade-out is applied to the last chunk once we know it's
+                the last.
+                """
+                try:
+                    for idx, sentence in enumerate(sentences):
+                        if self._cancelled:
+                            return
+                        results_iter = self._start_generation(sentence)
+                        if results_iter is None:
+                            continue
+                        chunk_count = 0
+                        for materialized in results_iter:
+                            if self._cancelled:
+                                return
+                            # Apply fade-in to first chunk of each sentence
+                            if chunk_count == 0:
+                                materialized.audio = _apply_sentence_fades(
+                                    materialized.audio, materialized.sample_rate,
+                                    fade_in=True, fade_out=False,
+                                )
+                            playback_queue.put(materialized)
+                            chunk_count += 1
+                        # Signal sentence boundary (playback reopens stream
+                        # here to follow device changes)
+                        if chunk_count > 0:
+                            playback_queue.put(_SENTENCE_BOUNDARY)
+                        if chunk_count > 0:
+                            logger.info("TTS speak: generated sentence %d/%d (%d chunks)",
+                                       idx + 1, len(sentences), chunk_count)
+                finally:
+                    playback_queue.put(None)  # sentinel
+
+            gen_thread = threading.Thread(target=_generate_all, daemon=True)
+            gen_thread.start()
+
+            stream: sd.OutputStream | None = None
             try:
-                for sentence in sentences:
+                chunk_count = 0
+                write_chunk_size: int = 0
+                while True:
                     if self._cancelled:
-                        return
+                        break
+                    try:
+                        item = playback_queue.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
+                    if item is None:
+                        break
+                    if item is _SENTENCE_BOUNDARY:
+                        # Reopen stream at sentence boundary to follow
+                        # the current default output device (e.g. Bluetooth
+                        # connected mid-playback).  Wait for the buffer to
+                        # drain before closing to avoid truncation.
+                        if stream is not None:
+                            try:
+                                stream.wait()
+                            except Exception:
+                                pass
+                            stream.stop()
+                            stream.close()
+                            stream = None
+                            self._stream = None
+                            self._last_chunk = None
+                        continue
 
-                    with lock_ctx:
-                        try:
-                            self._ensure_model()
-                        except Exception:
-                            logger.warning("TTS model load failed — cannot speak", exc_info=True)
-                            return
-                        if self._cancelled:
-                            logger.info("TTS speak: cancelled after model load")
-                            return
-                        gen_kwargs = _generate_kwargs(
-                            self._model,
-                            text=sentence,
-                            voice=self._voice,
-                            temperature=self._temperature,
-                            top_k=self._top_k,
-                            top_p=self._top_p,
-                            model_id=self._model_id,
+                    audio = np.array(item.audio, dtype=np.float32)
+                    if audio.ndim == 1:
+                        audio = audio.reshape(-1, 1)
+                    sr = item.sample_rate
+
+                    # Open stream lazily on first chunk (sample rate may vary).
+                    # Explicitly resolve the current default output device so
+                    # the stream follows Bluetooth/headphone changes.
+                    if stream is None:
+                        write_chunk_size = int(sr * 0.064)
+                        output_device = _resolve_output_device()
+                        stream = sd.OutputStream(
+                            samplerate=sr,
+                            channels=audio.shape[1],
+                            dtype="float32",
+                            device=output_device,
                         )
-                        results = self._model.generate(**gen_kwargs)
-                        logger.info("TTS speak: generate() returned, iterating results")
+                        self._stream = stream
+                        self._last_chunk = None
+                        stream.start()
+                        logger.info(
+                            "TTS playback stream opened: sample_rate=%d channels=%d device=%r (%s)",
+                            sr, audio.shape[1], output_device, _playback_device_summary(),
+                        )
 
-                    sample_rate_hint = getattr(self._model, "sample_rate", None)
-                    chunk_count = 0
-                    for materialized in _iter_playback_results(results, sample_rate_hint):
+                    chunk_count += 1
+                    if chunk_count == 1:
+                        logger.info("TTS speak: first audio chunk: %d samples @ %dHz",
+                                   len(audio), sr)
+
+                    # Write audio in ~64ms sub-chunks with gain modulation
+                    offset = 0
+                    while offset < len(audio):
                         if self._cancelled:
-                            logger.info("TTS speak: cancelled during playback (after %d chunks)", chunk_count)
-                            return
-                        chunk_count += 1
-                        if chunk_count == 1:
-                            logger.info("TTS speak: first audio chunk: %d samples @ %dHz",
-                                       len(materialized.audio), materialized.sample_rate)
-                        self._play_result(materialized, amplitude_callback=amplitude_callback)
-                    logger.info("TTS speak: finished sentence (%d chunks played)", chunk_count)
+                            break
+                        end = min(offset + write_chunk_size, len(audio))
+                        chunk = audio[offset:end]
+                        gain = self._current_audio_gain()
+                        shaped_chunk = chunk * gain
+                        self._last_chunk = shaped_chunk
+                        stream.write(shaped_chunk)
+                        if amplitude_callback is not None:
+                            rms = float(np.sqrt(np.mean(shaped_chunk ** 2)))
+                            amplitude_callback(rms)
+                        offset = end
+
+                logger.info("TTS speak: finished (%d chunks played)", chunk_count)
             finally:
+                # Fade out on cancel
+                if self._cancelled and stream is not None and self._last_chunk is not None:
+                    fade_samples = int(stream.samplerate * 0.05)
+                    last_amp = float(np.mean(np.abs(self._last_chunk[-1:])))
+                    fade_ramp = np.linspace(last_amp, 0.0, fade_samples, dtype=np.float32).reshape(-1, 1)
+                    try:
+                        stream.write(fade_ramp)
+                    except Exception:
+                        pass
+                # Close the single stream
+                if stream is not None:
+                    stream.stop()
+                    stream.close()
+                    self._stream = None
+                    self._last_chunk = None
+                if amplitude_callback is not None:
+                    amplitude_callback(0.0)
+                # Drain queue so gen thread doesn't block on put()
+                self._cancelled = True
+                while True:
+                    try:
+                        playback_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                gen_thread.join(timeout=5)
                 with self._audio_fade_lock:
                     self._playback_active = False
 

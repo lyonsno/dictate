@@ -132,6 +132,9 @@ _DEFAULT_COMMAND_SIDECAR_URL = ""
 _DEFAULT_CLOUD_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 _DEFAULT_CLOUD_MODEL = "gemini-2.5-flash"
 _DEFAULT_TTS_SIDECAR_URL = "http://MacBook-Pro-2.local:9001"
+_DEFAULT_WHISPER_SIDECAR_URL = ""
+_DEFAULT_WHISPER_CLOUD_URL = "https://api.openai.com"
+_DEFAULT_WHISPER_CLOUD_MODEL = "whisper-1"
 
 
 def _url_host(url: str) -> str:
@@ -139,6 +142,42 @@ def _url_host(url: str) -> str:
     from urllib.parse import urlparse
     parsed = urlparse(url)
     return parsed.netloc or url
+
+
+def _ensure_edit_menu() -> None:
+    """Install a minimal Edit menu so Cmd+V/C/X/A work in NSAlert text fields.
+
+    Agent-style apps (NSApplicationActivationPolicyAccessory) have no menu bar,
+    so the standard key equivalents never reach NSTextField.  This installs an
+    Edit menu once; subsequent calls are no-ops.
+    """
+    from AppKit import NSApp, NSMenu, NSMenuItem
+    app = NSApp()
+    if app is None:
+        return
+    main_menu = app.mainMenu()
+    if main_menu is None:
+        main_menu = NSMenu.new()
+        app.setMainMenu_(main_menu)
+    # Check if Edit menu already exists.
+    for i in range(main_menu.numberOfItems()):
+        if main_menu.itemAtIndex_(i).title() == "Edit":
+            return
+    edit_menu = NSMenu.alloc().initWithTitle_("Edit")
+    for title, action, key in [
+        ("Cut", "cut:", "x"),
+        ("Copy", "copy:", "c"),
+        ("Paste", "paste:", "v"),
+        ("Select All", "selectAll:", "a"),
+    ]:
+        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            title, action, key,
+        )
+        edit_menu.addItem_(item)
+    edit_item = NSMenuItem.new()
+    edit_item.setTitle_("Edit")
+    edit_item.setSubmenu_(edit_menu)
+    main_menu.addItem_(edit_item)
 _CURATED_LOCAL_COMMAND_MODEL_IDS = [
     "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
     "mlx-community/Qwen3-4B-Thinking-2507-8bit",
@@ -156,7 +195,122 @@ _TTS_MODELS = [
     ("k2-fsa/OmniVoice", "OmniVoice"),
 ]
 
-_OMNIVOICE_PROMPT_PRESETS = [
+# ── Per-model voice presets ──────────────────────────────────────
+# Each entry maps a model ID (lowercased) to a list of (voice_value, label)
+# tuples.  The menu shows these as a choice picker.  Models not listed here
+# fall back to the manual "Set TTS Voice…" text field.
+
+_VOXTRAL_VOICES: list[tuple[str, str]] = [
+    ("casual_female", "Casual Female"),
+    ("casual_male", "Casual Male"),
+    ("cheerful_female", "Cheerful Female"),
+    ("neutral_female", "Neutral Female"),
+    ("neutral_male", "Neutral Male"),
+    ("fr_female", "French Female"),
+    ("fr_male", "French Male"),
+    ("es_female", "Spanish Female"),
+    ("es_male", "Spanish Male"),
+    ("de_female", "German Female"),
+    ("de_male", "German Male"),
+    ("it_female", "Italian Female"),
+    ("it_male", "Italian Male"),
+    ("pt_female", "Portuguese Female"),
+    ("pt_male", "Portuguese Male"),
+    ("nl_female", "Dutch Female"),
+    ("nl_male", "Dutch Male"),
+    ("ar_male", "Arabic Male"),
+    ("hi_female", "Hindi Female"),
+    ("hi_male", "Hindi Male"),
+]
+
+_KOKORO_VOICES: list[tuple[str, str]] = [
+    ("af_heart", "Heart (American F)"),
+    ("af_alloy", "Alloy (American F)"),
+    ("af_aoede", "Aoede (American F)"),
+    ("af_bella", "Bella (American F)"),
+    ("af_jessica", "Jessica (American F)"),
+    ("af_kore", "Kore (American F)"),
+    ("af_nicole", "Nicole (American F)"),
+    ("af_nova", "Nova (American F)"),
+    ("af_river", "River (American F)"),
+    ("af_sarah", "Sarah (American F)"),
+    ("af_sky", "Sky (American F)"),
+    ("am_adam", "Adam (American M)"),
+    ("am_echo", "Echo (American M)"),
+    ("am_eric", "Eric (American M)"),
+    ("am_fenrir", "Fenrir (American M)"),
+    ("am_liam", "Liam (American M)"),
+    ("am_michael", "Michael (American M)"),
+    ("am_onyx", "Onyx (American M)"),
+    ("am_puck", "Puck (American M)"),
+    ("bf_alice", "Alice (British F)"),
+    ("bf_emma", "Emma (British F)"),
+    ("bf_isabella", "Isabella (British F)"),
+    ("bf_lily", "Lily (British F)"),
+    ("bm_daniel", "Daniel (British M)"),
+    ("bm_fable", "Fable (British M)"),
+    ("bm_george", "George (British M)"),
+    ("bm_lewis", "Lewis (British M)"),
+    ("ff_siwis", "Siwis (French F)"),
+    ("ef_dora", "Dora (Spanish F)"),
+    ("em_alex", "Alex (Spanish M)"),
+    ("hf_alpha", "Alpha (Hindi F)"),
+    ("hf_beta", "Beta (Hindi F)"),
+    ("hm_omega", "Omega (Hindi M)"),
+    ("hm_psi", "Psi (Hindi M)"),
+    ("if_sara", "Sara (Italian F)"),
+    ("im_nicola", "Nicola (Italian M)"),
+    ("jf_alpha", "Alpha (Japanese F)"),
+    ("jm_kumo", "Kumo (Japanese M)"),
+    ("pf_dora", "Dora (Portuguese F)"),
+    ("pm_alex", "Alex (Portuguese M)"),
+    ("zf_xiaobei", "Xiaobei (Chinese F)"),
+    ("zf_xiaoni", "Xiaoni (Chinese F)"),
+    ("zm_yunjian", "Yunjian (Chinese M)"),
+    ("zm_yunxi", "Yunxi (Chinese M)"),
+]
+
+_VIBEVOICE_VOICES: list[tuple[str, str]] = [
+    ("en-Emma_woman", "Emma (English F)"),
+    ("en-Grace_woman", "Grace (English F)"),
+    ("en-Carter_man", "Carter (English M)"),
+    ("en-Davis_man", "Davis (English M)"),
+    ("en-Frank_man", "Frank (English M)"),
+    ("en-Mike_man", "Mike (English M)"),
+    ("fr-Spk1_woman", "French F"),
+    ("fr-Spk0_man", "French M"),
+    ("de-Spk1_woman", "German F"),
+    ("de-Spk0_man", "German M"),
+    ("it-Spk0_woman", "Italian F"),
+    ("it-Spk1_man", "Italian M"),
+    ("sp-Spk0_woman", "Spanish F"),
+    ("sp-Spk1_man", "Spanish M"),
+    ("pt-Spk0_woman", "Portuguese F"),
+    ("pt-Spk1_man", "Portuguese M"),
+    ("nl-Spk1_woman", "Dutch F"),
+    ("nl-Spk0_man", "Dutch M"),
+    ("jp-Spk1_woman", "Japanese F"),
+    ("jp-Spk0_man", "Japanese M"),
+    ("kr-Spk0_woman", "Korean F"),
+    ("kr-Spk1_man", "Korean M"),
+    ("pl-Spk1_woman", "Polish F"),
+    ("pl-Spk0_man", "Polish M"),
+    ("in-Samuel_man", "Samuel (Hindi M)"),
+]
+
+_QWEN3_TTS_VOICES: list[tuple[str, str]] = [
+    ("serena", "Serena"),
+    ("vivian", "Vivian"),
+    ("ryan", "Ryan"),
+    ("aiden", "Aiden"),
+    ("eric", "Eric"),
+    ("dylan", "Dylan"),
+    ("ono_anna", "Ono Anna"),
+    ("sohee", "Sohee"),
+    ("uncle_fu", "Uncle Fu"),
+]
+
+_OMNIVOICE_PROMPT_PRESETS: list[tuple[str, str]] = [
     ("", "Auto voice"),
     ("female, child", "Female, child"),
     ("male, high pitch, indian accent", "Male, high pitch, Indian"),
@@ -168,6 +322,16 @@ _OMNIVOICE_PROMPT_PRESETS = [
     ("female, whisper, british accent", "Female whisper, British"),
     ("female, high pitch, american accent", "Female, high pitch, American"),
     ("male, low pitch, american accent", "Male, low pitch, American"),
+]
+
+# Model ID (lowercased) → voice presets.  Checked with str.contains so
+# partial model IDs work (e.g. "voxtral" matches all Voxtral quants).
+_MODEL_VOICE_PRESETS: list[tuple[str, list[tuple[str, str]]]] = [
+    ("voxtral", _VOXTRAL_VOICES),
+    ("kokoro", _KOKORO_VOICES),
+    ("vibevoice", _VIBEVOICE_VOICES),
+    ("qwen3-tts", _QWEN3_TTS_VOICES),
+    ("omnivoice", _OMNIVOICE_PROMPT_PRESETS),
 ]
 
 _OMNIVOICE_PROMPT_LEXICON = {
@@ -184,23 +348,40 @@ def _is_omnivoice_tts_model(model_id: str | None) -> bool:
     return isinstance(model_id, str) and model_id.strip().lower() == "k2-fsa/omnivoice"
 
 
-def _omnivoice_prompt_label(prompt: str) -> str:
-    for preset_prompt, label in _OMNIVOICE_PROMPT_PRESETS:
-        if prompt == preset_prompt:
-            return label
-    return prompt or "Auto voice"
+def _voice_presets_for_model(model_id: str | None) -> list[tuple[str, str]] | None:
+    """Return the voice presets for a model, or None if no presets exist."""
+    if not model_id:
+        return None
+    lowered = model_id.lower()
+    for key, presets in _MODEL_VOICE_PRESETS:
+        if key in lowered:
+            return presets
+    return None
 
 
-def _omnivoice_prompt_choices(current_prompt: str) -> list[tuple[str, str, bool]]:
-    choices = [
-        (prompt, label, True) for prompt, label in _OMNIVOICE_PROMPT_PRESETS
-    ]
-    if current_prompt and all(
-        prompt != current_prompt for prompt, _label in _OMNIVOICE_PROMPT_PRESETS
-    ):
-        choices.insert(1, (current_prompt, f"Custom: {current_prompt}", True))
-    choices.append(("configure_voice", "Set Custom TTS Prompt…", True))
+def _voice_choices_for_model(
+    model_id: str | None, current_voice: str
+) -> list[tuple[str, str, bool]] | None:
+    """Build a choice list for the voice menu, or None if no presets exist."""
+    presets = _voice_presets_for_model(model_id)
+    if presets is None:
+        return None
+    choices = [(voice, label, True) for voice, label in presets]
+    # If current voice isn't in presets, insert it as a custom entry
+    if current_voice and all(voice != current_voice for voice, _label in presets):
+        choices.insert(0, (current_voice, f"Custom: {current_voice}", True))
+    choices.append(("configure_voice", "Set Custom Voice…", True))
     return choices
+
+
+def _voice_preset_label(model_id: str | None, voice: str) -> str:
+    """Return a human label for the current voice, falling back to the raw value."""
+    presets = _voice_presets_for_model(model_id)
+    if presets:
+        for preset_voice, label in presets:
+            if voice == preset_voice:
+                return label
+    return voice or "(not set)"
 
 
 def _omnivoice_prompt_lexicon_text() -> str:
@@ -435,18 +616,68 @@ class SpokeAppDelegate(NSObject):
             )
             sys.exit(1)
 
-        self._whisper_url = whisper_url
+        # Whisper backend configuration — shared URL/key pool.
+        self._whisper_sidecar_url = (
+            self._load_preference("whisper_sidecar_url")
+            or os.environ.get("SPOKE_WHISPER_URL", "")
+            or _DEFAULT_WHISPER_SIDECAR_URL
+        )
+        self._whisper_cloud_url = (
+            self._load_preference("whisper_cloud_url")
+            or _DEFAULT_WHISPER_CLOUD_URL
+        )
+        self._whisper_cloud_api_key = (
+            self._load_preference("whisper_cloud_api_key") or ""
+        )
+        self._whisper_cloud_model = (
+            self._load_preference("whisper_cloud_model")
+            or _DEFAULT_WHISPER_CLOUD_MODEL
+        )
+        # If sidecar URL came from env but not yet saved, adopt it.
+        if whisper_url and not self._load_preference("whisper_sidecar_url"):
+            self._whisper_sidecar_url = whisper_url
+
+        # Per-role backend selection: preview (partials) and transcription (finals).
+        default_backend = "sidecar" if whisper_url else "local"
+        self._whisper_backend = (
+            self._load_preference("whisper_backend") or default_backend
+        )
+        self._preview_backend = (
+            self._load_preference("preview_backend") or self._whisper_backend
+        )
+
+        # Resolve effective URL + API key for each role.
+        transcription_url, transcription_api_key = self._resolve_whisper_endpoint(
+            self._whisper_backend
+        )
+        preview_url, preview_api_key = self._resolve_whisper_endpoint(
+            self._preview_backend
+        )
+        self._whisper_url = transcription_url
+        self._whisper_api_key = transcription_api_key
+        self._preview_url = preview_url
+        self._preview_api_key = preview_api_key
+
         self._preview_model_id, self._transcription_model_id = self._resolve_model_ids()
+        # Cloud backend uses its own model ID for each role.
+        if self._whisper_backend == "cloud":
+            self._transcription_model_id = self._whisper_cloud_model
+        if self._preview_backend == "cloud":
+            self._preview_model_id = self._whisper_cloud_model
         self._client_cache: dict[tuple[str, str], object] = {}
         self._capture = AudioCapture()
         self._capture.warmup()
-        self._local_mode = not bool(whisper_url)
+        self._local_mode = not bool(transcription_url) and not bool(preview_url)
         (
             self._local_whisper_decode_timeout,
             self._local_whisper_eager_eval,
         ) = self._resolve_local_whisper_settings()
-        self._client = self._get_client(whisper_url, self._transcription_model_id)
-        self._preview_client = self._get_client(whisper_url, self._preview_model_id)
+        self._client = self._get_client(
+            transcription_url, self._transcription_model_id, transcription_api_key,
+        )
+        self._preview_client = self._get_client(
+            preview_url, self._preview_model_id, preview_api_key,
+        )
         self._detector = SpacebarHoldDetector.alloc().initWithHoldStart_holdEnd_holdMs_(
             self._on_hold_start,
             self._on_hold_end,
@@ -499,13 +730,12 @@ class SpokeAppDelegate(NSObject):
             cloud_api_key = None
             if command_backend == "cloud":
                 self._command_model_id = (
-                    os.environ.get("SPOKE_COMMAND_MODEL")
-                    or self._load_cloud_model_preference()
+                    self._load_cloud_model_preference()
+                    or self._load_command_model_preference()
                     or _DEFAULT_CLOUD_MODEL
                 )
                 cloud_api_key = (
-                    os.environ.get("SPOKE_COMMAND_API_KEY")
-                    or self._load_cloud_api_key_preference()
+                    self._load_cloud_api_key_preference()
                     or os.environ.get("GEMINI_API_KEY", "")
                 )
             else:
@@ -614,6 +844,7 @@ class SpokeAppDelegate(NSObject):
             command_model=self._command_model_id,
             tts_enabled=self._tts_client is not None,
         )
+        _ensure_edit_menu()
         self._menubar = MenuBarIcon.alloc().initWithQuitCallback_selectModelCallback_(
             self._quit, self._handle_model_menu_action
         )
@@ -828,6 +1059,17 @@ class SpokeAppDelegate(NSObject):
         _record_runtime_phase("app.ready")
         self._menubar.set_status_text("Ready — hold spacebar")
         self._hide_startup_status()
+
+        # Warn if cloud preview is active — each partial is a paid API call.
+        if getattr(self, "_preview_backend", "local") == "cloud":
+            overlay = getattr(self, "_overlay", None)
+            if overlay is not None:
+                overlay.flash_notice(
+                    "Cloud preview active\n"
+                    "Partials sent every 3 seconds — each is a charged API call.",
+                    hold=4.0,
+                    fade=2.0,
+                )
 
         # Register loaded models with the heartbeat manager.
         self._register_loaded_models()
@@ -1235,10 +1477,18 @@ class SpokeAppDelegate(NSObject):
                 if getattr(self, "_preview_done", None) is not None:
                     self._preview_done.set()
 
+    def _preview_batch_intervals(self) -> tuple[float, float]:
+        """Return (min_interval, initial_delay) for batch preview by backend."""
+        backend = getattr(self, "_preview_backend", "local")
+        if backend == "cloud":
+            return (3.0, 1.0)
+        if backend == "sidecar":
+            return (0.75, 0.3)
+        return (0.2, 0.15)
+
     def _preview_loop_batch(self, token: int | None = None) -> None:
         """Batch preview: re-transcribe the full buffer each tick."""
-        _MIN_INTERVAL = 0.2 if self._local_mode else 0.75
-        _INITIAL_DELAY = 0.15 if self._local_mode else 0.3
+        _MIN_INTERVAL, _INITIAL_DELAY = self._preview_batch_intervals()
         token = getattr(self, "_preview_session_token", 0) if token is None else token
 
         try:
@@ -1249,7 +1499,7 @@ class SpokeAppDelegate(NSObject):
 
                 wav_bytes = self._capture.get_buffer()
                 if not wav_bytes:
-                    time.sleep(0.1 if self._local_mode else 0.2)
+                    time.sleep(min(_MIN_INTERVAL, 0.2))
                     continue
 
                 is_speech = getattr(self, "_is_speech", True)
@@ -2674,6 +2924,45 @@ class SpokeAppDelegate(NSObject):
                         else "Routing source: local runtime"
                     ),
                 }
+            whisper_backend = getattr(self, "_whisper_backend", "local")
+            preview_backend = getattr(self, "_preview_backend", "local")
+            whisper_sidecar_url = getattr(self, "_whisper_sidecar_url", "")
+            has_whisper_sidecar_url = bool(whisper_sidecar_url)
+            whisper_cloud_url = getattr(self, "_whisper_cloud_url", "")
+            has_whisper_cloud = bool(
+                whisper_cloud_url and getattr(self, "_whisper_cloud_api_key", "")
+            )
+            backend_labels = {
+                "local": "Local",
+                "sidecar": "Sidecar",
+                "cloud": "Cloud (OpenAI)",
+            }
+
+            def _backend_items(selected: str) -> list:
+                return [
+                    ("local", "Local Whisper", selected == "local"),
+                    ("sidecar", (
+                        f"Sidecar ({_url_host(whisper_sidecar_url)})"
+                        if has_whisper_sidecar_url
+                        else "Sidecar (not configured)"
+                    ), selected == "sidecar", has_whisper_sidecar_url),
+                    ("cloud", (
+                        "Cloud (OpenAI)"
+                        if has_whisper_cloud
+                        else "Cloud (not configured)"
+                    ), selected == "cloud", has_whisper_cloud),
+                    ("configure_whisper", "Set Whisper Sidecar URL\u2026", False, True),
+                    ("configure_whisper_cloud", "Set Cloud API Key\u2026", False, True),
+                ]
+
+            state["transcription_backend"] = {
+                "title": f"Final: {backend_labels.get(whisper_backend, whisper_backend)}",
+                "items": _backend_items(whisper_backend),
+            }
+            state["preview_backend"] = {
+                "title": f"Preview: {backend_labels.get(preview_backend, preview_backend)}",
+                "items": _backend_items(preview_backend),
+            }
             if self._local_whisper_controls_available():
                 eager_eval_available = self._local_whisper_eager_eval_available()
                 state["local_whisper"] = {
@@ -2743,11 +3032,16 @@ class SpokeAppDelegate(NSObject):
                         "models": tts_models,
                     }
                 current_voice = getattr(tts, "_voice", "") if tts else tts_voice_pref
-                prompt_mode = tts_backend != "sidecar" and _is_omnivoice_tts_model(current_tts_model)
+                # Try sidecar discovery first, then local presets
                 if tts_backend == "sidecar":
                     sidecar_voices = self._discover_tts_sidecar_voices(current_tts_model)
                 else:
                     sidecar_voices = []
+                local_choices = (
+                    _voice_choices_for_model(current_tts_model, current_voice)
+                    if not sidecar_voices
+                    else None
+                )
                 if sidecar_voices:
                     voice_models = [
                         (v, v, v == current_voice) for v in sidecar_voices
@@ -2757,12 +3051,13 @@ class SpokeAppDelegate(NSObject):
                         "selected": current_voice,
                         "models": voice_models,
                     }
-                elif prompt_mode:
+                elif local_choices is not None:
+                    voice_label = _voice_preset_label(current_tts_model, current_voice)
                     state["tts_voice"] = {
                         "type": "choice",
-                        "title": f"TTS Prompt: {_omnivoice_prompt_label(current_voice)}",
+                        "title": f"TTS Voice: {voice_label}",
                         "selected": current_voice,
-                        "models": _omnivoice_prompt_choices(current_voice),
+                        "models": local_choices,
                     }
                 else:
                     title = f"TTS Voice: {current_voice or '(not set)'}"
@@ -2809,6 +3104,12 @@ class SpokeAppDelegate(NSObject):
             return
         if role == "tts":
             self._apply_tts_model_selection(model_id)
+            return
+        if role == "transcription_backend":
+            self._apply_transcription_backend_selection(model_id)
+            return
+        if role == "preview_backend":
+            self._apply_preview_backend_selection(model_id)
             return
         if role == "local_whisper":
             self._toggle_local_whisper_setting(model_id)
@@ -3004,6 +3305,14 @@ class SpokeAppDelegate(NSObject):
             self._sanitize_model_id(preview_model, role="preview"),
             self._sanitize_model_id(transcription_model, role="transcription"),
         )
+
+    def _resolve_whisper_endpoint(self, backend: str) -> tuple[str, str]:
+        """Return (url, api_key) for the given backend choice."""
+        if backend == "sidecar" and self._whisper_sidecar_url:
+            return (self._whisper_sidecar_url, "")
+        if backend == "cloud" and self._whisper_cloud_url:
+            return (self._whisper_cloud_url, self._whisper_cloud_api_key)
+        return ("", "")
 
     def _resolve_model_ids(self) -> tuple[str, str]:
         prefs = self._load_model_preferences()
@@ -3359,18 +3668,140 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text("TTS sidecar URL saved")
 
-    def _get_client(self, whisper_url: str, model_id: str):
-        cache_key = (whisper_url, model_id)
+    def _apply_transcription_backend_selection(self, backend: str) -> None:
+        """Switch Whisper transcription backend between local/sidecar/cloud, then relaunch."""
+        if backend == "configure_whisper":
+            self._configure_whisper_sidecar_url()
+            return
+        if backend == "configure_whisper_cloud":
+            self._configure_whisper_cloud()
+            return
+        if backend == getattr(self, "_whisper_backend", "local"):
+            return
+        if backend == "sidecar" and not getattr(self, "_whisper_sidecar_url", ""):
+            logger.warning("Cannot switch to sidecar: no Whisper sidecar URL configured")
+            if self._menubar is not None:
+                self._menubar.set_status_text("No Whisper sidecar URL configured")
+            return
+        if backend == "cloud" and not getattr(self, "_whisper_cloud_api_key", ""):
+            logger.warning("Cannot switch to cloud: no API key configured")
+            if self._menubar is not None:
+                self._menubar.set_status_text("No cloud API key configured")
+            return
+        logger.info("Switching Whisper backend: %s -> %s", self._whisper_backend, backend)
+        self._save_preference("whisper_backend", backend)
+        self._whisper_backend = backend
+        self._relaunch()
+
+    def _apply_preview_backend_selection(self, backend: str) -> None:
+        """Switch preview (partials) backend between local/sidecar/cloud, then relaunch."""
+        if backend == "configure_whisper":
+            self._configure_whisper_sidecar_url()
+            return
+        if backend == "configure_whisper_cloud":
+            self._configure_whisper_cloud()
+            return
+        if backend == getattr(self, "_preview_backend", "local"):
+            return
+        if backend == "sidecar" and not getattr(self, "_whisper_sidecar_url", ""):
+            logger.warning("Cannot switch preview to sidecar: no Whisper sidecar URL configured")
+            if self._menubar is not None:
+                self._menubar.set_status_text("No Whisper sidecar URL configured")
+            return
+        if backend == "cloud" and not getattr(self, "_whisper_cloud_api_key", ""):
+            logger.warning("Cannot switch preview to cloud: no API key configured")
+            if self._menubar is not None:
+                self._menubar.set_status_text("No cloud API key configured")
+            return
+        logger.info("Switching preview backend: %s -> %s", self._preview_backend, backend)
+        self._save_preference("preview_backend", backend)
+        self._preview_backend = backend
+        self._relaunch()
+
+    def _configure_whisper_sidecar_url(self) -> None:
+        """Show a dialog to set or change the Whisper sidecar URL."""
+        current_url = getattr(self, "_whisper_sidecar_url", "") or ""
+        alert = NSAlert.new()
+        alert.setMessageText_("Whisper Sidecar URL")
+        alert.setInformativeText_(
+            "Enter the base URL for the OpenAI-compatible "
+            "/v1/audio/transcriptions endpoint."
+        )
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
+        field.setStringValue_(current_url)
+        alert.setAccessoryView_(field)
+        alert.addButtonWithTitle_("Save")
+        alert.addButtonWithTitle_("Cancel")
+        response = alert.runModal()
+        if response != 1000:
+            return
+        value = field.stringValue()
+        if not isinstance(value, str):
+            return
+        value = value.strip().rstrip("/")
+        if not value:
+            return
+        self._save_preference("whisper_sidecar_url", value)
+        self._whisper_sidecar_url = value
+        logger.info("Whisper sidecar URL saved: %s", value)
+        if self._whisper_backend == "sidecar":
+            self._relaunch()
+            return
+        if self._menubar is not None:
+            self._menubar.set_status_text("Whisper sidecar URL saved")
+
+    def _configure_whisper_cloud(self) -> None:
+        """Show a dialog to set or change the OpenAI Whisper cloud API key."""
+        current_key = getattr(self, "_whisper_cloud_api_key", "") or ""
+
+        alert = NSAlert.new()
+        alert.setMessageText_("Cloud Whisper (OpenAI)")
+        alert.setInformativeText_(
+            "Enter your OpenAI API key for cloud transcription.\n"
+            "Uses the whisper-1 model at api.openai.com."
+        )
+        field = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
+        field.setStringValue_(current_key)
+        field.setPlaceholderString_("sk-...")
+        alert.setAccessoryView_(field)
+        alert.addButtonWithTitle_("Save")
+        alert.addButtonWithTitle_("Cancel")
+        response = alert.runModal()
+        if response != 1000:
+            return
+        value = field.stringValue()
+        if not isinstance(value, str):
+            return
+        value = value.strip()
+        if not value:
+            return
+        self._save_preference("whisper_cloud_api_key", value)
+        self._save_preference("whisper_cloud_url", _DEFAULT_WHISPER_CLOUD_URL)
+        self._save_preference("whisper_cloud_model", _DEFAULT_WHISPER_CLOUD_MODEL)
+        self._whisper_cloud_api_key = value
+        self._whisper_cloud_url = _DEFAULT_WHISPER_CLOUD_URL
+        self._whisper_cloud_model = _DEFAULT_WHISPER_CLOUD_MODEL
+        logger.info("Whisper cloud API key saved")
+        # Auto-switch to cloud if not already on it.
+        if self._whisper_backend != "cloud":
+            self._save_preference("whisper_backend", "cloud")
+            self._whisper_backend = "cloud"
+        self._relaunch()
+
+    def _get_client(self, whisper_url: str, model_id: str, api_key: str = ""):
+        cache_key = (whisper_url, model_id, api_key)
         if cache_key in self._client_cache:
             return self._client_cache[cache_key]
-        client = self._build_client(whisper_url, model_id)
+        client = self._build_client(whisper_url, model_id, api_key=api_key)
         self._client_cache[cache_key] = client
         return client
 
-    def _build_client(self, whisper_url: str, model_id: str):
+    def _build_client(self, whisper_url: str, model_id: str, api_key: str = ""):
         if whisper_url:
-            logger.info("Using sidecar transcription: %s (%s)", whisper_url, model_id)
-            return TranscriptionClient(base_url=whisper_url, model=model_id)
+            logger.info("Using remote transcription: %s (%s)", whisper_url, model_id)
+            return TranscriptionClient(
+                base_url=whisper_url, model=model_id, api_key=api_key,
+            )
         if model_id == _PARAKEET_MODEL_ID:
             model_dir = self._resolve_parakeet_model_dir()
             logger.info("Using Parakeet CoreML: %s", model_dir)
@@ -3585,6 +4016,12 @@ class SpokeAppDelegate(NSObject):
             if self._menubar is not None:
                 self._menubar.set_status_text("Couldn't save model selection")
             return
+        # Cloud backend reads command_cloud_model on startup — keep both keys
+        # in sync so the selection survives relaunch.
+        if getattr(self, "_command_backend", None) == "cloud":
+            payload = self._load_preferences()
+            payload["command_cloud_model"] = model_id
+            self._save_preferences(payload)
         self._command_model_id = model_id
         self._relaunch()
 
@@ -3782,6 +4219,25 @@ class SpokeAppDelegate(NSObject):
             payload["tts_sidecar_model"] = model_id
         else:
             payload["tts_model"] = model_id
+            # Reset voice when switching between incompatible model families
+            # (e.g. OmniVoice prompts are not valid Voxtral voice names and
+            # vice versa).
+            # Reset voice when switching between models with different
+            # voice presets (e.g. Voxtral voices ≠ Kokoro voices ≠ OmniVoice
+            # prompts).  Set to the first preset of the new model.
+            old_presets = _voice_presets_for_model(current_model)
+            new_presets = _voice_presets_for_model(model_id)
+            if old_presets is not new_presets:
+                if new_presets:
+                    payload["tts_voice"] = new_presets[0][0]
+                else:
+                    payload.pop("tts_voice", None)
+                logger.info(
+                    "Reset tts_voice to %r on model switch (%s -> %s)",
+                    payload.get("tts_voice"),
+                    current_model,
+                    model_id,
+                )
         if not self._save_preferences(payload):
             logger.warning(
                 "Skipping relaunch because the TTS model selection could not be persisted"
@@ -3823,12 +4279,12 @@ class SpokeAppDelegate(NSObject):
                 self._load_preference("tts_model")
                 or os.environ.get("SPOKE_TTS_MODEL", "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit")
             )
-        prompt_mode = getattr(self, "_tts_backend", "local") != "sidecar" and _is_omnivoice_tts_model(current_model)
+        is_omnivoice = _is_omnivoice_tts_model(current_model) and getattr(self, "_tts_backend", "local") != "sidecar"
         alert = NSAlert.new()
-        alert.setMessageText_("TTS Prompt" if prompt_mode else "TTS Voice")
+        alert.setMessageText_("TTS Prompt" if is_omnivoice else "TTS Voice")
         alert.setInformativeText_(
             _omnivoice_prompt_lexicon_text()
-            if prompt_mode
+            if is_omnivoice
             else "Enter the voice name to use for TTS synthesis."
         )
         field = _PastableTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))

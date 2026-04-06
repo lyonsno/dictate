@@ -28,6 +28,22 @@ class TestTranscriptionClient:
         client = TranscriptionClient(base_url="http://x", model="custom/whisper")
         assert client._model == "custom/whisper"
 
+    @patch("spoke.transcribe.httpx.Client")
+    def test_api_key_sets_auth_header(self, MockClient):
+        """Providing api_key should set Bearer auth on the HTTP client."""
+        TranscriptionClient(base_url="http://x", api_key="sk-test123")
+        MockClient.assert_called_once()
+        headers = MockClient.call_args[1].get("headers", {})
+        assert headers["Authorization"] == "Bearer sk-test123"
+
+    @patch("spoke.transcribe.httpx.Client")
+    def test_no_api_key_omits_auth_header(self, MockClient):
+        """No api_key should not set Authorization header."""
+        TranscriptionClient(base_url="http://x")
+        MockClient.assert_called_once()
+        headers = MockClient.call_args[1].get("headers", {})
+        assert "Authorization" not in headers
+
     def test_empty_bytes_returns_empty_string(self):
         """Empty WAV input should short-circuit without HTTP call."""
         client = TranscriptionClient(base_url="http://x")

@@ -776,6 +776,12 @@ class TestDualModelConfiguration:
             lambda self: {},
             raising=False,
         )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_preferences",
+            lambda self: {},
+            raising=False,
+        )
         monkeypatch.setenv(
             "SPOKE_PREVIEW_MODEL", "mlx-community/whisper-medium.en-mlx-8bit"
         )
@@ -811,6 +817,12 @@ class TestDualModelConfiguration:
         monkeypatch.delenv("SPOKE_WHISPER_URL", raising=False)
         monkeypatch.setenv("SPOKE_PREVIEW_MODEL", "mlx-community/whisper-small.en-mlx")
         monkeypatch.setenv("SPOKE_TRANSCRIPTION_MODEL", "mlx-community/whisper-tiny.en-mlx")
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_preferences",
+            lambda self: {},
+            raising=False,
+        )
 
         with patch.object(main_module, "LocalTranscriptionClient") as MockLocal:
             final_client = MagicMock(name="final_client")
@@ -847,6 +859,12 @@ class TestDualModelConfiguration:
                 "decode_timeout": None,
                 "eager_eval": True,
             },
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_preferences",
+            lambda self: {},
             raising=False,
         )
 
@@ -1159,6 +1177,126 @@ class TestDualModelConfiguration:
 
         MockTTS.assert_not_called()
         assert result is None
+
+    def test_handle_model_menu_none_surfaces_transcription_and_preview_backends(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._preview_backend = "local"
+        d._whisper_sidecar_url = ""
+        d._whisper_cloud_url = ""
+        d._whisper_cloud_api_key = ""
+
+        model_state = d._handle_model_menu_action(None)
+
+        expected_items = [
+            ("local", "Local Whisper", True),
+            ("sidecar", "Sidecar (not configured)", False, False),
+            ("cloud", "Cloud (not configured)", False, False),
+            ("configure_whisper", "Set Whisper Sidecar URL\u2026", False, True),
+            ("configure_whisper_cloud", "Set Cloud API Key\u2026", False, True),
+        ]
+        assert model_state["transcription_backend"] == {
+            "title": "Final: Local",
+            "items": expected_items,
+        }
+        assert model_state["preview_backend"] == {
+            "title": "Preview: Local",
+            "items": expected_items,
+        }
+
+    def test_handle_model_menu_independent_preview_and_transcription_backends(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "cloud"
+        d._preview_backend = "local"
+        d._whisper_sidecar_url = ""
+        d._whisper_cloud_url = "https://api.openai.com"
+        d._whisper_cloud_api_key = "sk-test"
+
+        model_state = d._handle_model_menu_action(None)
+
+        assert model_state["transcription_backend"]["title"] == "Final: Cloud (OpenAI)"
+        assert model_state["preview_backend"]["title"] == "Preview: Local"
+        final_items = model_state["transcription_backend"]["items"]
+        assert final_items[2] == ("cloud", "Cloud (OpenAI)", True, True)
+        preview_items = model_state["preview_backend"]["items"]
+        assert preview_items[0] == ("local", "Local Whisper", True)
+
+    def test_selecting_transcription_backend_sidecar_persists_and_relaunches(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._whisper_sidecar_url = "http://my-server:8080"
+        d._save_preference = MagicMock()
+
+        with patch.object(main_module.os, "execv") as mock_execv:
+            d._handle_model_menu_action(("transcription_backend", "sidecar"))
+
+        d._save_preference.assert_called_once_with("whisper_backend", "sidecar")
+        mock_execv.assert_called_once()
+
+    def test_selecting_transcription_backend_sidecar_blocked_without_url(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._whisper_sidecar_url = ""
+        d._menubar = MagicMock()
+        d._save_preference = MagicMock()
+
+        d._handle_model_menu_action(("transcription_backend", "sidecar"))
+
+        d._save_preference.assert_not_called()
+        d._menubar.set_status_text.assert_called_once_with(
+            "No Whisper sidecar URL configured"
+        )
+
+    def test_selecting_transcription_backend_cloud_blocked_without_key(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._whisper_cloud_api_key = ""
+        d._menubar = MagicMock()
+        d._save_preference = MagicMock()
+
+        d._handle_model_menu_action(("transcription_backend", "cloud"))
+
+        d._save_preference.assert_not_called()
+        d._menubar.set_status_text.assert_called_once_with(
+            "No cloud API key configured"
+        )
+
+    def test_selecting_transcription_backend_noop_when_already_selected(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._save_preference = MagicMock()
+
+        with patch.object(main_module.os, "execv") as mock_execv:
+            d._handle_model_menu_action(("transcription_backend", "local"))
+
+        d._save_preference.assert_not_called()
+        mock_execv.assert_not_called()
+
+    def test_selecting_preview_backend_persists_and_relaunches(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_backend = "local"
+        d._whisper_sidecar_url = "http://my-server:8080"
+        d._save_preference = MagicMock()
+
+        with patch.object(main_module.os, "execv") as mock_execv:
+            d._handle_model_menu_action(("preview_backend", "sidecar"))
+
+        d._save_preference.assert_called_once_with("preview_backend", "sidecar")
+        mock_execv.assert_called_once()
 
     def test_handle_model_menu_none_exposes_launch_targets_from_registry(
         self, main_module, monkeypatch
@@ -1520,6 +1658,12 @@ class TestDualModelConfiguration:
             lambda self: {},
             raising=False,
         )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_preferences",
+            lambda self: {},
+            raising=False,
+        )
         monkeypatch.setenv(
             "SPOKE_PREVIEW_MODEL", "mlx-community/whisper-medium.en-mlx-8bit"
         )
@@ -1554,6 +1698,12 @@ class TestDualModelConfiguration:
         monkeypatch.setattr(
             main_module.SpokeAppDelegate,
             "_load_local_whisper_preferences",
+            lambda self: {},
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_preferences",
             lambda self: {},
             raising=False,
         )
@@ -2515,6 +2665,12 @@ class TestEnvValidation:
         monkeypatch.setattr(
             main_module.SpokeAppDelegate,
             "_load_model_preferences",
+            lambda self: {},
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_preferences",
             lambda self: {},
             raising=False,
         )

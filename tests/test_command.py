@@ -175,6 +175,28 @@ class TestCommandClient:
         req = mock_open.call_args[0][0]
         assert req.full_url == "https://generativelanguage.googleapis.com/v1beta/openai/models"
 
+    def test_list_models_strips_models_prefix(self):
+        """Gemini returns 'models/gemini-2.5-flash'; list_models strips the prefix."""
+        from spoke.command import CommandClient
+
+        payload = {"data": [
+            {"id": "models/gemini-2.5-flash"},
+            {"id": "models/gemini-2.5-pro"},
+            {"id": "qwen3-14b"},
+        ]}
+        fake_resp = MagicMock()
+        fake_resp.__enter__ = MagicMock(return_value=io.BytesIO(json.dumps(payload).encode()))
+        fake_resp.__exit__ = MagicMock(return_value=False)
+
+        client = CommandClient(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            model="gemini-2.5-flash",
+            api_key="key",
+        )
+
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            assert client.list_models() == ["gemini-2.5-flash", "gemini-2.5-pro", "qwen3-14b"]
+
     def test_list_models_sends_auth_header(self):
         """list_models() should reuse the configured bearer token."""
         from spoke.command import CommandClient
@@ -828,3 +850,62 @@ class TestCommandThinking:
 
         assert "data" in captured_body, "urlopen was never called — request body not captured"
         assert "chat_template_kwargs" not in captured_body["data"]
+
+
+class TestXMLToolCallFallback:
+    """Test spoke-side XML tool call extraction from content stream."""
+
+    def test_bare_function_tags_extracted(self):
+        from spoke.command import _extract_xml_tool_calls
+        text = '<function=list_directory><parameter=dir_path>/Users/dev</parameter></function>'
+        result = _extract_xml_tool_calls(text)
+        assert result is not None
+        cleaned, calls = result
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "list_directory"
+        args = json.loads(calls[0]["function"]["arguments"])
+        assert args["dir_path"] == "/Users/dev"
+        assert cleaned == ""
+
+    def test_wrapped_in_tool_call_tags(self):
+        from spoke.command import _extract_xml_tool_calls
+        text = '<tool_call><function=read_file><parameter=path>foo.txt</parameter></function></tool_call>'
+        result = _extract_xml_tool_calls(text)
+        assert result is not None
+        _, calls = result
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "read_file"
+
+    def test_trailing_tool_call_close_only(self):
+        from spoke.command import _extract_xml_tool_calls
+        text = '<function=search><parameter=query>hello</parameter></function></tool_call>'
+        result = _extract_xml_tool_calls(text)
+        assert result is not None
+        _, calls = result
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "search"
+
+    def test_mixed_text_and_xml(self):
+        from spoke.command import _extract_xml_tool_calls
+        text = 'Let me check:\n<function=ls><parameter=dir>/tmp</parameter></function>\nDone.'
+        result = _extract_xml_tool_calls(text)
+        assert result is not None
+        cleaned, calls = result
+        assert len(calls) == 1
+        assert "Let me check:" in cleaned
+        assert "Done." in cleaned
+
+    def test_no_xml_returns_none(self):
+        from spoke.command import _extract_xml_tool_calls
+        assert _extract_xml_tool_calls("just plain text") is None
+
+    def test_multiple_calls_extracted(self):
+        from spoke.command import _extract_xml_tool_calls
+        text = ('<function=a><parameter=x>1</parameter></function>'
+                '<function=b><parameter=y>2</parameter></function>')
+        result = _extract_xml_tool_calls(text)
+        assert result is not None
+        _, calls = result
+        assert len(calls) == 2
+        assert calls[0]["function"]["name"] == "a"
+        assert calls[1]["function"]["name"] == "b"

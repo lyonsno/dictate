@@ -260,6 +260,26 @@ class MenuBarIcon(NSObject):
                             preview["models"],
                         )
                     )
+                transcription_backend = model_state.get("transcription_backend")
+                if transcription_backend:
+                    menu.addItem_(
+                        self._build_toggle_submenu_item(
+                            transcription_backend["title"],
+                            "transcription_backend",
+                            transcription_backend["items"],
+                        )
+                    )
+                    added_menu_section = True
+                preview_backend = model_state.get("preview_backend")
+                if preview_backend:
+                    menu.addItem_(
+                        self._build_toggle_submenu_item(
+                            preview_backend["title"],
+                            "preview_backend",
+                            preview_backend["items"],
+                        )
+                    )
+                    added_menu_section = True
                 tts_backend = model_state.get("tts_backend")
                 if tts_backend:
                     menu.addItem_(
