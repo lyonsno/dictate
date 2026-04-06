@@ -148,18 +148,11 @@ inline float fill_alpha(float sd, float width, float floor_val) {
     return floor_val * exp(-normalized * normalized);
 }
 
-// Diffuse outer glow: very faint, only outside (sd > 0).
-inline float glow_alpha(float sd, float glow_width) {
-    if (sd <= 0.0) return 0.0;
-    float normalized = sd / max(glow_width, 1e-6);
-    return exp(-normalized * normalized);
-}
-
-// Hairline highlight ridge: ~1px sharp peak at the card boundary.
-// Uses high-power exponential for extreme sharpness.
-inline float highlight_ridge(float sd, float ridge_width) {
-    float normalized = abs(sd) / max(ridge_width, 1e-6);
-    return exp(-normalized * normalized * normalized);  // cubic Gaussian — very sharp
+// 1px anti-aliased stroke at the card boundary.
+// Returns 1.0 exactly at sd=0, drops to 0.0 within ±1px.
+// This is a hard edge with AA, not a soft glow.
+inline float hairline(float sd) {
+    return clamp(1.0 - abs(sd), 0.0, 1.0);
 }
 
 fragment float4 fs_fill(
@@ -171,24 +164,17 @@ fragment float4 fs_fill(
 
     uint count = min(uint(u.card_count_f), uint(MAX_CARDS));
 
-    // === Background chromatic glow (very faint) ===
-    float2 bg_offset = float2(3.0, 1.5);      // pixel offset
-    float bg_width = u.fill_width * 6.0;       // wide diffuse
-    float bg_gold_str = 0.015;                 // barely visible
-    float bg_blue_str = 0.008;
-    float3 gold_rgb = float3(1.0, 0.82, 0.45);
-    float3 blue_rgb = float3(0.55, 0.65, 0.85);
-
-    // === Highlight ridge (hairline, 1-2px) ===
-    float2 hl_offset = float2(1.0, 0.5);      // tight chromatic split
-    float hl_width = 1.5;                      // ~1px ridge + AA
-    float hl_gold_str = 0.18;                  // punchy but thin
-    float hl_blue_str = 0.10;                  // blue recedes
+    // Chromatic hairline: two 1px strokes displaced by ~1px.
+    // Where they overlap (center) → white. Where they separate
+    // (corners, curvature) → gold on one side, blue on the other.
+    float2 hl_offset = float2(0.75, 0.4);    // subpixel chromatic split
+    float hl_gold_str = 0.25;
+    float hl_blue_str = 0.15;
+    float3 gold_rgb = float3(1.0, 0.85, 0.5);
+    float3 blue_rgb = float3(0.6, 0.7, 0.9);
 
     float best_alpha = 0.0;
     float3 best_rgb = float3(0.0);
-    float best_bg_gold = 0.0;
-    float best_bg_blue = 0.0;
     float best_hl_gold = 0.0;
     float best_hl_blue = 0.0;
 
@@ -210,34 +196,22 @@ fragment float4 fs_fill(
             best_rgb = mix(best_rgb, u.cards[i].color.rgb, t);
         }
 
-        // Background glow — diffuse, faint
-        float sd_bg_gold = card_sdf(pixel - bg_offset, rect, u.corner_radius);
-        best_bg_gold = max(best_bg_gold, glow_alpha(sd_bg_gold, bg_width));
-        float sd_bg_blue = card_sdf(pixel + bg_offset, rect, u.corner_radius);
-        best_bg_blue = max(best_bg_blue, glow_alpha(sd_bg_blue, bg_width));
+        // Gold hairline — displaced one direction
+        float sd_gold = card_sdf(pixel - hl_offset, rect, u.corner_radius);
+        best_hl_gold = max(best_hl_gold, hairline(sd_gold));
 
-        // Highlight ridge — hairline, right at the boundary
-        float sd_hl_gold = card_sdf(pixel - hl_offset, rect, u.corner_radius);
-        best_hl_gold = max(best_hl_gold, highlight_ridge(sd_hl_gold, hl_width));
-        float sd_hl_blue = card_sdf(pixel + hl_offset, rect, u.corner_radius);
-        best_hl_blue = max(best_hl_blue, highlight_ridge(sd_hl_blue, hl_width));
+        // Blue hairline — displaced opposite
+        float sd_blue = card_sdf(pixel + hl_offset, rect, u.corner_radius);
+        best_hl_blue = max(best_hl_blue, hairline(sd_blue));
     }
 
-    // Composite: fill + background glow + highlight ridge
-    float3 bg_chroma = gold_rgb * (best_bg_gold * bg_gold_str)
-                     + blue_rgb * (best_bg_blue * bg_blue_str);
-    float3 hl_chroma = gold_rgb * (best_hl_gold * hl_gold_str)
-                     + blue_rgb * (best_hl_blue * hl_blue_str);
+    // Additive hairline over fill
+    float3 hl = gold_rgb * (best_hl_gold * hl_gold_str)
+              + blue_rgb * (best_hl_blue * hl_blue_str);
+    float hl_a = max(best_hl_gold * hl_gold_str, best_hl_blue * hl_blue_str);
 
-    float3 total_chroma = bg_chroma + hl_chroma;
-    float chroma_a = max(
-        max(best_bg_gold * bg_gold_str, best_bg_blue * bg_blue_str),
-        max(best_hl_gold * hl_gold_str, best_hl_blue * hl_blue_str)
-    );
-
-    // Fill over chroma
-    float final_alpha = best_alpha + chroma_a * (1.0 - best_alpha);
-    float3 final_rgb = best_rgb * best_alpha + total_chroma * (1.0 - best_alpha);
+    float final_alpha = best_alpha + hl_a * (1.0 - best_alpha);
+    float3 final_rgb = best_rgb * best_alpha + hl * (1.0 - best_alpha);
 
     return float4(final_rgb, final_alpha);
 }
