@@ -71,6 +71,11 @@ _DEFAULT_COMMAND_URL = "http://localhost:8001"
 _DEFAULT_COMMAND_MODEL = "qwen3p5-35B-A3B"
 _DEFAULT_RING_BUFFER_SIZE = 10
 
+
+def _rough_tool_result_tokens(text: str) -> int:
+    """Approximate token count for a tool result."""
+    return int(len(text.split()) * 1.3)
+
 _SYSTEM_PROMPT = (
     "You are an assistant with access to tools for interacting with the user's "
     "development environment, screen, clipboard, email, and project state. "
@@ -569,10 +574,36 @@ class CommandClient:
 
                     logger.info("Executing tool %s with args: %s", fn_name, str(fn_args)[:200])
                     tool_result = tool_executor(name=fn_name, arguments=fn_args)
+                    result_tokens = _rough_tool_result_tokens(tool_result)
                     logger.info(
-                        "Tool %s result: %d chars (preview: %s)",
-                        fn_name, len(tool_result), tool_result[:200],
+                        "Tool %s result: %d chars (~%d tokens) (preview: %s)",
+                        fn_name, len(tool_result), result_tokens, tool_result[:200],
                     )
+
+                    # Emit a subtext line with tool result info
+                    info_parts = []
+                    if fn_name == "read_file" and fn_args.get("path"):
+                        info_parts.append(fn_args["path"])
+                    elif fn_name == "search_file":
+                        query = fn_args.get("query", "")
+                        path = fn_args.get("path", "")
+                        if query and path:
+                            info_parts.append(f'"{query}" in {path}')
+                        elif query:
+                            info_parts.append(f'"{query}"')
+                        elif path:
+                            info_parts.append(path)
+                    elif fn_name == "capture_context":
+                        info_parts.append("screen capture")
+                    if result_tokens > 0:
+                        info_parts.append(f"~{result_tokens} tokens")
+                    if info_parts:
+                        info_line = f"  [{' · '.join(info_parts)}]\n"
+                        round_content += info_line
+                        yield CommandStreamEvent(
+                            kind="assistant_delta",
+                            text=info_line,
+                        )
 
                     messages.append({
                         "role": "tool",
