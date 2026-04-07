@@ -459,7 +459,8 @@ def _execute_list_directory(arguments: dict) -> dict[str, Any]:
             names = [n for n in names if fnmatch.fnmatch(n, pattern)]
         names.sort()
         entries = []
-        for name in names[:500]:
+        max_entries = 50
+        for name in names[:max_entries]:
             full = os.path.join(dir_path, name)
             try:
                 st = os.stat(full)
@@ -474,8 +475,8 @@ def _execute_list_directory(arguments: dict) -> dict[str, Any]:
             except OSError:
                 entries.append({"name": name, "type": "unknown"})
         result: dict[str, Any] = {"dir_path": dir_path, "entries": entries}
-        if len(names) > 500:
-            result["truncated"] = f"Showing 500 of {len(names)} entries"
+        if len(names) > max_entries:
+            result["truncated"] = f"Showing {max_entries} of {len(names)} entries"
         return result
     except Exception as e:
         return {"error": str(e)}
@@ -598,13 +599,21 @@ def _execute_search_file(arguments: dict) -> dict[str, Any]:
         return {"error": "pattern is required"}
     try:
         # Simple grep via subprocess with timeout and safe flags
+        # -m 5 per file keeps total output bounded across large trees
         result = subprocess.run(
-            ["grep", "-rnm", "100", "--", pattern, dir_path], 
-            capture_output=True, 
-            text=True, 
+            ["grep", "-rnm", "5", "--", pattern, dir_path],
+            capture_output=True,
+            text=True,
             timeout=10
         )
-        return {"matches": result.stdout, "dir_path": dir_path, "pattern": pattern}
+        lines = result.stdout.rstrip("\n").split("\n") if result.stdout.strip() else []
+        max_total = 30
+        truncated = len(lines) > max_total
+        lines = lines[:max_total]
+        out: dict[str, Any] = {"matches": "\n".join(lines), "dir_path": dir_path, "pattern": pattern}
+        if truncated:
+            out["truncated"] = f"Showing first {max_total} matches"
+        return out
     except subprocess.TimeoutExpired:
         return {"error": "Search timed out after 10 seconds"}
     except Exception as e:
@@ -641,11 +650,11 @@ def _execute_find_file(arguments: dict) -> dict[str, Any]:
                 })
             except OSError:
                 matches.append({"path": str(p), "type": "unknown"})
-            if len(matches) >= 100:
+            if len(matches) >= 30:
                 break
         result: dict[str, Any] = {"pattern": pattern, "dir_path": dir_path, "matches": matches}
-        if len(matches) >= 100:
-            result["truncated"] = "Showing first 100 matches"
+        if len(matches) >= 30:
+            result["truncated"] = "Showing first 30 matches"
         return result
     except Exception as e:
         return {"error": str(e)}

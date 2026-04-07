@@ -219,6 +219,7 @@ class CommandOverlay(NSObject):
         self._thinking_label = None  # NSTextField for the counter
         self._thinking_glow_layer = None  # CALayer for the glow behind the number
         self._thinking_inverted = False  # False = glowing number, True = cutout
+        self._narrator_label = None  # NSTextField for narrator summary
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -349,6 +350,34 @@ class CommandOverlay(NSObject):
         self._thinking_label.setStringValue_("")
         self._thinking_label.setHidden_(True)
         content.addSubview_(self._thinking_label)
+
+        # Narrator summary label — below the thinking timer, left-aligned
+        # Matches the user utterance text style (same font, adaptive color)
+        from AppKit import NSTextAlignmentLeft, NSLineBreakByTruncatingTail
+        narrator_h = 22.0
+        narrator_x = 14.0
+        narrator_y = timer_y - narrator_h - 2
+        narrator_w = _OVERLAY_WIDTH - 28
+        self._narrator_label = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(narrator_x, narrator_y, narrator_w, narrator_h)
+        )
+        self._narrator_label.setEditable_(False)
+        self._narrator_label.setSelectable_(False)
+        self._narrator_label.setBezeled_(False)
+        self._narrator_label.setDrawsBackground_(False)
+        self._narrator_label.setAlignment_(NSTextAlignmentLeft)
+        self._narrator_label.setLineBreakMode_(NSLineBreakByTruncatingTail)
+        self._narrator_label.setFont_(
+            NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0)
+        )
+        # Initial color set; will be updated by _apply_narrator_theme()
+        user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
+        self._narrator_label.setTextColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4)
+        )
+        self._narrator_label.setStringValue_("")
+        self._narrator_label.setHidden_(True)
+        content.addSubview_(self._narrator_label)
 
         self._window.setContentView_(wrapper)
         self._window.setAlphaValue_(0.0)
@@ -1079,6 +1108,28 @@ class CommandOverlay(NSObject):
         self._thinking_inverted = True
         self._apply_thinking_label_theme()
 
+    def set_narrator_summary(self, summary: str) -> None:
+        """Update the narrator summary line displayed during thinking."""
+        if self._narrator_label is not None:
+            self._narrator_label.setStringValue_(summary)
+            self._narrator_label.setHidden_(False)
+            self._apply_narrator_theme()
+
+    def _apply_narrator_theme(self) -> None:
+        """Match narrator label color to user utterance style."""
+        if self._narrator_label is None or self._narrator_label.isHidden():
+            return
+        user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
+        self._narrator_label.setTextColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4)
+        )
+
+    def _hide_narrator(self) -> None:
+        """Hide the narrator summary label."""
+        if self._narrator_label is not None:
+            self._narrator_label.setHidden_(True)
+            self._narrator_label.setStringValue_("")
+
     def _stop_thinking_timer(self) -> None:
         """Stop and fade the thinking counter."""
         if self._thinking_timer is not None:
@@ -1086,6 +1137,7 @@ class CommandOverlay(NSObject):
             self._thinking_timer = None
         if self._thinking_label is not None:
             self._thinking_label.setHidden_(True)
+        self._hide_narrator()
 
     def thinkingTick_(self, timer) -> None:
         """Update the thinking counter every 100ms."""
@@ -1097,7 +1149,12 @@ class CommandOverlay(NSObject):
     # ── ridge masks ────────────────────────────────────────
 
     def _apply_ridge_masks(self, width: float, height: float) -> None:
-        """Compute SDF and apply ridge mask + build fill image."""
+        """Compute SDF and apply ridge mask + build fill image.
+
+        The SDF and fill-alpha field are cached by geometry (width, height).
+        When only brightness changes (same dimensions), we skip the expensive
+        numpy SDF computation and just rebuild the colored image.
+        """
         from .overlay import (
             _RIDGE_FALLOFF, _RIDGE_POWER, _OVERLAY_CORNER_RADIUS,
             _overlay_rounded_rect_sdf, _ridge_alpha, _interior_fill_alpha,
@@ -1111,12 +1168,19 @@ class CommandOverlay(NSObject):
         try:
             from .overlay import _glow_fill_alpha
 
-            sdf = _overlay_rounded_rect_sdf(
-                total_w, total_h, width, height,
-                _OVERLAY_CORNER_RADIUS, scale,
-            )
+            cache_key = (width, height, scale)
+            cached = getattr(self, '_sdf_cache_key', None)
+            if cached == cache_key:
+                fill_alpha = self._cached_fill_alpha
+            else:
+                sdf = _overlay_rounded_rect_sdf(
+                    total_w, total_h, width, height,
+                    _OVERLAY_CORNER_RADIUS, scale,
+                )
+                fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
+                self._sdf_cache_key = cache_key
+                self._cached_fill_alpha = fill_alpha
 
-            fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
             bg_r, bg_g, bg_b = _background_color_for_brightness(
                 getattr(self, '_brightness', 0.0)
             )
@@ -1200,6 +1264,7 @@ class CommandOverlay(NSObject):
             content_frame = self._content_view.frame()
             self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
         self._apply_thinking_label_theme()
+        self._apply_narrator_theme()
 
     def _apply_thinking_label_theme(self) -> None:
         if self._thinking_label is None or self._thinking_label.isHidden():

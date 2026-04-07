@@ -147,7 +147,7 @@ _SYSTEM_PROMPT = (
 class CommandStreamEvent:
     """Semantic event emitted while streaming a command response."""
 
-    kind: Literal["assistant_delta", "assistant_final", "tool_call"]
+    kind: Literal["assistant_delta", "assistant_final", "tool_call", "thinking_delta"]
     text: str = ""
     tool_name: str | None = None
     tool_arguments: str | None = None
@@ -340,6 +340,12 @@ class CommandClient:
             # Content accumulated during this round only (may be
             # intermediate text during a tool-call turn)
             round_content = ""
+            # Thinking token state machine for <think>...</think> tags.
+            # States: "detect" (haven't seen anything yet),
+            #         "thinking" (inside <think> block),
+            #         "content" (after </think>, normal content)
+            thinking_state = "detect"
+            thinking_tag_buf = ""  # partial tag accumulator
 
             try:
                 with urllib.request.urlopen(req, timeout=120) as resp:
@@ -377,16 +383,74 @@ class CommandClient:
                         if fr:
                             finish_reason = fr
 
-                        # Content tokens
+                        # Reasoning tokens (OpenAI reasoning_content field)
+                        reasoning_token = delta.get("reasoning_content")
+                        if reasoning_token is not None:
+                            yield CommandStreamEvent(
+                                kind="thinking_delta",
+                                text=reasoning_token,
+                            )
+
+                        # Content tokens — with <think> tag state machine
                         token = delta.get("content")
                         if token is not None:
+                            # Route through thinking state machine
+                            text_to_process = token
+
+                            if thinking_state == "detect":
+                                # Accumulate until we can tell if it starts with <think>
+                                thinking_tag_buf += text_to_process
+                                if thinking_tag_buf.startswith("<think>"):
+                                    thinking_state = "thinking"
+                                    text_to_process = thinking_tag_buf[len("<think>"):]
+                                    thinking_tag_buf = ""
+                                    if not text_to_process:
+                                        continue
+                                    # Fall through to "thinking" handler below
+                                elif len(thinking_tag_buf) < len("<think>") and "<think>".startswith(thinking_tag_buf):
+                                    # Could still be <think>, keep buffering
+                                    continue
+                                else:
+                                    # Not a <think> tag — flush buffer as content
+                                    thinking_state = "content"
+                                    text_to_process = thinking_tag_buf
+                                    thinking_tag_buf = ""
+
+                            if thinking_state == "thinking":
+                                # Inside <think> block — check for </think>
+                                combined = thinking_tag_buf + text_to_process
+                                thinking_tag_buf = ""
+                                close_idx = combined.find("</think>")
+                                if close_idx >= 0:
+                                    # Emit remaining thinking, switch to content
+                                    before = combined[:close_idx]
+                                    after = combined[close_idx + len("</think>"):]
+                                    if before:
+                                        yield CommandStreamEvent(kind="thinking_delta", text=before)
+                                    thinking_state = "content"
+                                    if after:
+                                        text_to_process = after
+                                    else:
+                                        continue
+                                else:
+                                    # Check for partial </think> at end
+                                    for k in range(min(len("</think>"), len(combined)), 0, -1):
+                                        if combined.endswith("</think>"[:k]):
+                                            thinking_tag_buf = combined[-k:]
+                                            combined = combined[:-k]
+                                            break
+                                    if combined:
+                                        yield CommandStreamEvent(kind="thinking_delta", text=combined)
+                                    continue
+
+                            # thinking_state == "content" — normal visible content
                             if not first_token_logged:
-                                logger.info("First content token on round %d: %r", _round, token[:50] if len(token) > 50 else token)
+                                logger.info("First content token on round %d: %r", _round, text_to_process[:50] if len(text_to_process) > 50 else text_to_process)
                                 first_token_logged = True
-                            round_content += token
+                            round_content += text_to_process
                             yield CommandStreamEvent(
                                 kind="assistant_delta",
-                                text=token,
+                                text=text_to_process,
                             )
 
                         # Tool call deltas — yield name indicators and accumulate

@@ -906,6 +906,10 @@ class TranscriptionOverlay(NSObject):
         The SDF is computed for the content rect (width x height) and embedded
         in a larger field covering the full window (content + feather margin)
         so the outer falloff bleeds into the feather zone.
+
+        The SDF is cached by geometry (width, height, scale).  When only
+        brightness changes the cache is hit and the expensive numpy
+        computation is skipped — only the colored fill image is rebuilt.
         """
         f = _OUTER_FEATHER
         scale = getattr(self, '_ridge_scale', 2.0)
@@ -913,14 +917,15 @@ class TranscriptionOverlay(NSObject):
         total_h = height + 2 * f
 
         try:
-            sdf = _overlay_rounded_rect_sdf(
-                total_w, total_h, width, height,
-                _OVERLAY_CORNER_RADIUS, scale,
-            )
-
-            _FILL_EDGE_SOFTNESS = 6.0
-            self._fill_sdf = sdf
-            self._fill_scale = scale
+            cache_key = (width, height, scale)
+            if getattr(self, '_sdf_cache_key', None) != cache_key:
+                sdf = _overlay_rounded_rect_sdf(
+                    total_w, total_h, width, height,
+                    _OVERLAY_CORNER_RADIUS, scale,
+                )
+                self._fill_sdf = sdf
+                self._fill_scale = scale
+                self._sdf_cache_key = cache_key
         except (ImportError, Exception):
             return  # numpy or Quartz not available (test environment)
 

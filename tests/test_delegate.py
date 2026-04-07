@@ -36,6 +36,7 @@ def _make_delegate(main_module, monkeypatch):
     delegate._cap_fired = False
     delegate._transcribe_start = time.monotonic()
     delegate._last_preview_text = ""
+    delegate._mic_ready = True
     delegate._command_client = None
     delegate._command_backend = "local"
     delegate._command_url = "http://localhost:8001"
@@ -60,6 +61,9 @@ def _make_delegate(main_module, monkeypatch):
     delegate._recovery_pending_insert = None
     delegate._recovery_hold_active = False
     delegate._recovery_retry_pending = False
+    delegate._whisper_backend = "local"
+    delegate._preview_backend = "local"
+    delegate._segment_accumulator = main_module.SegmentAccumulator()
     # Stub performSelectorOnMainThread so we can call callbacks directly
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
@@ -3349,6 +3353,256 @@ class TestHoldStartDuringTranscription:
         d._glow.show.assert_called_once()
 
 
+class TestMicNotReady:
+    """Hold is rejected and status reflects mic unavailability."""
+
+    def test_hold_rejected_when_mic_not_ready(self, main_module, monkeypatch):
+        """Spacebar hold with models ready but mic unavailable should not start recording."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._models_ready = True
+        d._mic_ready = False
+
+        d._on_hold_start()
+
+        d._capture.start.assert_not_called()
+        d._menubar.set_status_text.assert_called_with("Mic unavailable — retrying…")
+
+    def test_warmup_succeeded_shows_mic_unavailable_when_mic_not_ready(self, main_module, monkeypatch):
+        """clientWarmupSucceeded_ should reflect mic state in menubar status."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._mic_ready = False
+        d._warmup_in_flight = True
+
+        d.clientWarmupSucceeded_(None)
+
+        assert d._models_ready is True
+        d._menubar.set_status_text.assert_called_with(
+            "Models ready — mic unavailable, retrying…"
+        )
+
+    def test_mic_granted_after_models_ready_shows_ready(self, main_module, monkeypatch):
+        """micPermissionGranted_ when models already loaded should show full ready state."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._models_ready = True
+        d._mic_ready = False
+        d._mic_probe_in_flight = True
+
+        d.micPermissionGranted_(None)
+
+        assert d._mic_ready is True
+        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+
+
+class TestCaptureStartFailure:
+    """Capture failure at hold time shows memory-pressure guidance."""
+
+    def test_capture_failure_shows_overlay_notice(self, main_module, monkeypatch):
+        """When capture.start() throws, the overlay should flash a notice
+        explaining audio is unavailable due to memory pressure."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._models_ready = True
+        d._mic_ready = True
+        d._capture.start.side_effect = RuntimeError("PortAudio error -9986")
+
+        d._on_hold_start()
+
+        d._overlay.flash_notice.assert_called_once()
+        msg = d._overlay.flash_notice.call_args[0][0]
+        assert "audio" in msg.lower() or "microphone" in msg.lower()
+        assert "memory" in msg.lower() or "pressure" in msg.lower()
+
+    def test_capture_failure_updates_menubar(self, main_module, monkeypatch):
+        """Menubar status should mention memory pressure on capture failure."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._models_ready = True
+        d._mic_ready = True
+        d._capture.start.side_effect = RuntimeError("PortAudio error -9986")
+
+        d._on_hold_start()
+
+        d._menubar.set_recording.assert_called_with(False)
+        status_text = d._menubar.set_status_text.call_args[0][0]
+        assert "memory" in status_text.lower() or "pressure" in status_text.lower()
+
+
+class TestMicPermissionProbe:
+    """Mic probe uses AVCaptureDevice permission check, not sd.rec()."""
+
+    def test_probe_dispatches_granted_on_authorized_status(self, main_module, monkeypatch):
+        """When AVCaptureDevice says authorized, mic probe should dispatch
+        micPermissionGranted_ without touching PortAudio at all."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._mic_probe_in_flight = True
+        d._mic_ready = False
+
+        monkeypatch.setattr(main_module, "_get_av_auth_status", lambda: 3)
+        # sd.rec should NOT be called — permission check is enough
+        mock_sd = MagicMock()
+        monkeypatch.setattr("sounddevice.rec", mock_sd)
+
+        # Capture the selector dispatched to main thread
+        dispatched = []
+        d.performSelectorOnMainThread_withObject_waitUntilDone_ = (
+            lambda sel, obj, wait: dispatched.append(sel)
+        )
+
+        d._probe_mic_permission()
+
+        mock_sd.assert_not_called()
+        assert "micPermissionGranted:" in dispatched
+
+    def test_probe_dispatches_denied_on_denied_status(self, main_module, monkeypatch):
+        """When AVCaptureDevice says denied, probe should dispatch denial
+        without attempting PortAudio recording."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._mic_probe_in_flight = True
+        d._mic_ready = False
+
+        monkeypatch.setattr(main_module, "_get_av_auth_status", lambda: 2)
+
+        dispatched = []
+        d.performSelectorOnMainThread_withObject_waitUntilDone_ = (
+            lambda sel, obj, wait: dispatched.append(sel)
+        )
+
+        d._probe_mic_permission()
+
+        assert "micPermissionDenied:" in dispatched
+        assert d._mic_ready is False
+
+    def test_probe_requests_on_not_determined(self, main_module, monkeypatch):
+        """When status is not-determined, probe should request access via
+        AVCaptureDevice and dispatch granted if the request succeeds."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._mic_probe_in_flight = True
+        d._mic_ready = False
+
+        monkeypatch.setattr(main_module, "_get_av_auth_status", lambda: 0)
+        monkeypatch.setattr(main_module, "_request_av_mic_access", lambda: True)
+
+        dispatched = []
+        d.performSelectorOnMainThread_withObject_waitUntilDone_ = (
+            lambda sel, obj, wait: dispatched.append(sel)
+        )
+
+        d._probe_mic_permission()
+
+        assert "micPermissionGranted:" in dispatched
+
+
+class TestPortAudioFallbackProbe:
+    """PortAudio fallback probe fires when AVFoundation is unavailable."""
+
+    def test_fallback_triggers_on_av_unavailable(self, main_module, monkeypatch):
+        """When _get_av_auth_status returns -1, probe should fall back to
+        PortAudio sd.rec() and dispatch granted on success."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._mic_probe_in_flight = True
+        d._mic_ready = False
+
+        monkeypatch.setattr(main_module, "_get_av_auth_status", lambda: -1)
+        mock_rec = MagicMock()
+        monkeypatch.setattr("sounddevice.rec", mock_rec)
+
+        dispatched = []
+        d.performSelectorOnMainThread_withObject_waitUntilDone_ = (
+            lambda sel, obj, wait: dispatched.append(sel)
+        )
+
+        d._probe_mic_permission()
+
+        mock_rec.assert_called_once()
+        assert "micPermissionGranted:" in dispatched
+
+    def test_fallback_dispatches_denied_on_permission_error(self, main_module, monkeypatch):
+        """PortAudio fallback should dispatch denied when sd.rec() raises
+        a permission-related error."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._mic_probe_in_flight = True
+        d._mic_ready = False
+
+        monkeypatch.setattr(main_module, "_get_av_auth_status", lambda: -1)
+        monkeypatch.setattr(
+            "sounddevice.rec",
+            MagicMock(side_effect=RuntimeError("access denied by system")),
+        )
+
+        dispatched = []
+        d.performSelectorOnMainThread_withObject_waitUntilDone_ = (
+            lambda sel, obj, wait: dispatched.append(sel)
+        )
+
+        d._probe_mic_permission()
+
+        assert "micPermissionDenied:" in dispatched
+
+    def test_fallback_dispatches_failed_on_generic_error(self, main_module, monkeypatch):
+        """PortAudio fallback should dispatch micProbeFailed_ when sd.rec()
+        raises a non-permission error (e.g. PortAudio buffer allocation)."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._mic_probe_in_flight = True
+        d._mic_ready = False
+
+        monkeypatch.setattr(main_module, "_get_av_auth_status", lambda: -1)
+        monkeypatch.setattr(
+            "sounddevice.rec",
+            MagicMock(side_effect=RuntimeError("PortAudio error -9986")),
+        )
+
+        dispatched = []
+        d.performSelectorOnMainThread_withObject_waitUntilDone_ = (
+            lambda sel, obj, wait: dispatched.append(sel)
+        )
+
+        d._probe_mic_permission()
+
+        assert "micProbeFailed:" in dispatched
+
+
+class TestAVHelperExceptionPaths:
+    """Exception paths in _get_av_auth_status and _request_av_mic_access."""
+
+    def test_get_av_auth_status_returns_neg1_on_import_failure(self, main_module, monkeypatch):
+        """If AVFoundation import fails, _get_av_auth_status should return -1."""
+        def broken_import():
+            raise ImportError("No module named 'AVFoundation'")
+
+        original = main_module._get_av_auth_status
+
+        def patched():
+            # Simulate import failure inside the function
+            raise ImportError("No module named 'AVFoundation'")
+
+        # We need to patch at the point where AVFoundation is imported
+        import builtins
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "AVFoundation":
+                raise ImportError("No module named 'AVFoundation'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+
+        result = main_module._get_av_auth_status()
+        assert result == -1
+
+    def test_request_av_mic_access_returns_false_on_failure(self, main_module, monkeypatch):
+        """If AVFoundation import fails, _request_av_mic_access should return False."""
+        import builtins
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "AVFoundation":
+                raise ImportError("No module named 'AVFoundation'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+
+        result = main_module._request_av_mic_access()
+        assert result is False
+
+
 class TestShortShiftHold:
     """Test the instant recall/dismiss path for short shift-holds."""
 
@@ -4034,3 +4288,155 @@ class TestVADPreviewGating:
             d._preview_loop_streaming()
 
         d._preview_client.feed.assert_not_called()
+
+
+class TestSegmentAccumulator:
+    """Test the SegmentAccumulator for opportunistic segment transcription."""
+
+    def test_empty_accumulator(self, main_module, monkeypatch):
+        acc = main_module.SegmentAccumulator()
+        assert acc.count == 0
+        assert acc.text == ""
+        assert not acc.has_results
+
+    def test_dispatch_accumulates_results(self, main_module, monkeypatch):
+        acc = main_module.SegmentAccumulator()
+        client = MagicMock()
+        client.transcribe.side_effect = ["hello", "world"]
+
+        acc.dispatch(b"seg1", client)
+        acc.dispatch(b"seg2", client)
+        acc.wait(timeout=5.0)
+
+        assert acc.count == 2
+        assert acc.text == "hello world"
+        assert acc.has_results
+
+    def test_dispatch_handles_failure_gracefully(self, main_module, monkeypatch):
+        acc = main_module.SegmentAccumulator()
+        client = MagicMock()
+        client.transcribe.side_effect = [Exception("server down"), "world"]
+
+        acc.dispatch(b"seg1", client)
+        acc.dispatch(b"seg2", client)
+        acc.wait(timeout=5.0)
+
+        assert acc.count == 2
+        assert acc.text == "world"  # first segment failed, second succeeded
+
+    def test_reset_clears_state(self, main_module, monkeypatch):
+        acc = main_module.SegmentAccumulator()
+        client = MagicMock()
+        client.transcribe.return_value = "hello"
+
+        acc.dispatch(b"seg1", client)
+        acc.wait(timeout=5.0)
+        assert acc.count == 1
+
+        acc.reset()
+        assert acc.count == 0
+        assert acc.text == ""
+
+
+class TestSegmentAcceleratedTranscription:
+    """Test the segment-accelerated final transcription path."""
+
+    def test_transcribe_worker_uses_segments_when_available(self, main_module, monkeypatch):
+        """When segments are cached, _transcribe_worker should use them + tail."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "sidecar"
+        d._transcribe_start = time.monotonic()
+
+        # Pre-populate the segment accumulator with cached results.
+        acc = main_module.SegmentAccumulator()
+        d._segment_accumulator = acc
+        # Simulate two already-completed segments.
+        d._client.transcribe.side_effect = ["seg one", "seg two", "tail text"]
+        acc.dispatch(b"s1", d._client)
+        acc.dispatch(b"s2", d._client)
+        acc.wait(timeout=5.0)
+
+        # The tail transcription call.
+        d._capture.get_tail_buffer.return_value = b"tail_wav"
+        d._client.transcribe.side_effect = ["tail text"]
+
+        d._transcribe_worker(b"full_wav_unused", token=1)
+
+        # The final client.transcribe call should be for the tail only.
+        last_call = d._client.transcribe.call_args
+        assert last_call[0][0] == b"tail_wav"
+
+        # Result should be segments + tail joined.
+        result_call = d.performSelectorOnMainThread_withObject_waitUntilDone_
+        payload = result_call.call_args[0][1]
+        assert "seg one" in payload["text"]
+        assert "seg two" in payload["text"]
+        assert "tail text" in payload["text"]
+
+    def test_transcribe_worker_falls_back_without_segments(self, main_module, monkeypatch):
+        """Without segments, _transcribe_worker should use full buffer."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+        d._transcribe_start = time.monotonic()
+        d._segment_accumulator = main_module.SegmentAccumulator()  # empty
+
+        d._client.transcribe.return_value = "full buffer text"
+
+        d._transcribe_worker(b"full_wav", token=1)
+
+        d._client.transcribe.assert_called_once_with(b"full_wav")
+
+    def test_hold_start_wires_segment_callback_for_sidecar(self, main_module, monkeypatch):
+        """_on_hold_start should wire segment_callback when backend is sidecar."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "sidecar"
+
+        d._on_hold_start()
+
+        # capture.start should have been called with a segment_callback.
+        call_kwargs = d._capture.start.call_args[1]
+        assert call_kwargs.get("segment_callback") is not None
+
+    def test_hold_start_no_segment_callback_for_local(self, main_module, monkeypatch):
+        """_on_hold_start should not wire segment_callback for local backend."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "local"
+
+        d._on_hold_start()
+
+        call_kwargs = d._capture.start.call_args[1]
+        assert call_kwargs.get("segment_callback") is None
+
+    def test_preview_batch_uses_cached_segments_plus_tail(self, main_module, monkeypatch):
+        """Preview loop should use cached segment text + tail when segments exist."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._whisper_backend = "sidecar"
+        d._preview_active = True
+        d._is_speech = True
+        d._force_preview_update = False
+        d._preview_done = threading.Event()
+
+        # Pre-populate segment accumulator.
+        acc = main_module.SegmentAccumulator()
+        client = MagicMock()
+        client.transcribe.return_value = "cached segment"
+        acc.dispatch(b"s1", client)
+        acc.wait(timeout=5.0)
+        d._segment_accumulator = acc
+
+        d._capture.get_tail_buffer.return_value = b"tail_wav"
+        d._preview_client.transcribe.return_value = "tail preview"
+
+        call_count = [0]
+        def _sleep(*args):
+            call_count[0] += 1
+            if call_count[0] > 1:
+                d._preview_active = False
+
+        with patch.object(main_module.time, "sleep", side_effect=_sleep):
+            d._preview_loop_batch()
+
+        # Preview client should have been called with tail, not full buffer.
+        d._preview_client.transcribe.assert_called_with(b"tail_wav")
+        # Full buffer should NOT have been requested.
+        d._capture.get_buffer.assert_not_called()

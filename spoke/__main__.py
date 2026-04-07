@@ -89,6 +89,7 @@ def _run_modal_with_paste(alert) -> int:
 
 from .capture import AudioCapture
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
+from .narrator import ThinkingNarrator
 from .focus_check import has_focused_text_input, focused_text_contains
 from .scene_capture import SceneCaptureCache
 from .tool_dispatch import execute_tool, get_tool_schemas
@@ -107,7 +108,7 @@ from .transcribe import TranscriptionClient
 from .transcribe_local import LocalTranscriptionClient, supports_eager_eval
 from .transcribe_parakeet import ParakeetCoreMLClient, _PARAKEET_MODEL_ID
 from .transcribe_qwen import LocalQwenClient
-from .tts import TTSClient, RemoteTTSClient, _DEFAULT_VOICE
+from .tts import TTSClient, RemoteTTSClient, CloudTTSClient, GEMINI_VOICES, _DEFAULT_VOICE
 from .heartbeat import (
     HeartbeatManager,
     zombie_sweep,
@@ -332,6 +333,7 @@ _MODEL_VOICE_PRESETS: list[tuple[str, list[tuple[str, str]]]] = [
     ("vibevoice", _VIBEVOICE_VOICES),
     ("qwen3-tts", _QWEN3_TTS_VOICES),
     ("omnivoice", _OMNIVOICE_PROMPT_PRESETS),
+    ("gemini", GEMINI_VOICES),
 ]
 
 _OMNIVOICE_PROMPT_LEXICON = {
@@ -415,6 +417,47 @@ def _flush_logging_handlers() -> None:
             handler.flush()
         except Exception:
             pass
+
+
+# ── AVCaptureDevice mic permission helpers ─────────────────────
+# These check/request microphone permission via the macOS AVFoundation API
+# without allocating any PortAudio buffers.  Under memory pressure, PortAudio
+# can fail to open a stream even though mic permission is already granted.
+# Using AVCaptureDevice avoids that failure mode entirely.
+#
+# AVAuthorizationStatus values:
+#   0 = notDetermined, 1 = restricted, 2 = denied, 3 = authorized
+
+def _get_av_auth_status() -> int:
+    """Return AVCaptureDevice.authorizationStatus(for: .audio) as an int."""
+    try:
+        from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
+        return int(AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio))
+    except Exception:
+        logger.debug("AVCaptureDevice import failed — falling back to unknown", exc_info=True)
+        return -1  # unknown / unavailable
+
+
+def _request_av_mic_access() -> bool:
+    """Block until the user grants or denies mic access. Returns True if granted."""
+    try:
+        from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
+        import threading
+        result = threading.Event()
+        granted_box: list[bool] = [False]
+
+        def handler(granted: bool) -> None:
+            granted_box[0] = granted
+            result.set()
+
+        AVCaptureDevice.requestAccessForMediaType_completionHandler_(
+            AVMediaTypeAudio, handler
+        )
+        result.wait(timeout=60)
+        return granted_box[0]
+    except Exception:
+        logger.debug("AVCaptureDevice.requestAccess failed", exc_info=True)
+        return False
 
 
 def _record_runtime_phase(phase: str, **details) -> None:
@@ -586,6 +629,74 @@ class TrayEntry:
         return "user"
 
 
+class SegmentAccumulator:
+    """Thread-safe accumulator for opportunistic segment transcriptions.
+
+    During recording, silence-bounded audio segments are dispatched to a remote
+    transcription backend as they arrive.  Results are stored in order so that
+    on release the final transcription only needs to cover the tail audio since
+    the last segment boundary.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._results: list[str] = []  # transcription text per segment, in order
+        self._pending: int = 0  # segments dispatched but not yet returned
+        self._done = threading.Event()
+        self._done.set()  # nothing pending initially
+
+    def dispatch(self, wav_bytes: bytes, client: object) -> None:
+        """Transcribe *wav_bytes* on a background thread and store the result."""
+        with self._lock:
+            idx = len(self._results)
+            self._results.append("")  # placeholder
+            self._pending += 1
+            self._done.clear()
+
+        def _work():
+            try:
+                text = client.transcribe(wav_bytes)
+            except Exception:
+                logger.exception("Segment %d transcription failed", idx)
+                text = ""
+            with self._lock:
+                self._results[idx] = text
+                self._pending -= 1
+                if self._pending <= 0:
+                    self._done.set()
+
+        t = threading.Thread(target=_work, daemon=True)
+        t.start()
+
+    def wait(self, timeout: float = 10.0) -> bool:
+        """Block until all pending segments are transcribed."""
+        return self._done.wait(timeout=timeout)
+
+    @property
+    def text(self) -> str:
+        """Concatenated transcription of all completed segments."""
+        with self._lock:
+            parts = [r for r in self._results if r]
+        return " ".join(parts)
+
+    @property
+    def count(self) -> int:
+        """Number of segments dispatched (completed + pending)."""
+        with self._lock:
+            return len(self._results)
+
+    @property
+    def has_results(self) -> bool:
+        with self._lock:
+            return any(self._results)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._results.clear()
+            self._pending = 0
+            self._done.set()
+
+
 class SpokeAppDelegate(NSObject):
     """Main application delegate — wires input → capture → transcribe → inject."""
 
@@ -716,6 +827,7 @@ class SpokeAppDelegate(NSObject):
         self._warmup_in_flight = False
         self._hold_rejected_during_warmup = False
         self._mic_probe_in_flight = False
+        self._mic_ready = False  # True once mic probe succeeds at least once
 
         # Command pathway — always enabled, but can persist a sidecar URL.
         self._command_backend = None
@@ -752,6 +864,15 @@ class SpokeAppDelegate(NSObject):
                 client_kwargs["api_key"] = cloud_api_key
             self._command_client = CommandClient(**client_kwargs)
             self._command_server_unreachable = False
+            # Thinking narrator sidecar
+            if ThinkingNarrator.is_enabled():
+                self._narrator = ThinkingNarrator(
+                    on_summary=lambda s: self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "narratorSummary:", {"summary": s}, False
+                    ),
+                )
+            else:
+                self._narrator = None
             self._command_model_options = self._seed_command_model_options(
                 self._command_model_id
             )
@@ -768,6 +889,7 @@ class SpokeAppDelegate(NSObject):
         else:
             self._command_url = None
             self._command_client = None
+            self._narrator = None
             self._command_backend = None
             self._command_url = None
             self._command_model_id = None
@@ -800,7 +922,12 @@ class SpokeAppDelegate(NSObject):
         self._tts_server_unreachable = False
         self._command_tool_used_tts = False
         if self._tts_client is not None:
-            backend_label = "sidecar" if isinstance(self._tts_client, RemoteTTSClient) else "local"
+            if isinstance(self._tts_client, CloudTTSClient):
+                backend_label = "cloud"
+            elif isinstance(self._tts_client, RemoteTTSClient):
+                backend_label = "sidecar"
+            else:
+                backend_label = "local"
             logger.info("TTS enabled: backend=%s voice=%s", backend_label, self._tts_client._voice)
 
         # Tray state — speech-native stacked clipboard
@@ -870,18 +997,24 @@ class SpokeAppDelegate(NSObject):
         self._terraform_hud.restore_visibility()
         self._menubar._on_toggle_terraform = self._terraform_hud.toggle
 
-        # Step 1: Request mic permission with a test recording.
-        # This triggers the system prompt before we start listening for spacebar.
-        self._menubar.set_status_text("Requesting mic access…")
+        # Iron Giant: install event tap and probe mic in parallel.
+        # The event tap (spacebar interception) only needs Accessibility permission,
+        # not mic access.  Under memory pressure the mic probe can fail even though
+        # the system has already granted mic permission, which previously blocked
+        # the entire app.  Now the spacebar works immediately and mic readiness is
+        # tracked independently.
+        self._menubar.set_status_text("Starting up…")
+        self._setup_event_tap()
         self._request_mic_permission()
 
     def _request_mic_permission(self) -> None:
-        """Trigger mic permission prompt by attempting a short recording.
+        """Check mic permission via AVCaptureDevice (no PortAudio allocation).
 
-        The sd.rec(blocking=True) call can deadlock the main thread if PortAudio
-        hits a hardware error or the mic permission prompt is pending.  Run the
-        probe on a background thread and dispatch the result back to the main
-        thread so the NSRunLoop stays responsive.
+        Under memory pressure, PortAudio can fail to open a stream even when
+        mic permission is already granted.  This probe uses the macOS
+        AVFoundation API which requires zero buffer allocation — it just asks
+        the OS whether the app has permission.  PortAudio stream opening is
+        deferred to first actual recording (capture.start()).
         """
         if self._mic_probe_in_flight:
             return
@@ -892,96 +1025,78 @@ class SpokeAppDelegate(NSObject):
         ).start()
 
     def _probe_mic_permission(self) -> None:
-        """Background-thread mic probe — dispatches result to main thread."""
-        import sounddevice as sd
-        try:
-            self._run_mic_permission_probe(sd)
-            logger.info("Microphone access granted")
+        """Background-thread mic probe — uses AVCaptureDevice, no PortAudio."""
+        status = _get_av_auth_status()
+
+        if status == 3:  # authorized
+            logger.info("Microphone access granted (AVCaptureDevice)")
             _record_runtime_phase("mic_probe.granted")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "micPermissionGranted:", None, False
             )
-        except Exception as exc:
-            if self._is_permission_probe_denial(exc):
-                logger.warning("Mic permission not yet granted: %s", exc)
-                _record_runtime_phase("mic_probe.denied", error=str(exc))
-                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "micPermissionDenied:", None, False
-                )
-                return
-
-            logger.warning(
-                "Mic probe hit audio runtime failure — resetting PortAudio",
-                exc_info=True,
-            )
-            self._reset_portaudio_probe(sd)
-
-            try:
-                self._run_mic_permission_probe(sd)
-                logger.info("Microphone access granted after PortAudio reset")
-                _record_runtime_phase("mic_probe.granted_after_reset")
+        elif status == 0:  # not determined — need to trigger the system prompt
+            logger.info("Mic permission not yet determined — requesting")
+            _record_runtime_phase("mic_probe.requesting")
+            granted = _request_av_mic_access()
+            if granted:
+                logger.info("Microphone access granted after prompt")
+                _record_runtime_phase("mic_probe.granted_after_prompt")
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "micPermissionGranted:", None, False
                 )
-            except Exception as retry_exc:
-                if self._is_permission_probe_denial(retry_exc):
-                    logger.warning("Mic permission not yet granted: %s", retry_exc)
-                    _record_runtime_phase("mic_probe.denied_after_reset", error=str(retry_exc))
-                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                        "micPermissionDenied:", None, False
-                    )
-                    return
-                logger.warning(
-                    "Mic probe failed after PortAudio reset",
-                    exc_info=True,
+            else:
+                logger.warning("Mic permission denied by user")
+                _record_runtime_phase("mic_probe.denied_by_user")
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "micPermissionDenied:", None, False
                 )
-                _record_runtime_phase("mic_probe.failed", error=str(retry_exc))
+        elif status in (1, 2):  # restricted or denied
+            logger.warning("Mic permission denied (status=%d)", status)
+            _record_runtime_phase("mic_probe.denied", status=status)
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "micPermissionDenied:", None, False
+            )
+        else:  # -1 or unknown — AVFoundation unavailable, fall back to sd.rec
+            logger.warning("AVCaptureDevice unavailable — falling back to PortAudio probe")
+            self._probe_mic_permission_portaudio_fallback()
+
+    def _probe_mic_permission_portaudio_fallback(self) -> None:
+        """Legacy PortAudio-based probe, used only if AVFoundation is unavailable."""
+        import sounddevice as sd
+        try:
+            sd.rec(1600, samplerate=16000, channels=1, dtype='float32', blocking=True)
+            logger.info("Microphone access granted (PortAudio fallback)")
+            _record_runtime_phase("mic_probe.granted_portaudio_fallback")
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "micPermissionGranted:", None, False
+            )
+        except Exception as exc:
+            msg = str(exc).lower()
+            if any(m in msg for m in ("permission", "not permitted", "access denied")):
+                _record_runtime_phase("mic_probe.denied_portaudio_fallback")
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "micPermissionDenied:", None, False
+                )
+            else:
+                logger.warning("PortAudio fallback probe failed", exc_info=True)
+                _record_runtime_phase("mic_probe.failed_portaudio_fallback", error=str(exc))
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "micProbeFailed:", None, False
                 )
 
-    def _run_mic_permission_probe(self, sd_module) -> None:
-        sd_module.rec(
-            1600,
-            samplerate=16000,
-            channels=1,
-            dtype='float32',
-            blocking=True,
-        )
-
-    def _reset_portaudio_probe(self, sd_module) -> None:
-        try:
-            sd_module._terminate()
-        except Exception:
-            logger.debug("Mic probe PortAudio terminate failed", exc_info=True)
-        try:
-            sd_module._initialize()
-        except Exception:
-            logger.debug("Mic probe PortAudio initialize failed", exc_info=True)
-
-    def _is_permission_probe_denial(self, exc: Exception) -> bool:
-        message = str(exc).lower()
-        permission_markers = (
-            "permission",
-            "not permitted",
-            "permission denied",
-            "access denied",
-            "access was denied",
-            "operation not permitted",
-        )
-        return any(marker in message for marker in permission_markers)
-
     def micPermissionGranted_(self, _sender) -> None:
         """Main-thread callback after mic probe succeeds."""
         self._mic_probe_in_flight = False
-        self._setup_event_tap()
+        self._mic_ready = True
+        if self._menubar is not None and self._models_ready:
+            self._menubar.set_status_text("Ready — hold spacebar")
 
     def micPermissionDenied_(self, _sender) -> None:
         """Main-thread callback after mic probe fails — schedule retry."""
         from Foundation import NSTimer
         self._mic_probe_in_flight = False
         if self._menubar is not None:
-            self._menubar.set_status_text("Grant mic access, then wait…")
+            self._menubar.set_status_text("Mic: grant access, then wait…")
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             2.0, self, "retryMicPermission:", None, False
         )
@@ -1057,7 +1172,10 @@ class SpokeAppDelegate(NSObject):
         self._warm_error = None
         logger.info("spoke ready — hold spacebar to record")
         _record_runtime_phase("app.ready")
-        self._menubar.set_status_text("Ready — hold spacebar")
+        if self._mic_ready:
+            self._menubar.set_status_text("Ready — hold spacebar")
+        else:
+            self._menubar.set_status_text("Models ready — mic unavailable, retrying…")
         self._hide_startup_status()
 
         # Warn if cloud preview is active — each partial is a paid API call.
@@ -1198,6 +1316,11 @@ class SpokeAppDelegate(NSObject):
             self._hold_rejected_during_warmup = True
             self._refresh_startup_status()
             return
+        if not getattr(self, "_mic_ready", False):
+            logger.warning("Hold started but mic not yet available — ignoring")
+            if self._menubar is not None:
+                self._menubar.set_status_text("Mic unavailable — retrying…")
+            return
         # If TTS is playing from a tool call, cancel the playback but
         # don't invalidate the stream token — let the remaining tool batch
         # finish so subsequent read_aloud calls still execute.
@@ -1275,22 +1398,43 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
+        # Set up opportunistic segment transcription for remote backends.
+        # Each silence-bounded segment is dispatched to the final client as it
+        # arrives, so that on release we only need to transcribe the tail.
+        self._segment_accumulator = SegmentAccumulator()
+        use_segments = getattr(self, "_whisper_backend", "local") in ("sidecar", "cloud")
+        segment_cb = None
+        if use_segments:
+            def segment_cb(wav_bytes: bytes):
+                self._segment_accumulator.dispatch(wav_bytes, self._client)
+
         try:
             def on_vad_state(is_speech: bool):
                 if self._menubar is not None:
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "updateVadState:", is_speech, False
                     )
-            self._capture.start(amplitude_callback=self._on_amplitude, vad_state_callback=on_vad_state)
+            self._capture.start(
+                amplitude_callback=self._on_amplitude,
+                vad_state_callback=on_vad_state,
+                segment_callback=segment_cb,
+            )
         except Exception:
             logger.exception("Audio capture failed to start")
             if self._glow is not None:
                 self._glow.hide()
             if self._overlay is not None:
-                self._overlay.hide()
+                self._overlay.flash_notice(
+                    "Audio unavailable — system under memory pressure.\n"
+                    "Free memory or use sidecar for transcription.",
+                    hold=4.0,
+                    fade=2.0,
+                )
             if self._menubar is not None:
                 self._menubar.set_recording(False)
-                self._menubar.set_status_text("Audio input error — try again")
+                self._menubar.set_status_text(
+                    "Audio unavailable — memory pressure"
+                )
             return
         if self._glow is not None:
             self._glow.show()
@@ -1487,7 +1631,12 @@ class SpokeAppDelegate(NSObject):
         return (0.2, 0.15)
 
     def _preview_loop_batch(self, token: int | None = None) -> None:
-        """Batch preview: re-transcribe the full buffer each tick."""
+        """Batch preview: re-transcribe the full buffer each tick.
+
+        When the segment accumulator is active, only the tail audio (since the
+        last segment boundary) is sent to the preview client; cached segment
+        text is prepended to the result.
+        """
         _MIN_INTERVAL, _INITIAL_DELAY = self._preview_batch_intervals()
         token = getattr(self, "_preview_session_token", 0) if token is None else token
 
@@ -1497,8 +1646,17 @@ class SpokeAppDelegate(NSObject):
             while self._preview_active:
                 loop_start = time.monotonic()
 
-                wav_bytes = self._capture.get_buffer()
-                if not wav_bytes:
+                acc = getattr(self, "_segment_accumulator", None)
+                use_segments = acc is not None and acc.count > 0
+
+                if use_segments:
+                    wav_bytes = self._capture.get_tail_buffer()
+                    cached_prefix = acc.text
+                else:
+                    wav_bytes = self._capture.get_buffer()
+                    cached_prefix = ""
+
+                if not wav_bytes and not cached_prefix:
                     time.sleep(min(_MIN_INTERVAL, 0.2))
                     continue
 
@@ -1513,12 +1671,21 @@ class SpokeAppDelegate(NSObject):
                 self._force_preview_update = False
 
                 try:
-                    with self._local_inference_context(self._preview_client):
-                        text = self._preview_client.transcribe(wav_bytes)
+                    if wav_bytes:
+                        with self._local_inference_context(self._preview_client):
+                            tail_text = self._preview_client.transcribe(wav_bytes)
+                    else:
+                        tail_text = ""
                 except Exception:
                     logger.debug("Preview transcription failed", exc_info=True)
                     time.sleep(0.5)
                     continue
+
+                if use_segments:
+                    parts = [p for p in (cached_prefix, tail_text) if p]
+                    text = " ".join(parts)
+                else:
+                    text = tail_text
 
                 if text and self._preview_active:
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1686,6 +1853,41 @@ class SpokeAppDelegate(NSObject):
             )
         thread.start()
 
+    def _transcribe_segments_and_tail(self, wav_bytes: bytes) -> str | None:
+        """Try segment-accelerated transcription.  Returns final text, or None
+        to signal the caller should fall back to full-buffer transcription."""
+        acc = getattr(self, "_segment_accumulator", None)
+        if acc is None or acc.count == 0:
+            return None
+
+        # Wait for any in-flight segment transcriptions to land.
+        # Cloud endpoints can take >10s on congested connections.
+        if not acc.wait(timeout=30.0):
+            logger.warning(
+                "Segment accumulator timed out with %d pending — falling back to full buffer",
+                acc._pending,
+            )
+            return None
+        cached = acc.text
+
+        # Transcribe the tail — audio recorded after the last segment boundary.
+        tail_wav = self._capture.get_tail_buffer()
+        tail_text = ""
+        if tail_wav:
+            try:
+                tail_text = self._client.transcribe(tail_wav)
+            except Exception:
+                logger.exception("Tail transcription failed — falling back to full buffer")
+                return None
+
+        parts = [p for p in (cached, tail_text) if p]
+        text = " ".join(parts)
+        logger.info(
+            "Segment-accelerated transcription: %d segments cached, tail=%d bytes, result=%r",
+            acc.count, len(tail_wav) if tail_wav else 0, text[:80],
+        )
+        return text
+
     def _transcribe_worker(self, wav_bytes: bytes, token: int) -> None:
         """Background thread: finalize transcription and marshal result to main thread."""
         release_cutover = getattr(self, "_preview_cancelled_on_release", False)
@@ -1700,27 +1902,31 @@ class SpokeAppDelegate(NSObject):
             self._preview_thread = None
 
         try:
-            with self._local_inference_context(self._client):
-                # If the preview client was streaming, finalize it for the final text
-                # (this runs the tail refinement pass with the existing KV cache).
-                if (
-                    release_cutover
-                    and getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    cancel_stream = getattr(self._client, "cancel_stream", None)
-                    if callable(cancel_stream):
-                        cancel_stream()
-                    text = self._client.transcribe(wav_bytes)
-                elif (
-                    getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    text = self._client.finish_stream()
-                else:
-                    text = self._client.transcribe(wav_bytes)
+            # Fast path: use cached segment transcriptions + tail only.
+            text = self._transcribe_segments_and_tail(wav_bytes)
+            if text is None:
+                # Slow path: full-buffer transcription.
+                with self._local_inference_context(self._client):
+                    # If the preview client was streaming, finalize it for the final text
+                    # (this runs the tail refinement pass with the existing KV cache).
+                    if (
+                        release_cutover
+                        and getattr(self._client, 'supports_streaming', False)
+                        and self._client is self._preview_client
+                        and getattr(self._client, "has_active_stream", False)
+                    ):
+                        cancel_stream = getattr(self._client, "cancel_stream", None)
+                        if callable(cancel_stream):
+                            cancel_stream()
+                        text = self._client.transcribe(wav_bytes)
+                    elif (
+                        getattr(self._client, 'supports_streaming', False)
+                        and self._client is self._preview_client
+                        and getattr(self._client, "has_active_stream", False)
+                    ):
+                        text = self._client.finish_stream()
+                    else:
+                        text = self._client.transcribe(wav_bytes)
         except Exception:
             logger.exception("Transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1881,25 +2087,28 @@ class SpokeAppDelegate(NSObject):
             self._preview_thread = None
 
         try:
-            with self._local_inference_context(self._client):
-                if (
-                    release_cutover
-                    and getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    cancel_stream = getattr(self._client, "cancel_stream", None)
-                    if callable(cancel_stream):
-                        cancel_stream()
-                    text = self._client.transcribe(wav_bytes)
-                elif (
-                    getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    text = self._client.finish_stream()
-                else:
-                    text = self._client.transcribe(wav_bytes)
+            # Fast path: use cached segment transcriptions + tail only.
+            text = self._transcribe_segments_and_tail(wav_bytes)
+            if text is None:
+                with self._local_inference_context(self._client):
+                    if (
+                        release_cutover
+                        and getattr(self._client, 'supports_streaming', False)
+                        and self._client is self._preview_client
+                        and getattr(self._client, "has_active_stream", False)
+                    ):
+                        cancel_stream = getattr(self._client, "cancel_stream", None)
+                        if callable(cancel_stream):
+                            cancel_stream()
+                        text = self._client.transcribe(wav_bytes)
+                    elif (
+                        getattr(self._client, 'supports_streaming', False)
+                        and self._client is self._preview_client
+                        and getattr(self._client, "has_active_stream", False)
+                    ):
+                        text = self._client.finish_stream()
+                    else:
+                        text = self._client.transcribe(wav_bytes)
         except Exception:
             logger.exception("Tray transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -2434,15 +2643,18 @@ class SpokeAppDelegate(NSObject):
 
         # Step 1: Transcribe the audio
         try:
-            with self._local_inference_context(self._client):
-                if (
-                    getattr(self._client, 'supports_streaming', False)
-                    and self._client is self._preview_client
-                    and getattr(self._client, "has_active_stream", False)
-                ):
-                    utterance = self._client.finish_stream()
-                else:
-                    utterance = self._client.transcribe(wav_bytes)
+            # Fast path: use cached segment transcriptions + tail only.
+            utterance = self._transcribe_segments_and_tail(wav_bytes)
+            if utterance is None:
+                with self._local_inference_context(self._client):
+                    if (
+                        getattr(self._client, 'supports_streaming', False)
+                        and self._client is self._preview_client
+                        and getattr(self._client, "has_active_stream", False)
+                    ):
+                        utterance = self._client.finish_stream()
+                    else:
+                        utterance = self._client.transcribe(wav_bytes)
         except Exception:
             logger.exception("Command transcription failed")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -2470,7 +2682,23 @@ class SpokeAppDelegate(NSObject):
         # Step 2: Stream the command response
         full_response = ""
         stale_break = False
+        narrator_started = False
+        vamp_started = False
+        first_event_received = False
         try:
+            # Start the narrator if available
+            if self._narrator is not None:
+                self._narrator.start()
+                narrator_started = True
+                # Start loading vamp — runs in background while the HTTP
+                # request blocks during model loading.  Stops when the
+                # first event arrives (model is loaded and generating).
+                model_id = getattr(self, "_command_model_id", "") or ""
+                self._narrator.start_loading_vamp(
+                    utterance=utterance, model_id=model_id
+                )
+                vamp_started = True
+
             for event in self._command_client.stream_command_events(
                 utterance,
                 tools=self._tool_schemas,
@@ -2480,7 +2708,23 @@ class SpokeAppDelegate(NSObject):
                 if token != self._transcription_token:
                     stale_break = True
                     break  # stale
-                if event.kind == "assistant_delta" or event.kind == "tool_call":
+
+                # Stop loading vamp on first event from the model
+                if not first_event_received:
+                    first_event_received = True
+                    if vamp_started and self._narrator is not None:
+                        self._narrator.stop_loading_vamp()
+                        vamp_started = False
+
+                if event.kind == "thinking_delta":
+                    # Feed thinking tokens to the narrator sidecar
+                    if self._narrator is not None:
+                        self._narrator.feed(event.text)
+                elif event.kind == "assistant_delta" or event.kind == "tool_call":
+                    # Stop narrator when visible content starts
+                    if narrator_started and self._narrator is not None:
+                        self._narrator.stop()
+                        narrator_started = False
                     if event.text:
                         full_response += event.text
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -2504,6 +2748,11 @@ class SpokeAppDelegate(NSObject):
             )
             return
         finally:
+            # Always stop the narrator and vamp on stream end
+            if vamp_started and self._narrator is not None:
+                self._narrator.stop_loading_vamp()
+            if narrator_started and self._narrator is not None:
+                self._narrator.stop()
             # Repair history only when a stale token break interrupts the
             # streaming loop before the command client can finalize the turn.
             if stale_break and full_response:
@@ -2554,6 +2803,18 @@ class SpokeAppDelegate(NSObject):
             return
         if self._command_overlay is not None:
             self._command_overlay.set_tool_active(False)
+
+    def narratorSummary_(self, payload: dict) -> None:
+        """Main thread: update the overlay with a narrator thinking summary."""
+        summary = payload.get("summary", "")
+        if not summary:
+            return
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay.set_narrator_summary(summary)
+            except Exception:
+                logger.exception("Command overlay failed to set narrator summary")
 
     def commandToken_(self, payload: dict) -> None:
         """Main thread: append a streamed token to the command overlay."""
@@ -2890,22 +3151,36 @@ class SpokeAppDelegate(NSObject):
             tts_client = getattr(self, "_tts_client", None)
             tts_backend = getattr(self, "_tts_backend", "local")
             tts_sidecar_url = getattr(self, "_tts_sidecar_url", "")
-            tts_voice_pref = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE", "")
+            tts_voice_pref = (
+                self._load_preference("tts_cloud_voice")
+                if tts_backend == "cloud"
+                else self._load_preference("tts_voice")
+            ) or os.environ.get("SPOKE_TTS_VOICE", "")
             saved_tts_model = (
-                self._load_preference("tts_sidecar_model")
+                self._load_preference("tts_cloud_model")
+                if tts_backend == "cloud"
+                else self._load_preference("tts_sidecar_model")
                 if tts_backend == "sidecar"
                 else self._load_preference("tts_model")
             ) or os.environ.get("SPOKE_TTS_MODEL", "")
-            if tts_client is not None or tts_voice_pref or saved_tts_model or tts_backend == "sidecar":
+            if tts_client is not None or tts_voice_pref or saved_tts_model or tts_backend in ("sidecar", "cloud"):
                 has_tts_sidecar_url = bool(tts_sidecar_url)
+                has_tts_cloud = bool(
+                    os.environ.get("GEMINI_API_KEY")
+                    or self._load_preference("tts_cloud_api_key")
+                    or self._load_preference("command_cloud_api_key")
+                )
+                tts_backend_labels = {"local": "Local", "sidecar": "Sidecar", "cloud": "Cloud (Gemini)"}
                 tts_target = "not active"
                 if tts_client is not None:
-                    if isinstance(tts_client, RemoteTTSClient):
+                    if isinstance(tts_client, CloudTTSClient):
+                        tts_target = "Gemini"
+                    elif isinstance(tts_client, RemoteTTSClient):
                         tts_target = _url_host(getattr(tts_client, "_base_url", ""))
                     else:
                         tts_target = "local runtime"
                 state["tts_backend"] = {
-                    "title": f"TTS Backend: {'Sidecar' if tts_backend == 'sidecar' else 'Local'}",
+                    "title": f"TTS Backend: {tts_backend_labels.get(tts_backend, tts_backend)}",
                     "items": [
                         ("local", "Local runtime", tts_backend == "local"),
                         ("sidecar", (
@@ -2913,13 +3188,20 @@ class SpokeAppDelegate(NSObject):
                             if has_tts_sidecar_url
                             else "Sidecar (not configured)"
                         ), tts_backend == "sidecar", has_tts_sidecar_url),
+                        ("cloud", (
+                            "Cloud (Gemini)"
+                            if has_tts_cloud
+                            else "Cloud (no API key)"
+                        ), tts_backend == "cloud", has_tts_cloud),
                         ("configure_tts", "Set TTS Sidecar URL\u2026", False, True),
                     ],
                 }
                 state["tts_endpoint"] = {
                     "title": f"TTS Endpoint: {tts_target}",
                     "note": (
-                        "Routing source: saved sidecar URL"
+                        "Routing source: Gemini cloud API"
+                        if tts_backend == "cloud"
+                        else "Routing source: saved sidecar URL"
                         if tts_backend == "sidecar" and has_tts_sidecar_url
                         else "Routing source: local runtime"
                     ),
@@ -3002,13 +3284,17 @@ class SpokeAppDelegate(NSObject):
             tts = getattr(self, "_tts_client", None)
             show_tts_menus = (
                 tts is not None
-                or tts_backend == "sidecar"
+                or tts_backend in ("sidecar", "cloud")
                 or bool(tts_voice_pref)
                 or bool(saved_tts_model)
             )
             if show_tts_menus:
                 current_tts_model = getattr(tts, "_model_id", "") if tts else saved_tts_model
-                if tts_backend == "sidecar":
+                if tts_backend == "cloud":
+                    cloud_model = self._load_preference("tts_cloud_model") or "gemini-2.5-flash-preview-tts"
+                    current_tts_model = current_tts_model or cloud_model
+                    tts_models = [(cloud_model, f"Gemini ({cloud_model})", True)]
+                elif tts_backend == "sidecar":
                     sidecar_models = self._discover_tts_sidecar_models()
                     if sidecar_models:
                         tts_models = sidecar_models
@@ -3032,16 +3318,30 @@ class SpokeAppDelegate(NSObject):
                         "models": tts_models,
                     }
                 current_voice = getattr(tts, "_voice", "") if tts else tts_voice_pref
+                # Cloud voices come from the preset list
+                if tts_backend == "cloud":
+                    sidecar_voices = []
+                    local_choices = _voice_choices_for_model(current_tts_model, current_voice)
+                    # Fall back: if model key didn't match, use Gemini voices directly
+                    if local_choices is None:
+                        local_choices = [
+                            (v, label, v == current_voice) for v, label in GEMINI_VOICES
+                        ]
                 # Try sidecar discovery first, then local presets
-                if tts_backend == "sidecar":
+                elif tts_backend == "sidecar":
                     sidecar_voices = self._discover_tts_sidecar_voices(current_tts_model)
+                    local_choices = (
+                        _voice_choices_for_model(current_tts_model, current_voice)
+                        if not sidecar_voices
+                        else None
+                    )
                 else:
                     sidecar_voices = []
-                local_choices = (
-                    _voice_choices_for_model(current_tts_model, current_voice)
-                    if not sidecar_voices
-                    else None
-                )
+                    local_choices = (
+                        _voice_choices_for_model(current_tts_model, current_voice)
+                        if not sidecar_voices
+                        else None
+                    )
                 if sidecar_voices:
                     voice_models = [
                         (v, v, v == current_voice) for v in sidecar_voices
@@ -3532,13 +3832,37 @@ class SpokeAppDelegate(NSObject):
         tts = self._build_tts_client(allow_default_voice=allow_default_voice)
         if tts is not None:
             self._tts_client = tts
-            backend_label = "sidecar" if isinstance(tts, RemoteTTSClient) else "local"
+            if isinstance(tts, CloudTTSClient):
+                backend_label = "cloud"
+            elif isinstance(tts, RemoteTTSClient):
+                backend_label = "sidecar"
+            else:
+                backend_label = "local"
             logger.info("TTS enabled: backend=%s voice=%s", backend_label, getattr(tts, "_voice", ""))
         return tts
 
     def _build_tts_client(self, *, allow_default_voice: bool = False):
         """Build a TTS client based on backend preference and env vars."""
         voice = self._load_preference("tts_voice") or os.environ.get("SPOKE_TTS_VOICE")
+        if self._tts_backend == "cloud":
+            api_key = (
+                self._load_preference("tts_cloud_api_key")
+                or os.environ.get("GEMINI_API_KEY", "")
+                or self._load_preference("command_cloud_api_key")
+            )
+            if not api_key:
+                logger.warning("Cannot build cloud TTS client: no API key")
+                return None
+            cloud_voice = self._load_preference("tts_cloud_voice") or voice or "Aoede"
+            cloud_model = (
+                self._load_preference("tts_cloud_model")
+                or "gemini-2.5-flash-preview-tts"
+            )
+            return CloudTTSClient(
+                api_key=api_key,
+                model=cloud_model,
+                voice=cloud_voice,
+            )
         if self._tts_backend == "sidecar" and self._tts_sidecar_url:
             if not voice:
                 return None
@@ -3619,7 +3943,7 @@ class SpokeAppDelegate(NSObject):
         return voices
 
     def _apply_tts_backend_selection(self, backend: str) -> None:
-        """Switch TTS backend between 'local' and 'sidecar', then relaunch."""
+        """Switch TTS backend between 'local', 'sidecar', and 'cloud', then relaunch."""
         if backend == "configure_tts":
             self._configure_tts_sidecar_url()
             return
@@ -3630,6 +3954,22 @@ class SpokeAppDelegate(NSObject):
             if self._menubar is not None:
                 self._menubar.set_status_text("No TTS sidecar URL configured")
             return
+        if backend == "cloud":
+            api_key = (
+                self._load_preference("tts_cloud_api_key")
+                or os.environ.get("GEMINI_API_KEY", "")
+                or self._load_preference("command_cloud_api_key")
+            )
+            if not api_key:
+                logger.warning("Cannot switch to cloud TTS: no GEMINI_API_KEY")
+                if self._menubar is not None:
+                    self._menubar.set_status_text("No Gemini API key configured")
+                return
+            # Default to Aoede voice when switching to cloud for the first time.
+            # Use a separate preference key so we don't clobber the local/sidecar voice.
+            cloud_voice = self._load_preference("tts_cloud_voice")
+            if not cloud_voice or not any(v == cloud_voice for v, _ in GEMINI_VOICES):
+                self._save_preference("tts_cloud_voice", "Aoede")
         logger.info("Switching TTS backend: %s -> %s", self._tts_backend, backend)
         self._save_preference("tts_backend", backend)
         self._tts_backend = backend
@@ -4215,7 +4555,9 @@ class SpokeAppDelegate(NSObject):
         )
         payload = self._load_preferences()
         tts_backend = getattr(self, "_tts_backend", "local")
-        if tts_backend == "sidecar":
+        if tts_backend == "cloud":
+            payload["tts_cloud_model"] = model_id
+        elif tts_backend == "sidecar":
             payload["tts_sidecar_model"] = model_id
         else:
             payload["tts_model"] = model_id
@@ -4257,8 +4599,10 @@ class SpokeAppDelegate(NSObject):
         current_voice = getattr(tts, "_voice", "") if tts else ""
         if selection == current_voice:
             return
-        self._save_preference("tts_voice", selection)
-        logger.info("TTS voice changed: %s -> %s", current_voice, selection)
+        # Write to backend-scoped key so cloud voice doesn't clobber local/sidecar
+        voice_key = "tts_cloud_voice" if getattr(self, "_tts_backend", "local") == "cloud" else "tts_voice"
+        self._save_preference(voice_key, selection)
+        logger.info("TTS voice changed: %s -> %s (key=%s)", current_voice, selection, voice_key)
         self._relaunch()
 
     def _configure_tts_voice(self) -> None:

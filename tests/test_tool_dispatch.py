@@ -750,14 +750,102 @@ class TestExecuteToolIntegration:
         # Null pattern
         res1 = json.loads(mod.execute_tool("search_file", {"pattern": None}))
         assert "error" in res1
-        
+
         # Timeout simulated via monkeypatch
         import subprocess
         class TimeoutMock:
             def __init__(self, *args, **kwargs):
                 raise subprocess.TimeoutExpired(cmd="grep", timeout=10)
-        
+
         with unittest.mock.patch("subprocess.run", new=TimeoutMock):
             res2 = json.loads(mod.execute_tool("search_file", {"pattern": "slow", "dir_path": "."}))
             assert "error" in res2
             assert "timed out" in res2["error"]
+
+
+# ── Output capping ───────────────────────────────────────────────
+
+
+class TestOutputCapping:
+    """Tools must cap output to avoid flooding the LLM context."""
+
+    def test_list_directory_caps_at_50(self, tmp_path):
+        mod = _import_tools()
+        d = tmp_path / "big"
+        d.mkdir()
+        for i in range(80):
+            (d / f"file_{i:03d}.txt").write_text(f"content {i}")
+
+        result = json.loads(mod.execute_tool(
+            "list_directory", {"dir_path": str(d)}
+        ))
+        assert len(result["entries"]) == 50
+        assert "truncated" in result
+        assert "80" in result["truncated"]
+
+    def test_list_directory_no_truncation_under_cap(self, tmp_path):
+        mod = _import_tools()
+        d = tmp_path / "small"
+        d.mkdir()
+        for i in range(10):
+            (d / f"file_{i}.txt").write_text("x")
+
+        result = json.loads(mod.execute_tool(
+            "list_directory", {"dir_path": str(d)}
+        ))
+        assert len(result["entries"]) == 10
+        assert "truncated" not in result
+
+    def test_find_file_caps_at_30(self, tmp_path):
+        mod = _import_tools()
+        d = tmp_path / "many"
+        d.mkdir()
+        for i in range(50):
+            (d / f"item_{i:03d}.txt").write_text("x")
+
+        result = json.loads(mod.execute_tool(
+            "find_file", {"pattern": "*.txt", "dir_path": str(d)}
+        ))
+        assert len(result["matches"]) == 30
+        assert "truncated" in result
+
+    def test_find_file_no_truncation_under_cap(self, tmp_path):
+        mod = _import_tools()
+        d = tmp_path / "few"
+        d.mkdir()
+        for i in range(5):
+            (d / f"item_{i}.txt").write_text("x")
+
+        result = json.loads(mod.execute_tool(
+            "find_file", {"pattern": "*.txt", "dir_path": str(d)}
+        ))
+        assert len(result["matches"]) == 5
+        assert "truncated" not in result
+
+    def test_search_file_caps_total_lines(self, tmp_path):
+        mod = _import_tools()
+        d = tmp_path / "grep_many"
+        d.mkdir()
+        # Create enough files with matches to exceed the 30-line total cap
+        for i in range(20):
+            lines = "\n".join(f"MATCH_LINE_{j}" for j in range(10))
+            (d / f"file_{i:03d}.txt").write_text(lines)
+
+        result = json.loads(mod.execute_tool(
+            "search_file", {"pattern": "MATCH_LINE", "dir_path": str(d)}
+        ))
+        match_lines = [l for l in result["matches"].split("\n") if l.strip()]
+        assert len(match_lines) <= 30
+        assert "truncated" in result
+
+    def test_search_file_no_truncation_under_cap(self, tmp_path):
+        mod = _import_tools()
+        d = tmp_path / "grep_few"
+        d.mkdir()
+        (d / "one.txt").write_text("FINDME here\nanother line\n")
+
+        result = json.loads(mod.execute_tool(
+            "search_file", {"pattern": "FINDME", "dir_path": str(d)}
+        ))
+        assert "truncated" not in result
+        assert "FINDME" in result["matches"]
