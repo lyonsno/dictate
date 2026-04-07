@@ -1742,11 +1742,12 @@ class SpokeAppDelegate(NSObject):
             amplitude_callback=self._on_live_playback_amplitude,
         )
 
-        # Build live-mode tool schemas (subset: capture_context + add_to_tray).
+        # Build live-mode tool schemas — all tools except read_aloud
+        # (model already has native voice).
         from spoke.tool_dispatch import get_tool_schemas
         live_tools = [
             s for s in get_tool_schemas()
-            if s.get("function", {}).get("name") in ("capture_context", "add_to_tray")
+            if s.get("function", {}).get("name") != "read_aloud"
         ]
 
         self._live_client = GeminiLiveClient(
