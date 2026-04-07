@@ -28,13 +28,18 @@ logger = logging.getLogger(__name__)
 # ── Voice commands (matched against full transcription, case-insensitive) ──
 #
 # Each entry maps to a tuple of (action, value):
-#   ("inject", "\n")       — paste this text at cursor
-#   ("keystroke", "return") — synthesize this keystroke
+#   ("inject", "\n")            — paste this text at cursor
+#   ("keystroke", "return")     — synthesize a bare keystroke
+#   ("chord", "cmd+shift+[")    — synthesize a modifier chord
+#   ("tray_enter", "")          — enter tray dictation mode
+#   ("tray_insert", "")         — insert current tray entry at cursor
 
 VOICE_COMMANDS: dict[str, tuple[str, str]] = {
+    # Text insertion
     "new line": ("inject", "\n"),
     "newline": ("inject", "\n"),
     "new paragraph": ("inject", "\n\n"),
+    # θές — Enter keystroke
     "tessera": ("keystroke", "return"),
     "tesserae": ("keystroke", "return"),
     "tessara": ("keystroke", "return"),
@@ -42,6 +47,13 @@ VOICE_COMMANDS: dict[str, tuple[str, str]] = {
     "kessura": ("keystroke", "return"),
     "pessera": ("keystroke", "return"),
     "kessera": ("keystroke", "return"),
+    # ἐφήμερα — enter tray mode
+    "ephemera": ("tray_enter", ""),
+    # εὕρηκα — insert from tray
+    "eureka": ("tray_insert", ""),
+    # tab switching — Cmd+Shift+[ / Cmd+Shift+]
+    "alpha": ("chord", "cmd+shift+["),
+    "omega": ("chord", "cmd+shift+]"),
 }
 
 

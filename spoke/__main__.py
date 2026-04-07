@@ -1196,6 +1196,12 @@ class SpokeAppDelegate(NSObject):
             logger.info("Hands-free voice command: %r → %s(%r)", text, action, value)
             if action == "keystroke":
                 self._synthesize_keystroke(value)
+            elif action == "chord":
+                self._synthesize_chord(value)
+            elif action == "tray_enter":
+                self._handsfree_tray_enter()
+            elif action == "tray_insert":
+                self._handsfree_tray_insert()
             else:
                 inject_text(value)
             return
@@ -1224,6 +1230,68 @@ class SpokeAppDelegate(NSObject):
         CGEventPost(kCGHIDEventTap, down)
         CGEventPost(kCGHIDEventTap, up)
         logger.info("Synthesized keystroke: %s (keycode %d)", key_name, keycode)
+
+    _CHORD_KEYCODE_MAP = {
+        "[": 33,
+        "]": 30,
+    }
+
+    def _synthesize_chord(self, chord: str) -> None:
+        """Synthesize a modifier+key chord like 'cmd+shift+['."""
+        from Quartz import (
+            CGEventCreateKeyboardEvent, CGEventPost, CGEventSetFlags,
+            kCGEventFlagMaskCommand, kCGEventFlagMaskShift, kCGHIDEventTap,
+        )
+        parts = chord.lower().split("+")
+        key = parts[-1]
+        mods = set(parts[:-1])
+
+        keycode = self._CHORD_KEYCODE_MAP.get(key) or self._KEYSTROKE_MAP.get(key)
+        if keycode is None:
+            logger.warning("Unknown chord key: %s", key)
+            return
+
+        flags = 0
+        if "cmd" in mods:
+            flags |= kCGEventFlagMaskCommand
+        if "shift" in mods:
+            flags |= kCGEventFlagMaskShift
+
+        down = CGEventCreateKeyboardEvent(None, keycode, True)
+        CGEventSetFlags(down, flags)
+        up = CGEventCreateKeyboardEvent(None, keycode, False)
+        CGEventSetFlags(up, 0)
+        CGEventPost(kCGHIDEventTap, down)
+        CGEventPost(kCGHIDEventTap, up)
+        logger.info("Synthesized chord: %s (keycode %d, flags %d)", chord, keycode, flags)
+
+    def _handsfree_tray_enter(self) -> None:
+        """Voice command: switch hands-free to dictate into tray instead of cursor."""
+        hf = getattr(self, "_handsfree", None)
+        if hf is None:
+            return
+        # Stop current dictation capture, pause hands-free
+        if hf.is_dictating:
+            hf._stop_dictation_capture()
+        # Start a normal tray recording flow — hold_end with shift_held will
+        # route through the tray pathway. For now, just toggle tray mode on
+        # and let the next segment go to tray.
+        logger.info("Hands-free: entering tray dictation mode")
+        # TODO: implement tray dictation — for now log and resume
+        if hf.state != HandsFreeState.DORMANT:
+            hf._start_dictating()
+
+    def _handsfree_tray_insert(self) -> None:
+        """Voice command: insert the current tray entry at cursor."""
+        if not getattr(self, "_tray_stack", None):
+            logger.info("Hands-free: no tray entries to insert")
+            return
+        # Insert the most recent tray entry
+        entry = self._tray_stack[-1]
+        text = entry if isinstance(entry, str) else getattr(entry, "text", str(entry))
+        if text:
+            logger.info("Hands-free: inserting tray entry: %r", text)
+            inject_text(text)
 
     def _on_handsfree_state_change(self, state: HandsFreeState) -> None:
         """Update UI when hands-free state changes."""
