@@ -91,6 +91,12 @@ _RESPONSE_TEXT_LIGHT_BG_TARGET = (0.07, 0.08, 0.11)
 _THINKING_CUTOUT_DARK = (0.05, 0.05, 0.06)
 _THINKING_CUTOUT_LIGHT = (0.80, 0.80, 0.78)
 
+# Radar-sweep spinner
+_SPINNER_PERIOD = 2.0  # seconds per full revolution
+_SPINNER_RADIUS = 16.0  # points — the circle radius
+_SPINNER_MARGIN_RIGHT = 14.0  # right margin from content edge
+_SPINNER_MARGIN_TOP = 10.0  # top margin from content edge
+
 
 def _clamp01(value: float) -> float:
     return min(max(value, 0.0), 1.0)
@@ -140,6 +146,126 @@ def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
     from .overlay import _fill_compositing_filter_for_brightness as _preview_fill_compositing_filter_for_brightness
 
     return _preview_fill_compositing_filter_for_brightness(brightness)
+
+
+def _spinner_state(elapsed: float) -> tuple[float, float]:
+    """Pure function: radar-sweep spinner state for a given elapsed time.
+
+    Returns (angle_radians, fill_fraction) where:
+    - angle_radians: how far the sweep hand has rotated (0 to 2*pi per revolution)
+    - fill_fraction: how much of the circle is filled opaque (0.0 to 1.0)
+
+    After a full revolution the sweep resets for the next cycle.
+    """
+    if elapsed <= 0.0:
+        return (0.0, 0.0)
+    phase = (elapsed % _SPINNER_PERIOD) / _SPINNER_PERIOD  # 0.0 to 1.0
+    angle = phase * 2.0 * math.pi
+    fill = phase  # linear fill — the opaque region trails the sweep hand
+    return (angle, fill)
+
+
+def _build_spinner_image(
+    radius: float,
+    angle: float,
+    fill: float,
+    scale: float,
+    bg_color: tuple[float, float, float],
+    sweep_color: tuple[float, float, float],
+    sweep_alpha: float,
+):
+    """Build a CGImage for the radar-sweep spinner.
+
+    The spinner is a circle where:
+    - The region from angle 0 to (angle - fill*2*pi) is transparent (cutout — see through)
+    - The region from (angle - fill*2*pi) to angle is filled (opaque trail)
+    - A thin bright line at the sweep head (angle) for the radar hand
+
+    Actually simpler: the filled portion is the trail *behind* the sweep,
+    and the unfilled portion ahead of the sweep is transparent (cutout).
+
+    The filled trail uses bg_color at sweep_alpha. The cutout is fully transparent.
+    A bright edge at the sweep boundary gives the radar-hand feel.
+    """
+    import numpy as np
+    from Quartz import (
+        CGColorSpaceCreateDeviceRGB,
+        CGDataProviderCreateWithCFData,
+        CGImageCreate,
+        kCGImageAlphaPremultipliedLast,
+        kCGRenderingIntentDefault,
+    )
+    from Foundation import NSData
+
+    diameter = radius * 2.0
+    px = int(diameter * scale)
+    py = int(diameter * scale)
+    cx = px * 0.5
+    cy = py * 0.5
+    r_px = radius * scale
+
+    # Coordinate grids
+    x = np.arange(px, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(py, dtype=np.float32)[:, None] + 0.5
+    dx = x - cx
+    dy = y - cy
+
+    # Distance from center
+    dist = np.sqrt(dx * dx + dy * dy)
+
+    # Circle mask — smooth anti-aliased edge
+    edge_softness = 1.5 * scale
+    circle_alpha = np.clip((r_px - dist) / edge_softness, 0.0, 1.0)
+
+    # Angle of each pixel (atan2, 0 at right, CCW positive)
+    # Convert to CW from top (12 o'clock = 0)
+    pixel_angle = np.arctan2(dx, dy)  # note: (dx, dy) gives CW-from-top
+    pixel_angle = pixel_angle % (2.0 * np.pi)
+
+    # The filled trail goes from 0 to fill * 2*pi.
+    # The sweep hand is at angle = fill * 2*pi.
+    # Pixels in the trail are opaque; pixels ahead are transparent (cutout).
+    fill_end = fill * 2.0 * np.pi
+    in_trail = pixel_angle <= fill_end
+
+    # Sweep head highlight — thin bright line at the leading edge
+    sweep_hand_width = 0.08  # radians (~4.6 degrees)
+    angle_to_hand = np.abs(pixel_angle - fill_end)
+    # Wrap shortest arc
+    angle_to_hand = np.minimum(angle_to_hand, 2.0 * np.pi - angle_to_hand)
+    hand_glow = np.exp(-angle_to_hand / sweep_hand_width) * circle_alpha
+
+    # Build RGBA
+    rgba = np.zeros((py, px, 4), dtype=np.uint8)
+
+    # Trail region: bg_color at sweep_alpha
+    trail_alpha = circle_alpha * sweep_alpha
+    trail_mask = in_trail.astype(np.float32) * trail_alpha
+    rgba[..., 0] = np.clip(bg_color[0] * 255.0 * trail_mask, 0, 255).astype(np.uint8)
+    rgba[..., 1] = np.clip(bg_color[1] * 255.0 * trail_mask, 0, 255).astype(np.uint8)
+    rgba[..., 2] = np.clip(bg_color[2] * 255.0 * trail_mask, 0, 255).astype(np.uint8)
+    rgba[..., 3] = np.clip(trail_mask * 255.0, 0, 255).astype(np.uint8)
+
+    # Sweep hand glow: additive bright line
+    hand_alpha = hand_glow * 0.9
+    for ch_idx, ch_val in enumerate(sweep_color):
+        existing = rgba[..., ch_idx].astype(np.float32) / 255.0
+        blended = existing + ch_val * hand_alpha
+        rgba[..., ch_idx] = np.clip(blended * 255.0, 0, 255).astype(np.uint8)
+    # Alpha: max of trail and hand
+    total_alpha = np.maximum(trail_mask, hand_alpha)
+    rgba[..., 3] = np.clip(total_alpha * 255.0, 0, 255).astype(np.uint8)
+
+    payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+    provider = CGDataProviderCreateWithCFData(payload)
+    image = CGImageCreate(
+        px, py, 8, 32, px * 4,
+        CGColorSpaceCreateDeviceRGB(),
+        kCGImageAlphaPremultipliedLast,
+        provider, None, False,
+        kCGRenderingIntentDefault,
+    )
+    return image, payload
 
 
 def _ease_in(progress: float) -> float:
@@ -1052,7 +1178,7 @@ class CommandOverlay(NSObject):
     # ── thinking timer ──────────────────────────────────────
 
     def _start_thinking_timer(self) -> None:
-        """Start the thinking counter in glowing-number mode."""
+        """Start the thinking counter in glowing-number mode with radar spinner."""
         self._thinking_seconds = 0.0
         self._thinking_inverted = False
         if self._thinking_label is not None:
@@ -1065,10 +1191,59 @@ class CommandOverlay(NSObject):
                     _GLOW_COLOR[0], _GLOW_COLOR[1], _GLOW_COLOR[2], 0.7
                 )
             )
-        logger.info("Thinking timer started")
+
+        # Create the radar-sweep spinner layer
+        self._create_spinner_layer()
+
+        logger.info("Thinking timer started (with spinner)")
         self._thinking_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.1, self, "thinkingTick:", None, True
         )
+
+    def _create_spinner_layer(self) -> None:
+        """Create or reset the radar-sweep spinner CALayer."""
+        if self._content_view is None:
+            self._spinner_layer = None
+            return
+
+        # Position: top-right of content area
+        content_frame = self._content_view.frame()
+        diameter = _SPINNER_RADIUS * 2.0
+        spinner_x = content_frame.size.width - diameter - _SPINNER_MARGIN_RIGHT
+        spinner_y = content_frame.size.height - diameter - _SPINNER_MARGIN_TOP
+
+        if getattr(self, "_spinner_layer", None) is not None:
+            # Reuse existing layer
+            self._spinner_layer.setFrame_(((spinner_x, spinner_y), (diameter, diameter)))
+            self._spinner_layer.setHidden_(False)
+        else:
+            self._spinner_layer = CALayer.alloc().init()
+            self._spinner_layer.setFrame_(((spinner_x, spinner_y), (diameter, diameter)))
+            self._spinner_layer.setContentsGravity_("resize")
+            self._content_view.layer().addSublayer_(self._spinner_layer)
+
+        # Initial render at t=0
+        self._update_spinner_image()
+
+    def _update_spinner_image(self) -> None:
+        """Rebuild the spinner CGImage for the current elapsed time."""
+        if getattr(self, "_spinner_layer", None) is None:
+            return
+        angle, fill = _spinner_state(self._thinking_seconds)
+        scale = getattr(self, "_ridge_scale", 2.0)
+        bg = _background_color_for_brightness(self._brightness)
+        # Sweep color: current hue rotation color for the glowing hand
+        sweep_rgb = self._current_hue_rgb()
+        try:
+            image, self._spinner_payload = _build_spinner_image(
+                _SPINNER_RADIUS, angle, fill, scale,
+                bg_color=bg,
+                sweep_color=sweep_rgb,
+                sweep_alpha=_BG_ALPHA,
+            )
+            self._spinner_layer.setContents_(image)
+        except Exception:
+            logger.debug("Spinner image build failed", exc_info=True)
 
     def invert_thinking_timer(self) -> None:
         """Switch from glowing number to negative-space cutout mode.
@@ -1086,13 +1261,17 @@ class CommandOverlay(NSObject):
             self._thinking_timer = None
         if self._thinking_label is not None:
             self._thinking_label.setHidden_(True)
+        if getattr(self, "_spinner_layer", None) is not None:
+            self._spinner_layer.setHidden_(True)
 
     def thinkingTick_(self, timer) -> None:
-        """Update the thinking counter every 100ms."""
+        """Update the thinking counter and spinner every 100ms."""
         self._thinking_seconds += 0.1
         if self._thinking_label is not None and not self._thinking_label.isHidden():
             if self._tool_mode: self._thinking_label.setStringValue_("tool…")
             else: self._thinking_label.setStringValue_(f"{self._thinking_seconds:.1f}s")
+        # Update the radar-sweep spinner
+        self._update_spinner_image()
 
     # ── ridge masks ────────────────────────────────────────
 

@@ -507,9 +507,9 @@ class TestToolState:
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._visible = True
         overlay._thinking_label.setHidden_.reset_mock()
-        
+
         overlay.set_tool_active(True)
-        
+
         assert overlay._tool_mode is True
         overlay._thinking_label.setHidden_.assert_called_with(False)
         overlay._thinking_label.setStringValue_.assert_called_with("tool…")
@@ -518,17 +518,119 @@ class TestToolState:
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay.set_tool_active(True)
         overlay._thinking_label.setStringValue_.reset_mock()
-        
+
         overlay.thinkingTick_(None)
-        
+
         overlay._thinking_label.setStringValue_.assert_called_with("tool…")
 
     def test_set_tool_active_false_preserves_mode_until_tick(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay.set_tool_active(True)
         overlay.set_tool_active(False)
-        
+
         assert overlay._tool_mode is False
         overlay.thinkingTick_(None)
         # Now it should show seconds again
         assert "s" in overlay._thinking_label.setStringValue_.call_args[0][0]
+
+
+class TestSpinnerState:
+    """Test the radar-sweep spinner pure state function."""
+
+    def test_spinner_state_exists(self, mock_pyobjc):
+        """The module must expose a _spinner_state function."""
+        _, mod = _make_overlay(mock_pyobjc)
+        assert hasattr(mod, "_spinner_state"), (
+            "_spinner_state function not found in command_overlay module"
+        )
+
+    def test_spinner_state_returns_angle_and_fill(self, mock_pyobjc):
+        """_spinner_state(elapsed) returns (angle_radians, fill_fraction)."""
+        _, mod = _make_overlay(mock_pyobjc)
+        result = mod._spinner_state(1.0)
+        assert len(result) == 2, f"Expected 2-tuple, got {len(result)}-tuple"
+        angle, fill = result
+        assert isinstance(angle, float)
+        assert isinstance(fill, float)
+
+    def test_spinner_starts_at_zero(self, mock_pyobjc):
+        """At t=0 the sweep angle is 0 and fill fraction is 0."""
+        _, mod = _make_overlay(mock_pyobjc)
+        angle, fill = mod._spinner_state(0.0)
+        assert angle == pytest.approx(0.0)
+        assert fill == pytest.approx(0.0)
+
+    def test_spinner_angle_advances_with_time(self, mock_pyobjc):
+        """The sweep angle increases monotonically with time."""
+        _, mod = _make_overlay(mock_pyobjc)
+        _, _ = mod._spinner_state(0.0)
+        angle_1, _ = mod._spinner_state(0.5)
+        angle_2, _ = mod._spinner_state(1.0)
+        assert angle_1 > 0.0
+        assert angle_2 > angle_1
+
+    def test_spinner_fill_increases_with_time(self, mock_pyobjc):
+        """The fill fraction increases as the sweep progresses."""
+        _, mod = _make_overlay(mock_pyobjc)
+        _, fill_0 = mod._spinner_state(0.0)
+        _, fill_1 = mod._spinner_state(0.5)
+        _, fill_2 = mod._spinner_state(1.0)
+        assert fill_1 > fill_0
+        assert fill_2 > fill_1
+
+    def test_spinner_completes_one_revolution(self, mock_pyobjc):
+        """Just before one full period the fill fraction is near 1.0."""
+        _, mod = _make_overlay(mock_pyobjc)
+        period = getattr(mod, "_SPINNER_PERIOD", 2.0)
+        # Test just before the period boundary (at exactly period, modulo wraps)
+        angle, fill = mod._spinner_state(period - 0.01)
+        assert angle == pytest.approx(2.0 * 3.141592653589793, abs=0.1)
+        assert fill == pytest.approx(1.0, abs=0.05)
+
+    def test_spinner_wraps_after_full_revolution(self, mock_pyobjc):
+        """After one full period, fill resets for the next revolution."""
+        _, mod = _make_overlay(mock_pyobjc)
+        period = getattr(mod, "_SPINNER_PERIOD", 2.0)
+        # Slightly past the period boundary
+        angle, fill = mod._spinner_state(period + 0.1)
+        # Fill should have reset to near zero for the new cycle
+        assert fill < 0.2
+
+
+class TestSpinnerLayer:
+    """Test that the spinner layer is created and managed correctly."""
+
+    def test_start_thinking_creates_spinner_layer(self, mock_pyobjc):
+        """_start_thinking_timer must create a _spinner_layer attribute."""
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._start_thinking_timer()
+        assert hasattr(overlay, "_spinner_layer"), (
+            "_spinner_layer not created by _start_thinking_timer"
+        )
+        assert overlay._spinner_layer is not None
+
+    def test_stop_thinking_hides_spinner_layer(self, mock_pyobjc):
+        """_stop_thinking_timer must hide the spinner layer."""
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._start_thinking_timer()
+        assert overlay._spinner_layer is not None
+
+        overlay._stop_thinking_timer()
+        # Either removed or hidden
+        if overlay._spinner_layer is not None:
+            overlay._spinner_layer.setHidden_.assert_called_with(True)
+
+    def test_thinking_tick_advances_spinner_angle(self, mock_pyobjc):
+        """Each thinking tick must advance the spinner's elapsed time."""
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._start_thinking_timer()
+        initial = overlay._thinking_seconds
+
+        overlay.thinkingTick_(None)
+        assert overlay._thinking_seconds > initial
+
+    def test_show_resets_spinner_state(self, mock_pyobjc):
+        """Calling show() must reset spinner elapsed time to 0."""
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay.show()
+        assert overlay._thinking_seconds == pytest.approx(0.0)
