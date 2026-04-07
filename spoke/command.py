@@ -480,6 +480,7 @@ class CommandClient:
 
             finish_reason = None
             first_token_logged = False
+            first_delta_logged = False
             # Content accumulated during this round only (may be
             # intermediate text during a tool-call turn)
             round_content = ""
@@ -526,8 +527,9 @@ class CommandClient:
                         if fr:
                             finish_reason = fr
 
-                        # Log first delta for debugging thinking detection
-                        if not first_token_logged and delta:
+                        # Log first delta for debugging thinking detection (once per round)
+                        if not first_delta_logged and delta:
+                            first_delta_logged = True
                             logger.info(
                                 "First SSE delta keys on round %d: %s (preview: %s)",
                                 _round, list(delta.keys()),
