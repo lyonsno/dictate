@@ -370,7 +370,7 @@ class CommandOverlay(NSObject):
         _NARRATOR_MAX_LINES = 3
         narrator_h = _NARRATOR_LINE_HEIGHT * _NARRATOR_MAX_LINES
         narrator_x = 14.0
-        narrator_y = timer_y - narrator_h - 2
+        narrator_y = timer_y - narrator_h - 10
         narrator_w = _OVERLAY_WIDTH - 28
         self._narrator_label = NSTextField.alloc().initWithFrame_(
             NSMakeRect(narrator_x, narrator_y, narrator_w, narrator_h)
