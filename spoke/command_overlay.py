@@ -585,6 +585,20 @@ class CommandOverlay(NSObject):
         attr_str.addAttribute_value_range_(
             NSShadowAttributeName, glow, (0, len(text))
         )
+        # Append a blank line after the utterance for visual breathing room
+        from AppKit import NSFontAttributeName
+        trailing = NSMutableAttributedString.alloc().initWithString_("\n")
+        trailing.addAttribute_value_range_(
+            NSForegroundColorAttributeName,
+            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
+            (0, 1),
+        )
+        trailing.addAttribute_value_range_(
+            NSFontAttributeName,
+            NSFont.systemFontOfSize_weight_(8.0, 0.0),
+            (0, 1),
+        )
+        attr_str.appendAttributedString_(trailing)
         self._text_view.textStorage().setAttributedString_(attr_str)
         self._update_layout()
 
