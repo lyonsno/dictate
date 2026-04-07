@@ -1291,7 +1291,7 @@ class SpokeAppDelegate(NSObject):
         text = entry if isinstance(entry, str) else getattr(entry, "text", str(entry))
         if text:
             logger.info("Hands-free: inserting tray entry: %r", text)
-            inject_text(text)
+            inject_text(text + " ")
 
     def _on_handsfree_state_change(self, state: HandsFreeState) -> None:
         """Update UI when hands-free state changes."""
