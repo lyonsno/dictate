@@ -297,19 +297,30 @@ class TestStreamCommand:
             )
 
         assert call_count["n"] == 2
-        assert [
+        event_tuples = [
             (event.kind, event.text, event.tool_name)
             for event in events
-        ] == [
-            ("assistant_delta", "Let me check. ", None),
-            ("assistant_delta", "\n[calling capture_context…]\n", None),
-            ("tool_call", "", "capture_context"),
-            ("assistant_delta", "Done.", None),
-            ("assistant_final", "Done.", None),
         ]
-        assert client._history == [
-            ("check it", "Let me check. \n[calling capture_context…]\nDone.")
-        ]
+        # Tool info line appears after tool execution
+        assert event_tuples[0] == ("assistant_delta", "Let me check. ", None)
+        assert event_tuples[1] == ("assistant_delta", "\n[calling capture_context…]\n", None)
+        assert event_tuples[2] == ("tool_call", "", "capture_context")
+        # Info line: screen capture · ~N tokens
+        assert event_tuples[3][0] == "assistant_delta"
+        assert "screen capture" in event_tuples[3][1]
+        assert "tokens" in event_tuples[3][1]
+        assert event_tuples[4] == ("assistant_delta", "Done.", None)
+        assert event_tuples[5] == ("assistant_final", "Done.", None)
+        # History is now a full message chain: user, assistant+tool_calls, tool result
+        assert len(client._history) == 1
+        chain = client._history[0]
+        assert chain[0] == {"role": "user", "content": "check it"}
+        # Assistant message with tool_calls
+        assert chain[1]["role"] == "assistant"
+        assert chain[1]["tool_calls"][0]["function"]["name"] == "capture_context"
+        # Tool result
+        assert chain[2]["role"] == "tool"
+        assert chain[2]["content"] == '{"ok": true}'
 
     def test_stream_skips_reasoning_tokens(self):
         """reasoning_content tokens should not be yielded."""
