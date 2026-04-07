@@ -90,6 +90,7 @@ def _run_modal_with_paste(alert) -> int:
 from .capture import AudioCapture
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
 from .focus_check import has_focused_text_input, focused_text_contains
+from .handsfree import HandsFreeController, HandsFreeState, match_voice_command
 from .scene_capture import SceneCaptureCache
 from .tool_dispatch import execute_tool, get_tool_schemas
 from .glow import GlowOverlay
@@ -899,6 +900,10 @@ class SpokeAppDelegate(NSObject):
                 _MAX_RECORD_SECS,
             )
 
+        # Hands-free continuous dictation controller
+        self._handsfree = HandsFreeController(self)
+        self._handsfree.on_state_change = self._on_handsfree_state_change
+
         return self
 
     # ── NSApplication delegate ──────────────────────────────
@@ -937,6 +942,10 @@ class SpokeAppDelegate(NSObject):
         self._terraform_hud = TerraformHUD.alloc().init()
         self._terraform_hud.restore_visibility()
         self._menubar._on_toggle_terraform = self._terraform_hud.toggle
+
+        # Hands-free mode — wire menubar toggle if Porcupine key is available
+        if os.environ.get("SPOKE_PORCUPINE_ACCESS_KEY"):
+            self._menubar._on_toggle_handsfree = self._toggle_handsfree
 
         # Step 1: Request mic permission with a test recording.
         # This triggers the system prompt before we start listening for spacebar.
@@ -1154,6 +1163,54 @@ class SpokeAppDelegate(NSObject):
         self._refresh_startup_status()
         self._show_model_load_alert(exc)
 
+    # ── Hands-free mode ────────────────────────────────────────
+
+    def _toggle_handsfree(self) -> None:
+        """Menu/manual toggle for hands-free mode."""
+        hf = self._handsfree
+        if hf.is_active:
+            hf.disable()
+        else:
+            hf.enable()
+
+    def handleWakeWord_(self, payload: dict) -> None:
+        """Main-thread selector called by HandsFreeController on wake word detection."""
+        role = payload.get("role", "")
+        self._handsfree.handle_wake_word(role)
+
+    def handsFreeInject_(self, payload: dict) -> None:
+        """Main-thread selector: inject hands-free transcription at cursor."""
+        text = payload.get("text", "")
+        if not text:
+            return
+
+        # Check for voice commands
+        replacement = match_voice_command(text)
+        if replacement is not None:
+            logger.info("Hands-free voice command: %r → %r", text, replacement)
+            inject_text(replacement)
+            return
+
+        # Normal text — append trailing space for continuous flow
+        logger.info("Hands-free inject: %r", text)
+        inject_text(text + " ")
+
+    def _on_handsfree_state_change(self, state: HandsFreeState) -> None:
+        """Update UI when hands-free state changes."""
+        if self._menubar is None:
+            return
+
+        if state == HandsFreeState.DORMANT:
+            self._menubar.set_status_text("Ready — hold spacebar")
+            self._menubar.set_recording(False)
+        elif state == HandsFreeState.LISTENING:
+            self._menubar.set_status_text("Listening for wake word…")
+            self._menubar.set_recording(False)
+            if self._glow is not None:
+                self._glow.hide()
+        elif state == HandsFreeState.DICTATING:
+            self._menubar.set_status_text("Hands-free — dictating…")
+
     def _warm_tts_in_background(self) -> None:
         tts = getattr(self, "_tts_client", None)
         if tts is None:
@@ -1340,6 +1397,15 @@ class SpokeAppDelegate(NSObject):
             getattr(self, "_verify_paste_text", None) is not None,
             getattr(self._overlay, "_visible", False) if self._overlay is not None else False,
         )
+        # Pause hands-free dictation if it's active — spacebar hold takes priority.
+        self._handsfree_paused_for_hold = False
+        hf = getattr(self, "_handsfree", None)
+        if hf is not None and hf.is_dictating:
+            logger.info("Pausing hands-free for spacebar hold")
+            hf._stop_dictation_capture()
+            hf._set_state(HandsFreeState.LISTENING)
+            self._handsfree_paused_for_hold = True
+
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
@@ -4739,7 +4805,13 @@ class SpokeAppDelegate(NSObject):
 
         def _on_clipboard_restored():
             if self._menubar is not None:
-                self._menubar.set_status_text("Ready — hold spacebar")
+                # Resume hands-free if it was paused for a spacebar hold
+                hf = getattr(self, "_handsfree", None)
+                if getattr(self, "_handsfree_paused_for_hold", False) and hf is not None:
+                    self._handsfree_paused_for_hold = False
+                    hf._start_dictating()
+                else:
+                    self._menubar.set_status_text("Ready — hold spacebar")
 
         inject_text(text, on_restored=_on_clipboard_restored)
         if self._menubar is not None:
@@ -4935,6 +5007,9 @@ class SpokeAppDelegate(NSObject):
     def _quit(self) -> None:
         self._detector.uninstall()
         self._preview_active = False
+        hf = getattr(self, "_handsfree", None)
+        if hf is not None and hf.is_active:
+            hf.disable()
         if hasattr(self, "_terraform_hud") and self._terraform_hud is not None:
             self._terraform_hud.cleanup()
         self._close_clients()
