@@ -250,6 +250,16 @@ class ThinkingNarrator:
 
     def _vamp_loop(self, utterance: str, model_id: str) -> None:
         """Background loop that generates vamp lines every few seconds."""
+        # Wait before starting — don't vamp on fast responses
+        _VAMP_GRACE_PERIOD_S = 4.0
+        grace_slept = 0.0
+        while grace_slept < _VAMP_GRACE_PERIOD_S:
+            time.sleep(0.5)
+            grace_slept += 0.5
+            with self._lock:
+                if not self._vamp_active:
+                    return
+
         vamp_messages: list[dict] = [
             {"role": "system", "content": _LOADING_VAMP_SYSTEM_PROMPT},
         ]
