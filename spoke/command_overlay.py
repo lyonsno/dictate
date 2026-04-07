@@ -273,6 +273,8 @@ def _build_spinner_tile(
     alpha *= (1.0 - ring2_cut)
 
     # ── Noise: domain-warped sinusoidal field ──
+    # The noise adds a faint smoky glow INTO the swept (transparent) region,
+    # so you see organic texture through the cutout instead of pure black.
     t = elapsed
     nx = dx / max(r_px, 1.0) * 3.0
     ny = dy / max(r_px, 1.0) * 3.0
@@ -282,9 +284,16 @@ def _build_spinner_tile(
         np.sin(wnx * 5.0 + t * 0.9) * np.cos(wny * 4.0 + t * 1.2)
         + 0.5 * np.sin(wnx * 8.0 + wny * 6.0 + t * 1.5)
     )
-    noise_field = (noise * 0.3 + 0.5).clip(0.0, 1.0)
-    noise_strength = 0.15 * circle
-    alpha *= (1.0 - noise_strength * (1.0 - noise_field))
+    noise_field = ((noise * 0.35 + 0.5) * circle).clip(0.0, 1.0)
+
+    # Where swept (alpha near 0), add the noise as a faint smoke layer.
+    # Where unswept (alpha at fill level), subtract noise for texture.
+    swept_amount = sweep_mask * circle  # 1.0 in swept region, 0.0 outside
+    # Additive smoke in the cutout: faint bg_color glow shaped by noise
+    smoke_alpha = swept_amount * noise_field * 0.12 * bg_alpha
+    # Subtractive texture in the fill: noise eats into the fill slightly
+    fill_texture = (1.0 - swept_amount) * (1.0 - noise_field * 0.08)
+    alpha = alpha * fill_texture + smoke_alpha
 
     # ── Build RGBA ──
     rgba = np.zeros((tile_px, tile_px, 4), dtype=np.uint8)
@@ -1286,6 +1295,18 @@ class CommandOverlay(NSObject):
             self._spinner_tile_layer.setFrame_(frame)
             self._spinner_tile_layer.setHidden_(False)
 
+    def _reposition_spinner_tile(self, content_width: float, content_height: float) -> None:
+        """Update spinner tile layer position when overlay geometry changes."""
+        if getattr(self, "_spinner_tile_layer", None) is None:
+            return
+        f = _OUTER_FEATHER
+        diameter = _SPINNER_RADIUS * 2.0
+        margin = 4.0
+        tile_size = diameter + margin * 2.0
+        tile_x = f + content_width - diameter - _SPINNER_MARGIN_RIGHT - margin
+        tile_y = f + _SPINNER_MARGIN_BOTTOM - margin
+        self._spinner_tile_layer.setFrame_(((tile_x, tile_y), (tile_size, tile_size)))
+
     def _bake_fill_image(self, fill_alpha, width: float = None, height: float = None):
         """Convert fill alpha array to CGImage and update layers."""
         try:
@@ -1409,6 +1430,8 @@ class CommandOverlay(NSObject):
                     fill_alpha, spinner_cx, spinner_cy,
                     _SPINNER_RADIUS, scale,
                 )
+                # Keep tile layer position in sync with the hole
+                self._reposition_spinner_tile(width, height)
 
             self._bake_fill_image(fill_alpha, width, height)
         except (ImportError, Exception):
@@ -1466,9 +1489,12 @@ class CommandOverlay(NSObject):
             )
         last_t = getattr(self, "_fill_image_brightness", -1.0)
         if abs(self._brightness - last_t) > 0.03:
-            self._fill_image_brightness = self._brightness
-            content_frame = self._content_view.frame()
-            self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
+            # Skip expensive fill rebuild while spinner is animating —
+            # the tile handles its own bg_color adaptation per frame.
+            if not getattr(self, "_spinner_active", False):
+                self._fill_image_brightness = self._brightness
+                content_frame = self._content_view.frame()
+                self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
         # Keep spinner tile compositing in sync with fill
         if getattr(self, "_spinner_tile_layer", None) is not None and hasattr(
             self._spinner_tile_layer, "setCompositingFilter_"
