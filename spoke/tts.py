@@ -1113,123 +1113,22 @@ class CloudTTSClient:
         text: str,
         amplitude_callback: Callable[[float], None] | None = None,
     ) -> None:
+        """Synthesize and play text as a single API call.
+
+        Unlike the local TTSClient, cloud TTS sends the full text in one
+        request — the Gemini model handles sentence pacing internally and
+        one call avoids burning through the per-minute rate limit.
+        """
         if not text:
             return
         self._cancelled = False
 
-        sentences = _split_sentences(text)
-        if not sentences:
+        result = self._synthesize(text)
+        if self._cancelled or result is None:
             return
-
-        # Producer/consumer pipeline: a generation thread fires all API calls
-        # ahead of playback so the next sentence is ready when the current one
-        # finishes.  Same pattern as TTSClient.speak().
-        playback_queue: queue.Queue[tuple[np.ndarray, int] | None] = queue.Queue(maxsize=len(sentences))
-
-        def _synthesize_all() -> None:
-            try:
-                for idx, sentence in enumerate(sentences):
-                    if self._cancelled:
-                        return
-                    try:
-                        result = self._synthesize(sentence)
-                    except Exception:
-                        logger.warning("TTS cloud synthesis failed for sentence %d", idx, exc_info=True)
-                        continue
-                    if self._cancelled or result is None:
-                        return
-                    audio_bytes, mime_type = result
-                    audio, sample_rate = self._decode_audio(audio_bytes, mime_type)
-                    audio = _apply_sentence_fades(
-                        audio, sample_rate,
-                        fade_in=(idx == 0),
-                        fade_out=(idx == len(sentences) - 1),
-                    )
-                    playback_queue.put((audio, sample_rate))
-            finally:
-                playback_queue.put(None)  # sentinel
-
-        gen_thread = threading.Thread(target=_synthesize_all, daemon=True)
-        gen_thread.start()
-
-        stream: sd.OutputStream | None = None
-        stream_sr: int = 0
-        try:
-            while True:
-                if self._cancelled:
-                    break
-                try:
-                    item = playback_queue.get(timeout=0.1)
-                except queue.Empty:
-                    continue
-                if item is None:
-                    break
-                audio, sample_rate = item
-                if audio.size == 0:
-                    continue
-                if audio.ndim == 1:
-                    audio = audio.reshape(-1, 1)
-
-                # Open stream lazily, reopen only on sample rate change
-                if stream is None or sample_rate != stream_sr:
-                    if stream is not None:
-                        stream.stop()
-                        stream.close()
-                    output_device = _resolve_output_device()
-                    stream = sd.OutputStream(
-                        samplerate=sample_rate,
-                        channels=audio.shape[1],
-                        dtype="float32",
-                        device=output_device,
-                    )
-                    self._stream = stream
-                    self._last_chunk = None
-                    stream_sr = sample_rate
-                    stream.start()
-                    logger.info(
-                        "TTS cloud playback stream opened: sample_rate=%d device=%r",
-                        sample_rate, output_device,
-                    )
-
-                # Write audio in ~64ms chunks
-                chunk_size = int(sample_rate * 0.064)
-                offset = 0
-                while offset < len(audio):
-                    if self._cancelled:
-                        break
-                    end = min(offset + chunk_size, len(audio))
-                    chunk = audio[offset:end]
-                    self._last_chunk = chunk
-                    stream.write(chunk)
-                    if amplitude_callback is not None:
-                        rms = float(np.sqrt(np.mean(chunk ** 2)))
-                        amplitude_callback(rms)
-                    offset = end
-        finally:
-            # Fade out on cancel
-            if self._cancelled and stream is not None and self._last_chunk is not None:
-                fade_samples = int(stream_sr * 0.05)
-                last_amp = float(np.mean(np.abs(self._last_chunk[-1:])))
-                fade_ramp = np.linspace(last_amp, 0.0, fade_samples, dtype=np.float32).reshape(-1, 1)
-                try:
-                    stream.write(fade_ramp)
-                except Exception:
-                    pass
-            if stream is not None:
-                stream.stop()
-                stream.close()
-                self._stream = None
-                self._last_chunk = None
-            if amplitude_callback is not None:
-                amplitude_callback(0.0)
-            # Drain queue so gen thread doesn't block on put()
-            self._cancelled = True
-            while True:
-                try:
-                    playback_queue.get_nowait()
-                except queue.Empty:
-                    break
-            gen_thread.join(timeout=5)
+        audio_bytes, mime_type = result
+        audio, sample_rate = self._decode_audio(audio_bytes, mime_type)
+        self._play_audio(audio, sample_rate, amplitude_callback=amplitude_callback)
 
     def speak_async(
         self,
