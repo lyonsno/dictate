@@ -91,11 +91,11 @@ _RESPONSE_TEXT_LIGHT_BG_TARGET = (0.07, 0.08, 0.11)
 _THINKING_CUTOUT_DARK = (0.05, 0.05, 0.06)
 _THINKING_CUTOUT_LIGHT = (0.80, 0.80, 0.78)
 
-# Radar-sweep spinner
+# Radar-sweep spinner — tucked into the bottom-right corner
 _SPINNER_PERIOD = 2.0  # seconds per full revolution
-_SPINNER_RADIUS = 16.0  # points — the circle radius
-_SPINNER_MARGIN_RIGHT = 14.0  # right margin from content edge
-_SPINNER_MARGIN_TOP = 10.0  # top margin from content edge
+_SPINNER_RADIUS = 12.0  # points — smaller, corner detail
+_SPINNER_MARGIN_RIGHT = 6.0  # snug against the corner radius
+_SPINNER_MARGIN_BOTTOM = 6.0  # snug against the bottom edge
 
 
 def _clamp01(value: float) -> float:
@@ -1186,8 +1186,13 @@ class CommandOverlay(NSObject):
             return
 
         if self._spinner_metal is None:
-            from .spinner_metal import SpinnerMetalLayer
-            self._spinner_metal = SpinnerMetalLayer()
+            try:
+                from .spinner_metal import SpinnerMetalLayer
+                self._spinner_metal = SpinnerMetalLayer()
+            except Exception:
+                logger.info("Failed to import SpinnerMetalLayer", exc_info=True)
+                self._spinner_metal = None
+                return
 
         if not self._spinner_metal.ready:
             # Set up the Metal layer covering the entire wrapper
@@ -1202,7 +1207,7 @@ class CommandOverlay(NSObject):
             metal_size = diameter + margin * 2
             # In wrapper coords (macOS: Y=0 at bottom)
             metal_x = f + content_frame.size.width - diameter - _SPINNER_MARGIN_RIGHT - margin
-            metal_y = f + content_frame.size.height - diameter - _SPINNER_MARGIN_TOP - margin
+            metal_y = f + _SPINNER_MARGIN_BOTTOM - margin  # bottom-right
             frame = ((metal_x, metal_y), (metal_size, metal_size))
             scale = getattr(self, "_ridge_scale", 2.0)
 
@@ -1284,20 +1289,18 @@ class CommandOverlay(NSObject):
                 # Spinner center in fill-image pixel coordinates.
                 # The fill image covers total_w x total_h with the content area
                 # inset by f (feather) on each side. The spinner sits at the
-                # top-right of the content area.
+                # bottom-right corner of the content area, nestled into the
+                # corner radius.
                 #
                 # Image convention: row 0 = top of image = top of overlay.
-                # X: right side of content = f + width - margin - radius
+                # X: right side of content
                 spinner_cx = (f + width - _SPINNER_RADIUS - _SPINNER_MARGIN_RIGHT) * scale
-                # Y: top of content = f + margin + radius (small row = top)
-                spinner_cy = (f + _SPINNER_MARGIN_TOP + _SPINNER_RADIUS) * scale
-                logger.debug(
-                    "Spinner cutout: cx=%.1f cy=%.1f fill=%.2f "
-                    "image=%dx%d content=%.0fx%.0f",
-                    spinner_cx, spinner_cy, sweep_fill,
-                    fill_alpha.shape[1], fill_alpha.shape[0],
-                    width, height,
-                )
+                # Y: bottom of content. In image coords, bottom = large row index.
+                # total_h in image = bottom of fill. Content bottom is at f from
+                # the bottom of the fill image, so in image rows:
+                # row = total_h - f - margin - radius (from bottom)
+                ph = fill_alpha.shape[0]
+                spinner_cy = ph - (f + _SPINNER_MARGIN_BOTTOM + _SPINNER_RADIUS) * scale
                 _spinner_cutout_mask(
                     fill_alpha, total_w, total_h,
                     spinner_cx, spinner_cy,
