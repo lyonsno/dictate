@@ -3353,6 +3353,46 @@ class TestHoldStartDuringTranscription:
         d._glow.show.assert_called_once()
 
 
+class TestMicNotReady:
+    """Hold is rejected and status reflects mic unavailability."""
+
+    def test_hold_rejected_when_mic_not_ready(self, main_module, monkeypatch):
+        """Spacebar hold with models ready but mic unavailable should not start recording."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._models_ready = True
+        d._mic_ready = False
+
+        d._on_hold_start()
+
+        d._capture.start.assert_not_called()
+        d._menubar.set_status_text.assert_called_with("Mic unavailable — retrying…")
+
+    def test_warmup_succeeded_shows_mic_unavailable_when_mic_not_ready(self, main_module, monkeypatch):
+        """clientWarmupSucceeded_ should reflect mic state in menubar status."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._mic_ready = False
+        d._warmup_in_flight = True
+
+        d.clientWarmupSucceeded_(None)
+
+        assert d._models_ready is True
+        d._menubar.set_status_text.assert_called_with(
+            "Models ready — mic unavailable, retrying…"
+        )
+
+    def test_mic_granted_after_models_ready_shows_ready(self, main_module, monkeypatch):
+        """micPermissionGranted_ when models already loaded should show full ready state."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._models_ready = True
+        d._mic_ready = False
+        d._mic_probe_in_flight = True
+
+        d.micPermissionGranted_(None)
+
+        assert d._mic_ready is True
+        d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
+
+
 class TestShortShiftHold:
     """Test the instant recall/dismiss path for short shift-holds."""
 
