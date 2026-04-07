@@ -1121,20 +1121,57 @@ class CloudTTSClient:
         if not sentences:
             return
 
-        for idx, sentence in enumerate(sentences):
-            if self._cancelled:
-                break
-            wav_bytes = self._synthesize(sentence)
-            if self._cancelled or wav_bytes is None:
-                break
-            audio, sample_rate = self._decode_wav(wav_bytes)
-            # Apply sentence boundary fades
-            audio = _apply_sentence_fades(
-                audio, sample_rate,
-                fade_in=(idx == 0),
-                fade_out=(idx == len(sentences) - 1),
-            )
-            self._play_audio(audio, sample_rate, amplitude_callback=amplitude_callback)
+        # Producer/consumer pipeline: a generation thread fires all API calls
+        # ahead of playback so the next sentence is ready when the current one
+        # finishes.  Same pattern as TTSClient.speak().
+        playback_queue: queue.Queue[tuple[np.ndarray, int] | None] = queue.Queue(maxsize=len(sentences))
+
+        def _synthesize_all() -> None:
+            try:
+                for idx, sentence in enumerate(sentences):
+                    if self._cancelled:
+                        return
+                    try:
+                        wav_bytes = self._synthesize(sentence)
+                    except Exception:
+                        logger.warning("TTS cloud synthesis failed for sentence %d", idx, exc_info=True)
+                        continue
+                    if self._cancelled or wav_bytes is None:
+                        return
+                    audio, sample_rate = self._decode_wav(wav_bytes)
+                    audio = _apply_sentence_fades(
+                        audio, sample_rate,
+                        fade_in=(idx == 0),
+                        fade_out=(idx == len(sentences) - 1),
+                    )
+                    playback_queue.put((audio, sample_rate))
+            finally:
+                playback_queue.put(None)  # sentinel
+
+        gen_thread = threading.Thread(target=_synthesize_all, daemon=True)
+        gen_thread.start()
+
+        try:
+            while True:
+                if self._cancelled:
+                    break
+                try:
+                    item = playback_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if item is None:
+                    break
+                audio, sample_rate = item
+                self._play_audio(audio, sample_rate, amplitude_callback=amplitude_callback)
+        finally:
+            # Drain queue so gen thread doesn't block on put()
+            self._cancelled = True
+            while True:
+                try:
+                    playback_queue.get_nowait()
+                except queue.Empty:
+                    break
+            gen_thread.join(timeout=5)
 
     def speak_async(
         self,
