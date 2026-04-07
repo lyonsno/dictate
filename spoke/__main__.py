@@ -1949,7 +1949,10 @@ class SpokeAppDelegate(NSObject):
                 logger.info("Hold start in live mode with enter — arming exit timer (3000ms)")
                 self._start_live_exit_timer()
             else:
-                logger.info("Hold start in live mode without enter — ignoring")
+                logger.info("Hold start in live mode without enter — recording timestamp for tray recall")
+                # Record the hold start time so _on_hold_end can detect
+                # short shift-holds for tray recall during live mode.
+                self._record_start_time = time.monotonic()
             return
 
         if not getattr(self, "_models_ready", True):
@@ -2387,6 +2390,27 @@ class SpokeAppDelegate(NSObject):
         # ── Live mode: cancel exit timer if hold was too short ──
         if getattr(self, "_live_mode", False):
             self._cancel_live_exit_timer()
+            # Allow tray interaction during live mode.
+            tray_active = getattr(self, "_tray_active", False)
+            recovery_active = getattr(self, "_recovery_text", None) is not None
+            if tray_active or recovery_active:
+                if shift_held:
+                    self._tray_navigate_down()
+                elif enter_held and tray_active:
+                    self._tray_send_current()
+                elif tray_active:
+                    self._tray_insert_current()
+                else:
+                    self._recovery_retry_insert()
+            elif shift_held and self._tray_stack:
+                # Short shift+space during live mode = recall tray
+                elapsed = time.monotonic() - self._record_start_time if self._record_start_time else 0
+                if elapsed < 0.8:
+                    logger.info("Shift+space in live mode (%.0fms) — recalling tray", elapsed * 1000)
+                    self._tray_active = True
+                    self._detector.tray_active = True
+                    self._tray_index = len(self._tray_stack) - 1
+                    self._show_tray_current(acknowledge=True)
             return
 
         # Cancel live arm timer if hold ended before 3000ms threshold
