@@ -1129,10 +1129,14 @@ class CommandOverlay(NSObject):
             else:
                 self._spring_tint_layer.setOpacity_(0.0)
 
-        # Spinner: rebuild fill with cutout at 30Hz for smooth sweep
+        # Spinner: advance time every pulse tick, but only rebuild the fill
+        # image every other tick (15Hz) to reduce CGImage allocation pressure.
+        # Halos rotate every tick (30Hz) since that's just a transform, no alloc.
         if getattr(self, "_spinner_active", False):
             self._spinner_elapsed = getattr(self, "_spinner_elapsed", 0.0) + dt
-            self._update_spinner_fill()
+            self._spinner_frame_skip = not getattr(self, "_spinner_frame_skip", False)
+            if self._spinner_frame_skip:
+                self._update_spinner_fill()
             self._update_spinner_halos()
             # Render Metal effect behind the cutout
             if self._spinner_metal is not None and self._spinner_metal.ready:
@@ -1276,21 +1280,26 @@ class CommandOverlay(NSObject):
             return
 
         diameter = _SPINNER_RADIUS * 2.0
-        halo_size = diameter + 8.0  # slight overflow for glow
-        # Bottom-right in wrapper coords
-        halo_x = f + content_frame.size.width - diameter - _SPINNER_MARGIN_RIGHT - 4.0
-        halo_y = f + _SPINNER_MARGIN_BOTTOM - 4.0
+        halo_size = diameter * 1.3 + 8.0  # accommodate larger ring 2 + glow
+        halo_offset = (halo_size - diameter) / 2.0  # center the halo on the spinner
+        # Bottom-right in wrapper coords, centered on the spinner circle
+        halo_x = f + content_frame.size.width - diameter - _SPINNER_MARGIN_RIGHT - halo_offset
+        halo_y = f + _SPINNER_MARGIN_BOTTOM - halo_offset
         frame = ((halo_x, halo_y), (halo_size, halo_size))
 
         scale = getattr(self, "_ridge_scale", 2.0)
 
+        # Ring 1: synced to cutout — same radius, highlight at 12 o'clock (angle 0),
+        # rotates in sync with the sweep so the highlight tracks the sweep hand.
         ring1_img, ring1_pay = _build_halo_ring(
-            _SPINNER_RADIUS, scale, ring_width=2.5,
-            highlight_angle=0.0, highlight_width=0.4,
+            _SPINNER_RADIUS, scale, ring_width=0.83,
+            highlight_angle=0.0, highlight_width=0.35,
         )
+        # Ring 2: slightly larger radius, thinner, opposite highlight,
+        # spins at 7/5x opposite — creates interference with ring 1.
         ring2_img, ring2_pay = _build_halo_ring(
-            _SPINNER_RADIUS * 0.82, scale, ring_width=1.8,
-            highlight_angle=math.pi, highlight_width=0.5,
+            _SPINNER_RADIUS * 1.15, scale, ring_width=0.36,
+            highlight_angle=math.pi, highlight_width=0.45,
         )
 
         # Keep payloads alive
