@@ -3458,6 +3458,119 @@ class TestMicPermissionProbe:
         assert "micPermissionGranted:" in dispatched
 
 
+class TestPortAudioFallbackProbe:
+    """PortAudio fallback probe fires when AVFoundation is unavailable."""
+
+    def test_fallback_triggers_on_av_unavailable(self, main_module, monkeypatch):
+        """When _get_av_auth_status returns -1, probe should fall back to
+        PortAudio sd.rec() and dispatch granted on success."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._mic_probe_in_flight = True
+        d._mic_ready = False
+
+        monkeypatch.setattr(main_module, "_get_av_auth_status", lambda: -1)
+        mock_rec = MagicMock()
+        monkeypatch.setattr("sounddevice.rec", mock_rec)
+
+        dispatched = []
+        d.performSelectorOnMainThread_withObject_waitUntilDone_ = (
+            lambda sel, obj, wait: dispatched.append(sel)
+        )
+
+        d._probe_mic_permission()
+
+        mock_rec.assert_called_once()
+        assert "micPermissionGranted:" in dispatched
+
+    def test_fallback_dispatches_denied_on_permission_error(self, main_module, monkeypatch):
+        """PortAudio fallback should dispatch denied when sd.rec() raises
+        a permission-related error."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._mic_probe_in_flight = True
+        d._mic_ready = False
+
+        monkeypatch.setattr(main_module, "_get_av_auth_status", lambda: -1)
+        monkeypatch.setattr(
+            "sounddevice.rec",
+            MagicMock(side_effect=RuntimeError("access denied by system")),
+        )
+
+        dispatched = []
+        d.performSelectorOnMainThread_withObject_waitUntilDone_ = (
+            lambda sel, obj, wait: dispatched.append(sel)
+        )
+
+        d._probe_mic_permission()
+
+        assert "micPermissionDenied:" in dispatched
+
+    def test_fallback_dispatches_failed_on_generic_error(self, main_module, monkeypatch):
+        """PortAudio fallback should dispatch micProbeFailed_ when sd.rec()
+        raises a non-permission error (e.g. PortAudio buffer allocation)."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._mic_probe_in_flight = True
+        d._mic_ready = False
+
+        monkeypatch.setattr(main_module, "_get_av_auth_status", lambda: -1)
+        monkeypatch.setattr(
+            "sounddevice.rec",
+            MagicMock(side_effect=RuntimeError("PortAudio error -9986")),
+        )
+
+        dispatched = []
+        d.performSelectorOnMainThread_withObject_waitUntilDone_ = (
+            lambda sel, obj, wait: dispatched.append(sel)
+        )
+
+        d._probe_mic_permission()
+
+        assert "micProbeFailed:" in dispatched
+
+
+class TestAVHelperExceptionPaths:
+    """Exception paths in _get_av_auth_status and _request_av_mic_access."""
+
+    def test_get_av_auth_status_returns_neg1_on_import_failure(self, main_module, monkeypatch):
+        """If AVFoundation import fails, _get_av_auth_status should return -1."""
+        def broken_import():
+            raise ImportError("No module named 'AVFoundation'")
+
+        original = main_module._get_av_auth_status
+
+        def patched():
+            # Simulate import failure inside the function
+            raise ImportError("No module named 'AVFoundation'")
+
+        # We need to patch at the point where AVFoundation is imported
+        import builtins
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "AVFoundation":
+                raise ImportError("No module named 'AVFoundation'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+
+        result = main_module._get_av_auth_status()
+        assert result == -1
+
+    def test_request_av_mic_access_returns_false_on_failure(self, main_module, monkeypatch):
+        """If AVFoundation import fails, _request_av_mic_access should return False."""
+        import builtins
+        real_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "AVFoundation":
+                raise ImportError("No module named 'AVFoundation'")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", mock_import)
+
+        result = main_module._request_av_mic_access()
+        assert result is False
+
+
 class TestShortShiftHold:
     """Test the instant recall/dismiss path for short shift-holds."""
 
