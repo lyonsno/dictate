@@ -3120,6 +3120,10 @@ class SpokeAppDelegate(NSObject):
                     if vamp_started and self._narrator is not None:
                         self._narrator.stop_loading_vamp()
                         vamp_started = False
+                    # Hide the narrator label — vamp text shouldn't linger
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "narratorHide:", {"token": token}, False
+                    )
 
                 if event.kind == "thinking_delta":
                     # Feed thinking tokens to the narrator sidecar
@@ -3217,6 +3221,17 @@ class SpokeAppDelegate(NSObject):
             return
         if self._command_overlay is not None:
             self._command_overlay.set_tool_active(False)
+
+    def narratorHide_(self, payload: dict) -> None:
+        """Main thread: hide the narrator label immediately."""
+        if payload.get("token") != self._transcription_token:
+            return
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay._hide_narrator()
+            except Exception:
+                logger.exception("Command overlay failed to hide narrator")
 
     def narratorCollapsed_(self, payload: dict) -> None:
         """Main thread: inject collapsed thinking summary into the overlay."""
