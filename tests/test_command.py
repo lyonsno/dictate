@@ -504,7 +504,6 @@ class TestStreamErrorHandling:
         assert tokens == []
         assert client._history == [("think hard", "")]
 
-
 class TestStreamCleanup:
     """Test HTTP connection cleanup and history invariants on partial consumption."""
 
@@ -850,6 +849,77 @@ class TestCommandThinking:
 
         assert "data" in captured_body, "urlopen was never called — request body not captured"
         assert "chat_template_kwargs" not in captured_body["data"]
+
+    def _content_chunk(self, token):
+        return {"choices": [{"index": 0, "delta": {"content": token}}]}
+
+    def _reasoning_chunk(self, token):
+        return {"choices": [{"index": 0, "delta": {"reasoning_content": token}}]}
+
+    def test_reasoning_content_yields_thinking_delta(self):
+        """reasoning_content field should produce thinking_delta events."""
+        client = self._make_client()
+        chunks = [
+            self._reasoning_chunk("Let me think..."),
+            self._content_chunk("The answer."),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            events = list(client.stream_command_events("q"))
+        thinking = [e for e in events if e.kind == "thinking_delta"]
+        content = [e for e in events if e.kind == "assistant_delta"]
+        assert len(thinking) == 1
+        assert thinking[0].text == "Let me think..."
+        assert len(content) == 1
+        assert content[0].text == "The answer."
+
+    def test_think_tags_yield_thinking_delta(self):
+        """<think>...</think> tags in content should produce thinking_delta events."""
+        client = self._make_client()
+        chunks = [
+            self._content_chunk("<think>"),
+            self._content_chunk("deep thought"),
+            self._content_chunk("</think>"),
+            self._content_chunk("visible answer"),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            events = list(client.stream_command_events("q"))
+        thinking = [e for e in events if e.kind == "thinking_delta"]
+        content = [e for e in events if e.kind == "assistant_delta"]
+        assert any("deep thought" in e.text for e in thinking)
+        assert any("visible answer" in e.text for e in content)
+        for e in content:
+            assert "<think>" not in e.text
+            assert "deep thought" not in e.text
+
+    def test_think_tags_not_stored_in_history(self):
+        """<think> content should not appear in the ring buffer history."""
+        client = self._make_client()
+        chunks = [
+            self._content_chunk("<think>secret thoughts</think>"),
+            self._content_chunk("public answer"),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            list(client.stream_command("q"))
+        assert client._history == [("q", "public answer")]
+
+    def test_no_think_tags_passes_content_through(self):
+        """Content without <think> tags should pass through unchanged."""
+        client = self._make_client()
+        chunks = [
+            self._content_chunk("Hello "),
+            self._content_chunk("world"),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            events = list(client.stream_command_events("q"))
+        content = [e for e in events if e.kind == "assistant_delta"]
+        thinking = [e for e in events if e.kind == "thinking_delta"]
+        assert len(thinking) == 0
+        full_text = "".join(e.text for e in content)
+        assert full_text == "Hello world"
 
 
 class TestXMLToolCallFallback:

@@ -219,6 +219,7 @@ class CommandOverlay(NSObject):
         self._thinking_label = None  # NSTextField for the counter
         self._thinking_glow_layer = None  # CALayer for the glow behind the number
         self._thinking_inverted = False  # False = glowing number, True = cutout
+        self._narrator_label = None  # NSTextField for narrator summary
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -349,6 +350,31 @@ class CommandOverlay(NSObject):
         self._thinking_label.setStringValue_("")
         self._thinking_label.setHidden_(True)
         content.addSubview_(self._thinking_label)
+
+        # Narrator summary label — below the thinking timer, left-aligned
+        from AppKit import NSTextAlignmentLeft, NSLineBreakByTruncatingTail
+        narrator_h = 18.0
+        narrator_x = 14.0
+        narrator_y = timer_y - narrator_h - 2
+        narrator_w = _OVERLAY_WIDTH - 28
+        self._narrator_label = NSTextField.alloc().initWithFrame_(
+            NSMakeRect(narrator_x, narrator_y, narrator_w, narrator_h)
+        )
+        self._narrator_label.setEditable_(False)
+        self._narrator_label.setSelectable_(False)
+        self._narrator_label.setBezeled_(False)
+        self._narrator_label.setDrawsBackground_(False)
+        self._narrator_label.setAlignment_(NSTextAlignmentLeft)
+        self._narrator_label.setLineBreakMode_(NSLineBreakByTruncatingTail)
+        self._narrator_label.setFont_(
+            NSFont.systemFontOfSize_weight_(12.0, 0.1)
+        )
+        self._narrator_label.setTextColor_(
+            NSColor.colorWithSRGBRed_green_blue_alpha_(0.7, 0.7, 0.75, 0.6)
+        )
+        self._narrator_label.setStringValue_("")
+        self._narrator_label.setHidden_(True)
+        content.addSubview_(self._narrator_label)
 
         self._window.setContentView_(wrapper)
         self._window.setAlphaValue_(0.0)
@@ -1079,6 +1105,18 @@ class CommandOverlay(NSObject):
         self._thinking_inverted = True
         self._apply_thinking_label_theme()
 
+    def set_narrator_summary(self, summary: str) -> None:
+        """Update the narrator summary line displayed during thinking."""
+        if self._narrator_label is not None:
+            self._narrator_label.setStringValue_(summary)
+            self._narrator_label.setHidden_(False)
+
+    def _hide_narrator(self) -> None:
+        """Hide the narrator summary label."""
+        if self._narrator_label is not None:
+            self._narrator_label.setHidden_(True)
+            self._narrator_label.setStringValue_("")
+
     def _stop_thinking_timer(self) -> None:
         """Stop and fade the thinking counter."""
         if self._thinking_timer is not None:
@@ -1086,6 +1124,7 @@ class CommandOverlay(NSObject):
             self._thinking_timer = None
         if self._thinking_label is not None:
             self._thinking_label.setHidden_(True)
+        self._hide_narrator()
 
     def thinkingTick_(self, timer) -> None:
         """Update the thinking counter every 100ms."""

@@ -89,6 +89,7 @@ def _run_modal_with_paste(alert) -> int:
 
 from .capture import AudioCapture
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
+from .narrator import ThinkingNarrator
 from .focus_check import has_focused_text_input, focused_text_contains
 from .scene_capture import SceneCaptureCache
 from .tool_dispatch import execute_tool, get_tool_schemas
@@ -820,6 +821,15 @@ class SpokeAppDelegate(NSObject):
                 client_kwargs["api_key"] = cloud_api_key
             self._command_client = CommandClient(**client_kwargs)
             self._command_server_unreachable = False
+            # Thinking narrator sidecar
+            if ThinkingNarrator.is_enabled():
+                self._narrator = ThinkingNarrator(
+                    on_summary=lambda s: self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "narratorSummary:", {"summary": s}, False
+                    ),
+                )
+            else:
+                self._narrator = None
             self._command_model_options = self._seed_command_model_options(
                 self._command_model_id
             )
@@ -836,6 +846,7 @@ class SpokeAppDelegate(NSObject):
         else:
             self._command_url = None
             self._command_client = None
+            self._narrator = None
             self._command_backend = None
             self._command_url = None
             self._command_model_id = None
@@ -2616,7 +2627,13 @@ class SpokeAppDelegate(NSObject):
         # Step 2: Stream the command response
         full_response = ""
         stale_break = False
+        narrator_started = False
         try:
+            # Start the narrator if available
+            if self._narrator is not None:
+                self._narrator.start()
+                narrator_started = True
+
             for event in self._command_client.stream_command_events(
                 utterance,
                 tools=self._tool_schemas,
@@ -2626,7 +2643,16 @@ class SpokeAppDelegate(NSObject):
                 if token != self._transcription_token:
                     stale_break = True
                     break  # stale
-                if event.kind == "assistant_delta" or event.kind == "tool_call":
+
+                if event.kind == "thinking_delta":
+                    # Feed thinking tokens to the narrator sidecar
+                    if self._narrator is not None:
+                        self._narrator.feed(event.text)
+                elif event.kind == "assistant_delta" or event.kind == "tool_call":
+                    # Stop narrator when visible content starts
+                    if narrator_started and self._narrator is not None:
+                        self._narrator.stop()
+                        narrator_started = False
                     if event.text:
                         full_response += event.text
                     self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -2650,6 +2676,9 @@ class SpokeAppDelegate(NSObject):
             )
             return
         finally:
+            # Always stop the narrator on stream end
+            if narrator_started and self._narrator is not None:
+                self._narrator.stop()
             # Repair history only when a stale token break interrupts the
             # streaming loop before the command client can finalize the turn.
             if stale_break and full_response:
@@ -2700,6 +2729,18 @@ class SpokeAppDelegate(NSObject):
             return
         if self._command_overlay is not None:
             self._command_overlay.set_tool_active(False)
+
+    def narratorSummary_(self, payload: dict) -> None:
+        """Main thread: update the overlay with a narrator thinking summary."""
+        summary = payload.get("summary", "")
+        if not summary:
+            return
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay.set_narrator_summary(summary)
+            except Exception:
+                logger.exception("Command overlay failed to set narrator summary")
 
     def commandToken_(self, payload: dict) -> None:
         """Main thread: append a streamed token to the command overlay."""
