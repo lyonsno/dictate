@@ -532,3 +532,54 @@ class TestToolState:
         overlay.thinkingTick_(None)
         # Now it should show seconds again
         assert "s" in overlay._thinking_label.setStringValue_.call_args[0][0]
+
+
+class TestSDFCaching:
+    """SDF recomputation is skipped when geometry hasn't changed."""
+
+    def test_same_dimensions_reuses_cached_sdf(self, mock_pyobjc, monkeypatch):
+        """Brightness-only changes should not recompute the SDF."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._spring_tint_layer = None
+
+        import spoke.overlay as ov_mod
+        call_count = 0
+        original = ov_mod._overlay_rounded_rect_sdf
+
+        def counting_sdf(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(ov_mod, "_overlay_rounded_rect_sdf", counting_sdf)
+
+        # First call — SDF must be computed
+        overlay._apply_ridge_masks(600.0, 80.0)
+        assert call_count == 1
+
+        # Second call, same dimensions — SDF should be cached
+        overlay._brightness = 0.5
+        overlay._apply_ridge_masks(600.0, 80.0)
+        assert call_count == 1, "SDF was recomputed despite identical geometry"
+
+    def test_changed_height_recomputes_sdf(self, mock_pyobjc, monkeypatch):
+        """A height change must recompute the SDF."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._spring_tint_layer = None
+
+        import spoke.overlay as ov_mod
+        call_count = 0
+        original = ov_mod._overlay_rounded_rect_sdf
+
+        def counting_sdf(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(ov_mod, "_overlay_rounded_rect_sdf", counting_sdf)
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+        assert call_count == 1
+
+        overlay._apply_ridge_masks(600.0, 200.0)
+        assert call_count == 2, "SDF was not recomputed after height change"

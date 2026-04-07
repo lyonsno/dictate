@@ -1149,7 +1149,12 @@ class CommandOverlay(NSObject):
     # ── ridge masks ────────────────────────────────────────
 
     def _apply_ridge_masks(self, width: float, height: float) -> None:
-        """Compute SDF and apply ridge mask + build fill image."""
+        """Compute SDF and apply ridge mask + build fill image.
+
+        The SDF and fill-alpha field are cached by geometry (width, height).
+        When only brightness changes (same dimensions), we skip the expensive
+        numpy SDF computation and just rebuild the colored image.
+        """
         from .overlay import (
             _RIDGE_FALLOFF, _RIDGE_POWER, _OVERLAY_CORNER_RADIUS,
             _overlay_rounded_rect_sdf, _ridge_alpha, _interior_fill_alpha,
@@ -1163,12 +1168,19 @@ class CommandOverlay(NSObject):
         try:
             from .overlay import _glow_fill_alpha
 
-            sdf = _overlay_rounded_rect_sdf(
-                total_w, total_h, width, height,
-                _OVERLAY_CORNER_RADIUS, scale,
-            )
+            cache_key = (width, height, scale)
+            cached = getattr(self, '_sdf_cache_key', None)
+            if cached == cache_key:
+                fill_alpha = self._cached_fill_alpha
+            else:
+                sdf = _overlay_rounded_rect_sdf(
+                    total_w, total_h, width, height,
+                    _OVERLAY_CORNER_RADIUS, scale,
+                )
+                fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
+                self._sdf_cache_key = cache_key
+                self._cached_fill_alpha = fill_alpha
 
-            fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
             bg_r, bg_g, bg_b = _background_color_for_brightness(
                 getattr(self, '_brightness', 0.0)
             )
