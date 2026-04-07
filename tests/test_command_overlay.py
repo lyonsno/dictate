@@ -66,6 +66,19 @@ def _make_overlay(mock_pyobjc):
     overlay._fill_layer = MagicMock()
     overlay._cancel_step = 0
     overlay._cancel_phase = ""
+    overlay._narrator_label = MagicMock()
+    overlay._narrator_label.isHidden.return_value = True
+    overlay._cancel_spring = 0.0
+    overlay._cancel_spring_target = 0.0
+    overlay._cancel_spring_fired = False
+    overlay._on_cancel_spring_threshold = None
+    overlay._spring_tint_layer = MagicMock()
+    overlay._thinking_glow_layer = None
+    overlay._utterance_label = None
+    overlay._fill_image_brightness = -1.0
+    overlay._fill_payload = None
+    overlay._ridge_scale = 2.0
+    overlay._cancel_elapsed = 0.0
     return overlay, mod
 
 
