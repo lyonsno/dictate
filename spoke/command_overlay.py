@@ -1286,7 +1286,7 @@ class CommandOverlay(NSObject):
             self._spinner_tile_layer.setFrame_(frame)
             self._spinner_tile_layer.setHidden_(False)
 
-    def _bake_fill_image(self, fill_alpha):
+    def _bake_fill_image(self, fill_alpha, width: float = None, height: float = None):
         """Convert fill alpha array to CGImage and update layers."""
         try:
             from .overlay import _fill_field_to_image
@@ -1302,8 +1302,10 @@ class CommandOverlay(NSObject):
             return
 
         f = _OUTER_FEATHER
-        width = getattr(self, "_base_fill_width", _OVERLAY_WIDTH)
-        height = getattr(self, "_base_fill_height", _OVERLAY_HEIGHT)
+        if width is None:
+            width = _OVERLAY_WIDTH
+        if height is None:
+            height = _OVERLAY_HEIGHT
         total_w = width + 2 * f
         total_h = height + 2 * f
 
@@ -1408,7 +1410,7 @@ class CommandOverlay(NSObject):
                     _SPINNER_RADIUS, scale,
                 )
 
-            self._bake_fill_image(fill_alpha)
+            self._bake_fill_image(fill_alpha, width, height)
         except (ImportError, Exception):
             return
 
