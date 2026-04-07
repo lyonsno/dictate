@@ -181,7 +181,8 @@ def _punch_permanent_hole(
 
     ph, pw = fill_alpha.shape
     r_px = radius * scale
-    edge_softness = 1.5 * scale
+    # Wide soft edge to blend the hole into the surrounding SDF fill
+    edge_softness = 4.0 * scale
 
     x = np.arange(pw, dtype=np.float32)[None, :] + 0.5
     y = np.arange(ph, dtype=np.float32)[:, None] + 0.5
@@ -190,6 +191,8 @@ def _punch_permanent_hole(
     dist = np.sqrt(dx * dx + dy * dy)
 
     hole = np.clip((r_px - dist) / edge_softness, 0.0, 1.0)
+    # Smoothstep for gentle transition matching the SDF's profile
+    hole = hole * hole * (3.0 - 2.0 * hole)
     fill_alpha *= (1.0 - hole)
 
 
@@ -220,8 +223,12 @@ class _SpinnerTileRenderer:
         self.dy = y - cy
         self.dist = np.sqrt(self.dx * self.dx + self.dy * self.dy)
 
-        edge_softness = 1.5 * scale
+        # Soft edge matching the overlay's stretched-exponential SDF profile.
+        # Much wider falloff than a hard clip so the tile blends into the fill.
+        edge_softness = 4.0 * scale
         self.circle = np.clip((self.r_px - self.dist) / edge_softness, 0.0, 1.0)
+        # Smoothstep for organic feel instead of linear ramp
+        self.circle = self.circle * self.circle * (3.0 - 2.0 * self.circle)
         self.pixel_angle = np.arctan2(self.dx, self.dy) % (2.0 * np.pi)
 
         # Pre-compute ring distance fields
