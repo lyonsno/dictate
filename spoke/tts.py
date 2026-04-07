@@ -1132,13 +1132,14 @@ class CloudTTSClient:
                     if self._cancelled:
                         return
                     try:
-                        wav_bytes = self._synthesize(sentence)
+                        result = self._synthesize(sentence)
                     except Exception:
                         logger.warning("TTS cloud synthesis failed for sentence %d", idx, exc_info=True)
                         continue
-                    if self._cancelled or wav_bytes is None:
+                    if self._cancelled or result is None:
                         return
-                    audio, sample_rate = self._decode_wav(wav_bytes)
+                    audio_bytes, mime_type = result
+                    audio, sample_rate = self._decode_audio(audio_bytes, mime_type)
                     audio = _apply_sentence_fades(
                         audio, sample_rate,
                         fade_in=(idx == 0),
@@ -1270,29 +1271,52 @@ class CloudTTSClient:
             parts = candidates[0]["content"]["parts"]
             inline_data = parts[0]["inlineData"]
             b64_audio = inline_data["data"]
+            mime_type = inline_data.get("mimeType", "")
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError(
                 f"Gemini TTS response missing audio data: {response!r:.500}"
             ) from exc
 
-        wav_bytes = base64.b64decode(b64_audio)
-        logger.info("TTS cloud response: %d bytes audio", len(wav_bytes))
-        return wav_bytes
+        audio_bytes = base64.b64decode(b64_audio)
+        logger.info("TTS cloud response: %d bytes audio, mimeType=%s", len(audio_bytes), mime_type)
+        return audio_bytes, mime_type
 
-    def _decode_wav(self, wav_bytes: bytes) -> tuple[np.ndarray, int]:
-        """Decode WAV bytes to float32 numpy array + sample rate."""
+    def _decode_audio(self, audio_bytes: bytes, mime_type: str = "") -> tuple[np.ndarray, int]:
+        """Decode audio bytes to float32 numpy array + sample rate.
+
+        Parses the MIME type (e.g. ``audio/L16;codec=pcm;rate=24000``) to
+        determine the format.  Falls back to WAV header decode, then raw
+        PCM if both fail.
+        """
+        # Parse sample rate from MIME type if available (e.g. "audio/L16;rate=24000")
+        pcm_rate = _GEMINI_TTS_SAMPLE_RATE
+        if mime_type:
+            for param in mime_type.split(";"):
+                param = param.strip()
+                if param.lower().startswith("rate="):
+                    try:
+                        pcm_rate = int(param.split("=", 1)[1])
+                    except (ValueError, IndexError):
+                        pass
+
+        # If MIME says raw PCM, skip WAV attempt
+        mime_base = mime_type.split(";")[0].strip().lower() if mime_type else ""
+        if mime_base in ("audio/l16", "audio/pcm"):
+            audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            return audio.reshape(-1, 1), pcm_rate
+
+        # Try WAV decode
         try:
-            with wave.open(io.BytesIO(wav_bytes), "rb") as wav_file:
+            with wave.open(io.BytesIO(audio_bytes), "rb") as wav_file:
                 channels = wav_file.getnchannels()
                 sample_width = wav_file.getsampwidth()
                 sample_rate = wav_file.getframerate()
                 frames = wav_file.readframes(wav_file.getnframes())
         except Exception:
-            # Gemini may return raw PCM (L16) without WAV headers
-            # Assume 24kHz mono 16-bit signed
+            # Last resort: raw PCM
             logger.info("TTS cloud: WAV decode failed, trying raw PCM")
-            audio = np.frombuffer(wav_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-            return audio.reshape(-1, 1), _GEMINI_TTS_SAMPLE_RATE
+            audio = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+            return audio.reshape(-1, 1), pcm_rate
 
         if sample_width == 1:
             audio = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0

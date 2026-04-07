@@ -1129,11 +1129,31 @@ class TestCloudTTSClient:
         # Audio should still play via the PCM fallback path
         mock_sd.OutputStream.assert_called()
 
-    def test_decode_wav_valid(self):
-        """_decode_wav should decode valid WAV bytes."""
+    def test_decode_audio_valid_wav(self):
+        """_decode_audio should decode valid WAV bytes."""
         from spoke.tts import CloudTTSClient
         client = CloudTTSClient(api_key="test-key")
         wav_bytes = self._make_wav_bytes(sample_rate=24000, num_samples=50)
-        audio, sr = client._decode_wav(wav_bytes)
+        audio, sr = client._decode_audio(wav_bytes)
         assert sr == 24000
         assert len(audio) == 50
+
+    def test_decode_audio_raw_pcm_via_mime(self):
+        """_decode_audio should parse L16 MIME type and skip WAV decode."""
+        import struct
+        from spoke.tts import CloudTTSClient
+        client = CloudTTSClient(api_key="test-key")
+        raw_pcm = struct.pack("<50h", *([1000] * 50))
+        audio, sr = client._decode_audio(raw_pcm, "audio/L16;codec=pcm;rate=24000")
+        assert sr == 24000
+        assert len(audio) == 50
+
+    def test_decode_audio_custom_rate_from_mime(self):
+        """_decode_audio should extract sample rate from MIME type parameters."""
+        import struct
+        from spoke.tts import CloudTTSClient
+        client = CloudTTSClient(api_key="test-key")
+        raw_pcm = struct.pack("<10h", *([500] * 10))
+        audio, sr = client._decode_audio(raw_pcm, "audio/L16;rate=16000")
+        assert sr == 16000
+        assert len(audio) == 10
