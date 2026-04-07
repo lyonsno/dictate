@@ -419,6 +419,47 @@ def _flush_logging_handlers() -> None:
             pass
 
 
+# ── AVCaptureDevice mic permission helpers ─────────────────────
+# These check/request microphone permission via the macOS AVFoundation API
+# without allocating any PortAudio buffers.  Under memory pressure, PortAudio
+# can fail to open a stream even though mic permission is already granted.
+# Using AVCaptureDevice avoids that failure mode entirely.
+#
+# AVAuthorizationStatus values:
+#   0 = notDetermined, 1 = restricted, 2 = denied, 3 = authorized
+
+def _get_av_auth_status() -> int:
+    """Return AVCaptureDevice.authorizationStatus(for: .audio) as an int."""
+    try:
+        from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
+        return int(AVCaptureDevice.authorizationStatusForMediaType_(AVMediaTypeAudio))
+    except Exception:
+        logger.debug("AVCaptureDevice import failed — falling back to unknown", exc_info=True)
+        return -1  # unknown / unavailable
+
+
+def _request_av_mic_access() -> bool:
+    """Block until the user grants or denies mic access. Returns True if granted."""
+    try:
+        from AVFoundation import AVCaptureDevice, AVMediaTypeAudio
+        import threading
+        result = threading.Event()
+        granted_box: list[bool] = [False]
+
+        def handler(granted: bool) -> None:
+            granted_box[0] = granted
+            result.set()
+
+        AVCaptureDevice.requestAccessForMediaType_completionHandler_(
+            AVMediaTypeAudio, handler
+        )
+        result.wait(timeout=60)
+        return granted_box[0]
+    except Exception:
+        logger.debug("AVCaptureDevice.requestAccess failed", exc_info=True)
+        return False
+
+
 def _record_runtime_phase(phase: str, **details) -> None:
     cwd = os.getcwd()
     payload = {
@@ -967,12 +1008,13 @@ class SpokeAppDelegate(NSObject):
         self._request_mic_permission()
 
     def _request_mic_permission(self) -> None:
-        """Trigger mic permission prompt by attempting a short recording.
+        """Check mic permission via AVCaptureDevice (no PortAudio allocation).
 
-        The sd.rec(blocking=True) call can deadlock the main thread if PortAudio
-        hits a hardware error or the mic permission prompt is pending.  Run the
-        probe on a background thread and dispatch the result back to the main
-        thread so the NSRunLoop stays responsive.
+        Under memory pressure, PortAudio can fail to open a stream even when
+        mic permission is already granted.  This probe uses the macOS
+        AVFoundation API which requires zero buffer allocation — it just asks
+        the OS whether the app has permission.  PortAudio stream opening is
+        deferred to first actual recording (capture.start()).
         """
         if self._mic_probe_in_flight:
             return
@@ -983,84 +1025,64 @@ class SpokeAppDelegate(NSObject):
         ).start()
 
     def _probe_mic_permission(self) -> None:
-        """Background-thread mic probe — dispatches result to main thread."""
-        import sounddevice as sd
-        try:
-            self._run_mic_permission_probe(sd)
-            logger.info("Microphone access granted")
+        """Background-thread mic probe — uses AVCaptureDevice, no PortAudio."""
+        status = _get_av_auth_status()
+
+        if status == 3:  # authorized
+            logger.info("Microphone access granted (AVCaptureDevice)")
             _record_runtime_phase("mic_probe.granted")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "micPermissionGranted:", None, False
             )
-        except Exception as exc:
-            if self._is_permission_probe_denial(exc):
-                logger.warning("Mic permission not yet granted: %s", exc)
-                _record_runtime_phase("mic_probe.denied", error=str(exc))
-                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "micPermissionDenied:", None, False
-                )
-                return
-
-            logger.warning(
-                "Mic probe hit audio runtime failure — resetting PortAudio",
-                exc_info=True,
-            )
-            self._reset_portaudio_probe(sd)
-
-            try:
-                self._run_mic_permission_probe(sd)
-                logger.info("Microphone access granted after PortAudio reset")
-                _record_runtime_phase("mic_probe.granted_after_reset")
+        elif status == 0:  # not determined — need to trigger the system prompt
+            logger.info("Mic permission not yet determined — requesting")
+            _record_runtime_phase("mic_probe.requesting")
+            granted = _request_av_mic_access()
+            if granted:
+                logger.info("Microphone access granted after prompt")
+                _record_runtime_phase("mic_probe.granted_after_prompt")
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "micPermissionGranted:", None, False
                 )
-            except Exception as retry_exc:
-                if self._is_permission_probe_denial(retry_exc):
-                    logger.warning("Mic permission not yet granted: %s", retry_exc)
-                    _record_runtime_phase("mic_probe.denied_after_reset", error=str(retry_exc))
-                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                        "micPermissionDenied:", None, False
-                    )
-                    return
-                logger.warning(
-                    "Mic probe failed after PortAudio reset",
-                    exc_info=True,
+            else:
+                logger.warning("Mic permission denied by user")
+                _record_runtime_phase("mic_probe.denied_by_user")
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "micPermissionDenied:", None, False
                 )
-                _record_runtime_phase("mic_probe.failed", error=str(retry_exc))
+        elif status in (1, 2):  # restricted or denied
+            logger.warning("Mic permission denied (status=%d)", status)
+            _record_runtime_phase("mic_probe.denied", status=status)
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "micPermissionDenied:", None, False
+            )
+        else:  # -1 or unknown — AVFoundation unavailable, fall back to sd.rec
+            logger.warning("AVCaptureDevice unavailable — falling back to PortAudio probe")
+            self._probe_mic_permission_portaudio_fallback()
+
+    def _probe_mic_permission_portaudio_fallback(self) -> None:
+        """Legacy PortAudio-based probe, used only if AVFoundation is unavailable."""
+        import sounddevice as sd
+        try:
+            sd.rec(1600, samplerate=16000, channels=1, dtype='float32', blocking=True)
+            logger.info("Microphone access granted (PortAudio fallback)")
+            _record_runtime_phase("mic_probe.granted_portaudio_fallback")
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "micPermissionGranted:", None, False
+            )
+        except Exception as exc:
+            msg = str(exc).lower()
+            if any(m in msg for m in ("permission", "not permitted", "access denied")):
+                _record_runtime_phase("mic_probe.denied_portaudio_fallback")
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "micPermissionDenied:", None, False
+                )
+            else:
+                logger.warning("PortAudio fallback probe failed", exc_info=True)
+                _record_runtime_phase("mic_probe.failed_portaudio_fallback", error=str(exc))
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "micProbeFailed:", None, False
                 )
-
-    def _run_mic_permission_probe(self, sd_module) -> None:
-        sd_module.rec(
-            1600,
-            samplerate=16000,
-            channels=1,
-            dtype='float32',
-            blocking=True,
-        )
-
-    def _reset_portaudio_probe(self, sd_module) -> None:
-        try:
-            sd_module._terminate()
-        except Exception:
-            logger.debug("Mic probe PortAudio terminate failed", exc_info=True)
-        try:
-            sd_module._initialize()
-        except Exception:
-            logger.debug("Mic probe PortAudio initialize failed", exc_info=True)
-
-    def _is_permission_probe_denial(self, exc: Exception) -> bool:
-        message = str(exc).lower()
-        permission_markers = (
-            "permission",
-            "not permitted",
-            "permission denied",
-            "access denied",
-            "access was denied",
-            "operation not permitted",
-        )
-        return any(marker in message for marker in permission_markers)
 
     def micPermissionGranted_(self, _sender) -> None:
         """Main-thread callback after mic probe succeeds."""

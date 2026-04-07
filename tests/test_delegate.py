@@ -3393,6 +3393,71 @@ class TestMicNotReady:
         d._menubar.set_status_text.assert_called_with("Ready — hold spacebar")
 
 
+class TestMicPermissionProbe:
+    """Mic probe uses AVCaptureDevice permission check, not sd.rec()."""
+
+    def test_probe_dispatches_granted_on_authorized_status(self, main_module, monkeypatch):
+        """When AVCaptureDevice says authorized, mic probe should dispatch
+        micPermissionGranted_ without touching PortAudio at all."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._mic_probe_in_flight = True
+        d._mic_ready = False
+
+        monkeypatch.setattr(main_module, "_get_av_auth_status", lambda: 3)
+        # sd.rec should NOT be called — permission check is enough
+        mock_sd = MagicMock()
+        monkeypatch.setattr("sounddevice.rec", mock_sd)
+
+        # Capture the selector dispatched to main thread
+        dispatched = []
+        d.performSelectorOnMainThread_withObject_waitUntilDone_ = (
+            lambda sel, obj, wait: dispatched.append(sel)
+        )
+
+        d._probe_mic_permission()
+
+        mock_sd.assert_not_called()
+        assert "micPermissionGranted:" in dispatched
+
+    def test_probe_dispatches_denied_on_denied_status(self, main_module, monkeypatch):
+        """When AVCaptureDevice says denied, probe should dispatch denial
+        without attempting PortAudio recording."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._mic_probe_in_flight = True
+        d._mic_ready = False
+
+        monkeypatch.setattr(main_module, "_get_av_auth_status", lambda: 2)
+
+        dispatched = []
+        d.performSelectorOnMainThread_withObject_waitUntilDone_ = (
+            lambda sel, obj, wait: dispatched.append(sel)
+        )
+
+        d._probe_mic_permission()
+
+        assert "micPermissionDenied:" in dispatched
+        assert d._mic_ready is False
+
+    def test_probe_requests_on_not_determined(self, main_module, monkeypatch):
+        """When status is not-determined, probe should request access via
+        AVCaptureDevice and dispatch granted if the request succeeds."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._mic_probe_in_flight = True
+        d._mic_ready = False
+
+        monkeypatch.setattr(main_module, "_get_av_auth_status", lambda: 0)
+        monkeypatch.setattr(main_module, "_request_av_mic_access", lambda: True)
+
+        dispatched = []
+        d.performSelectorOnMainThread_withObject_waitUntilDone_ = (
+            lambda sel, obj, wait: dispatched.append(sel)
+        )
+
+        d._probe_mic_permission()
+
+        assert "micPermissionGranted:" in dispatched
+
+
 class TestShortShiftHold:
     """Test the instant recall/dismiss path for short shift-holds."""
 
