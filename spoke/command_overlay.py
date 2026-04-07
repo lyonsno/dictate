@@ -309,7 +309,7 @@ class _SpinnerTileRenderer:
 
         # Smoke in cutout: bright (white-ish) glow, not bg_color
         swept = sweep_mask * circle
-        smoke_alpha = swept * noise_01 * 0.35
+        smoke_alpha = swept * noise_01 * 0.55
         # Texture in fill: slight noise subtraction
         alpha *= (1.0 - (1.0 - swept) * noise_01 * 0.06)
         alpha += smoke_alpha
@@ -324,12 +324,6 @@ class _SpinnerTileRenderer:
 
         rgba = self.rgba
         px = self.tile_px
-        np.clip(r * 255.0 * alpha, 0, 255, out=rgba[..., 0].view(np.float32).reshape(px, px))
-        np.clip(g * 255.0 * alpha, 0, 255, out=rgba[..., 1].view(np.float32).reshape(px, px))
-        np.clip(b * 255.0 * alpha, 0, 255, out=rgba[..., 2].view(np.float32).reshape(px, px))
-        np.clip(alpha * 255.0, 0, 255, out=rgba[..., 3].view(np.float32).reshape(px, px))
-
-        # Actually the view trick won't work for uint8. Do it simply:
         rgba[..., 0] = np.clip(r * 255.0 * alpha, 0, 255).astype(np.uint8)
         rgba[..., 1] = np.clip(g * 255.0 * alpha, 0, 255).astype(np.uint8)
         rgba[..., 2] = np.clip(b * 255.0 * alpha, 0, 255).astype(np.uint8)
