@@ -1272,6 +1272,12 @@ class CommandOverlay(NSObject):
             self._spinner_tile_layer = CALayer.alloc().init()
             self._spinner_tile_layer.setFrame_(frame)
             self._spinner_tile_layer.setContentsGravity_("resize")
+            # Match the fill layer's compositing filter so the tile blends
+            # with the desktop the same way the overlay fill does
+            if hasattr(self._spinner_tile_layer, "setCompositingFilter_"):
+                self._spinner_tile_layer.setCompositingFilter_(
+                    _fill_compositing_filter_for_brightness(self._brightness)
+                )
             # Behind the fill so it's only visible through the permanent hole
             self._wrapper_view.layer().insertSublayer_below_(
                 self._spinner_tile_layer, self._fill_layer
@@ -1461,6 +1467,13 @@ class CommandOverlay(NSObject):
             self._fill_image_brightness = self._brightness
             content_frame = self._content_view.frame()
             self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
+        # Keep spinner tile compositing in sync with fill
+        if getattr(self, "_spinner_tile_layer", None) is not None and hasattr(
+            self._spinner_tile_layer, "setCompositingFilter_"
+        ):
+            self._spinner_tile_layer.setCompositingFilter_(
+                _fill_compositing_filter_for_brightness(self._brightness)
+            )
         self._apply_thinking_label_theme()
 
     def _apply_thinking_label_theme(self) -> None:
