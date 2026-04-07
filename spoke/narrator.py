@@ -186,10 +186,11 @@ class ThinkingNarrator:
 
         if not self._on_thinking_collapsed:
             return
+        if elapsed < 1.0:
+            return  # sub-second thinking — not worth reporting
         if len(messages) < 3:
-            # No summaries were produced — thinking was too short
-            if elapsed >= 2.0:
-                self._on_thinking_collapsed(f"Thought for {elapsed:.0f}s")
+            # No summaries were produced — still show the bare duration
+            self._on_thinking_collapsed(f"Thought for {elapsed:.0f}s")
             return
 
         # Fire async wrap-up
