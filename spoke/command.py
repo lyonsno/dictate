@@ -526,6 +526,14 @@ class CommandClient:
                         if fr:
                             finish_reason = fr
 
+                        # Log first delta for debugging thinking detection
+                        if not first_token_logged and delta:
+                            logger.info(
+                                "First SSE delta keys on round %d: %s (preview: %s)",
+                                _round, list(delta.keys()),
+                                {k: str(v)[:80] for k, v in delta.items()},
+                            )
+
                         # Reasoning tokens can arrive as plaintext fields
                         # or structured reasoning_details, depending on provider.
                         for reasoning_token in _extract_reasoning_tokens(delta):
