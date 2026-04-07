@@ -887,6 +887,7 @@ class TestCommandCompletionAutoplay:
         tts._stream = MagicMock()  # simulate active playback
         delegate = self._make_delegate(main_module, tts_client=tts)
         delegate._models_ready = True
+        delegate._mic_ready = True
         delegate._capture = MagicMock()
         delegate._overlay = MagicMock()
         delegate._glow = MagicMock()

@@ -786,6 +786,7 @@ class SpokeAppDelegate(NSObject):
         self._warmup_in_flight = False
         self._hold_rejected_during_warmup = False
         self._mic_probe_in_flight = False
+        self._mic_ready = False  # True once mic probe succeeds at least once
 
         # Command pathway — always enabled, but can persist a sidecar URL.
         self._command_backend = None
@@ -955,9 +956,14 @@ class SpokeAppDelegate(NSObject):
         self._terraform_hud.restore_visibility()
         self._menubar._on_toggle_terraform = self._terraform_hud.toggle
 
-        # Step 1: Request mic permission with a test recording.
-        # This triggers the system prompt before we start listening for spacebar.
-        self._menubar.set_status_text("Requesting mic access…")
+        # Iron Giant: install event tap and probe mic in parallel.
+        # The event tap (spacebar interception) only needs Accessibility permission,
+        # not mic access.  Under memory pressure the mic probe can fail even though
+        # the system has already granted mic permission, which previously blocked
+        # the entire app.  Now the spacebar works immediately and mic readiness is
+        # tracked independently.
+        self._menubar.set_status_text("Starting up…")
+        self._setup_event_tap()
         self._request_mic_permission()
 
     def _request_mic_permission(self) -> None:
@@ -1059,14 +1065,16 @@ class SpokeAppDelegate(NSObject):
     def micPermissionGranted_(self, _sender) -> None:
         """Main-thread callback after mic probe succeeds."""
         self._mic_probe_in_flight = False
-        self._setup_event_tap()
+        self._mic_ready = True
+        if self._menubar is not None and self._models_ready:
+            self._menubar.set_status_text("Ready — hold spacebar")
 
     def micPermissionDenied_(self, _sender) -> None:
         """Main-thread callback after mic probe fails — schedule retry."""
         from Foundation import NSTimer
         self._mic_probe_in_flight = False
         if self._menubar is not None:
-            self._menubar.set_status_text("Grant mic access, then wait…")
+            self._menubar.set_status_text("Mic: grant access, then wait…")
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             2.0, self, "retryMicPermission:", None, False
         )
@@ -1142,7 +1150,10 @@ class SpokeAppDelegate(NSObject):
         self._warm_error = None
         logger.info("spoke ready — hold spacebar to record")
         _record_runtime_phase("app.ready")
-        self._menubar.set_status_text("Ready — hold spacebar")
+        if self._mic_ready:
+            self._menubar.set_status_text("Ready — hold spacebar")
+        else:
+            self._menubar.set_status_text("Models ready — mic unavailable, retrying…")
         self._hide_startup_status()
 
         # Warn if cloud preview is active — each partial is a paid API call.
@@ -1282,6 +1293,11 @@ class SpokeAppDelegate(NSObject):
             logger.warning("Hold started before models were ready — ignoring")
             self._hold_rejected_during_warmup = True
             self._refresh_startup_status()
+            return
+        if not getattr(self, "_mic_ready", False):
+            logger.warning("Hold started but mic not yet available — ignoring")
+            if self._menubar is not None:
+                self._menubar.set_status_text("Mic unavailable — retrying…")
             return
         # If TTS is playing from a tool call, cancel the playback but
         # don't invalidate the stream token — let the remaining tool batch

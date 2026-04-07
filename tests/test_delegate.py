@@ -36,6 +36,7 @@ def _make_delegate(main_module, monkeypatch):
     delegate._cap_fired = False
     delegate._transcribe_start = time.monotonic()
     delegate._last_preview_text = ""
+    delegate._mic_ready = True
     delegate._command_client = None
     delegate._command_backend = "local"
     delegate._command_url = "http://localhost:8001"

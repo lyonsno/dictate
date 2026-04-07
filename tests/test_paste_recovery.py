@@ -30,6 +30,7 @@ def _make_delegate(main_module, monkeypatch):
     delegate._transcribe_start = time.monotonic()
     delegate._last_preview_text = ""
     delegate._models_ready = True
+    delegate._mic_ready = True
     delegate._preview_session_token = 0
     delegate._preview_done = MagicMock()
     delegate._preview_done.set = MagicMock()
