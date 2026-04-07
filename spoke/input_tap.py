@@ -584,13 +584,6 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             # Notify delegate when space+enter are both held during active
             # recording.  Used for live mode arming.  Not fired during WAITING
             # because Enter during WAITING cancels the hold (overlay toggle).
-            # Diagnostic: log enter keyDown state
-            try:
-                with open("/tmp/spoke-chord-diag.log", "a") as _f:
-                    import time as _t
-                    _f.write(f"enter keyDown: state={det._state.name} at {_t.time()}\n")
-            except Exception:
-                pass
             if det._state in (_State.RECORDING, _State.LATCHED):
                 cb = getattr(det, '_on_space_enter_chord', None)
                 if cb is not None:
@@ -621,13 +614,6 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                         cb()
                 return None  # suppress enter during WAITING regardless
             if det._state == _State.RECORDING:
-                # Diagnostic: log state for live mode debugging
-                try:
-                    with open("/tmp/spoke-chord-diag.log", "a") as _f:
-                        import time as _t
-                        _f.write(f"enter during RECORDING: overlay_active={getattr(det, 'command_overlay_active', 'MISSING')} at {_t.time()}\n")
-                except Exception:
-                    pass
                 # Fire cancel spring callback if the command overlay is active
                 # (generation in progress and user is adding enter to the hold)
                 if getattr(det, 'command_overlay_active', False):
