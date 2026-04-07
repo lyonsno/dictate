@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import json
 import struct
+import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -393,3 +395,139 @@ class TestToolUseSupport:
         assert len(calls) == 1
         sent = json.loads(calls[0][0][0])
         assert "tool_response" in sent
+
+
+class TestLiveToolSchemaFiltering:
+    """Tests for tool schema filtering when entering live mode."""
+
+    def test_read_aloud_excluded_from_live_tools(self):
+        """Live mode should exclude read_aloud since model has native voice."""
+        from spoke.tool_dispatch import get_tool_schemas
+
+        all_schemas = get_tool_schemas()
+        all_names = {s["function"]["name"] for s in all_schemas}
+        assert "read_aloud" in all_names, "read_aloud should exist in full schema set"
+
+        # Apply the same filter as __main__.py _enter_live_mode
+        live_tools = [
+            s for s in all_schemas
+            if s.get("function", {}).get("name") != "read_aloud"
+        ]
+        live_names = {s["function"]["name"] for s in live_tools}
+        assert "read_aloud" not in live_names
+        assert "capture_context" in live_names
+        assert "add_to_tray" in live_names
+        assert len(live_tools) == len(all_schemas) - 1
+
+    def test_gemini_setup_includes_tools_when_provided(self):
+        """Setup message should contain tools field when tools are given."""
+        from spoke.gemini_live import GeminiLiveClient
+
+        tools = [
+            {"type": "function", "function": {"name": "capture_context", "description": "Capture screen"}},
+            {"type": "function", "function": {"name": "add_to_tray", "description": "Add to tray"}},
+        ]
+        client = GeminiLiveClient("test-key", tools=tools)
+        assert client._tools is not None
+        decl_names = [d["name"] for d in client._tools[0]["function_declarations"]]
+        assert "capture_context" in decl_names
+        assert "add_to_tray" in decl_names
+
+    def test_gemini_setup_omits_tools_when_none(self):
+        """Setup message should not contain tools field when none given."""
+        from spoke.gemini_live import GeminiLiveClient
+
+        client = GeminiLiveClient("test-key")
+        assert client._tools is None
+
+
+class TestLiveToolDispatch:
+    """Tests for tool call dispatch from live mode (_on_live_tool_call)."""
+
+    def test_tool_worker_executes_and_responds(self):
+        """_live_tool_worker should call execute_tool and send response."""
+        import spoke.__main__ as main_module
+
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        d._scene_cache = None
+        d._tray_stack = []
+        d._tray_index = 0
+        d._tray_active = False
+        d._live_client = MagicMock()
+
+        # Stub _add_assistant_content_to_tray
+        d._add_assistant_content_to_tray = MagicMock()
+
+        function_calls = [
+            {"id": "call-1", "name": "capture_context", "args": {"scope": "screen"}},
+        ]
+
+        with patch("spoke.tool_dispatch.execute_tool", return_value='{"scene_ref": "test"}') as mock_exec:
+            d._live_tool_worker(function_calls)
+
+        mock_exec.assert_called_once_with(
+            name="capture_context",
+            arguments={"scope": "screen"},
+            scene_cache=None,
+            last_response=None,
+            tts_client=None,
+            tray_writer=d._add_assistant_content_to_tray,
+        )
+        d._live_client.send_tool_response.assert_called_once()
+        responses = d._live_client.send_tool_response.call_args[0][0]
+        assert len(responses) == 1
+        assert responses[0]["id"] == "call-1"
+        assert responses[0]["name"] == "capture_context"
+
+    def test_tool_worker_handles_execution_error(self):
+        """_live_tool_worker should catch exceptions and send error response."""
+        import spoke.__main__ as main_module
+
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        d._scene_cache = None
+        d._tray_stack = []
+        d._tray_index = 0
+        d._tray_active = False
+        d._live_client = MagicMock()
+        d._add_assistant_content_to_tray = MagicMock()
+
+        function_calls = [
+            {"id": "call-err", "name": "bad_tool", "args": {}},
+        ]
+
+        with patch("spoke.tool_dispatch.execute_tool", side_effect=RuntimeError("boom")):
+            d._live_tool_worker(function_calls)
+
+        d._live_client.send_tool_response.assert_called_once()
+        responses = d._live_client.send_tool_response.call_args[0][0]
+        assert "error" in responses[0]["response"]["result"]
+
+    def test_on_live_tool_call_dispatches_to_thread(self):
+        """_on_live_tool_call should spawn a worker thread, not block."""
+        import spoke.__main__ as main_module
+
+        d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        d._scene_cache = None
+        d._tray_stack = []
+        d._tray_index = 0
+        d._tray_active = False
+        d._live_client = MagicMock()
+        d._add_assistant_content_to_tray = MagicMock()
+
+        started = threading.Event()
+        original_start = threading.Thread.start
+
+        def _track_start(self_thread):
+            original_start(self_thread)
+            if self_thread.name == "live-tool-exec":
+                started.set()
+
+        function_calls = [
+            {"id": "call-t", "name": "capture_context", "args": {}},
+        ]
+
+        with patch("spoke.tool_dispatch.execute_tool", return_value='{}'):
+            with patch.object(threading.Thread, "start", _track_start):
+                d._on_live_tool_call(function_calls)
+
+        assert started.wait(timeout=2), "Worker thread should have started"
