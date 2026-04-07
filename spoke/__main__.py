@@ -3112,7 +3112,11 @@ class SpokeAppDelegate(NSObject):
             ) or os.environ.get("SPOKE_TTS_MODEL", "")
             if tts_client is not None or tts_voice_pref or saved_tts_model or tts_backend in ("sidecar", "cloud"):
                 has_tts_sidecar_url = bool(tts_sidecar_url)
-                has_tts_cloud = bool(os.environ.get("GEMINI_API_KEY") or self._load_preference("tts_cloud_api_key"))
+                has_tts_cloud = bool(
+                    os.environ.get("GEMINI_API_KEY")
+                    or self._load_preference("tts_cloud_api_key")
+                    or self._load_preference("command_cloud_api_key")
+                )
                 tts_backend_labels = {"local": "Local", "sidecar": "Sidecar", "cloud": "Cloud (Gemini)"}
                 tts_target = "not active"
                 if tts_client is not None:
@@ -3791,6 +3795,7 @@ class SpokeAppDelegate(NSObject):
             api_key = (
                 self._load_preference("tts_cloud_api_key")
                 or os.environ.get("GEMINI_API_KEY", "")
+                or self._load_preference("command_cloud_api_key")
             )
             if not api_key:
                 logger.warning("Cannot build cloud TTS client: no API key")
@@ -3900,6 +3905,7 @@ class SpokeAppDelegate(NSObject):
             api_key = (
                 self._load_preference("tts_cloud_api_key")
                 or os.environ.get("GEMINI_API_KEY", "")
+                or self._load_preference("command_cloud_api_key")
             )
             if not api_key:
                 logger.warning("Cannot switch to cloud TTS: no GEMINI_API_KEY")
