@@ -231,6 +231,7 @@ class CommandOverlay(NSObject):
         self._narrator_shimmer_phase = 0.0  # 0–1 cycling hue phase
         self._narrator_shimmer_active = False
         self._narrator_suppressed = False  # True after hide, blocks late callbacks
+        self._collapsed_text = ""  # accumulated collapsed thinking text
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -413,6 +414,7 @@ class CommandOverlay(NSObject):
         self._response_text = ""
         self._utterance_text = ""
         self._narrator_suppressed = False  # allow narrator for new command
+        self._collapsed_text = ""  # clear collapsed thinking for new command
         # Reset TTS state so stale blend doesn't affect new responses
         self._tts_active = False
         self._tts_blend = 0.0
@@ -602,6 +604,8 @@ class CommandOverlay(NSObject):
             NSFontAttributeName,
         )
         user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
+        # Track the full collapsed text for rebuild in set_response_text
+        self._collapsed_text += text
         # If this is the first collapsed text, add a newline prefix
         is_append = text.startswith(" · ")
         prefix = "" if is_append else ("\n" if self._utterance_text else "")
@@ -661,7 +665,14 @@ class CommandOverlay(NSObject):
             )
             self._text_view.textStorage().appendAttributedString_(sep)
 
-        frag = self._make_response_fragment(token)
+        # Style tool call indicators smaller (like collapsed thinking)
+        is_tool_indicator = (
+            token.startswith("\n[calling ") or token.startswith("  [")
+        )
+        if is_tool_indicator:
+            frag = self._make_tool_indicator_fragment(token)
+        else:
+            frag = self._make_response_fragment(token)
         self._text_view.textStorage().appendAttributedString_(frag)
 
         self._update_layout()
@@ -708,11 +719,34 @@ class CommandOverlay(NSObject):
             )
             combined.appendAttributedString_(utt)
 
+            # Re-inject collapsed thinking text if present
+            if self._collapsed_text:
+                from AppKit import NSFontAttributeName
+                collapsed_full = "\n" + self._collapsed_text
+                collapsed_attr = NSMutableAttributedString.alloc().initWithString_(collapsed_full)
+                collapsed_attr.addAttribute_value_range_(
+                    NSForegroundColorAttributeName,
+                    NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.25),
+                    (0, len(collapsed_full)),
+                )
+                collapsed_attr.addAttribute_value_range_(
+                    NSFontAttributeName,
+                    NSFont.systemFontOfSize_weight_(12.0, 0.0),
+                    (0, len(collapsed_full)),
+                )
+                combined.appendAttributedString_(collapsed_attr)
+
             if text:
                 sep = NSMutableAttributedString.alloc().initWithString_("\n\n")
                 sep.addAttribute_value_range_(
                     NSForegroundColorAttributeName,
                     NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
+                    (0, 2),
+                )
+                from AppKit import NSFontAttributeName
+                sep.addAttribute_value_range_(
+                    NSFontAttributeName,
+                    NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
                     (0, 2),
                 )
                 combined.appendAttributedString_(sep)
@@ -745,6 +779,27 @@ class CommandOverlay(NSObject):
             return (x + m, m, c + m)
         else:
             return (c + m, m, x + m)
+
+    def _make_tool_indicator_fragment(self, token: str):
+        """Create a small, subtle attributed string for tool call indicators."""
+        from AppKit import (
+            NSMutableAttributedString,
+            NSForegroundColorAttributeName,
+            NSFontAttributeName,
+        )
+        user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
+        frag = NSMutableAttributedString.alloc().initWithString_(token)
+        frag.addAttribute_value_range_(
+            NSForegroundColorAttributeName,
+            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.25),
+            (0, len(token)),
+        )
+        frag.addAttribute_value_range_(
+            NSFontAttributeName,
+            NSFont.systemFontOfSize_weight_(12.0, 0.0),
+            (0, len(token)),
+        )
+        return frag
 
     def _make_response_fragment(self, token: str):
         """Create an attributed string fragment for a response token.
