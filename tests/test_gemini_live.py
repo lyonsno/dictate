@@ -293,6 +293,38 @@ class TestToolUseSupport:
         assert "parameters" in declarations[0]
         assert declarations[1]["name"] == "add_to_tray"
 
+    def test_schema_conversion_strips_additionalProperties(self):
+        from spoke.gemini_live import _openai_tools_to_gemini
+
+        schemas = [{
+            "type": "function",
+            "function": {
+                "name": "complex_tool",
+                "description": "A tool with nested schemas",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "ops": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {"op": {"type": "string"}},
+                                "required": ["op"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "required": ["ops"],
+                    "additionalProperties": False,
+                },
+            },
+        }]
+        result = _openai_tools_to_gemini(schemas)
+        params = result[0]["function_declarations"][0]["parameters"]
+        assert "additionalProperties" not in params
+        items = params["properties"]["ops"]["items"]
+        assert "additionalProperties" not in items
+
     def test_client_stores_converted_tools(self):
         from spoke.gemini_live import GeminiLiveClient
 

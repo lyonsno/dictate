@@ -58,6 +58,29 @@ _DEFAULT_SYSTEM_INSTRUCTION = (
 _SHUTDOWN = object()
 
 
+def _strip_unsupported_keys(obj: dict) -> dict:
+    """Recursively strip keys Gemini doesn't understand from JSON Schema.
+
+    Gemini's function declaration format is a subset of OpenAPI 3.0.3 and
+    rejects unknown fields like ``additionalProperties``.
+    """
+    _BANNED = {"additionalProperties", "default", "$schema"}
+    out = {}
+    for k, v in obj.items():
+        if k in _BANNED:
+            continue
+        if isinstance(v, dict):
+            out[k] = _strip_unsupported_keys(v)
+        elif isinstance(v, list):
+            out[k] = [
+                _strip_unsupported_keys(item) if isinstance(item, dict) else item
+                for item in v
+            ]
+        else:
+            out[k] = v
+    return out
+
+
 def _openai_tools_to_gemini(openai_schemas: list[dict]) -> list[dict]:
     """Convert OpenAI-format tool schemas to Gemini function_declarations.
 
@@ -76,7 +99,7 @@ def _openai_tools_to_gemini(openai_schemas: list[dict]) -> list[dict]:
         if "description" in fn:
             decl["description"] = fn["description"]
         if "parameters" in fn:
-            decl["parameters"] = fn["parameters"]
+            decl["parameters"] = _strip_unsupported_keys(fn["parameters"])
         declarations.append(decl)
     return [{"function_declarations": declarations}]
 
