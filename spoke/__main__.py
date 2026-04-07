@@ -91,10 +91,11 @@ from .capture import AudioCapture
 from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
 from .narrator import ThinkingNarrator
 from .focus_check import has_focused_text_input, focused_text_contains
+from .handsfree import HandsFreeController, HandsFreeState, match_voice_command
 from .scene_capture import SceneCaptureCache
 from .tool_dispatch import execute_tool, get_tool_schemas
 from .glow import GlowOverlay
-from .inject import inject_text, save_pasteboard, restore_pasteboard, set_pasteboard_only
+from .inject import inject_text, inject_text_raw, save_pasteboard, restore_pasteboard, set_pasteboard_only
 from .input_tap import SpacebarHoldDetector
 from .launch_targets import (
     current_launch_target,
@@ -958,6 +959,10 @@ class SpokeAppDelegate(NSObject):
                 _MAX_RECORD_SECS,
             )
 
+        # Hands-free continuous dictation controller
+        self._handsfree = HandsFreeController(self)
+        self._handsfree.on_state_change = self._on_handsfree_state_change
+
         return self
 
     # ── NSApplication delegate ──────────────────────────────
@@ -996,6 +1001,10 @@ class SpokeAppDelegate(NSObject):
         self._terraform_hud = TerraformHUD.alloc().init()
         self._terraform_hud.restore_visibility()
         self._menubar._on_toggle_terraform = self._terraform_hud.toggle
+
+        # Hands-free mode — wire menubar toggle if Porcupine key is available
+        if os.environ.get("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY"):
+            self._menubar._on_toggle_handsfree = self._toggle_handsfree
 
         # Iron Giant: install event tap and probe mic in parallel.
         # The event tap (spacebar interception) only needs Accessibility permission,
@@ -1193,6 +1202,11 @@ class SpokeAppDelegate(NSObject):
         self._register_loaded_models()
         self._start_heartbeat_timer()
 
+        # Auto-enable hands-free wake word listening if Porcupine key is available.
+        hf = getattr(self, "_handsfree", None)
+        if hf is not None and os.environ.get("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY"):
+            hf.enable()
+
         # Keep TTS lazy. Startup-time local TTS warmup can monopolize the same
         # MLX lock transcription uses, which starves preview/final text on
         # OmniVoice surfaces until the TTS model finishes loading.
@@ -1203,6 +1217,154 @@ class SpokeAppDelegate(NSObject):
         exc = self._warm_error or RuntimeError("Model warmup failed")
         self._refresh_startup_status()
         self._show_model_load_alert(exc)
+
+    # ── Hands-free mode ────────────────────────────────────────
+
+    def _toggle_handsfree(self) -> None:
+        """Menu/manual toggle for hands-free mode."""
+        hf = self._handsfree
+        if hf.is_active:
+            hf.disable()
+        else:
+            hf.enable()
+
+    def handleWakeWord_(self, payload: dict) -> None:
+        """Main-thread selector called by HandsFreeController on wake word detection."""
+        role = payload.get("role", "")
+        self._handsfree.handle_wake_word(role)
+
+    def handsFreeInject_(self, payload: dict) -> None:
+        """Main-thread selector: inject hands-free transcription at cursor."""
+        text = payload.get("text", "")
+        dest = payload.get("dest", "cursor")
+        if not text:
+            return
+
+        # Check for voice commands (only for cursor-destined segments)
+        if dest == "cursor":
+            cmd = match_voice_command(text)
+            if cmd is not None:
+                action, value = cmd
+                logger.info("Hands-free voice command: %r → %s(%r)", text, action, value)
+                if action == "keystroke":
+                    self._synthesize_keystroke(value)
+                elif action == "chord":
+                    self._synthesize_chord(value)
+                elif action == "tray_enter":
+                    self._handsfree_tray_enter()
+                elif action == "tray_insert":
+                    self._handsfree_tray_insert()
+                else:
+                    inject_text_raw(value)
+                return
+
+        # Route based on destination
+        if dest == "tray":
+            logger.info("Hands-free → tray: %r", text)
+            self._add_tray_entry(text, owner="handsfree", activate=False)
+            return
+
+        # Normal text — append trailing space for continuous flow.
+        # Use inject_text_raw to skip per-segment clipboard save/restore;
+        # the HandsFreeController saves clipboard once at dictation start.
+        logger.info("Hands-free inject: %r", text)
+        inject_text_raw(text + " ")
+
+    _KEYSTROKE_MAP = {
+        "return": 36,
+        "tab": 48,
+        "escape": 53,
+        "delete": 51,
+        "space": 49,
+    }
+
+    def _synthesize_keystroke(self, key_name: str) -> None:
+        """Synthesize a bare keystroke (no modifiers)."""
+        from Quartz import CGEventCreateKeyboardEvent, CGEventPost, kCGHIDEventTap
+        keycode = self._KEYSTROKE_MAP.get(key_name)
+        if keycode is None:
+            logger.warning("Unknown keystroke: %s", key_name)
+            return
+        down = CGEventCreateKeyboardEvent(None, keycode, True)
+        up = CGEventCreateKeyboardEvent(None, keycode, False)
+        CGEventPost(kCGHIDEventTap, down)
+        CGEventPost(kCGHIDEventTap, up)
+        logger.info("Synthesized keystroke: %s (keycode %d)", key_name, keycode)
+
+    _CHORD_KEYCODE_MAP = {
+        "[": 33,
+        "]": 30,
+    }
+
+    def _synthesize_chord(self, chord: str) -> None:
+        """Synthesize a modifier+key chord like 'cmd+shift+['."""
+        from Quartz import (
+            CGEventCreateKeyboardEvent, CGEventPost, CGEventSetFlags,
+            kCGEventFlagMaskCommand, kCGEventFlagMaskShift, kCGHIDEventTap,
+        )
+        parts = chord.lower().split("+")
+        key = parts[-1]
+        mods = set(parts[:-1])
+
+        keycode = self._CHORD_KEYCODE_MAP.get(key) or self._KEYSTROKE_MAP.get(key)
+        if keycode is None:
+            logger.warning("Unknown chord key: %s", key)
+            return
+
+        flags = 0
+        if "cmd" in mods:
+            flags |= kCGEventFlagMaskCommand
+        if "shift" in mods:
+            flags |= kCGEventFlagMaskShift
+
+        down = CGEventCreateKeyboardEvent(None, keycode, True)
+        CGEventSetFlags(down, flags)
+        up = CGEventCreateKeyboardEvent(None, keycode, False)
+        CGEventSetFlags(up, 0)
+        CGEventPost(kCGHIDEventTap, down)
+        CGEventPost(kCGHIDEventTap, up)
+        logger.info("Synthesized chord: %s (keycode %d, flags %d)", chord, keycode, flags)
+
+    def _handsfree_tray_enter(self) -> None:
+        """Voice command: route the next spoken segment to the tray."""
+        hf = getattr(self, "_handsfree", None)
+        if hf is None:
+            return
+        logger.info("Hands-free: next segment → tray")
+        hf.route_next_segment("tray")
+
+    def _handsfree_tray_insert(self) -> None:
+        """Voice command: insert the current tray entry at cursor."""
+        if not getattr(self, "_tray_stack", None):
+            logger.info("Hands-free: no tray entries to insert")
+            return
+        # Insert the most recent tray entry
+        entry = self._tray_stack[-1]
+        text = entry if isinstance(entry, str) else getattr(entry, "text", str(entry))
+        if text:
+            logger.info("Hands-free: inserting tray entry: %r", text)
+            inject_text(text + " ")
+
+    def _on_handsfree_state_change(self, state: HandsFreeState) -> None:
+        """Update UI when hands-free state changes."""
+        if self._menubar is None:
+            return
+
+        if state == HandsFreeState.DORMANT:
+            self._menubar.set_status_text("Ready — hold spacebar")
+            self._menubar.set_recording(False)
+            if self._glow is not None:
+                self._glow.hide()
+        elif state == HandsFreeState.LISTENING:
+            self._menubar.set_status_text("Listening for wake word…")
+            self._menubar.set_recording(False)
+            if self._glow is not None:
+                self._glow.hide()
+        elif state == HandsFreeState.DICTATING:
+            self._menubar.set_status_text("Hands-free — dictating…")
+            self._menubar.set_recording(True)
+            if self._glow is not None:
+                self._glow.show()
 
     def _warm_tts_in_background(self) -> None:
         tts = getattr(self, "_tts_client", None)
@@ -1395,6 +1557,15 @@ class SpokeAppDelegate(NSObject):
             getattr(self, "_verify_paste_text", None) is not None,
             getattr(self._overlay, "_visible", False) if self._overlay is not None else False,
         )
+        # Pause hands-free dictation if it's active — spacebar hold takes priority.
+        self._handsfree_paused_for_hold = False
+        hf = getattr(self, "_handsfree", None)
+        if hf is not None and hf.is_dictating:
+            logger.info("Pausing hands-free for spacebar hold")
+            hf._stop_dictation_capture()
+            hf._set_state(HandsFreeState.LISTENING)
+            self._handsfree_paused_for_hold = True
+
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
@@ -4933,7 +5104,13 @@ class SpokeAppDelegate(NSObject):
 
         def _on_clipboard_restored():
             if self._menubar is not None:
-                self._menubar.set_status_text("Ready — hold spacebar")
+                # Resume hands-free if it was paused for a spacebar hold
+                hf = getattr(self, "_handsfree", None)
+                if getattr(self, "_handsfree_paused_for_hold", False) and hf is not None:
+                    self._handsfree_paused_for_hold = False
+                    hf._start_dictating()
+                else:
+                    self._menubar.set_status_text("Ready — hold spacebar")
 
         inject_text(text, on_restored=_on_clipboard_restored)
         if self._menubar is not None:
@@ -5129,6 +5306,9 @@ class SpokeAppDelegate(NSObject):
     def _quit(self) -> None:
         self._detector.uninstall()
         self._preview_active = False
+        hf = getattr(self, "_handsfree", None)
+        if hf is not None and hf.is_active:
+            hf.disable()
         if hasattr(self, "_terraform_hud") and self._terraform_hud is not None:
             self._terraform_hud.cleanup()
         self._close_clients()
