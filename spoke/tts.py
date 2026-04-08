@@ -1113,22 +1113,99 @@ class CloudTTSClient:
         text: str,
         amplitude_callback: Callable[[float], None] | None = None,
     ) -> None:
-        """Synthesize and play text as a single API call.
+        """Synthesize and play text, chunked by paragraph.
 
-        Unlike the local TTSClient, cloud TTS sends the full text in one
-        request — the Gemini model handles sentence pacing internally and
-        one call avoids burning through the per-minute rate limit.
+        Splits text on blank lines and synthesizes each paragraph in a
+        separate API call.  Audio from the first paragraph starts playing
+        while subsequent paragraphs are being synthesized, reducing
+        perceived latency for long texts.
         """
         if not text:
             return
         self._cancelled = False
 
-        result = self._synthesize(text)
-        if self._cancelled or result is None:
+        paragraphs = self._split_paragraphs(text)
+        if not paragraphs:
             return
-        audio_bytes, mime_type = result
-        audio, sample_rate = self._decode_audio(audio_bytes, mime_type)
-        self._play_audio(audio, sample_rate, amplitude_callback=amplitude_callback)
+
+        # Synthesize + play each paragraph, keeping one stream open.
+        stream = None
+        sample_rate = None
+        try:
+            for para in paragraphs:
+                if self._cancelled:
+                    break
+                result = self._synthesize(para)
+                if self._cancelled or result is None:
+                    break
+                audio_bytes, mime_type = result
+                audio, sr = self._decode_audio(audio_bytes, mime_type)
+                if audio.size == 0:
+                    continue
+
+                if stream is None:
+                    sample_rate = sr
+                    output_device = _resolve_output_device()
+                    stream = sd.OutputStream(
+                        samplerate=sr,
+                        channels=audio.shape[1] if audio.ndim > 1 else 1,
+                        dtype="float32",
+                        device=output_device,
+                    )
+                    self._stream = stream
+                    self._last_chunk = None
+                    stream.start()
+
+                if audio.ndim == 1:
+                    audio = audio.reshape(-1, 1)
+                self._write_audio_chunks(audio, sample_rate, stream, amplitude_callback)
+        finally:
+            if stream is not None:
+                if self._cancelled and self._last_chunk is not None and sample_rate:
+                    fade_samples = int(sample_rate * 0.05)
+                    last_amp = float(np.mean(np.abs(self._last_chunk[-1:])))
+                    fade_ramp = np.linspace(last_amp, 0.0, fade_samples, dtype=np.float32).reshape(-1, 1)
+                    try:
+                        stream.write(fade_ramp)
+                    except Exception:
+                        pass
+                stream.stop()
+                stream.close()
+                self._stream = None
+                self._last_chunk = None
+
+    @staticmethod
+    def _split_paragraphs(text: str) -> list[str]:
+        """Split text on blank lines, preserving non-empty paragraphs."""
+        paragraphs = []
+        for block in text.split("\n\n"):
+            block = block.strip()
+            if block:
+                paragraphs.append(block)
+        # If no blank-line breaks, just return the whole text as one chunk.
+        return paragraphs if paragraphs else [text.strip()] if text.strip() else []
+
+    def _write_audio_chunks(
+        self,
+        audio: np.ndarray,
+        sample_rate: int,
+        stream: sd.OutputStream,
+        amplitude_callback: Callable[[float], None] | None,
+    ) -> None:
+        """Write decoded audio to an open stream in small chunks."""
+        chunk_size = int(sample_rate * 0.064)
+        offset = 0
+        while offset < len(audio):
+            if self._cancelled:
+                break
+            end = min(offset + chunk_size, len(audio))
+            chunk = audio[offset:end]
+            self._last_chunk = chunk
+            stream.write(chunk)
+            if amplitude_callback is not None:
+                rms = float(np.sqrt(np.mean(chunk ** 2)))
+                amplitude_callback(rms)
+            offset = end
 
     def speak_async(
         self,
