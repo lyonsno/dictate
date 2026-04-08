@@ -3354,6 +3354,21 @@ class TestHoldStartDuringTranscription:
         d._menubar.set_recording.assert_called_with(True)
         d._glow.show.assert_called_once()
 
+    def test_hold_during_transcription_hides_visible_command_overlay(
+        self, main_module, monkeypatch
+    ):
+        """Starting a new recording should not stack the preview overlay on top of the assistant."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcribing = True
+        d._models_ready = True
+        d._command_overlay = MagicMock(_visible=True)
+        d._detector.command_overlay_active = True
+
+        d._on_hold_start()
+
+        d._command_overlay.hide.assert_called_once()
+        assert d._detector.command_overlay_active is False
+
 
 class TestMicNotReady:
     """Hold is rejected and status reflects mic unavailability."""
