@@ -2505,6 +2505,24 @@ class SpokeAppDelegate(NSObject):
             logger.info("Double-tap Enter — dismissing command overlay")
             self._command_overlay.cancel_dismiss()
             self._detector.command_overlay_active = False
+        elif self._transcribing and self._command_overlay is not None:
+            # Generation still in progress — re-show with accumulated text.
+            utterance = getattr(self, "_last_command_utterance", "")
+            streaming = getattr(self, "_command_streaming_text", "")
+            logger.info(
+                "Double-tap Enter — resuming in-progress overlay (%d chars so far)",
+                len(streaming),
+            )
+            try:
+                self._sync_command_overlay_brightness(immediate=True)
+                self._command_overlay.show()
+                self._command_overlay.set_utterance(utterance)
+                if streaming:
+                    self._command_overlay.set_response_text(streaming)
+                    self._command_overlay.invert_thinking_timer()
+                self._detector.command_overlay_active = True
+            except Exception:
+                logger.exception("Resume overlay failed")
         else:
             snapshot = self._last_command_overlay_snapshot()
             if snapshot is not None:
@@ -2974,6 +2992,7 @@ class SpokeAppDelegate(NSObject):
         utterance = payload["utterance"]
         self._last_command_utterance = utterance
         self._last_command_response = ""
+        self._command_streaming_text = ""
         # Hide the input overlay
         if self._overlay is not None:
             self._overlay.hide()
@@ -3018,6 +3037,12 @@ class SpokeAppDelegate(NSObject):
         """Main thread: append a streamed token to the command overlay."""
         if payload["token"] != self._transcription_token:
             return
+        # Always accumulate streaming text so we can restore the overlay
+        # if the user dismisses and re-opens mid-generation.
+        text = payload["text"]
+        if not hasattr(self, "_command_streaming_text"):
+            self._command_streaming_text = ""
+        self._command_streaming_text += text
         overlay = self._command_overlay
         # First content token: invert the thinking timer and update status
         if getattr(self, "_command_first_token", False):
@@ -3031,7 +3056,7 @@ class SpokeAppDelegate(NSObject):
                 self._menubar.set_status_text("Responding…")
         if overlay is not None:
             try:
-                overlay.append_token(payload["text"])
+                overlay.append_token(text)
             except Exception:
                 logger.exception("Command overlay failed to append streamed token")
 
