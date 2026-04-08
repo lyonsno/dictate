@@ -3354,10 +3354,10 @@ class TestHoldStartDuringTranscription:
         d._menubar.set_recording.assert_called_with(True)
         d._glow.show.assert_called_once()
 
-    def test_hold_during_transcription_hides_visible_command_overlay(
+    def test_hold_during_transcription_keeps_visible_command_overlay_active(
         self, main_module, monkeypatch
     ):
-        """Starting a new recording should not stack the preview overlay on top of the assistant."""
+        """Recording during generation must not hide the visible assistant overlay."""
         d = _make_delegate(main_module, monkeypatch)
         d._transcribing = True
         d._models_ready = True
@@ -3366,8 +3366,8 @@ class TestHoldStartDuringTranscription:
 
         d._on_hold_start()
 
-        d._command_overlay.hide.assert_called_once()
-        assert d._detector.command_overlay_active is False
+        d._command_overlay.hide.assert_not_called()
+        assert d._detector.command_overlay_active is True
 
 
 class TestMicNotReady:

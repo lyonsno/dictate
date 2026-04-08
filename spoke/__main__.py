@@ -1521,13 +1521,6 @@ class SpokeAppDelegate(NSObject):
         )
         self._detector.command_overlay_active = overlay_visible
         logger.info("command_overlay_active -> %s (hold start)", overlay_visible)
-        if self._transcribing and overlay_visible and self._command_overlay is not None:
-            # Recording during an active assistant turn keeps the stream alive,
-            # but we should not stack the preview overlay on top of the
-            # assistant overlay. Hide the assistant surface and rely on the
-            # accumulated transcript to restore it on demand.
-            self._command_overlay.hide()
-            self._detector.command_overlay_active = False
         # Note: if command overlay is visible but finished, leave it up.
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
