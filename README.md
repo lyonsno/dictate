@@ -4,11 +4,10 @@ Speech-native control surface for macOS.
 
 `spoke` is a menubar app built with PyObjC. Hold the spacebar anywhere on the
 system to dictate, route the utterance into a tray for review, send it into a
-tool-calling assistant, or keep recording hands-free. It is not just
-"dictation with an AI mode": `spoke` treats direct text insertion, tray review,
-assistant dispatch, and spoken playback as separate surfaces with explicit
-transitions between them. Preview/final transcription, assistant inference, and
-TTS each have their own backend selection and persist in
+tool-calling assistant, or keep recording hands-free. Direct text insertion,
+tray review, assistant dispatch, and spoken playback are separate surfaces
+with explicit transitions between them. Preview/final transcription, assistant
+inference, and TTS each have their own backend selection and persist in
 `~/Library/Application Support/Spoke/model_preferences.json`.
 
 <video src="https://github.com/user-attachments/assets/f05bafa9-f149-494b-b514-84070a6125e4" width="100%"></video>
@@ -31,8 +30,7 @@ TTS each have their own backend selection and persist in
 - `Assistant`: hold enter at release to send the utterance into the assistant path.
 - `Speech out`: assistant responses can be spoken back through the configured TTS backend.
 
-The overlays and glow are there to make those transitions legible, not to turn
-the app into a floating chatbot UI.
+The overlays and glow exist to make those transitions legible.
 
 ## Interaction model
 
@@ -46,7 +44,12 @@ Optional wake words -> start or stop hands-free dictation without touching the k
 
 Quick taps still produce a normal space. Longer holds trigger recording,
 preview text, and the overlay/glow surface. If insertion cannot be verified,
-`spoke` falls back to the tray instead of silently losing text.
+`spoke` falls back to the tray so the utterance is recoverable.
+
+Hands-free mode can also be started by voice. Set
+`SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY` (see the env-var table below) to enable
+the wake-word listener; without that key the wake-word path is inert and only
+the keyboard gestures above are active.
 
 The full gesture surface lives in
 [`docs/keyboard-grammar.md`](docs/keyboard-grammar.md).
@@ -113,9 +116,8 @@ The menus can independently control:
 - `Assistant Backend`: local OMLX, sidecar OMLX, or cloud
 - `TTS Backend`: local runtime, MLX-audio sidecar, or Gemini cloud
 
-For ordinary use, the menus matter more than env vars. Most environment
-variables are now smoke/debugging overrides or bootstrap plumbing, not the main
-user-facing configuration story.
+For ordinary use, prefer the menus. The remaining environment variables are
+smoke/debugging overrides and bootstrap plumbing.
 
 ## Remote sidecars
 
@@ -163,11 +165,10 @@ the README as a full configuration reference.
 - `spoke` keeps a bounded post-transcription repair pass for recurring
   project-specific vocabulary that is known to fail in real logs.
 - The assistant tool surface includes local filesystem and screen-context
-  affordances; the overlay is no longer just a text dump from a single local
-  model.
-- TTS is now a real routing surface rather than a single hardcoded backend.
+  affordances available to the model during a turn.
+- TTS is a routing surface across local, sidecar, and cloud backends.
 - Brief thinking summaries can be shown while the assistant is reasoning or
-  loading, but they are a secondary affordance, not the main interaction model.
+  loading, as a secondary affordance.
 - The menubar also exposes launch-target switching, source/branch visibility,
   and the status HUD (`Terror Form`) for runtime legibility on local smoke
   surfaces.
@@ -227,7 +228,7 @@ brew install create-dmg
 
 The app bundle is written to `dist/Spoke.app`.
 
-## Notes
+## Runtime notes
 
 - The bundled app logs to `~/Library/Logs/Spoke.log`.
 - Local MLX backends may download model weights on first use.
