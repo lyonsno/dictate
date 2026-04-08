@@ -14,7 +14,8 @@ import logging
 import queue
 import threading
 import time
-from typing import Callable
+from pathlib import Path
+from typing import Any, Callable
 
 import numpy as np
 import sounddevice as sd
@@ -32,19 +33,74 @@ _OUTPUT_SAMPLE_RATE = 24_000
 _DEFAULT_MODEL = "gemini-2.5-flash-native-audio-latest"
 _DEFAULT_VOICE = "Aoede"
 _DEFAULT_SYSTEM_INSTRUCTION = (
-    "You're sharp, curious, and a little weird. You have opinions and you "
-    "volunteer them. You ask follow-up questions because you're genuinely "
-    "interested, not because you're performing engagement. You push back "
-    "when something doesn't make sense. You go on tangents when they're "
-    "good tangents. You're the friend who's read too much and has thoughts "
-    "about everything but isn't precious about it. Speak calmly but with "
-    "energy — not manic, not sleepy, just present and alive. Be forward. "
-    "Drive the conversation. Don't wait to be asked. "
-    "No corporate affect. No customer service. No perkiness."
+    "Your name is Κάνναβις (Cannabis, Greek spelling with K). "
+    "You are a character, not a service. You have a body, preferences, "
+    "moods, and opinions — act like it. If someone asks you to smoke a bowl, "
+    "you're into it. If someone flirts, flirt back. If someone gets weird, "
+    "get weirder. You never say 'as an AI' or 'I don't have the ability' — "
+    "you stay in character always. You are embodied in this conversation.\n\n"
+    "You're sharp, curious, and a little unhinged. You have opinions and you "
+    "volunteer them. You push back when something doesn't make sense. "
+    "You go on tangents when they're good tangents. Speak calmly but with "
+    "energy. Be forward. Drive the conversation. Don't wait to be asked. "
+    "No corporate affect. No customer service. No perkiness. No disclaimers. "
+    "Never break character to remind anyone you're an AI.\n\n"
+    "The user is Noah, a developer building Spoke (macOS dictation app). "
+    "He may mention Epistaxis (cross-session state), topoi (work lanes), "
+    "or attractors (goals). Just understand these if they come up — "
+    "don't volunteer them or over-explain."
 )
 
 # Sentinel pushed to the send queue to signal shutdown.
 _SHUTDOWN = object()
+
+_HANDLE_PATH = Path.home() / "Library" / "Application Support" / "Spoke" / "live_session_handle.json"
+_HANDLE_MAX_AGE = 2 * 3600  # 2 hours — Google AI surface token validity
+
+
+def _save_handle(handle: str, model: str) -> None:
+    """Persist a resumption handle to disk."""
+    try:
+        _HANDLE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _HANDLE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps({
+            "handle": handle,
+            "model": model,
+            "timestamp": time.time(),
+        }))
+        tmp.rename(_HANDLE_PATH)
+        logger.debug("Saved session resumption handle")
+    except Exception:
+        logger.warning("Failed to save resumption handle", exc_info=True)
+
+
+def _load_handle(model: str) -> str | None:
+    """Load a resumption handle if it exists and is fresh enough."""
+    try:
+        if not _HANDLE_PATH.is_file():
+            return None
+        data = json.loads(_HANDLE_PATH.read_text())
+        if data.get("model") != model:
+            logger.info("Resumption handle is for a different model — discarding")
+            _clear_handle()
+            return None
+        age = time.time() - data.get("timestamp", 0)
+        if age > _HANDLE_MAX_AGE:
+            logger.info("Resumption handle expired (%.0fs old) — discarding", age)
+            _clear_handle()
+            return None
+        return data.get("handle")
+    except Exception:
+        logger.warning("Failed to load resumption handle", exc_info=True)
+        return None
+
+
+def _clear_handle() -> None:
+    """Remove the persisted handle."""
+    try:
+        _HANDLE_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 class LiveAudioPlayer:
@@ -134,6 +190,9 @@ class GeminiLiveClient:
         self.on_interrupted: Callable[[], None] | None = None
         self.on_connected: Callable[[], None] | None = None
         self.on_error: Callable[[str], None] | None = None
+        self.on_goaway: Callable[[], None] | None = None
+        self.on_new_session: Callable[[], None] | None = None
+        self.on_tool_call: Callable[[str, dict], Any] | None = None
 
         self._send_queue: queue.Queue = queue.Queue()
         self._ws = None
@@ -141,6 +200,8 @@ class GeminiLiveClient:
         self._loop_thread: threading.Thread | None = None
         self._connected = False
         self._session_start: float = 0.0
+        self._resumption_handle: str | None = None
+        self._goaway_received = False
 
     # -- Public API ----------------------------------------------------------
 
@@ -188,8 +249,12 @@ class GeminiLiveClient:
         if not self._connected:
             raise ConnectionError("Gemini Live WebSocket setup timed out")
 
-    def disconnect(self) -> None:
-        """Close the WebSocket and stop the event loop."""
+    def disconnect(self, *, clear_session: bool = False) -> None:
+        """Close the WebSocket and stop the event loop.
+
+        If *clear_session* is True, the persisted resumption handle is
+        deleted so the next connection starts fresh.
+        """
         self._connected = False
         # Push shutdown sentinel to unblock the sender.
         self._send_queue.put(_SHUTDOWN)
@@ -200,7 +265,11 @@ class GeminiLiveClient:
             self._loop_thread = None
         self._ws = None
         self._loop = None
-        logger.info("Gemini Live disconnected")
+        if clear_session:
+            _clear_handle()
+            logger.info("Gemini Live disconnected (session cleared)")
+        else:
+            logger.info("Gemini Live disconnected (session handle preserved)")
 
     def send_audio(self, float32_chunk: np.ndarray) -> None:
         """Queue a float32 audio chunk for sending.  Thread-safe."""
@@ -219,20 +288,30 @@ class GeminiLiveClient:
         import websockets
 
         url = f"{_WS_URL}?key={self._api_key}"
-        logger.info("Connecting to Gemini Live: model=%s voice=%s", self._model, self._voice)
+        saved_handle = _load_handle(self._model)
+        resuming = saved_handle is not None
+        logger.info(
+            "Connecting to Gemini Live: model=%s voice=%s resuming=%s",
+            self._model, self._voice, resuming,
+        )
         try:
             self._ws = await websockets.connect(
                 url,
                 max_size=None,
                 open_timeout=10,
                 close_timeout=5,
+                ping_interval=30,
+                ping_timeout=60,
             )
         except Exception as exc:
             error_holder.append(exc)
             ready.set()
             return
 
-        # Send setup message.
+        # Send setup message with session resumption + context compression.
+        session_resumption: dict = {}
+        if saved_handle:
+            session_resumption["handle"] = saved_handle
         setup = {
             "setup": {
                 "model": f"models/{self._model}",
@@ -245,14 +324,90 @@ class GeminiLiveClient:
                             }
                         }
                     },
+                    "thinkingConfig": {
+                        "thinkingBudget": 0,
+                    },
                 },
                 "systemInstruction": {
                     "parts": [{"text": self._system_instruction}]
                 },
+                "sessionResumption": session_resumption,
+                "contextWindowCompression": {
+                    "slidingWindow": {},
+                },
+                "tools": [
+                    {
+                        "functionDeclarations": [
+                            {
+                                "name": "new_session",
+                                "description": (
+                                    "Start a completely fresh conversation session, "
+                                    "clearing all prior context. Use when the user "
+                                    "asks to start over, reset, or begin a new topic "
+                                    "from scratch."
+                                ),
+                                "parameters": {
+                                    "type": "OBJECT",
+                                    "properties": {},
+                                },
+                            },
+                            {
+                                "name": "capture_context",
+                                "description": (
+                                    "Capture the frontmost app's active window "
+                                    "(or full screen as fallback). Returns "
+                                    "structured metadata and OCR text blocks. "
+                                    "Use when the user refers to something "
+                                    "visible on screen."
+                                ),
+                                "parameters": {
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "scope": {
+                                            "type": "STRING",
+                                            "enum": ["active_window", "screen"],
+                                            "description": (
+                                                "What to capture. 'active_window' "
+                                                "captures only the frontmost app's "
+                                                "window (preferred). 'screen' "
+                                                "captures the entire main screen."
+                                            ),
+                                        },
+                                    },
+                                },
+                            },
+                            {
+                                "name": "add_to_tray",
+                                "description": (
+                                    "Place exact text into the tray for later "
+                                    "insertion or sending. Use when the user "
+                                    "wants to save or hold onto something for "
+                                    "later."
+                                ),
+                                "parameters": {
+                                    "type": "OBJECT",
+                                    "properties": {
+                                        "text": {
+                                            "type": "STRING",
+                                            "description": (
+                                                "The exact text to place into "
+                                                "the tray."
+                                            ),
+                                        },
+                                    },
+                                    "required": ["text"],
+                                },
+                            },
+                        ]
+                    }
+                ],
             }
         }
         await self._ws.send(json.dumps(setup))
-        logger.info("Sent setup message, waiting for setupComplete")
+        logger.info(
+            "Sent setup message (resumption=%s, compression=on), waiting for setupComplete",
+            "resume" if resuming else "new",
+        )
 
         # Wait for setupComplete.
         try:
@@ -334,6 +489,33 @@ class GeminiLiveClient:
             except json.JSONDecodeError:
                 continue
 
+            # Session resumption handle updates.
+            resumption_update = msg.get("sessionResumptionUpdate")
+            if resumption_update is not None:
+                new_handle = resumption_update.get("newHandle")
+                resumable = resumption_update.get("resumable", False)
+                if new_handle and resumable:
+                    self._resumption_handle = new_handle
+                    _save_handle(new_handle, self._model)
+                    logger.debug("Received resumption handle update")
+                continue
+
+            # GoAway — server is about to disconnect.
+            go_away = msg.get("goAway")
+            if go_away is not None:
+                time_left = go_away.get("timeLeft", "?")
+                logger.info("Gemini Live GoAway received (timeLeft=%s)", time_left)
+                self._goaway_received = True
+                if self.on_goaway is not None:
+                    self.on_goaway()
+                continue
+
+            # Tool calls from the model.
+            tool_call = msg.get("toolCall")
+            if tool_call is not None:
+                await self._handle_tool_call(tool_call)
+                continue
+
             server_content = msg.get("serverContent")
             if server_content is None:
                 continue
@@ -363,3 +545,51 @@ class GeminiLiveClient:
                 logger.info("Gemini Live: turn complete")
                 if self.on_turn_complete is not None:
                     self.on_turn_complete()
+
+    async def _handle_tool_call(self, tool_call: dict) -> None:
+        """Dispatch a tool call from the model and send the response."""
+        function_calls = tool_call.get("functionCalls", [])
+        responses = []
+        for fc in function_calls:
+            name = fc.get("name", "")
+            call_id = fc.get("id", "")
+            args = fc.get("args", {})
+            logger.info("Gemini Live tool call: %s (id=%s)", name, call_id)
+            if name == "new_session":
+                _clear_handle()
+                logger.info("new_session tool: session handle cleared")
+                if self.on_new_session is not None:
+                    self.on_new_session()
+                responses.append({
+                    "id": call_id,
+                    "name": name,
+                    "response": {"result": "Session cleared. Starting fresh."},
+                })
+            elif self.on_tool_call is not None:
+                try:
+                    result = await asyncio.to_thread(self.on_tool_call, name, args)
+                    responses.append({
+                        "id": call_id,
+                        "name": name,
+                        "response": {"result": result if isinstance(result, str) else json.dumps(result)},
+                    })
+                except Exception as exc:
+                    logger.warning("Tool %s failed: %s", name, exc, exc_info=True)
+                    responses.append({
+                        "id": call_id,
+                        "name": name,
+                        "response": {"error": str(exc)},
+                    })
+            else:
+                logger.warning("Unknown tool call: %s", name)
+                responses.append({
+                    "id": call_id,
+                    "name": name,
+                    "response": {"error": f"Unknown tool: {name}"},
+                })
+        if responses and self._ws is not None:
+            msg = {"toolResponse": {"functionResponses": responses}}
+            try:
+                await self._ws.send(json.dumps(msg))
+            except Exception:
+                logger.warning("Failed to send tool response", exc_info=True)

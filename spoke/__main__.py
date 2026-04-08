@@ -1326,6 +1326,10 @@ class SpokeAppDelegate(NSObject):
     def _spaceEnterChordOnMain_(self, _) -> None:
         """Main thread: handle space+enter chord."""
         if getattr(self, "_live_mode", False):
+            # Ignore chord events during entry grace period — key repeat
+            # from the entry chord would immediately arm the exit timer.
+            if time.monotonic() - getattr(self, "_live_entry_time", 0) < 2.0:
+                return
             logger.info("Space+enter chord in live mode — arming exit timer")
             self._start_live_exit_timer()
             return
@@ -1396,7 +1400,8 @@ class SpokeAppDelegate(NSObject):
         self._enter_live_mode()
 
     def _start_live_exit_timer(self) -> None:
-        self._cancel_live_exit_timer()
+        if self._live_exit_timer is not None:
+            return  # already armed — don't restart on key repeat
         from Foundation import NSTimer
         self._live_exit_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             self._LIVE_EXIT_DELAY, self, "_liveExitFired:", None, False
@@ -1408,15 +1413,16 @@ class SpokeAppDelegate(NSObject):
             self._live_exit_timer = None
 
     def _liveExitFired_(self, timer) -> None:
-        """Exit hold reached 3000ms — leave live conversation mode."""
+        """Exit hold reached — leave live conversation mode (session preserved)."""
         self._live_exit_timer = None
-        logger.info("Live exit timer fired — exiting live mode")
-        self._exit_live_mode()
+        logger.info("Live exit timer fired — exiting live mode (session preserved)")
+        self._exit_live_mode(clear_session=False)
 
     def _enter_live_mode(self) -> None:
         from spoke.gemini_live import GeminiLiveClient, LiveAudioPlayer
 
         self._live_mode = True
+        self._live_entry_time = time.monotonic()  # updated again on connect
         self._transcribing = False
 
         # Resolve API key (cloud prefs first, then env)
@@ -1455,6 +1461,9 @@ class SpokeAppDelegate(NSObject):
         self._live_client.on_turn_complete = self._on_live_turn_complete
         self._live_client.on_interrupted = self._on_live_interrupted
         self._live_client.on_error = self._on_live_error
+        self._live_client.on_goaway = self._on_live_goaway
+        self._live_client.on_new_session = self._on_live_new_session
+        self._live_client.on_tool_call = self._on_live_tool_call
 
         if self._menubar is not None:
             self._menubar.set_status_text("Connecting to Gemini Live...")
@@ -1480,6 +1489,9 @@ class SpokeAppDelegate(NSObject):
         """Main thread: WebSocket connected — start streaming audio."""
         if not self._live_mode:
             return  # user already exited
+        # Reset grace period — key repeat events queued during async connect
+        # would otherwise fire with an expired grace window.
+        self._live_entry_time = time.monotonic()
         logger.info("Gemini Live connected — starting audio stream")
         try:
             self._capture.start(
@@ -1496,15 +1508,6 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text("Live conversation active")
 
-        # Session timeout timers
-        from Foundation import NSTimer
-        self._live_warning_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            self._LIVE_SESSION_WARN, self, "_liveSessionWarning:", None, False
-        )
-        self._live_session_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            self._LIVE_SESSION_MAX, self, "_liveSessionTimeout:", None, False
-        )
-
     def _liveConnectFailed_(self, error_msg) -> None:
         """Main thread: connection failed."""
         self._live_mode = False
@@ -1515,11 +1518,11 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text(f"Live mode failed: {error_msg}")
 
-    def _exit_live_mode(self) -> None:
+    def _exit_live_mode(self, *, clear_session: bool = True) -> None:
         if not self._live_mode:
             return
         self._live_mode = False
-        logger.info("Exiting Gemini Live mode")
+        logger.info("Exiting Gemini Live mode (clear_session=%s)", clear_session)
 
         # Stop audio capture
         if self._capture is not None:
@@ -1530,10 +1533,12 @@ class SpokeAppDelegate(NSObject):
 
         # Disconnect client
         if self._live_client is not None:
-            threading.Thread(
-                target=self._live_client.disconnect, daemon=True, name="live-disconnect"
-            ).start()
+            client = self._live_client
             self._live_client = None
+            threading.Thread(
+                target=lambda: client.disconnect(clear_session=clear_session),
+                daemon=True, name="live-disconnect",
+            ).start()
 
         # Close player
         if self._live_player is not None:
@@ -1572,6 +1577,39 @@ class SpokeAppDelegate(NSObject):
         if self._live_player is not None:
             self._live_player.flush()
 
+    def _on_live_tool_call(self, name: str, args: dict) -> str:
+        """Execute a tool call from the live mode model. Called from async thread."""
+        logger.info("Gemini Live tool dispatch: %s args=%s", name, args)
+        return execute_tool(
+            name,
+            args,
+            scene_cache=self._scene_cache,
+            tray_writer=self._tray.push if hasattr(self, "_tray") and self._tray is not None else None,
+        )
+
+    def _on_live_new_session(self) -> None:
+        """Model called new_session tool — session will start fresh on next entry."""
+        logger.info("Gemini Live new_session tool called — handle cleared")
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "_liveNewSessionOnMain:", None, False
+        )
+
+    def _liveNewSessionOnMain_(self, _) -> None:
+        if self._menubar is not None:
+            self._menubar.set_status_text("Session will reset on next entry")
+
+    def _on_live_goaway(self) -> None:
+        """Server is about to disconnect — exit and preserve session for auto-resume."""
+        logger.info("Gemini Live GoAway — preserving session for resume")
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "_liveGoAwayOnMain:", None, False
+        )
+
+    def _liveGoAwayOnMain_(self, _) -> None:
+        self._exit_live_mode(clear_session=False)
+        if self._menubar is not None:
+            self._menubar.set_status_text("Live session paused (re-enter to resume)")
+
     def _on_live_error(self, error_msg: str) -> None:
         logger.error("Gemini Live error: %s", error_msg)
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -1579,8 +1617,8 @@ class SpokeAppDelegate(NSObject):
         )
 
     def _liveErrorOnMain_(self, error_msg) -> None:
-        """Main thread: WebSocket error — exit live mode."""
-        self._exit_live_mode()
+        """Main thread: WebSocket error — exit live mode, preserve session."""
+        self._exit_live_mode(clear_session=False)
         if self._menubar is not None:
             self._menubar.set_status_text(f"Live session ended: {error_msg}")
 
@@ -1592,16 +1630,19 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_status_text("Live session ending in 1 minute")
 
     def _liveSessionTimeout_(self, timer) -> None:
-        """15 minutes elapsed — auto-disconnect."""
+        """15 minutes elapsed — auto-disconnect (preserves session for resume)."""
         self._live_session_timer = None
-        logger.info("Gemini Live session timeout — disconnecting")
-        self._exit_live_mode()
+        logger.info("Gemini Live session timeout — disconnecting (session preserved)")
+        self._exit_live_mode(clear_session=False)
         if self._menubar is not None:
-            self._menubar.set_status_text("Live session ended (15 min limit)")
+            self._menubar.set_status_text("Live session paused (re-enter to resume)")
 
     def _on_hold_start(self) -> None:
         # ── Live mode: new hold starts exit countdown ──
         if getattr(self, "_live_mode", False):
+            # Grace period: ignore holds from the entry chord's key repeat.
+            if time.monotonic() - getattr(self, "_live_entry_time", 0) < 2.0:
+                return
             enter_held = getattr(self._detector, '_enter_held', False) is True
             if enter_held:
                 logger.info("Hold start in live mode with enter — arming exit timer (3000ms)")
