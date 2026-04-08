@@ -232,6 +232,11 @@ class TestStreamCommand:
             "choices": [{"index": 0, "delta": {"reasoning_content": token}}]
         }
 
+    def _step_reasoning_chunk(self, token):
+        return {
+            "choices": [{"index": 0, "delta": {"reasoning": token}}]
+        }
+
     def _role_chunk(self):
         return {
             "choices": [{"index": 0, "delta": {"role": "assistant"}}]
@@ -328,6 +333,25 @@ class TestStreamCommand:
             tokens = list(client.stream_command("what is 2+2"))
         assert tokens == ["The answer is 4."]
 
+    def test_stream_skips_step_reasoning_tokens(self):
+        """Step reasoning tokens should not be yielded as assistant content."""
+        from spoke.command import CommandClient
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+        )
+        chunks = [
+            self._role_chunk(),
+            self._step_reasoning_chunk("compare the edge cases"),
+            self._step_reasoning_chunk("pick the cheapest backend"),
+            self._content_chunk("Use Step."),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            tokens = list(client.stream_command("which backend"))
+        assert tokens == ["Use Step."]
+
     def test_stream_adds_to_history(self):
         """Completed stream should add (utterance, response) to history."""
         from spoke.command import CommandClient
@@ -355,6 +379,23 @@ class TestStreamCommand:
         )
         chunks = [
             self._reasoning_chunk("thinking hard..."),
+            self._content_chunk("done"),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            list(client.stream_command("do it"))
+        assert client._history == [("do it", "done")]
+
+    def test_stream_does_not_store_step_reasoning_in_history(self):
+        """Step reasoning should not leak into the ring buffer history."""
+        from spoke.command import CommandClient
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+        )
+        chunks = [
+            self._step_reasoning_chunk("check the streaming field shape"),
             self._content_chunk("done"),
         ]
         fake_resp = _make_sse_response(chunks)
@@ -856,6 +897,9 @@ class TestCommandThinking:
     def _reasoning_chunk(self, token):
         return {"choices": [{"index": 0, "delta": {"reasoning_content": token}}]}
 
+    def _step_reasoning_chunk(self, token):
+        return {"choices": [{"index": 0, "delta": {"reasoning": token}}]}
+
     def test_reasoning_content_yields_thinking_delta(self):
         """reasoning_content field should produce thinking_delta events."""
         client = self._make_client()
@@ -872,6 +916,23 @@ class TestCommandThinking:
         assert thinking[0].text == "Let me think..."
         assert len(content) == 1
         assert content[0].text == "The answer."
+
+    def test_step_reasoning_yields_thinking_delta(self):
+        """Step's reasoning field should produce thinking_delta events."""
+        client = self._make_client()
+        chunks = [
+            self._step_reasoning_chunk("Compare the backend costs."),
+            self._content_chunk("Use Step."),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            events = list(client.stream_command_events("q"))
+        thinking = [e for e in events if e.kind == "thinking_delta"]
+        content = [e for e in events if e.kind == "assistant_delta"]
+        assert len(thinking) == 1
+        assert thinking[0].text == "Compare the backend costs."
+        assert len(content) == 1
+        assert content[0].text == "Use Step."
 
     def test_think_tags_yield_thinking_delta(self):
         """<think>...</think> tags in content should produce thinking_delta events."""
