@@ -77,8 +77,9 @@ _LOADING_VAMP_INTERVAL_S = 8.0  # seconds between subsequent vamp lines
 # ── chunking parameters ─────────────────────────────────────────────
 
 _TARGET_CHUNK_TOKENS = 300
-_MIN_INTERVAL_S = 5.0  # minimum seconds between narrator calls
-_MAX_TOKENS = 30        # generation budget for each summary
+_MIN_INTERVAL_S = 5.0   # minimum seconds between narrator calls
+_MAX_INTERVAL_S = 15.0  # dispatch even with few tokens after this long
+_MAX_TOKENS = 30         # generation budget for each summary
 
 
 def _rough_token_count(text: str) -> int:
@@ -257,10 +258,13 @@ class ThinkingNarrator:
             elapsed = now - self._last_dispatch
             tokens = _rough_token_count(self._buffer)
 
-            # Dispatch when BOTH conditions met: enough tokens AND enough time
+            # Dispatch when enough tokens have accumulated (with a minimum
+            # cooldown), OR unconditionally after _MAX_INTERVAL_S so the
+            # user always sees a fresh summary even during slow thinking.
+            enough_tokens = tokens >= _TARGET_CHUNK_TOKENS and elapsed >= _MIN_INTERVAL_S
+            time_ceiling = elapsed >= _MAX_INTERVAL_S and tokens > 0
             should_dispatch = (
-                tokens >= _TARGET_CHUNK_TOKENS
-                and elapsed >= _MIN_INTERVAL_S
+                (enough_tokens or time_ceiling)
                 and not self._pending_dispatch
             )
             if not should_dispatch:
