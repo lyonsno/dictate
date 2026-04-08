@@ -8,6 +8,7 @@ See docs/screen-context-v1.md for the design.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -22,11 +23,6 @@ from spoke.epistaxis_operator import (
     EpistaxisOperator,
     EpistaxisOperatorError,
     tool_schema as epistaxis_tool_schema,
-)
-from spoke.brave_search_operator import (
-    BraveSearchOperator,
-    BraveSearchOperatorError,
-    tool_schema as brave_search_tool_schema,
 )
 from spoke.gmail_operator import (
     GmailOperator,
@@ -77,6 +73,14 @@ _CAPTURE_CONTEXT_SCHEMA = {
                         "What to capture. 'active_window' captures only the "
                         "frontmost app's window (preferred). 'screen' captures "
                         "the entire main screen."
+                    ),
+                },
+                "include_image": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, attach a downscaled model-facing screenshot "
+                        "on vision-capable backends alongside the OCR refs. "
+                        "Text-only backends ignore this flag."
                     ),
                 },
             },
@@ -233,7 +237,6 @@ _FIND_FILE_SCHEMA = {
     }
 }
 _RUN_EPISTAXIS_OPS_SCHEMA = epistaxis_tool_schema()
-_SEARCH_WEB_SCHEMA = brave_search_tool_schema()
 _QUERY_GMAIL_SCHEMA = gmail_tool_schema()
 
 
@@ -249,7 +252,6 @@ def get_tool_schemas() -> list[dict]:
         _SEARCH_FILE_SCHEMA,
         _FIND_FILE_SCHEMA,
         _RUN_EPISTAXIS_OPS_SCHEMA,
-        _SEARCH_WEB_SCHEMA,
         _QUERY_GMAIL_SCHEMA,
     ]
 
@@ -312,12 +314,96 @@ class ToolCallAccumulator:
 def _execute_capture_context(
     arguments: dict,
     scene_cache: SceneCaptureCache | None = None,
+    *,
+    skip_ocr: bool | None = None,
 ) -> Any:
     """Execute capture_context and return the SceneCapture."""
     from spoke.scene_capture import capture_context
 
     scope = arguments.get("scope", "active_window")
-    return capture_context(scope=scope, cache=scene_cache)
+    return capture_context(scope=scope, cache=scene_cache, skip_ocr=skip_ocr)
+
+
+def _capture_context_result_dict(
+    capture: Any,
+    *,
+    include_image: bool = False,
+) -> dict[str, Any]:
+    result = {
+        "scene_ref": capture.scene_ref,
+        "scope": capture.scope,
+        "app_name": capture.app_name,
+        "bundle_id": capture.bundle_id,
+        "window_title": capture.window_title,
+        "image_size": list(capture.image_size),
+        "model_image_size": list(capture.model_image_size),
+        "ocr_blocks": [
+            {
+                "ref": b.ref,
+                "text": b.text,
+                "bbox": list(b.bbox),
+            }
+            for b in capture.ocr_blocks
+        ],
+        "ax_hints": [
+            {
+                "ref": h.ref,
+                "role": h.role,
+                "label": h.label,
+            }
+            for h in capture.ax_hints
+        ],
+    }
+    if include_image and getattr(capture, "model_image_path", None):
+        result["model_image"] = {
+            "path": capture.model_image_path,
+            "media_type": capture.model_image_media_type or "image/png",
+            "size": list(capture.model_image_size),
+        }
+    return result
+
+
+def _capture_context_multimodal_result(
+    capture: Any,
+    *,
+    include_image: bool = True,
+) -> dict[str, Any]:
+    summary = _capture_context_result_dict(capture, include_image=False)
+    parts: list[dict[str, Any]] = [
+        {"type": "text", "text": json.dumps(summary)}
+    ]
+    model_image_path = getattr(capture, "model_image_path", None)
+    if include_image and model_image_path:
+        try:
+            with open(model_image_path, "rb") as fh:
+                encoded = base64.b64encode(fh.read()).decode("ascii")
+            parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": (
+                            f"data:{getattr(capture, 'model_image_media_type', None) or 'image/png'};"
+                            f"base64,{encoded}"
+                        )
+                    },
+                }
+            )
+        except OSError:
+            logger.warning(
+                "Failed to inline capture_context model image from %s",
+                model_image_path,
+                exc_info=True,
+            )
+    logger.info(
+        "capture_context: multimodal payload scene_ref=%s image_attached=%s image_path=%r",
+        summary.get("scene_ref"),
+        len(parts) > 1,
+        model_image_path,
+    )
+    return {
+        "content": parts,
+        "log_text": json.dumps(summary),
+    }
 
 
 def _execute_read_aloud(
@@ -686,20 +772,6 @@ def _execute_epistaxis_ops(arguments: dict) -> str:
         return json.dumps({"error": str(exc)})
 
 
-def _execute_search_web(arguments: dict) -> str:
-    """Execute the bounded Brave Search web-search surface and return JSON."""
-    query = arguments.get("query", "")
-    max_results = arguments.get("max_results", 5)
-    try:
-        normalized_max_results = int(max_results)
-        operator = BraveSearchOperator()
-        return json.dumps(
-            operator.execute_search(query, max_results=normalized_max_results)
-        )
-    except (TypeError, ValueError, BraveSearchOperatorError) as exc:
-        return json.dumps({"error": str(exc)})
-
-
 def _execute_query_gmail(arguments: dict) -> str:
     """Execute the bounded Gmail query surface and return JSON."""
     query = arguments.get("query", "")
@@ -723,40 +795,49 @@ def execute_tool(
     last_response: str | None = None,
     tts_client: Any | None = None,
     tray_writer: Callable[[str], Any] | None = None,
-) -> str:
+    tool_output_mode: str = "text",
+) -> Any:
     """Execute a tool by name and return the result as a JSON string.
 
     Returns a JSON-encoded result for the model to consume.
     """
     if name == "capture_context":
-        capture = _execute_capture_context(arguments, scene_cache=scene_cache)
+        requested_include_image = arguments.get("include_image")
+        wants_image = (
+            tool_output_mode == "multimodal"
+            if requested_include_image is None
+            else bool(requested_include_image)
+        )
+        include_image = wants_image and tool_output_mode == "multimodal"
+        skip_ocr = include_image and (
+            os.environ.get("SPOKE_SKIP_OCR", "").lower() in ("1", "true", "yes")
+        )
+        capture = _execute_capture_context(
+            arguments,
+            scene_cache=scene_cache,
+            skip_ocr=skip_ocr,
+        )
         if capture is None:
             return json.dumps({"error": "Capture failed"})
-
-        # Build the return shape from the design doc
-        result = {
-            "scene_ref": capture.scene_ref,
-            "scope": capture.scope,
-            "app_name": capture.app_name,
-            "window_title": capture.window_title,
-            "ocr_blocks": [
-                {
-                    "ref": b.ref,
-                    "text": b.text,
-                    "bbox": list(b.bbox),
-                }
-                for b in capture.ocr_blocks
-            ],
-            "ax_hints": [
-                {
-                    "ref": h.ref,
-                    "role": h.role,
-                    "label": h.label,
-                }
-                for h in capture.ax_hints
-            ],
-        }
-        return json.dumps(result)
+        logger.info(
+            "capture_context: tool_output_mode=%s requested_include_image=%r wants_image=%s include_image=%s skip_ocr=%s scene_ref=%s app=%r title=%r",
+            tool_output_mode,
+            requested_include_image,
+            wants_image,
+            include_image,
+            skip_ocr,
+            getattr(capture, "scene_ref", None),
+            getattr(capture, "app_name", None),
+            getattr(capture, "window_title", None),
+        )
+        if tool_output_mode == "multimodal":
+            return _capture_context_multimodal_result(
+                capture,
+                include_image=include_image,
+            )
+        return json.dumps(
+            _capture_context_result_dict(capture, include_image=include_image)
+        )
 
     elif name == "read_aloud":
         return _execute_read_aloud(
@@ -787,9 +868,6 @@ def execute_tool(
         return json.dumps(_execute_find_file(arguments))
     elif name == "run_epistaxis_ops":
         return _execute_epistaxis_ops(arguments)
-
-    elif name == "search_web":
-        return _execute_search_web(arguments)
 
     elif name == "query_gmail":
         return _execute_query_gmail(arguments)

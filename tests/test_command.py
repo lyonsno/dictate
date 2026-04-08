@@ -47,7 +47,6 @@ class TestCommandClient:
         assert msgs[0]["role"] == "system"
         assert "add_to_tray" in msgs[0]["content"]
         assert "query_gmail" in msgs[0]["content"]
-        assert "search_web" in msgs[0]["content"]
         assert msgs[1] == {"role": "user", "content": "hello world"}
 
     def test_system_prompt_explicitly_allows_literal_read_aloud(self):
@@ -320,6 +319,192 @@ class TestStreamCommand:
         assert client._history == [
             ("check it", "Let me check. \n[calling capture_context…]\nDone.")
         ]
+
+    def test_vlm_capture_tool_round_sends_multimodal_tool_content(self):
+        """VLM backends should carry screenshot tool results as multimodal content."""
+        from spoke.command import CommandClient
+        from spoke.tool_dispatch import get_tool_schemas
+
+        client = CommandClient(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            model="gemini-2.5-flash",
+            api_key="key",
+        )
+
+        tool_round_chunks = [
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "capture_context", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"scope":"active_window"}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        final_chunks = [self._content_chunk("Done.")]
+        first_resp = _make_sse_response(tool_round_chunks)
+        second_resp = _make_sse_response(final_chunks)
+
+        request_bodies = []
+        tool_calls = []
+
+        def fake_urlopen(req, timeout=None):
+            request_bodies.append(json.loads(req.data))
+            return first_resp if len(request_bodies) == 1 else second_resp
+
+        def tool_executor(**kwargs):
+            tool_calls.append(kwargs)
+            return {
+                "content": [
+                    {"type": "text", "text": '{"scene_ref":"scene-test"}'},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,QUJD"},
+                    },
+                ],
+                "log_text": '{"scene_ref":"scene-test","model_image_size":[1707,960]}',
+            }
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            list(
+                client.stream_command_events(
+                    "check it",
+                    tools=get_tool_schemas(),
+                    tool_executor=tool_executor,
+                )
+            )
+
+        assert tool_calls[0]["tool_output_mode"] == "multimodal"
+        assert request_bodies[1]["messages"][-1] == {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": [
+                {"type": "text", "text": '{"scene_ref":"scene-test"}'},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,QUJD"},
+                },
+            ],
+        }
+
+    def test_local_step_vlm_tool_round_sends_multimodal_tool_content(self):
+        """Operation Eyeball's local Step model should get multimodal capture payloads."""
+        from spoke.command import CommandClient
+        from spoke.tool_dispatch import get_tool_schemas
+
+        client = CommandClient(
+            base_url="http://localhost:8001",
+            model="step-3p5-flash-mixedp-final",
+            api_key="key",
+        )
+
+        tool_round_chunks = [
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "capture_context", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"scope":"active_window"}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        final_chunks = [self._content_chunk("Done.")]
+        first_resp = _make_sse_response(tool_round_chunks)
+        second_resp = _make_sse_response(final_chunks)
+
+        request_bodies = []
+        tool_calls = []
+
+        def fake_urlopen(req, timeout=None):
+            request_bodies.append(json.loads(req.data))
+            return first_resp if len(request_bodies) == 1 else second_resp
+
+        def tool_executor(**kwargs):
+            tool_calls.append(kwargs)
+            return {
+                "content": [
+                    {"type": "text", "text": '{"scene_ref":"scene-test"}'},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,QUJD"},
+                    },
+                ],
+                "log_text": '{"scene_ref":"scene-test","model_image_size":[1707,960]}',
+            }
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            list(
+                client.stream_command_events(
+                    "check it",
+                    tools=get_tool_schemas(),
+                    tool_executor=tool_executor,
+                )
+            )
+
+        assert tool_calls[0]["tool_output_mode"] == "multimodal"
+        assert request_bodies[1]["messages"][-1] == {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": [
+                {"type": "text", "text": '{"scene_ref":"scene-test"}'},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,QUJD"},
+                },
+            ],
+        }
+
+    def test_stream_tool_round_accepts_legacy_tool_executor_signature(self):
+        """Older tool executors that only accept name/arguments should still work."""
+        from spoke.command import CommandClient
+        from spoke.tool_dispatch import get_tool_schemas
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test-model",
+            api_key="key",
+            history_path=None,
+        )
+
+        tool_round_chunks = [
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "capture_context", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"scope":"active_window"}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        final_chunks = [self._content_chunk("Done.")]
+        first_resp = _make_sse_response(tool_round_chunks)
+        second_resp = _make_sse_response(final_chunks)
+
+        call_count = {"n": 0}
+        tool_calls = []
+
+        def fake_urlopen(req, timeout=None):
+            call_count["n"] += 1
+            return first_resp if call_count["n"] == 1 else second_resp
+
+        def legacy_tool_executor(name, arguments):
+            tool_calls.append((name, arguments))
+            return '{"ok": true}'
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            events = list(
+                client.stream_command_events(
+                    "check it",
+                    tools=get_tool_schemas(),
+                    tool_executor=legacy_tool_executor,
+                )
+            )
+
+        assert tool_calls == [("capture_context", {"scope": "active_window"})]
+        assert events[-1] == _cmd_mod.CommandStreamEvent(
+            kind="assistant_final",
+            text="Done.",
+        )
 
     def test_stream_skips_reasoning_tokens(self):
         """reasoning_content tokens should not be yielded."""
