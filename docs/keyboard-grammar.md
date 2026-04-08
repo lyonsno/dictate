@@ -32,14 +32,14 @@ Each key has a consistent identity across the entire grammar:
 
 | Gesture | Result |
 |---|---|
-| Spacebar tap (< 400ms, no shift) | Normal space character (forwarded to app) |
-| Spacebar hold (≥ 400ms), clean release | **Text pathway** — record, transcribe, paste at cursor |
+| Spacebar tap (< 200ms, no shift) | Normal space character (forwarded to app) |
+| Spacebar hold (≥ 200ms), clean release | **Text pathway** — record, transcribe, paste at cursor |
 | Spacebar hold, shift held at release | **Enter tray** — record, transcribe, stage for review |
 | Spacebar hold, enter held at release | **Send to assistant** — record, transcribe, stream to assistant |
 | Spacebar hold, tap shift, then release spacebar | **Latched recording** — keep recording hands-free until explicit tray or assistant exit |
 | Short spacebar hold (< 800ms), shift at release | **Recall** — enter tray with last tray entry (no recording) |
 
-The hold threshold defaults to 400ms (configurable via `SPOKE_HOLD_MS`, which
+The hold threshold defaults to 200ms (configurable via `SPOKE_HOLD_MS`, which
 sets the threshold in the `SpacebarHoldDetector`).
 
 ## Disposition at release
@@ -74,7 +74,7 @@ not a recording gate.
 ## Recording state machine
 
 ```
-IDLE ──[spacebar down]──→ WAITING ──[400ms timer]──→ RECORDING ──[spacebar up]──→ IDLE
+IDLE ──[spacebar down]──→ WAITING ──[200ms timer]──→ RECORDING ──[spacebar up]──→ IDLE
                               │                           │
                      [spacebar up early]          [300s safety timeout]
                               │                           │
@@ -143,7 +143,7 @@ has been latched, it exits through tray or assistant.
 
 ### Relationship to the tray
 
-Tray entry does not change. From the tray, spacebar hold (≥ 400ms) still
+Tray entry does not change. From the tray, spacebar hold (≥ 200ms) still
 starts a new recording and pushes the current tray text down in the stack.
 If that new recording should continue hands-free, tap shift during the
 recording to latch it.
@@ -180,7 +180,7 @@ central interaction surface between recording and committing.
 | Gesture | Result |
 |---|---|
 | Spacebar tap (~150ms) | Insert tray text at cursor |
-| Spacebar hold (≥ 400ms) | Start new recording (pushes current text down in stack) |
+| Spacebar hold (≥ 200ms) | Start new recording (pushes current text down in stack) |
 | Enter | Send tray text to assistant |
 | Shift + release spacebar | Navigate up (more recent item; dismiss at top) |
 | Spacebar + tap shift | Navigate down (older item) |
@@ -212,7 +212,7 @@ navigate.
 
 ### Tray stack lifecycle
 
-- **New recording from tray** (spacebar hold ≥ 400ms) pushes the current tray
+- **New recording from tray** (spacebar hold ≥ 200ms) pushes the current tray
   text down in the stack and starts recording. The new transcription becomes
   the top of the stack when it lands.
 - **Insert** (spacebar tap) consumes the current entry — it is removed from
@@ -268,7 +268,7 @@ When the tray is entered from recording (shift held + release spacebar), the
 tray overlay appears and, if shift is still held, begins a spring animation:
 the overlay drifts downward with an ease-out curve (fast start, decelerating —
 like pulling against a spring). Maximum displacement is small (~8–10pt over
-400ms). This is purely a visual affordance — it signals "something is about
+200ms). This is purely a visual affordance — it signals "something is about
 to happen if you keep holding."
 
 If shift is released, the overlay eases back to resting position (spring

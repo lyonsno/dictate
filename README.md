@@ -1,37 +1,43 @@
 # spoke
 
-Global hold-to-dictate for macOS.
+System-wide dictation, tray capture, and voice-operator control for macOS.
 
-Hold the spacebar anywhere on the system, speak, release, and `spoke` pastes the transcription at the current cursor. It runs as a menubar app with PyObjC, supports three transcription backends, and optionally routes voice commands to a local LLM:
-
-- Local MLX Whisper
-- Local Qwen3-ASR via MLX
-- Remote OpenAI-compatible audio sidecars for transcription and TTS
+`spoke` is a menubar app built with PyObjC. Hold the spacebar anywhere on the
+system to dictate, route the utterance into a tray for review, send it to an
+assistant overlay, or keep recording hands-free. Preview/final transcription,
+assistant inference, and TTS each have their own backend selection and persist
+in `~/Library/Application Support/Spoke/model_preferences.json`.
 
 <video src="https://github.com/user-attachments/assets/f05bafa9-f149-494b-b514-84070a6125e4" width="100%"></video>
 
-## How It Works
+## What spoke is now
+
+- System-wide hold-to-dictate with paste verification and tray fail-open
+- Live preview overlay and screen-edge glow while recording
+- Latched recording plus optional wake-word hands-free dictation
+- Assistant pathway with streaming overlay output, tool calls, and thinking summaries
+- Independent preview and final transcription backends: local, sidecar, or cloud
+- TTS backends: local MLX runtime, MLX-audio sidecar, or Gemini cloud
+- Menubar-driven backend, model, and launch-target control with persisted preferences
+- Terror Form HUD for live topoi/status visibility
+- Single-instance behavior with visible source and branch in the menubar
+
+## Interaction model
 
 ```text
-Hold spacebar → record mic audio → preview text while speaking → transcribe on release → paste at cursor
+Hold spacebar -> speak -> release clean to paste at cursor
+                        -> hold Shift at release to route into the tray
+                        -> hold Enter at release to send to the assistant
+Tap Shift while recording -> latch recording hands-free
+Optional wake words -> start or stop hands-free dictation without touching the keyboard
 ```
 
-Quick taps still produce a normal space. Longer holds trigger recording, show the glow/overlay UI, then inject the final text with pasteboard save/restore plus synthetic `Cmd+V`. If the paste doesn't land (wrong app focused, no text field, etc.), a recovery overlay appears with retry and dismiss options.
+Quick taps still produce a normal space. Longer holds trigger recording,
+preview text, and the overlay/glow surface. If insertion cannot be verified,
+`spoke` falls back to the tray instead of silently losing text.
 
-## Features
-
-- Global spacebar hold detection with normal tap passthrough
-- Live preview overlay during recording
-- Screen-edge glow driven by microphone amplitude
-- Local transcription by default (Whisper or Qwen3-ASR) when `SPOKE_WHISPER_URL` is unset
-- Optional spoken-command pathway with local tool calls and overlay output
-- Optional remote sidecar mode for heavier transcription and TTS models
-- Voice command pathway via Shift+Space — sends utterances to a local LLM with streaming response overlay
-- OCR-verified paste with automatic recovery overlay on failure
-- Decoder-loop and silence-hallucination deduplication
-- Bounded Whisper ontology-vocabulary repair for recurring Epistaxis terms
-- Single-instance app behavior
-- Menubar-only UI with no Dock icon
+The full gesture surface lives in
+[`docs/keyboard-grammar.md`](docs/keyboard-grammar.md).
 
 ## Requirements
 
@@ -48,173 +54,133 @@ brew install portaudio
 
 ## Install
 
+Basic install:
+
 ```sh
 git clone https://github.com/lyonsno/spoke.git
 cd spoke
 uv sync
 ```
 
+If you want the full local speech stack, local TTS runtimes, and the usual dev
+tooling, use:
+
+```sh
+uv sync --extra tts --group dev
+```
+
 ## Run
-
-### Default: local MLX Whisper
-
-If you do not set `SPOKE_WHISPER_URL`, `spoke` runs transcription locally with `mlx-whisper`.
-By default, preview uses Whisper `medium.en` while final transcription uses Whisper `large-v3-turbo`
-on machines that pass the existing RAM guard; otherwise both roles fall back to the lighter model.
 
 ```sh
 uv run spoke
 ```
 
-### Local Qwen3-ASR
+On first run macOS will ask for:
 
-Use a Qwen model name to switch the local backend:
+- Microphone access
+- Accessibility access
 
-```sh
-SPOKE_WHISPER_MODEL=Qwen/Qwen3-ASR-0.6B uv run spoke
-```
+Accessibility must be granted to the app that launches `spoke` if you run it
+from a terminal, or to `Spoke.app` if you run the bundled app.
 
-### Remote sidecars
+## Backend model
 
-Point `spoke` at any OpenAI-compatible transcription server:
+`spoke` starts with local transcription by default:
 
-```sh
-SPOKE_WHISPER_URL=http://<host>:8000 uv run spoke
-```
+- Preview: `mlx-community/whisper-base.en-mlx-8bit`
+- Final transcription: `mlx-community/whisper-medium.en-mlx-8bit`
 
-For the canonical MLX-audio sidecar that `spoke` tracks for remote TTS and STT,
-use the sibling Voxtral-capable fork documented in
-[`docs/mlx-audio-sidecar.md`](docs/mlx-audio-sidecar.md):
+After launch, the menubar is the primary control surface for backend selection.
+Current choices persist across relaunches in
+`~/Library/Application Support/Spoke/model_preferences.json`.
+
+The current menu surface can independently control:
+
+- `Preview Backend`: local Whisper, sidecar, or cloud OpenAI Whisper
+- `Transcription Backend`: local Whisper, sidecar, or cloud OpenAI Whisper
+- `Assistant Backend`: local OMLX, sidecar OMLX, or cloud
+- `TTS Backend`: local runtime, MLX-audio sidecar, or Gemini cloud
+
+Environment variables still matter, but mostly as seed values or smoke/test
+overrides. Once preferences exist, the app uses the saved backend/model state
+instead of pretending the env is the whole story.
+
+## Remote sidecars
+
+For the tracked MLX-audio serving surface, bootstrap the sibling fork with:
 
 ```sh
 ./scripts/setup-mlx-audio-server.sh --start --port 9001
 ```
 
-That script syncs `../mlx-audio-pr-607-voxtral-tts` with the exact extras the
-sidecar needs and starts `.venv/bin/mlx_audio.server` on port `9001`.
+That script syncs the expected fork checkout, installs the required extras, and
+starts `.venv/bin/mlx_audio.server` on port `9001`. The canonical sidecar
+contract, required models, and manual probes are documented in
+[`docs/mlx-audio-sidecar.md`](docs/mlx-audio-sidecar.md).
 
-The tracked TTS serving surface is:
-
-- `mlx-community/Voxtral-4B-TTS-2603-mlx-6bit`
-- `mlx-community/VibeVoice-Realtime-0.5B-fp16`
-- `mlx-community/Kokoro-82M-bf16`
-- `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit`
-
-Once running, load models dynamically:
+If you want a quick health check for the local service fleet, run:
 
 ```sh
-curl -X POST "http://localhost:9001/v1/models?model_name=mlx-community/Voxtral-4B-TTS-2603-mlx-6bit"
-curl -X POST "http://localhost:9001/v1/models?model_name=mlx-community/VibeVoice-Realtime-0.5B-fp16"
-curl -X POST "http://localhost:9001/v1/models?model_name=mlx-community/Kokoro-82M-bf16"
-curl -X POST "http://localhost:9001/v1/models?model_name=mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit"
+./scripts/spoke-doctor.sh
 ```
 
-Or start the server manually from the fork checkout:
-
-```sh
-cd ../mlx-audio-pr-607-voxtral-tts
-uv sync --extra server --extra tts --extra sts
-.venv/bin/mlx_audio.server --host 0.0.0.0 --port 9001 --workers 1
-```
-
-> **Note:** The binary is `mlx_audio.server` (dots), not `mlx-audio-server` (dashes).
-
-### Voice commands
-
-When `SPOKE_COMMAND_URL` is set, Shift+Space activates the command pathway instead of dictation. Spoken input is sent to a local LLM (OpenAI-compatible chat completions API) and the streamed response appears in a dedicated overlay.
-
-```sh
-SPOKE_COMMAND_URL=http://localhost:8001 uv run spoke
-```
-
-### Whisper ontology vocabulary repair
-
-Spoke applies a bounded post-transcription repair pass for recurring
-Epistaxis ontology terms that have already shown up incorrectly in real launch
-logs. The repair pass now normalizes those hits to accented canonical forms,
-and the visible overlay/tray tints those ontology words in the same glow-blue
-family as the rest of the UI. Current observed failure examples include:
-
-- `Epistaxes`, `Nepistaxis`, `Epistexis`, `in his taxes` -> `Epístaxis`
-- `Epistaxistopos` -> `Epístaxis tópos`
-- `Topoie`, `topoit`, `tipos` -> `tópoi`, `tópos`
-- `an Afro`, `Afra`, `Aphro` -> `anaphorá`
-- `Metadose`, `Metadose II` -> `metádosis`
-- `Uxis`, `of seizes`, `Oxygesis`, `Oxesis`, `auxesus` -> `aúxesis`
-- `Syllogy`, `silagee`, `sueji`, `Silegy` -> `syllogé`
-- `appless kept says`, `upper skepticism`, `Aposcepsis`, `Episcapsis` -> `aposképsis`
-- `kerigma`, `kergma`, `Curigma`, `Karigma`, `Charygma`, `chorigma` -> `kérygma`
-- `epinorthosis`, `Epin orthosis`, `Evanorthosis` -> `epanórthosis`
-- `epispokisis`, `epispokosis` -> `epispókisis`
-- `semi-hostess`, `semi-oce's`, `Semion`, `Semian` -> `sēmeiōsis`, `sēmeion`
-- `Probolia`, `Proboli`, `probly`, `probaly`, `probally` -> `probolé`
-- `Autopuise`, `Autopoises`, `Otopoiesis` -> `autopoíesis`
-- `ooxisis` -> `aúxesis`
-- `Catastasis` -> `katástasis`
-- `Lysis` -> `lýsis`
-
-Whenever one of these repairs fires, the launch logs keep both the raw and
-repaired text so the vocabulary list can expand from observed failures instead
-of invented cases.
-
-## Permissions
-
-On first run, macOS will ask for:
-
-- Microphone access
-- Accessibility access
-
-Accessibility must be granted to the app that launches `spoke` if you run it from a terminal, or to `Spoke.app` if you run the bundled app.
+That script reports the current status of the assistant endpoint, narrator,
+MLX-audio sidecar, remote Whisper sidecar, and the running `spoke` process.
 
 ## Configuration
 
-### Core environment variables
+The env vars use some legacy names (`WHISPER`, `COMMAND`) for historical
+reasons. They now seed a broader backend model than the names suggest.
 
-The env var names use `WHISPER` for historical reasons — they control all backends, not just Whisper.
-Preview and final transcription can now be configured independently, and the menu persists those
-choices across relaunches.
-
-| Variable | Default | Description |
-|---|---|---|
-| `SPOKE_WHISPER_URL` | unset | Remote transcription server. When unset, transcription runs locally. |
-| `SPOKE_WHISPER_MODEL` | unset | Legacy single-model override. When set, both preview and final use the same model. |
-| `SPOKE_PREVIEW_MODEL` | `mlx-community/whisper-medium.en-mlx-8bit` | Preview model identifier. Use `Qwen/Qwen3-ASR-0.6B` for local streaming preview, or any menu-listed Whisper variant. |
-| `SPOKE_TRANSCRIPTION_MODEL` | `mlx-community/whisper-large-v3-turbo` | Final transcription model identifier. Use `Qwen/Qwen3-ASR-0.6B` or any menu-listed Whisper variant. |
-| `SPOKE_TTS_VOICE` | unset | Enables TTS when set. Used by both the local MLX TTS runtime and the sidecar TTS backend. |
-| `SPOKE_TTS_MODEL` | `mlx-community/Voxtral-4B-TTS-2603-mlx-4bit` | Initial TTS model selection. For the tracked sidecar-served models, see `docs/mlx-audio-sidecar.md`. |
-| `SPOKE_COMMAND_URL` | unset | OpenAI-compatible OMLX chat endpoint used by the assistant command pathway. |
-| `SPOKE_COMMAND_MODEL` | `qwen3p5-35B-A3B` | Initial assistant model identifier. When the command pathway is enabled, the menu bar persists the selected assistant model across relaunches. |
-| `SPOKE_COMMAND_MODEL_DIR` | `~/.lmstudio/models` | Optional local model inventory scanned to seed extra Assistant menu entries in `org/model` form alongside the server-reported `/v1/models` list. |
-| `SPOKE_HOLD_MS` | `200` | Spacebar hold threshold in milliseconds. Must be greater than `0`. |
-| `SPOKE_RESTORE_DELAY_MS` | `1000` | Delay before the original pasteboard contents are restored. |
-| `SPOKE_COMMAND_URL` | unset | Local LLM server for voice commands (Shift+Space). Chat completions endpoint. |
-| `SPOKE_COMMAND_MODEL` | `qwen3p5-35B-A3B` | Model name sent in command requests. |
-
-`spoke` persists the active TTS backend, sidecar URL, selected TTS model, and
-voice in `~/Library/Application Support/Spoke/model_preferences.json`. The
-repo-owned sidecar bootstrap and fork location are documented in
-[`docs/mlx-audio-sidecar.md`](docs/mlx-audio-sidecar.md).
-
-### Command and Gmail
+### Core runtime knobs
 
 | Variable | Default | Description |
 |---|---|---|
-| `SPOKE_COMMAND_URL` | unset | Enables the spoken-command pathway when set to an OpenAI-compatible chat completions endpoint. |
-| `SPOKE_COMMAND_MODEL` | `qwen3p5-35B-A3B` | Model id used for the spoken-command pathway. |
-| `SPOKE_COMMAND_API_KEY` | unset | Optional bearer token for the command endpoint. |
-| `SPOKE_GMAIL_CREDENTIALS_PATH` | `~/Library/Application Support/Spoke/gmail_credentials.json` | Local JSON file containing Gmail OAuth material for the bounded read-only `query_gmail` tool. |
-| `SPOKE_GMAIL_CLIENT_ID` | unset | Optional env override for the Gmail OAuth client id. |
-| `SPOKE_GMAIL_CLIENT_SECRET` | unset | Optional env override for the Gmail OAuth client secret. |
-| `SPOKE_GMAIL_REFRESH_TOKEN` | unset | Optional env override for the Gmail OAuth refresh token. |
-| `SPOKE_GMAIL_TOKEN_URI` | `https://oauth2.googleapis.com/token` | Optional token endpoint override for Gmail OAuth refresh requests. |
+| `SPOKE_HOLD_MS` | `200` | Spacebar hold threshold in milliseconds. |
+| `SPOKE_RESTORE_DELAY_MS` | `1000` | Delay before restoring the saved pasteboard contents. |
+| `SPOKE_PREVIEW_MODEL` | `mlx-community/whisper-base.en-mlx-8bit` | Initial local preview model. |
+| `SPOKE_TRANSCRIPTION_MODEL` | `mlx-community/whisper-medium.en-mlx-8bit` | Initial local final-transcription model. |
+| `SPOKE_WHISPER_MODEL` | unset | Legacy single-model override for both preview and final roles. |
+| `SPOKE_WHISPER_URL` | unset | Initial remote transcription sidecar URL for OpenAI-compatible `/v1/audio/transcriptions`. |
+| `SPOKE_COMMAND_URL` | `http://localhost:8001` | Initial local or sidecar assistant endpoint. Menu persistence wins after first save. |
+| `SPOKE_COMMAND_MODEL` | `qwen3p5-35B-A3B` | Initial assistant model id. |
+| `SPOKE_COMMAND_API_KEY` | unset | Optional bearer token for the assistant endpoint. |
+| `SPOKE_COMMAND_MODEL_DIR` | `~/.lmstudio/models` | Extra local model inventory to seed assistant menu entries. |
+| `SPOKE_TTS_MODEL` | `mlx-community/Voxtral-4B-TTS-2603-mlx-4bit` | Initial local or sidecar TTS model selection. |
+| `SPOKE_TTS_VOICE` | unset | Initial voice selection for local or sidecar TTS. |
+| `GEMINI_API_KEY` | unset | Enables cloud assistant and Gemini cloud TTS. |
 
-The first Gmail affordance is intentionally narrow and read-only: `query_gmail`
-currently supports recent starred recruiter- or CTO-style mail and returns
-compact metadata plus snippets rather than full message bodies.
+Cloud Whisper transcription is configured in-app from the menubar and persisted
+to `model_preferences.json`; it is not currently driven by a dedicated env var.
 
-### UI tuning
+### Optional integrations
 
-The overlay and glow also expose advanced tuning env vars such as `SPOKE_GLOW_MULTIPLIER`, `SPOKE_TEXT_ALPHA_MIN`, and related `SPOKE_*` values in the overlay/glow modules.
+| Variable | Default | Description |
+|---|---|---|
+| `SPOKE_PARAKEET_MODEL_DIR` | unset | Path to a `FluidInference/parakeet-ctc-110m-coreml` checkout or model snapshot. |
+| `SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY` | unset | Enables wake-word hands-free mode. |
+| `SPOKE_WAKEWORD_LISTEN` | `computer` | Wake word that starts hands-free dictation. |
+| `SPOKE_WAKEWORD_SLEEP` | `terminator` | Wake word that returns hands-free mode to dormant. |
+| `SPOKE_NARRATOR_URL` | unset | Optional separate OpenAI-compatible narrator sidecar URL. Defaults to the assistant endpoint. |
+| `SPOKE_MODEL_PREFERENCES_PATH` | unset | Override path for persisted backend/model preferences. Useful for isolated smoke/test surfaces. |
+| `SPOKE_GMAIL_CREDENTIALS_PATH` | `~/Library/Application Support/Spoke/gmail_credentials.json` | Local Gmail OAuth material for the bounded `query_gmail` tool. |
+| `SPOKE_GMAIL_CLIENT_ID` | unset | Optional Gmail OAuth client id override. |
+| `SPOKE_GMAIL_CLIENT_SECRET` | unset | Optional Gmail OAuth client secret override. |
+| `SPOKE_GMAIL_REFRESH_TOKEN` | unset | Optional Gmail OAuth refresh token override. |
+| `SPOKE_GMAIL_TOKEN_URI` | `https://oauth2.googleapis.com/token` | Optional Gmail OAuth token endpoint override. |
+
+The Gmail affordance is intentionally narrow and read-only: `query_gmail`
+returns compact metadata plus snippets for matching messages rather than full
+message bodies.
+
+## Notes
+
+- `spoke` keeps a bounded post-transcription repair pass for recurring
+  project-specific vocabulary that is known to fail in real logs.
+- The assistant tool surface includes local filesystem and screen-context
+  affordances; the overlay is no longer just a text dump from a single local
+  model.
+- TTS is now a real routing surface rather than a single hardcoded backend.
 
 ## Development
 
@@ -224,26 +190,28 @@ Run the test suite:
 uv run pytest -v
 ```
 
-Each layer is independent and testable in isolation.
+Core modules:
 
 ```text
 spoke/
-├── __main__.py               # app delegate and runtime wiring
-├── input_tap.py              # global spacebar hold detection
-├── capture.py                # sounddevice recording and WAV encoding
-├── transcribe.py             # remote OpenAI-compatible client
-├── transcribe_local.py       # local MLX Whisper backend
-├── transcribe_qwen.py        # local Qwen3-ASR backend
-├── patch_qwen3_streaming.py  # upstream Qwen3-ASR overlap fix
-├── dedup.py                  # decoder-loop and hallucination cleanup
-├── inject.py                 # pasteboard save/paste/restore
-├── paste_verify.py           # post-paste OCR verification
-├── focus_check.py            # text-field focus detection via Accessibility
-├── command.py                # voice command dispatch to local LLM
-├── command_overlay.py        # streaming command response overlay
-├── glow.py                   # screen-edge amplitude glow
-├── overlay.py                # live transcription overlay
-└── menubar.py                # status item and menu
+├── __main__.py           # app delegate, menu state, backend wiring, lifecycle
+├── input_tap.py          # global key grammar and hold detection
+├── capture.py            # sounddevice recording and WAV encoding
+├── handsfree.py          # latched and wake-word-driven dictation controller
+├── wakeword.py           # Picovoice Porcupine listener
+├── transcribe.py         # remote OpenAI-compatible transcription client
+├── transcribe_local.py   # local MLX Whisper backend
+├── transcribe_qwen.py    # local Qwen3-ASR backend
+├── transcribe_parakeet.py # local Parakeet CoreML backend
+├── command.py            # assistant client and tool-call streaming
+├── narrator.py           # thinking-summary sidecar
+├── tts.py                # local, sidecar, and cloud TTS clients
+├── command_overlay.py    # assistant overlay
+├── overlay.py            # live transcription overlay
+├── glow.py               # screen-edge glow
+├── terraform_hud.py      # Terror Form HUD
+├── menubar.py            # status item and menu
+└── tool_dispatch.py      # local tool execution surface
 ```
 
 ## Build
@@ -272,8 +240,9 @@ The app bundle is written to `dist/Spoke.app`.
 ## Notes
 
 - The bundled app logs to `~/Library/Logs/Spoke.log`.
-- The local MLX backends may download model weights on first use.
-- The app is designed for Apple Silicon-oriented local inference workflows, but remote sidecar mode works independently of local model availability.
+- Local MLX backends may download model weights on first use.
+- The local runtime is Apple Silicon-oriented, but sidecar and cloud backends
+  work independently of local model availability.
 
 ## License
 
