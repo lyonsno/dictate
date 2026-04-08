@@ -1,0 +1,93 @@
+# Spoke Service Fleet Manifest
+#
+# Spoke runs as a coordinated fleet of isolated services. The core app
+# (UI, orchestration, input tap) talks to sidecar services over HTTP.
+# Each sidecar lives in its own venv and can break independently without
+# taking down the core.
+#
+# Use `scripts/spoke-doctor.sh` to check fleet health.
+
+services:
+
+  omlx:
+    description: "OpenAI-compatible LLM server (commands, tool calls, thinking)"
+    default_host: localhost
+    default_port: 8001
+    env_url: SPOKE_COMMAND_URL
+    env_api_key: SPOKE_COMMAND_API_KEY
+    env_api_key_fallback: OMLX_SERVER_API_KEY
+    health_endpoint: /v1/models
+    notes: >
+      Runs via omlx CLI. API key is typically set in shell profile.
+      Default model: qwen3p5-35B-A3B.
+    rebuild: |
+      # OMLX is installed globally or in its own venv — not in spoke's.
+      # Consult omlx docs for installation. Typical start:
+      omlx serve --port 8001
+
+  narrator:
+    description: "Thinking summary narrator (separate model, can run on another box)"
+    default_host: localhost
+    default_port: 8001
+    env_url: SPOKE_NARRATOR_URL
+    env_api_key: SPOKE_NARRATOR_API_KEY
+    env_api_key_fallback: OMLX_SERVER_API_KEY
+    health_endpoint: /v1/models
+    notes: >
+      Falls back to SPOKE_COMMAND_URL if SPOKE_NARRATOR_URL is unset.
+      Can point at a different OMLX instance (e.g. nlm2pr.local:8001)
+      running a smaller model like Bonsai-8B-mlx-1bit.
+    rebuild: |
+      # Same as omlx — just a second instance with a different model.
+      # On the secondary box (nlm2pr.local):
+      omlx serve --port 8001
+
+  mlx-audio-sidecar:
+    description: "TTS synthesis and Whisper transcription (MLX-audio fork)"
+    default_host: MacBook-Pro-2.local
+    default_port: 9001
+    env_url: SPOKE_TTS_URL
+    health_endpoint: /v1/models
+    canonical_repo: "../mlx-audio-pr-607-voxtral-tts"
+    notes: >
+      Voxtral-capable fork of mlx-audio. Serves TTS and STT on port 9001.
+      The fork checkout must include the Voxtral backend. Uses its own
+      venv, completely isolated from spoke's.
+    rebuild: |
+      # From the spoke repo root:
+      ./scripts/setup-mlx-audio-server.sh --start --port 9001
+      #
+      # Or manually:
+      cd ../mlx-audio-pr-607-voxtral-tts
+      uv sync --extra server --extra tts --extra sts
+      .venv/bin/mlx_audio.server --host 0.0.0.0 --port 9001 --workers 1
+    served_models:
+      - mlx-community/Voxtral-4B-TTS-2603-mlx-6bit
+      - mlx-community/VibeVoice-Realtime-0.5B-fp16
+      - mlx-community/Kokoro-82M-bf16
+      - mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit
+
+  whisper:
+    description: "Remote Whisper transcription (optional, can run on another box)"
+    default_host: nlm2pr.local
+    default_port: 7001
+    env_url: SPOKE_WHISPER_URL
+    health_endpoint: /v1/models
+    notes: >
+      Optional. If SPOKE_WHISPER_URL is unset, spoke uses local MLX Whisper
+      in-process. Useful for offloading transcription to the secondary box.
+      Default model: mlx-community/whisper-large-v3-turbo.
+    rebuild: |
+      # On the target box, using the same mlx-audio fork:
+      cd ~/dev/mlx-audio-pr-607-voxtral-tts
+      uv sync --extra server --extra tts --extra sts
+      .venv/bin/mlx_audio.server --host 0.0.0.0 --port 7001 --workers 1
+
+# Machines
+#
+# MacBook-Pro-2.local (M4 Max, 128GB) — primary dev box
+#   Runs: spoke core, omlx, mlx-audio-sidecar
+#
+# nlm2pr.local (M2 Pro, 16GB) — secondary box
+#   Runs: whisper sidecar, optional narrator omlx instance
+#   Constraint: 16GB means long recordings need VAD chunking

@@ -114,6 +114,38 @@ For full clean builds (after dependency changes, spec file changes, or when
 - Use `pkill -TERM` (not `-9`) to kill the app so the SIGTERM handler can cleanly uninstall the CGEventTap.
 - After rebuilding and relaunching, **ask the user if the spacebar is working** before doing anything else. There is no way to verify event tap functionality from logs or process state.
 
+## Service fleet
+
+Spoke runs as a coordinated fleet of isolated services. The core app handles
+UI, orchestration, and input; sidecar services handle inference workloads in
+their own venvs. Each sidecar can break independently without taking down the
+core.
+
+**Fleet manifest:** `services.yaml` at the repo root describes every service —
+ports, env vars, health endpoints, rebuild instructions, and which box runs
+what. Read it before debugging connectivity or preparing a new smoke surface.
+
+**Health check:** `scripts/spoke-doctor.sh` pings every expected service and
+reports what's up, what's down, and what URL it tried. Run it when something
+feels broken — it separates "service is down" from "spoke can't reach it."
+
+```sh
+./scripts/spoke-doctor.sh            # quick status
+./scripts/spoke-doctor.sh --verbose  # include response snippets
+```
+
+The fleet topology as of 2026-04-07:
+
+| Service | Default URL | Required? |
+|---------|------------|-----------|
+| OMLX (commands) | `localhost:8001` | Yes |
+| Narrator | Falls back to OMLX | No |
+| MLX-audio (TTS/STT) | `MacBook-Pro-2.local:9001` | Yes |
+| Whisper (remote) | `nlm2pr.local:7001` | No (local fallback) |
+
+When preparing a new worktree or smoke surface, do not assume sidecars are
+reachable. Run `spoke-doctor.sh` first.
+
 ## Local assistant (command pathway)
 
 The assistant requires a local OpenAI-compatible model server. The app defaults
