@@ -4305,6 +4305,25 @@ class _RemovedCommandOverlayDismissRecallCycle:
         d._command_overlay.show.assert_not_called()
 
 
+class TestOverlayRecallSnapshots:
+    """Recall should prefer the delegate snapshot over stale ring history."""
+
+    def test_last_command_overlay_snapshot_prefers_delegate_snapshot_over_stale_history(
+        self, main_module, monkeypatch
+    ):
+        """Snapshot lookup should restore the last rendered transcript before ring history."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "Done.")]
+        d._last_command_utterance = "hello"
+        d._last_command_response = "Let me check. \n[calling capture_context…]\nDone."
+
+        assert d._last_command_overlay_snapshot() == (
+            "hello",
+            "Let me check. \n[calling capture_context…]\nDone.",
+        )
+
+
 class TestCoerceSettings:
     """Test _coerce_decode_timeout_setting and _coerce_eager_eval_setting parsers."""
 

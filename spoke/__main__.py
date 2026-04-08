@@ -2291,12 +2291,20 @@ class SpokeAppDelegate(NSObject):
 
     def _last_command_overlay_snapshot(self) -> tuple[str, str] | None:
         """Return the most recent assistant overlay content, including failures."""
+        utterance = getattr(self, "_last_command_utterance", "")
+        response = getattr(self, "_last_command_response", "")
         if self._command_client is not None:
             history = self._command_client.history
             if history:
-                return history[-1]
-        utterance = getattr(self, "_last_command_utterance", "")
-        response = getattr(self, "_last_command_response", "")
+                hist_utterance, hist_response = history[-1]
+                if (
+                    utterance
+                    and response
+                    and hist_utterance == utterance
+                    and len(response) >= len(hist_response)
+                ):
+                    return utterance, response
+                return hist_utterance, hist_response
         if utterance and response:
             return utterance, response
         return None
