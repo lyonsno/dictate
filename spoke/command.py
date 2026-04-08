@@ -290,6 +290,7 @@ class CommandClient:
         """
         messages = self._build_messages(utterance)
         full_response = ""
+        visible_response = ""
 
         # Safety cap on tool call round-trips.  With cancel_check wired
         # up the user can bail out at any time, so this is just a backstop
@@ -448,6 +449,7 @@ class CommandClient:
                                 logger.info("First content token on round %d: %r", _round, text_to_process[:50] if len(text_to_process) > 50 else text_to_process)
                                 first_token_logged = True
                             round_content += text_to_process
+                            visible_response += text_to_process
                             yield CommandStreamEvent(
                                 kind="assistant_delta",
                                 text=text_to_process,
@@ -465,6 +467,7 @@ class CommandClient:
                                     continue
                                 indicator = f"\n[calling {tool_name}…]\n"
                                 round_content += indicator
+                                visible_response += indicator
                                 yield CommandStreamEvent(
                                     kind="assistant_delta",
                                     text=indicator,
@@ -488,6 +491,7 @@ class CommandClient:
             if not tool_call_acc.has_calls and tool_executor is not None:
                 xml_result = _extract_xml_tool_calls(round_content)
                 if xml_result is not None:
+                    original_round_content = round_content
                     cleaned_text, xml_calls = xml_result
                     logger.info(
                         "Extracted %d XML tool call(s) from content stream: %s",
@@ -495,9 +499,18 @@ class CommandClient:
                         ", ".join(c["function"]["name"] for c in xml_calls),
                     )
                     round_content = cleaned_text
+                    if (
+                        original_round_content
+                        and visible_response.endswith(original_round_content)
+                    ):
+                        visible_response = (
+                            visible_response[: -len(original_round_content)] + cleaned_text
+                        )
                     for i, xc in enumerate(xml_calls):
                         tool_call_acc._calls[i] = xc
                         indicator = f"\n[calling {xc['function']['name']}…]\n"
+                        round_content += indicator
+                        visible_response += indicator
                         yield CommandStreamEvent(
                             kind="assistant_delta",
                             text=indicator,
@@ -530,7 +543,7 @@ class CommandClient:
                     "— returning accumulated content as final response",
                     _round,
                 )
-                full_response = round_content
+                full_response = visible_response or round_content
                 yield CommandStreamEvent(kind="assistant_final", text=full_response)
                 break
 
@@ -592,7 +605,7 @@ class CommandClient:
             break
 
         # Add to ring buffer (content only, no reasoning)
-        self._history.append((utterance, full_response))
+        self._history.append((utterance, visible_response or full_response))
         if len(self._history) > self._max_history:
             self._history.pop(0)
 

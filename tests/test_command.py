@@ -307,7 +307,9 @@ class TestStreamCommand:
             ("assistant_delta", "Done.", None),
             ("assistant_final", "Done.", None),
         ]
-        assert client._history == [("check it", "Done.")]
+        assert client._history == [
+            ("check it", "Let me check. \n[calling capture_context…]\nDone.")
+        ]
 
     def test_stream_skips_reasoning_tokens(self):
         """reasoning_content tokens should not be yielded."""
