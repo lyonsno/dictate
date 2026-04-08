@@ -13,17 +13,26 @@ TTS each have their own backend selection and persist in
 
 <video src="https://github.com/user-attachments/assets/f05bafa9-f149-494b-b514-84070a6125e4" width="100%"></video>
 
-## Current surface
+## What It Does
 
-- System-wide hold-to-dictate with paste verification and tray fail-open
-- Live preview overlay and screen-edge glow while recording
-- Latched recording plus optional wake-word hands-free dictation
-- Assistant pathway with streaming overlay output, tool calls, and thinking summaries
-- Independent preview and final transcription backends: local, sidecar, or cloud
-- TTS backends: local MLX runtime, MLX-audio sidecar, or Gemini cloud
-- Menubar-driven backend, model, and launch-target control with persisted preferences
-- Terror Form HUD for live topoi/status visibility
-- Single-instance behavior with visible source and branch in the menubar
+- Dictate anywhere on the system and paste directly into the focused field
+- Fail open into a tray when insertion cannot be verified or when you want review first
+- Send spoken utterances to an assistant with streamed responses and tool calls
+- Keep recording hands-free with latched mode or wake words
+- Read results back through local, sidecar, or cloud TTS backends
+- Switch transcription, assistant, and TTS backends from the menubar and keep those choices across relaunches
+
+## Product Shape
+
+`spoke` is built around four connected surfaces:
+
+- `Text`: hold space, speak, release cleanly, and the text lands at the cursor.
+- `Tray`: hold shift at release to stage speech for review, recovery, recall, or later insertion.
+- `Assistant`: hold enter at release to send the utterance into the assistant path.
+- `Speech out`: assistant responses can be spoken back through the configured TTS backend.
+
+The overlays and glow are there to make those transitions legible, not to turn
+the app into a floating chatbot UI.
 
 ## Interaction model
 
@@ -38,10 +47,6 @@ Optional wake words -> start or stop hands-free dictation without touching the k
 Quick taps still produce a normal space. Longer holds trigger recording,
 preview text, and the overlay/glow surface. If insertion cannot be verified,
 `spoke` falls back to the tray instead of silently losing text.
-
-Outside active recording, a single idle Shift tap toggles TTS audibility,
-double-tap Shift toggles Terror Form, and pressing Enter during the pre-hold
-`WAITING` window toggles the assistant overlay.
 
 The full gesture surface lives in
 [`docs/keyboard-grammar.md`](docs/keyboard-grammar.md).
@@ -90,28 +95,27 @@ On first run macOS will ask for:
 Accessibility must be granted to the app that launches `spoke` if you run it
 from a terminal, or to `Spoke.app` if you run the bundled app.
 
-## Backend model
+## Backend Selection
 
 `spoke` starts with local transcription by default:
 
 - Preview: `mlx-community/whisper-base.en-mlx-8bit`
 - Final transcription: `mlx-community/whisper-medium.en-mlx-8bit`
 
-After launch, the menubar is the primary control surface for backend selection.
-Current choices persist across relaunches in
+After launch, the menubar is the canonical control surface for backend
+selection. Current choices persist across relaunches in
 `~/Library/Application Support/Spoke/model_preferences.json`.
 
-The current menu surface can independently control:
+The menus can independently control:
 
 - `Preview Backend`: local Whisper, sidecar, or cloud OpenAI Whisper
 - `Transcription Backend`: local Whisper, sidecar, or cloud OpenAI Whisper
 - `Assistant Backend`: local OMLX, sidecar OMLX, or cloud
 - `TTS Backend`: local runtime, MLX-audio sidecar, or Gemini cloud
 
-Environment variables still matter, but mostly as seed values or smoke/test
-overrides. In particular, assistant and narrator URLs are still live env-driven
-inputs during bootstrap and smoke flows. Once preferences exist, the app uses
-the saved backend/model state instead of pretending the env is the whole story.
+For ordinary use, the menus matter more than env vars. Most environment
+variables are now smoke/debugging overrides or bootstrap plumbing, not the main
+user-facing configuration story.
 
 ## Remote sidecars
 
@@ -132,59 +136,27 @@ If you want a quick health check for the local service fleet, run:
 ./scripts/spoke-doctor.sh
 ```
 
-That script reports the current status of the assistant endpoint, narrator,
+That script reports the current status of the assistant endpoint,
 MLX-audio sidecar, remote Whisper sidecar, and the running `spoke` process.
 
-## Configuration
+## Advanced Overrides
 
-The env vars use some legacy names (`WHISPER`, `COMMAND`) for historical
-reasons. They now seed a broader backend model than the names suggest.
-
-### Core runtime knobs
+If you are running isolated smoke surfaces or debugging backend wiring, a small
+set of env vars is still useful. For normal use, prefer the menus.
 
 | Variable | Default | Description |
 |---|---|---|
 | `SPOKE_HOLD_MS` | `200` | Spacebar hold threshold in milliseconds. |
 | `SPOKE_RESTORE_DELAY_MS` | `1000` | Delay before restoring the saved pasteboard contents. |
-| `SPOKE_PREVIEW_MODEL` | `mlx-community/whisper-base.en-mlx-8bit` | Initial local preview model. |
-| `SPOKE_TRANSCRIPTION_MODEL` | `mlx-community/whisper-medium.en-mlx-8bit` | Initial local final-transcription model. |
-| `SPOKE_WHISPER_MODEL` | unset | Legacy single-model override for both preview and final roles. |
-| `SPOKE_WHISPER_URL` | unset | Initial remote transcription sidecar URL for OpenAI-compatible `/v1/audio/transcriptions`. |
-| `SPOKE_COMMAND_URL` | `http://localhost:8001` | Initial local or sidecar assistant endpoint. Menu persistence wins after first save. |
-| `SPOKE_COMMAND_MODEL` | `qwen3p5-35B-A3B` | Initial assistant model id. |
-| `SPOKE_COMMAND_API_KEY` | unset | Optional bearer token for the assistant endpoint. |
-| `SPOKE_COMMAND_MODEL_DIR` | `~/.lmstudio/models` | Extra local model inventory to seed assistant menu entries. |
-| `SPOKE_TTS_MODEL` | `mlx-community/Voxtral-4B-TTS-2603-mlx-4bit` | Initial local or sidecar TTS model selection. |
-| `SPOKE_TTS_VOICE` | unset | Initial voice selection for local or sidecar TTS. |
-| `GEMINI_API_KEY` | unset | Enables cloud assistant and Gemini cloud TTS. |
-
-Cloud Whisper transcription is configured in-app from the menubar and persisted
-to `model_preferences.json`; it is not currently driven by a dedicated env var.
-
-### Optional integrations
-
-| Variable | Default | Description |
-|---|---|---|
-| `SPOKE_PARAKEET_MODEL_DIR` | unset | Path to a `FluidInference/parakeet-ctc-110m-coreml` checkout or model snapshot. |
+| `SPOKE_MODEL_PREFERENCES_PATH` | unset | Override path for persisted backend/model preferences. Useful for isolated smoke/test surfaces. |
 | `SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY` | unset | Enables wake-word hands-free mode. |
 | `SPOKE_WAKEWORD_LISTEN` | `computer` | Wake word that starts hands-free dictation. |
 | `SPOKE_WAKEWORD_SLEEP` | `terminator` | Wake word that returns hands-free mode to dormant. |
-| `SPOKE_WAKEWORD_LISTEN_PPN` | unset | Optional custom Porcupine model file for the listen wake word. |
-| `SPOKE_WAKEWORD_SLEEP_PPN` | unset | Optional custom Porcupine model file for the sleep wake word. |
-| `SPOKE_NARRATOR_URL` | unset | Optional separate OpenAI-compatible narrator sidecar URL. Defaults to the assistant endpoint. |
-| `SPOKE_NARRATOR_MODEL` | `Bonsai-8B-mlx-1bit` | Narrator model used for thinking summaries and loading-vamp lines. |
-| `SPOKE_NARRATOR_API_KEY` | unset | Optional narrator bearer token. Falls back to the assistant API key. |
-| `SPOKE_NARRATOR_ENABLED` | `1` | Set to `0` to disable narrator summaries entirely. |
-| `SPOKE_MODEL_PREFERENCES_PATH` | unset | Override path for persisted backend/model preferences. Useful for isolated smoke/test surfaces. |
-| `SPOKE_GMAIL_CREDENTIALS_PATH` | `~/Library/Application Support/Spoke/gmail_credentials.json` | Local Gmail OAuth material for the bounded `query_gmail` tool. |
-| `SPOKE_GMAIL_CLIENT_ID` | unset | Optional Gmail OAuth client id override. |
-| `SPOKE_GMAIL_CLIENT_SECRET` | unset | Optional Gmail OAuth client secret override. |
-| `SPOKE_GMAIL_REFRESH_TOKEN` | unset | Optional Gmail OAuth refresh token override. |
-| `SPOKE_GMAIL_TOKEN_URI` | `https://oauth2.googleapis.com/token` | Optional Gmail OAuth token endpoint override. |
 
-The Gmail affordance is intentionally narrow and read-only: `query_gmail`
-returns compact metadata plus snippets for matching messages rather than full
-message bodies.
+If you need deeper backend or smoke-surface plumbing than that, you are in
+developer territory and should inspect the codepaths in
+[`spoke/__main__.py`](spoke/__main__.py) and related modules rather than treat
+the README as a full configuration reference.
 
 ## Notes
 
@@ -194,6 +166,11 @@ message bodies.
   affordances; the overlay is no longer just a text dump from a single local
   model.
 - TTS is now a real routing surface rather than a single hardcoded backend.
+- Brief thinking summaries can be shown while the assistant is reasoning or
+  loading, but they are a secondary affordance, not the main interaction model.
+- The menubar also exposes launch-target switching, source/branch visibility,
+  and the status HUD (`Terror Form`) for runtime legibility on local smoke
+  surfaces.
 
 ## Development
 
@@ -217,7 +194,7 @@ spoke/
 ├── transcribe_qwen.py    # local Qwen3-ASR backend
 ├── transcribe_parakeet.py # local Parakeet CoreML backend
 ├── command.py            # assistant client and tool-call streaming
-├── narrator.py           # thinking-summary sidecar
+├── narrator.py           # optional thinking-summary sidecar
 ├── tts.py                # local, sidecar, and cloud TTS clients
 ├── command_overlay.py    # assistant overlay
 ├── overlay.py            # live transcription overlay
