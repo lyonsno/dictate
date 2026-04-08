@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import json
 import logging
-import subprocess
 from pathlib import Path
 
 import objc
 from AppKit import (
     NSBackingStoreBuffered,
+    NSButton,
     NSColor,
     NSFont,
     NSPanel,
@@ -45,7 +45,17 @@ from Foundation import (
     NSTimer,
 )
 
-from .terraform import Topos, load_topoi, filter_topoi, sort_topoi, count_attractors, disambiguated_name
+from .terraform import (
+    Topos,
+    apply_resume_plan,
+    count_attractors,
+    disambiguated_name,
+    filter_topoi,
+    load_topoi,
+    load_wezterm_state,
+    plan_resume_action,
+    sort_topoi,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -127,11 +137,20 @@ class ToposRowView(NSView):
     """A single row in the topoi list — frosted bubble matching overlay language."""
 
     @classmethod
-    def createWithTopos_width_(cls, topos: Topos, width: float) -> ToposRowView:
+    def createWithTopos_width_target_index_(
+        cls,
+        topos: Topos,
+        width: float,
+        target,
+        card_index: int,
+    ) -> ToposRowView:
         view = cls.alloc().initWithFrame_(NSMakeRect(0, 0, width, _ROW_HEIGHT))
         view._topos = topos
         view.setWantsLayer_(True)
         view.layer().setBackgroundColor_(Quartz.CGColorCreateGenericRGB(0, 0, 0, 0))
+
+        button_width = 66
+        text_width = width - _PADDING * 2 - button_width - 8
 
         rgba = _TEMP_COLORS.get(topos.temperature or "", (0.5, 0.5, 0.5, 0.08))
         r, g, b, _a = rgba
@@ -145,7 +164,7 @@ class ToposRowView(NSView):
         name = disambiguated_name(topos)
         name_label = _make_label(
             name,
-            NSMakeRect(_PADDING, _ROW_HEIGHT - 24, width - _PADDING * 2, 18),
+            NSMakeRect(_PADDING, _ROW_HEIGHT - 24, text_width, 18),
             size=13.0,
             bold=True,
             color=_text_color,
@@ -168,7 +187,7 @@ class ToposRowView(NSView):
             badge_text = " · ".join(badge_parts)
             badge_label = _make_label(
                 badge_text,
-                NSMakeRect(_PADDING, _ROW_HEIGHT - 38, width - _PADDING * 2, 14),
+                NSMakeRect(_PADDING, _ROW_HEIGHT - 38, text_width, 14),
                 size=10.0,
                 bold=False,
                 color=_sub_color,
@@ -181,12 +200,23 @@ class ToposRowView(NSView):
                 snippet = snippet[:57] + "..."
             status_label = _make_label(
                 snippet,
-                NSMakeRect(_PADDING, 4, width - _PADDING * 2, 14),
+                NSMakeRect(_PADDING, 4, text_width, 14),
                 size=10.0,
                 bold=False,
                 color=_sub_color,
             )
             view.addSubview_(status_label)
+
+        button = NSButton.alloc().initWithFrame_(
+            NSMakeRect(width - _PADDING - 58, 17, 58, 24)
+        )
+        button.setTitle_("Resume")
+        button.setTarget_(target)
+        button.setAction_("resumeTopos:")
+        button.setFont_(NSFont.systemFontOfSize_(10.0))
+        button.setEnabled_(bool(topos.resume_cmd))
+        button._card_index = card_index
+        view.addSubview_(button)
 
         return view
 
@@ -716,6 +746,20 @@ class TerraformHUD(NSObject):
             label.removeFromSuperview()
         self._detail_labels = []
 
+    def resumeTopos_(self, sender) -> None:
+        """Focus an existing WezTerm lane or open a new tab and resume it."""
+        index = getattr(sender, "_card_index", None)
+        if index is None or not (0 <= index < len(self._topoi)):
+            return
+        topos = self._topoi[index]
+        try:
+            panes, clients = load_wezterm_state()
+            plan = plan_resume_action(topos, panes, clients)
+            if not apply_resume_plan(plan):
+                logger.warning("Failed to resume topos %s via WezTerm", topos.id)
+        except Exception:
+            logger.exception("Failed to resume topos %s via WezTerm", topos.id)
+
     # -- private --
 
     def _save_position(self) -> None:
@@ -930,7 +974,12 @@ class TerraformHUD(NSObject):
 
         for i, topos in enumerate(self._topoi):
             y = total_height - (i + 1) * row_stride
-            row = ToposRowView.createWithTopos_width_(topos, card_width)
+            row = ToposRowView.createWithTopos_width_target_index_(
+                topos,
+                card_width,
+                self,
+                i,
+            )
             row._card_index = i  # for click detection
             row.setFrameOrigin_((inset + 4, y))
             new_content.addSubview_(row)

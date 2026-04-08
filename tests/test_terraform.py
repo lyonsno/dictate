@@ -77,6 +77,12 @@ def test_parse_branch():
     assert topoi[1].branch == "cc/panic-switch-0404"
 
 
+def test_parse_worktree():
+    topoi = parse_topoi(_SAMPLE_NOTE)
+    assert topoi[0].worktree == "/tmp/spoke-ham-hogg-0402"
+    assert topoi[1].worktree == "/tmp/spoke-panic-switch-0404"
+
+
 def test_parse_resume_cmd():
     topoi = parse_topoi(_SAMPLE_NOTE)
     assert topoi[0].resume_cmd == "codex resume 019d4bf1-1303-7053-9c37-f8f36fc5d720"

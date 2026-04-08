@@ -7,13 +7,16 @@ and current intent.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
+import socket
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +32,7 @@ class Topos:
     id: str
     semeion: str | None = None
     branch: str | None = None
+    worktree: str | None = None
     resume_cmd: str | None = None
     status: str | None = None
     temperature: str | None = None
@@ -122,6 +126,10 @@ def parse_topoi(text: str) -> list[Topos]:
             branch_m = re.search(r"Branch:\s*`([^`]+)`", content)
             if branch_m and not topos.branch:
                 topos.branch = branch_m.group(1)
+
+            worktree_m = re.search(r"Worktree:\s*`([^`]+)`", content)
+            if worktree_m and not topos.worktree:
+                topos.worktree = worktree_m.group(1)
 
             # Resume / Continuation
             resume_m = re.search(
@@ -468,6 +476,205 @@ def count_attractors(
                 stats.active += 1
 
     return stats
+
+
+@dataclass(frozen=True)
+class ResumePlan:
+    """Concrete WezTerm action for re-entering a lane."""
+
+    kind: str
+    pane_id: int | None = None
+    window_id: int | None = None
+    cwd: str | None = None
+    command: str | None = None
+    reason: str | None = None
+
+
+def _normalize_machine_name(name: str | None) -> str | None:
+    if not name:
+        return None
+    normalized = name.strip().lower()
+    if normalized.endswith(".local"):
+        normalized = normalized[:-6]
+    return normalized or None
+
+
+def _normalize_path(path: str | None) -> str | None:
+    if not path:
+        return None
+    parsed = urlparse(path)
+    candidate = unquote(parsed.path) if parsed.scheme == "file" else path
+    try:
+        return str(Path(candidate).resolve())
+    except OSError:
+        return str(Path(candidate))
+
+
+def _pane_location(pane: dict[str, Any]) -> tuple[str | None, str | None]:
+    raw_cwd = pane.get("cwd")
+    if not raw_cwd:
+        return None, None
+    parsed = urlparse(raw_cwd)
+    host = _normalize_machine_name(parsed.hostname) if parsed.scheme == "file" else None
+    return host, _normalize_path(raw_cwd)
+
+
+def _focused_window_id(
+    panes: list[dict[str, Any]],
+    clients: list[dict[str, Any]],
+) -> int | None:
+    panes_by_id = {
+        int(pane["pane_id"]): pane
+        for pane in panes
+        if pane.get("pane_id") is not None
+    }
+    for client in clients:
+        focused = client.get("focused_pane_id")
+        if focused is None:
+            continue
+        pane = panes_by_id.get(int(focused))
+        if pane and pane.get("window_id") is not None:
+            return int(pane["window_id"])
+    active_panes = [pane for pane in panes if pane.get("is_active")]
+    if active_panes:
+        return int(active_panes[0]["window_id"])
+    if panes and panes[0].get("window_id") is not None:
+        return int(panes[0]["window_id"])
+    return None
+
+
+def _find_matching_pane(
+    topos: Topos,
+    panes: list[dict[str, Any]],
+    *,
+    current_machine: str,
+    focused_window_id: int | None,
+) -> dict[str, Any] | None:
+    target_path = _normalize_path(topos.worktree)
+    local_machine = _normalize_machine_name(current_machine)
+    if not target_path or not local_machine:
+        return None
+
+    matches = []
+    for pane in panes:
+        pane_machine, pane_path = _pane_location(pane)
+        if pane_path != target_path:
+            continue
+        if pane_machine and pane_machine != local_machine:
+            continue
+        matches.append(pane)
+
+    if not matches:
+        return None
+
+    matches.sort(
+        key=lambda pane: (
+            pane.get("window_id") != focused_window_id,
+            not pane.get("is_active", False),
+            int(pane.get("pane_id", 0)),
+        )
+    )
+    return matches[0]
+
+
+def plan_resume_action(
+    topos: Topos,
+    panes: list[dict[str, Any]],
+    clients: list[dict[str, Any]],
+    *,
+    current_machine: str | None = None,
+) -> ResumePlan:
+    """Choose whether to focus an existing WezTerm lane or spawn a new tab."""
+    local_machine = current_machine or socket.gethostname()
+    if not topos.resume_cmd:
+        return ResumePlan(kind="unavailable", reason="missing_resume_cmd")
+    if topos.machine and _normalize_machine_name(topos.machine) != _normalize_machine_name(local_machine):
+        return ResumePlan(kind="unavailable", reason="machine_mismatch")
+
+    focused_window_id = _focused_window_id(panes, clients)
+    matching_pane = _find_matching_pane(
+        topos,
+        panes,
+        current_machine=local_machine,
+        focused_window_id=focused_window_id,
+    )
+    if matching_pane is not None:
+        return ResumePlan(
+            kind="focus_existing",
+            pane_id=int(matching_pane["pane_id"]),
+            window_id=int(matching_pane["window_id"]),
+        )
+
+    target_cwd = _normalize_path(topos.worktree)
+    if not target_cwd:
+        return ResumePlan(kind="unavailable", reason="missing_worktree")
+    if focused_window_id is None:
+        return ResumePlan(kind="unavailable", reason="missing_window")
+    return ResumePlan(
+        kind="spawn_new",
+        window_id=focused_window_id,
+        cwd=target_cwd,
+        command=topos.resume_cmd,
+    )
+
+
+def _default_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, capture_output=True, text=True, check=False)
+
+
+def apply_resume_plan(
+    plan: ResumePlan,
+    *,
+    runner=_default_runner,
+) -> bool:
+    """Execute a WezTerm resume plan."""
+    if plan.kind == "unavailable":
+        logger.warning("Cannot resume topos in WezTerm: %s", plan.reason)
+        return False
+
+    if plan.kind == "focus_existing":
+        primary = ["wezterm", "cli", "activate-pane", "--pane-id", str(plan.pane_id)]
+    elif plan.kind == "spawn_new":
+        primary = [
+            "wezterm",
+            "cli",
+            "spawn",
+            "--window-id",
+            str(plan.window_id),
+            "--cwd",
+            str(plan.cwd),
+            "/bin/zsh",
+            "-lc",
+            str(plan.command),
+        ]
+    else:
+        logger.warning("Unknown WezTerm resume plan kind: %s", plan.kind)
+        return False
+
+    activate = ["osascript", "-e", 'tell application "WezTerm" to activate']
+    primary_result = runner(primary)
+    if getattr(primary_result, "returncode", 1) != 0:
+        logger.warning("WezTerm command failed: %s", primary)
+        return False
+    activate_result = runner(activate)
+    if getattr(activate_result, "returncode", 1) != 0:
+        logger.warning("WezTerm activate failed")
+        return False
+    return True
+
+
+def load_wezterm_state(
+    *,
+    runner=_default_runner,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return live WezTerm pane and client metadata."""
+    panes_result = runner(["wezterm", "cli", "list", "--format", "json"])
+    clients_result = runner(["wezterm", "cli", "list-clients", "--format", "json"])
+    if getattr(panes_result, "returncode", 1) != 0:
+        raise RuntimeError("wezterm cli list failed")
+    if getattr(clients_result, "returncode", 1) != 0:
+        raise RuntimeError("wezterm cli list-clients failed")
+    return json.loads(panes_result.stdout), json.loads(clients_result.stdout)
 
 
 def format_topos_summary(topos: Topos) -> str:

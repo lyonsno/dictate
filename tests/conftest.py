@@ -99,6 +99,7 @@ def _make_fake_appkit():
         "NSAlert",
         "NSApplication",
         "NSBezierPath",
+        "NSButton",
         "NSColor",
         "NSImage",
         "NSMenu",
@@ -112,6 +113,7 @@ def _make_fake_appkit():
         "NSShadow",
         "NSTextView",
         "NSView",
+        "NSVisualEffectView",
         "NSWindow",
     ]:
         setattr(a, name, MagicMock())
