@@ -856,6 +856,14 @@ class TestCommandThinking:
     def _reasoning_chunk(self, token):
         return {"choices": [{"index": 0, "delta": {"reasoning_content": token}}]}
 
+    def _reasoning_field_chunk(self, token):
+        return {"choices": [{"index": 0, "delta": {"reasoning": token}}]}
+
+    def _reasoning_details_chunk(self, *details):
+        return {
+            "choices": [{"index": 0, "delta": {"reasoning_details": list(details)}}]
+        }
+
     def test_reasoning_content_yields_thinking_delta(self):
         """reasoning_content field should produce thinking_delta events."""
         client = self._make_client()
@@ -872,6 +880,52 @@ class TestCommandThinking:
         assert thinking[0].text == "Let me think..."
         assert len(content) == 1
         assert content[0].text == "The answer."
+
+    def test_reasoning_field_yields_thinking_delta(self):
+        """Plain delta.reasoning should also feed the thinking stream."""
+        client = self._make_client()
+        chunks = [
+            self._reasoning_field_chunk("Working through the constraints..."),
+            self._content_chunk("Visible answer."),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            events = list(client.stream_command_events("q"))
+        thinking = [e.text for e in events if e.kind == "thinking_delta"]
+        content = [e.text for e in events if e.kind == "assistant_delta"]
+        assert thinking == ["Working through the constraints..."]
+        assert content == ["Visible answer."]
+
+    def test_openrouter_reasoning_details_yield_thinking_delta(self):
+        """OpenRouter reasoning_details chunks should produce thinking_delta events."""
+        client = self._make_client()
+        chunks = [
+            self._reasoning_details_chunk(
+                {
+                    "type": "reasoning.summary",
+                    "summary": "First I identified the core tradeoff.",
+                    "format": "anthropic-claude-v1",
+                    "index": 0,
+                },
+                {
+                    "type": "reasoning.text",
+                    "text": "Then I compared the likely failure modes.",
+                    "format": "anthropic-claude-v1",
+                    "index": 1,
+                },
+            ),
+            self._content_chunk("Visible answer."),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            events = list(client.stream_command_events("q"))
+        thinking = [e.text for e in events if e.kind == "thinking_delta"]
+        content = [e.text for e in events if e.kind == "assistant_delta"]
+        assert thinking == [
+            "First I identified the core tradeoff.",
+            "Then I compared the likely failure modes.",
+        ]
+        assert content == ["Visible answer."]
 
     def test_think_tags_yield_thinking_delta(self):
         """<think>...</think> tags in content should produce thinking_delta events."""

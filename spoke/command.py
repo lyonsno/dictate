@@ -67,6 +67,32 @@ def _extract_xml_tool_calls(text: str) -> tuple[str, list[dict]] | None:
     cleaned = re.sub(pattern, "", text, flags=re.DOTALL).strip()
     return cleaned, tool_calls
 
+
+def _extract_reasoning_tokens(delta: dict[str, Any]) -> list[str]:
+    """Flatten provider-specific reasoning shapes into displayable text chunks."""
+    tokens: list[str] = []
+
+    # OpenAI-compatible servers sometimes expose plaintext reasoning directly.
+    for field in ("reasoning_content", "reasoning"):
+        value = delta.get(field)
+        if isinstance(value, str) and value:
+            tokens.append(value)
+
+    # OpenRouter streams structured reasoning in delta.reasoning_details.
+    reasoning_details = delta.get("reasoning_details")
+    if isinstance(reasoning_details, list):
+        for detail in reasoning_details:
+            if not isinstance(detail, dict):
+                continue
+            summary = detail.get("summary")
+            if isinstance(summary, str) and summary:
+                tokens.append(summary)
+            text = detail.get("text")
+            if isinstance(text, str) and text:
+                tokens.append(text)
+
+    return tokens
+
 _DEFAULT_COMMAND_URL = "http://localhost:8001"
 _DEFAULT_COMMAND_MODEL = "qwen3p5-35B-A3B"
 _DEFAULT_RING_BUFFER_SIZE = 10
@@ -383,9 +409,9 @@ class CommandClient:
                         if fr:
                             finish_reason = fr
 
-                        # Reasoning tokens (OpenAI reasoning_content field)
-                        reasoning_token = delta.get("reasoning_content")
-                        if reasoning_token is not None:
+                        # Reasoning tokens can arrive as plaintext fields
+                        # or structured reasoning_details, depending on provider.
+                        for reasoning_token in _extract_reasoning_tokens(delta):
                             yield CommandStreamEvent(
                                 kind="thinking_delta",
                                 text=reasoning_token,
