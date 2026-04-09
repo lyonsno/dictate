@@ -3387,6 +3387,31 @@ class TestHoldStartDuringTranscription:
         assert d._transcription_token == 5
         mock_thread.assert_not_called()
 
+    def test_plain_space_release_with_preview_text_stashes_to_tray_instead_of_superseding_active_turn(
+        self, main_module, monkeypatch
+    ):
+        """A real utterance during generation should be preserved without replacing the live turn."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._transcribing = True
+        d._transcription_token = 5
+        d._capture.stop.return_value = b"spoken-audio"
+        d._record_start_time = time.monotonic() - 0.6
+        d._last_preview_text = "capture this after the file read"
+        d._command_first_token = False
+        d._add_tray_entry = MagicMock()
+
+        with patch.object(main_module.threading, "Thread") as mock_thread:
+            d._on_hold_end(shift_held=False, enter_held=False)
+
+        assert d._transcription_token == 5
+        mock_thread.assert_not_called()
+        d._add_tray_entry.assert_called_once_with(
+            "capture this after the file read",
+            owner="user",
+            activate=False,
+            position="bottom",
+        )
+
 
 class TestMicNotReady:
     """Hold is rejected and status reflects mic unavailability."""
