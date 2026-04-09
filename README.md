@@ -119,6 +119,35 @@ The menus can independently control:
 For ordinary use, prefer the menus. The remaining environment variables are
 smoke/debugging overrides and bootstrap plumbing.
 
+### Reasoning continuity caveat
+
+`spoke`'s current command pathway talks to hosted assistant backends through an
+OpenAI-compatible `/v1/chat/completions` loop. That transport is good enough
+for streamed text, tool calls, and visible thinking summaries, but it is not
+the same thing as preserving first-class reasoning state across a multi-round
+tool loop.
+
+Concretely:
+
+- `spoke` preserves assistant/tool message chains between tool rounds.
+- `spoke` does not preserve first-class reasoning items for replay on the next
+  round.
+- Visible thinking summaries are downstream UI, not the semantic contract that
+  lets a reasoning model continue the same hidden chain of thought after tool
+  results come back.
+
+So a cloud backend can look correct in the overlay and still lose reasoning
+continuity during agentic tool use. If a provider requires replaying reasoning
+blocks or thinking items to maintain performance across tool rounds, the
+current generic chat-completions transport is semantically incomplete for that
+provider.
+
+This matters for backend selection. A provider's marketing around "reasoning"
+is not enough; what matters is whether the protocol we are actually speaking
+preserves the reasoning state the model needs on the next turn. If we want the
+stronger contract, we likely need a provider-specific integration surface
+rather than another OpenAI-compatible adapter.
+
 ## Remote sidecars
 
 For the tracked MLX-audio serving surface, bootstrap the sibling fork with:
@@ -234,6 +263,11 @@ The app bundle is written to `dist/Spoke.app`.
 - Local MLX backends may download model weights on first use.
 - The local runtime is Apple Silicon-oriented, but sidecar and cloud backends
   work independently of local model availability.
+- Anthropic-style extended thinking is a plausible future direction because its
+  Messages API explicitly requires replaying thinking blocks during tool use,
+  but that semantic win only applies if `spoke` speaks the Anthropic message
+  contract end to end. Routing Claude through a generic OpenAI-compatible
+  facade would not automatically preserve that behavior.
 
 ## License
 
