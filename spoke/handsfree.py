@@ -203,10 +203,8 @@ class HandsFreeController:
         """Process wake word on the main thread."""
         if role == "listen" and self._state == HandsFreeState.LISTENING:
             self._start_dictating()
-        elif role == "sleep" and self._state in (
-            HandsFreeState.DICTATING, HandsFreeState.TRANSCRIBING
-        ):
-            self._stop_dictating()
+        elif role == "sleep" and self._state != HandsFreeState.DORMANT:
+            self.disable()
 
     # ── Dictation loop ───────────────────────────────────────
 
