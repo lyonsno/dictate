@@ -63,6 +63,10 @@ def match_voice_command(text: str) -> tuple[str, str] | None:
     return VOICE_COMMANDS.get(normalized)
 
 
+def normalize_keyword(text: str) -> str:
+    return text.strip().lower().rstrip(".,!?")
+
+
 class HandsFreeState(enum.Enum):
     DORMANT = "dormant"        # feature disabled
     LISTENING = "listening"    # wake word active, waiting for "listen"
@@ -301,6 +305,12 @@ class HandsFreeController:
                 return
 
             if text and text.strip():
+                normalized = normalize_keyword(text)
+                if normalized == normalize_keyword(self._sleep_keyword):
+                    self._delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "handleWakeWord:", {"role": "sleep"}, False,
+                    )
+                    return
                 payload = {"text": text.strip(), "dest": dest or "cursor"}
                 self._delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "handsFreeInject:", payload, False,
