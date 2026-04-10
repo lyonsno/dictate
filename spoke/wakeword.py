@@ -45,7 +45,7 @@ class WakeWordListener:
         self._porcupine = None
         self._stream = None
         self._running = False
-        self._thread: threading.Thread | None = None
+        self._porcupine_lock = threading.Lock()
 
     def start(self) -> None:
         """Start the wake word listener."""
@@ -92,11 +92,17 @@ class WakeWordListener:
         """PortAudio callback: feed audio frames into Porcupine."""
         if status:
             logger.debug("Wake word stream status: %s", status)
-        if not self._running or self._porcupine is None:
+        if not self._running:
             return
         try:
             pcm = np.asarray(indata[:, 0], dtype=np.int16)
-            result = self._porcupine.process(pcm)
+            with self._porcupine_lock:
+                if not self._running:
+                    return
+                porcupine = self._porcupine
+                if porcupine is None:
+                    return
+                result = porcupine.process(pcm)
             if result >= 0:
                 if self._keyword_paths:
                     keyword = self._keyword_paths[result]
@@ -121,12 +127,11 @@ class WakeWordListener:
                 stream.close()
             except Exception:
                 logger.debug("WakeWordListener stream close failed during stop", exc_info=True)
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
-        if self._porcupine is not None:
-            self._porcupine.delete()
+        with self._porcupine_lock:
+            porcupine = self._porcupine
             self._porcupine = None
+            if porcupine is not None:
+                porcupine.delete()
         self._stream = None
         logger.info("Wake word listener stopped")
         logger.info("WakeWordListener stopped and released")
