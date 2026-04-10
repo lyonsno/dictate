@@ -2522,6 +2522,50 @@ class TestDualModelConfiguration:
         d._relaunch.assert_not_called()
 
 
+class TestGeminiApiKeyEnvResolution:
+    """`_gemini_api_key_env` honors the collision-avoiding pseudonym.
+
+    GEMINI_API_KEY_INACTIVE is a spoke-only alias that exists because
+    the Gemini CLI reads GEMINI_API_KEY and will prefer API-key auth
+    over an active subscription login. Stashing the key under the
+    INACTIVE alias lets the subscription keep working while spoke
+    still authenticates against the Gemini API directly.
+    """
+
+    def test_returns_empty_when_neither_set(self, main_module, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY_INACTIVE", raising=False)
+        assert main_module._gemini_api_key_env() == ""
+
+    def test_returns_vanilla_when_only_vanilla_set(self, main_module, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY_INACTIVE", raising=False)
+        monkeypatch.setenv("GEMINI_API_KEY", "vanilla-key")
+        assert main_module._gemini_api_key_env() == "vanilla-key"
+
+    def test_returns_inactive_when_only_inactive_set(self, main_module, monkeypatch):
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.setenv("GEMINI_API_KEY_INACTIVE", "inactive-key")
+        assert main_module._gemini_api_key_env() == "inactive-key"
+
+    def test_inactive_beats_vanilla_when_both_set(self, main_module, monkeypatch):
+        """INACTIVE must win. Otherwise the pseudonym workaround is pointless."""
+        monkeypatch.setenv("GEMINI_API_KEY", "vanilla-key")
+        monkeypatch.setenv("GEMINI_API_KEY_INACTIVE", "inactive-key")
+        assert main_module._gemini_api_key_env() == "inactive-key"
+
+    def test_empty_inactive_falls_through_to_vanilla(self, main_module, monkeypatch):
+        """An empty INACTIVE string must not mask a real vanilla key."""
+        monkeypatch.setenv("GEMINI_API_KEY_INACTIVE", "")
+        monkeypatch.setenv("GEMINI_API_KEY", "vanilla-key")
+        assert main_module._gemini_api_key_env() == "vanilla-key"
+
+    def test_whitespace_only_inactive_falls_through(self, main_module, monkeypatch):
+        """Whitespace-only INACTIVE is indistinguishable from unset."""
+        monkeypatch.setenv("GEMINI_API_KEY_INACTIVE", "   ")
+        monkeypatch.setenv("GEMINI_API_KEY", "vanilla-key")
+        assert main_module._gemini_api_key_env() == "vanilla-key"
+
+
 class TestWarmupContract:
     """Test non-blocking warmup behavior."""
 

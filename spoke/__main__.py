@@ -216,6 +216,25 @@ def _default_cloud_model_for_provider(provider: str) -> str:
     return _DEFAULT_CLOUD_MODEL
 
 
+def _gemini_api_key_env() -> str:
+    """Return the Gemini API key from environment, honoring the pseudonym alias.
+
+    Checks ``GEMINI_API_KEY_INACTIVE`` before ``GEMINI_API_KEY`` so users can
+    stash a spoke-only key without colliding with the Gemini CLI. The CLI
+    reads ``GEMINI_API_KEY`` and will prefer API-key auth over an active
+    subscription login, which silently invalidates the subscription for that
+    shell session. Stashing the real key under ``_INACTIVE`` lets the
+    subscription keep working interactively while spoke still authenticates
+    against the Gemini API directly.
+
+    Returns empty string if neither variable is set (or both are blank).
+    """
+    return (
+        os.environ.get("GEMINI_API_KEY_INACTIVE", "").strip()
+        or os.environ.get("GEMINI_API_KEY", "").strip()
+    )
+
+
 def _ensure_edit_menu() -> None:
     """Install a minimal Edit menu so Cmd+V/C/X/A work in NSAlert text fields.
 
@@ -1718,7 +1737,7 @@ class SpokeAppDelegate(NSObject):
         # Resolve API key (cloud prefs first, then env)
         api_key = (
             self._load_cloud_api_key_preference()
-            or os.environ.get("GEMINI_API_KEY", "")
+            or _gemini_api_key_env()
         )
         if not api_key:
             logger.error("No Gemini API key available for live mode")
@@ -4053,7 +4072,7 @@ class SpokeAppDelegate(NSObject):
             if tts_client is not None or tts_voice_pref or saved_tts_model or tts_backend in ("sidecar", "cloud"):
                 has_tts_sidecar_url = bool(tts_sidecar_url)
                 has_tts_cloud = bool(
-                    os.environ.get("GEMINI_API_KEY")
+                    _gemini_api_key_env()
                     or self._load_preference("tts_cloud_api_key")
                     or self._load_preference("command_cloud_api_key")
                 )
@@ -4818,7 +4837,7 @@ class SpokeAppDelegate(NSObject):
             if provider_key:
                 return provider_key
         if provider == "google":
-            provider_key = os.environ.get("GEMINI_API_KEY", "").strip()
+            provider_key = _gemini_api_key_env()
             if provider_key:
                 return provider_key
         host = _url_host(cloud_url or "").lower()
@@ -4827,7 +4846,7 @@ class SpokeAppDelegate(NSObject):
             if provider_key:
                 return provider_key
         if "googleapis.com" in host or "generativelanguage.googleapis.com" in host:
-            provider_key = os.environ.get("GEMINI_API_KEY", "").strip()
+            provider_key = _gemini_api_key_env()
             if provider_key:
                 return provider_key
         return os.environ.get("SPOKE_COMMAND_CLOUD_API_KEY", "").strip()
@@ -4855,7 +4874,7 @@ class SpokeAppDelegate(NSObject):
         if self._tts_backend == "cloud":
             api_key = (
                 self._load_preference("tts_cloud_api_key")
-                or os.environ.get("GEMINI_API_KEY", "")
+                or _gemini_api_key_env()
                 or self._load_preference("command_cloud_api_key")
             )
             if not api_key:
@@ -4965,11 +4984,13 @@ class SpokeAppDelegate(NSObject):
         if backend == "cloud":
             api_key = (
                 self._load_preference("tts_cloud_api_key")
-                or os.environ.get("GEMINI_API_KEY", "")
+                or _gemini_api_key_env()
                 or self._load_preference("command_cloud_api_key")
             )
             if not api_key:
-                logger.warning("Cannot switch to cloud TTS: no GEMINI_API_KEY")
+                logger.warning(
+                    "Cannot switch to cloud TTS: no GEMINI_API_KEY or GEMINI_API_KEY_INACTIVE"
+                )
                 if self._menubar is not None:
                     self._menubar.set_status_text("No Gemini API key configured")
                 return
