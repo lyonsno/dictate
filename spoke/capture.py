@@ -14,6 +14,7 @@ import logging
 import queue
 import struct
 import threading
+import time
 import wave
 from collections import deque
 from typing import Callable
@@ -119,7 +120,7 @@ class AudioCapture:
         # Async encoding state
         self._encode_queue: queue.Queue | None = None
         self._encode_thread: threading.Thread | None = None
-        self._callback_queue: queue.Queue | None = None
+        self._callback_queue: deque[tuple[int, str, object] | None] | None = None
         self._callback_thread: threading.Thread | None = None
         self._callbacks_enabled = False
         self._callback_generation = 0
@@ -163,37 +164,24 @@ class AudioCapture:
         queue_ref = self._callback_queue
         thread_ref = self._callback_thread
         if queue_ref is not None:
-            while True:
-                try:
-                    queue_ref.put_nowait(None)
-                    break
-                except queue.Full:
-                    try:
-                        queue_ref.get_nowait()
-                    except queue.Empty:
-                        break
+            queue_ref.clear()
+            queue_ref.append(None)
         if thread_ref is not None:
             thread_ref.join(timeout=1.0)
         self._callback_queue = None
         self._callback_thread = None
 
     def _queue_callback_event(self, kind: str, payload: object) -> None:
+        if not self._callbacks_enabled:
+            return
         queue_ref = self._callback_queue
         if queue_ref is None:
             return
-        try:
-            queue_ref.put_nowait((self._callback_generation, kind, payload))
-        except queue.Full:
-            if kind == "amplitude":
-                return
-            try:
-                queue_ref.get_nowait()
-            except queue.Empty:
-                return
-            try:
-                queue_ref.put_nowait((self._callback_generation, kind, payload))
-            except queue.Full:
-                pass
+        if kind == "amplitude" and len(queue_ref) >= 8:
+            return
+        if len(queue_ref) >= 8:
+            queue_ref.popleft()
+        queue_ref.append((self._callback_generation, kind, payload))
 
     def _callback_worker(self) -> None:
         """Dispatch UI-bound callbacks off the PortAudio thread."""
@@ -202,9 +190,11 @@ class AudioCapture:
             if queue_ref is None:
                 break
             try:
-                item = queue_ref.get()
-            except Exception:
-                logger.error("Error in callback dispatch worker", exc_info=True)
+                item = queue_ref.popleft()
+            except IndexError:
+                if not self._callbacks_enabled:
+                    break
+                time.sleep(0.005)
                 continue
 
             if item is None:
@@ -269,7 +259,7 @@ class AudioCapture:
             self._encode_thread.start()
         if self._amplitude_cb is not None or self._vad_cb is not None:
             self._callbacks_enabled = True
-            self._callback_queue = queue.Queue(maxsize=8)
+            self._callback_queue = deque()
             self._callback_thread = threading.Thread(
                 target=self._callback_worker,
                 daemon=True,

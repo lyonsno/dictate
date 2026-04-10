@@ -10,6 +10,7 @@ import struct
 import threading
 import time
 import wave
+from collections import deque
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -252,6 +253,45 @@ class TestAudioCallback:
         release.set()
         cap.stop()
 
+    def test_queue_callback_event_skips_disabled_dispatch(self):
+        """Disabled callback dispatch must not enqueue new PortAudio work."""
+        cap = AudioCapture()
+        cap._callbacks_enabled = False
+        cap._callback_queue = MagicMock()
+
+        cap._queue_callback_event("amplitude", 0.5)
+
+        cap._callback_queue.put_nowait.assert_not_called()
+
+    def test_audio_callback_path_does_not_depend_on_queue_put_nowait(self):
+        """PortAudio callback path should not touch queue.Queue primitives."""
+
+        class _Mailbox:
+            def __init__(self):
+                self.items = []
+
+            def __len__(self):
+                return len(self.items)
+
+            def append(self, item):
+                self.items.append(item)
+
+            def popleft(self):
+                return self.items.pop(0)
+
+            def put_nowait(self, item):
+                raise AssertionError("audio callback used queue.put_nowait")
+
+        cap = AudioCapture()
+        cap._stream = MagicMock()
+        cap._stream.active = True
+        cap._callbacks_enabled = True
+        cap._callback_queue = _Mailbox()
+        cap._amplitude_cb = MagicMock()
+
+        chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+        cap._audio_callback(chunk, 1024, None, 0)
+
 
 class TestStartStop:
     """Test start/stop lifecycle with mocked sounddevice."""
@@ -459,9 +499,7 @@ class TestStartStop:
         cap._callback_generation = 2
         cap._callbacks_enabled = True
         cap._amplitude_cb = MagicMock()
-        cap._callback_queue = queue.Queue()
-        cap._callback_queue.put((1, "amplitude", 0.5))
-        cap._callback_queue.put(None)
+        cap._callback_queue = deque([(1, "amplitude", 0.5), None])
 
         cap._callback_worker()
 
@@ -477,8 +515,7 @@ class TestStartStop:
         cap._stream.active = True
         cap._frames = [np.zeros(1024, dtype=np.float32)]
 
-        cap._callback_queue = queue.Queue()
-        cap._callback_queue.put((cap._callback_generation, "amplitude", 0.5))
+        cap._callback_queue = deque([(cap._callback_generation, "amplitude", 0.5)])
         cap._callback_thread = None
 
         cap.stop()
