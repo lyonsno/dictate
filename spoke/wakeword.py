@@ -77,50 +77,36 @@ class WakeWordListener:
             kw_labels, frame_length, sample_rate,
         )
 
-        self._running = True
-        self._thread = threading.Thread(
-            target=self._listen_loop,
-            args=(frame_length, sample_rate),
-            daemon=True,
-            name="wakeword-listener",
+        self._stream = sd.InputStream(
+            samplerate=sample_rate,
+            channels=1,
+            dtype="int16",
+            blocksize=frame_length,
+            callback=self._audio_callback,
         )
-        self._thread.start()
+        self._running = True
+        self._stream.start()
+        logger.info("Wake word listener audio stream started")
 
-    def _listen_loop(self, frame_length: int, sample_rate: int) -> None:
-        """Blocking loop that reads audio and feeds Porcupine."""
-        import sounddevice as sd
-
+    def _audio_callback(self, indata, frames, time_info, status) -> None:
+        """PortAudio callback: feed audio frames into Porcupine."""
+        if status:
+            logger.debug("Wake word stream status: %s", status)
+        if not self._running or self._porcupine is None:
+            return
         try:
-            with sd.InputStream(
-                samplerate=sample_rate,
-                channels=1,
-                dtype="int16",
-                blocksize=frame_length,
-            ) as stream:
-                self._stream = stream
-                logger.info("Wake word listener audio stream started")
-                while self._running:
-                    data, status = stream.read(frame_length)
-                    if status:
-                        logger.debug("Wake word stream status: %s", status)
-                    if not self._running:
-                        break
-
-                    pcm = data[:, 0]  # mono int16
-                    result = self._porcupine.process(pcm)
-                    if result >= 0:
-                        if self._keyword_paths:
-                            keyword = self._keyword_paths[result]
-                        else:
-                            keyword = self._keywords[result]
-                        logger.info("Wake word detected: %s", keyword)
-                        if self._on_wake is not None:
-                            self._on_wake(keyword)
+            pcm = np.asarray(indata[:, 0], dtype=np.int16)
+            result = self._porcupine.process(pcm)
+            if result >= 0:
+                if self._keyword_paths:
+                    keyword = self._keyword_paths[result]
+                else:
+                    keyword = self._keywords[result]
+                logger.info("Wake word detected: %s", keyword)
+                if self._on_wake is not None:
+                    self._on_wake(keyword)
         except Exception:
-            logger.exception("Wake word listener failed")
-        finally:
-            self._stream = None
-            logger.info("Wake word listener stopped")
+            logger.exception("Wake word listener callback failed")
 
     def stop(self) -> None:
         """Stop the wake word listener and release resources."""
@@ -142,6 +128,7 @@ class WakeWordListener:
             self._porcupine.delete()
             self._porcupine = None
         self._stream = None
+        logger.info("Wake word listener stopped")
         logger.info("WakeWordListener stopped and released")
 
     @property
