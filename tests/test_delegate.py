@@ -3538,6 +3538,8 @@ class TestCommandCallbacks:
         assert d._transcribing is False
         d._command_overlay.show.assert_called()
         d._command_overlay.set_utterance.assert_called_with("what time is it")
+        d._command_overlay.set_response_text.assert_called_once_with("It's 3pm")
+        d._command_overlay.append_token.assert_not_called()
         d._command_overlay.finish.assert_called()
 
     def test_recall_no_history(self, main_module, monkeypatch):
@@ -3603,6 +3605,25 @@ class TestCommandOverlayToggle:
         d._command_overlay.set_utterance.assert_called_once_with("open file")
         d._command_overlay.set_response_text.assert_called_once_with("still working")
         d._command_overlay.invert_thinking_timer.assert_called_once()
+
+    def test_toggle_command_overlay_recalls_finished_response_via_rebuild_path(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = [("open file", '\n[calling read_file…]\nDone.')]
+        d._command_overlay = MagicMock(_visible=False)
+        d._transcribing = False
+
+        d._toggle_command_overlay()
+
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.set_utterance.assert_called_once_with("open file")
+        d._command_overlay.set_response_text.assert_called_once_with(
+            '\n[calling read_file…]\nDone.'
+        )
+        d._command_overlay.append_token.assert_not_called()
+        d._command_overlay.finish.assert_called_once()
 
 
 class TestHoldStartDuringTranscription:

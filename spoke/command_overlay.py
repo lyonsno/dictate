@@ -773,13 +773,49 @@ class CommandOverlay(NSObject):
                 )
                 combined.appendAttributedString_(sep)
 
-        self._text_view.textStorage().setAttributedString_(combined)
-
         if text:
-            self._response_text = ""
-            self.append_token(text)
-        else:
+            self._response_text = text
+            for kind, fragment_text in self._iter_response_fragments(text):
+                if kind == "tool":
+                    combined.appendAttributedString_(
+                        self._make_tool_indicator_fragment(fragment_text)
+                    )
+                else:
+                    combined.appendAttributedString_(
+                        self._make_response_fragment(fragment_text)
+                    )
+            self._text_view.textStorage().setAttributedString_(combined)
             self._update_layout()
+        else:
+            self._text_view.textStorage().setAttributedString_(combined)
+            self._update_layout()
+
+    def _iter_response_fragments(self, text: str):
+        """Yield (kind, text) fragments preserving tool-indicator styling.
+
+        Final response rebuilds and overlay recall pass the whole response in
+        one shot, unlike the live streaming path. Split that canonical text
+        into tool-indicator lines and ordinary response chunks so rebuilt
+        overlays match live styling instead of flattening into one blob.
+        """
+        response_buffer: list[str] = []
+        for line in text.splitlines(keepends=True):
+            stripped = line.lstrip(" ")
+            is_tool_indicator = stripped.startswith("[") and not stripped.startswith("[!")
+            if is_tool_indicator:
+                if response_buffer:
+                    prefix = "".join(response_buffer)
+                    if prefix.strip():
+                        yield ("response", prefix)
+                        prefix = ""
+                    response_buffer = []
+                else:
+                    prefix = ""
+                yield ("tool", prefix + line)
+                continue
+            response_buffer.append(line)
+        if response_buffer:
+            yield ("response", "".join(response_buffer))
 
     def _current_hue_rgb(self):
         """Get the current hue rotation color as (r, g, b)."""

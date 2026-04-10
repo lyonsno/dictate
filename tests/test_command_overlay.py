@@ -306,17 +306,11 @@ class TestWindowLayering:
         overlay._utterance_text = ""
         overlay._response_text = "Let me check."
 
-        def _append(text):
-            overlay._response_text += text
-
-        overlay.append_token = MagicMock(side_effect=_append)
-
         overlay.set_response_text("Done.")
 
         assert overlay._response_text == "Done."
-        # New path uses setAttributedString_ to rebuild in one shot, not setString_("")
+        # Final rebuild happens in one shot without delegating through append_token().
         overlay._text_view.textStorage().setAttributedString_.assert_called_once()
-        overlay.append_token.assert_called_once_with("Done.")
 
     def test_set_response_text_with_utterance_calls_layout_once(self, mock_pyobjc):
         """set_response_text must not trigger an intermediate layout with only the
@@ -335,6 +329,32 @@ class TestWindowLayering:
             f"set_response_text called _update_layout {len(layout_calls)} time(s); "
             "expected exactly 1 — intermediate calls shrink the window causing flicker"
         )
+
+    def test_set_response_text_preserves_tool_indicator_fragments(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._utterance_text = "open config"
+
+        fragments = []
+
+        def _tool(token):
+            fragments.append(("tool", token))
+            return MagicMock()
+
+        def _response(token):
+            fragments.append(("response", token))
+            return MagicMock()
+
+        overlay._make_tool_indicator_fragment = MagicMock(side_effect=_tool)
+        overlay._make_response_fragment = MagicMock(side_effect=_response)
+
+        final_text = '\n[calling read_file…]\n  ["/tmp/config.json" · ~12 tokens]\nDone.'
+
+        overlay.set_response_text(final_text)
+
+        assert "".join(token for _, token in fragments) == final_text
+        assert any(kind == "tool" for kind, _ in fragments)
+        assert any(kind == "response" for kind, _ in fragments)
 
     def test_hide_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)

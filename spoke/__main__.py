@@ -2427,8 +2427,7 @@ class SpokeAppDelegate(NSObject):
                 self._sync_command_overlay_brightness(immediate=True)
                 self._command_overlay.show()
                 self._command_overlay.set_utterance(last_utterance)
-                for ch in last_response:
-                    self._command_overlay.append_token(ch)
+                self._command_overlay.set_response_text(last_response)
                 self._command_overlay.finish()
                 self._detector.command_overlay_active = True
                 logger.info("command_overlay_active -> True (shift recall)")
@@ -2714,7 +2713,7 @@ class SpokeAppDelegate(NSObject):
                         self._sync_command_overlay_brightness(immediate=True)
                         self._command_overlay.show()
                         self._command_overlay.set_utterance(last_utterance)
-                        self._command_overlay.append_token(last_response)
+                        self._command_overlay.set_response_text(last_response)
                         self._command_overlay.finish()
                         self._detector.command_overlay_active = True
                     except Exception:
