@@ -233,6 +233,7 @@ class CommandOverlay(NSObject):
         self._narrator_suppressed = False  # True after hide, blocks late callbacks
         self._collapsed_text = ""  # accumulated collapsed thinking text
         self._response_body_started = False
+        self._render_ops: list[tuple[str, str]] = []
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -420,6 +421,7 @@ class CommandOverlay(NSObject):
         self._narrator_suppressed = False  # allow narrator for new command
         self._collapsed_text = ""  # clear collapsed thinking for new command
         self._response_body_started = False
+        self._render_ops = []
         # Reset TTS state so stale blend doesn't affect new responses
         self._tts_active = False
         self._tts_blend = 0.0
@@ -652,16 +654,17 @@ class CommandOverlay(NSObject):
             self._collapsed_text += "\n" + text
         else:
             self._collapsed_text += text
-        # If the final response has already been set, re-rebuild so the
-        # topic lands in the right position (after "Thought for Xs",
-        # before the response text).
-        if is_topic_append and self._response_text:
-            self.set_response_text(self._response_text)
-            return
-        # Append to live text view
-        collapsed_str = self._make_collapsed_attributed(text)
-        self._text_view.textStorage().appendAttributedString_(collapsed_str)
-        self._update_layout()
+        if is_topic_append:
+            for i in range(len(self._render_ops) - 1, -1, -1):
+                kind, existing = self._render_ops[i]
+                if kind == "collapsed":
+                    self._render_ops[i] = (kind, existing + text)
+                    break
+            else:
+                self._render_ops.append(("collapsed", text))
+        else:
+            self._render_ops.append(("collapsed", text))
+        self._rebuild_from_render_ops()
 
     def append_token(self, token: str) -> None:
         """Append a streamed response token."""
@@ -694,6 +697,7 @@ class CommandOverlay(NSObject):
             self._text_view.textStorage().appendAttributedString_(sep)
 
         for kind, fragment_text in self._iter_response_fragments(token):
+            self._append_render_fragment(kind, fragment_text)
             if kind == "tool":
                 frag = self._make_tool_indicator_fragment(fragment_text)
                 self._text_view.textStorage().appendAttributedString_(frag)
@@ -732,69 +736,17 @@ class CommandOverlay(NSObject):
             NSShadow,
         )
 
-        combined = NSMutableAttributedString.alloc().initWithString_("")
-        saw_tool_prelude = False
-        self._response_body_started = False
-
-        if self._utterance_text:
-            from AppKit import NSFontAttributeName
-            _USER_FONT_SIZE = 13.5
-            user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
-            utt = NSMutableAttributedString.alloc().initWithString_(self._utterance_text)
-            utt.addAttribute_value_range_(
-                NSForegroundColorAttributeName,
-                NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4),
-                (0, len(self._utterance_text)),
-            )
-            utt.addAttribute_value_range_(
-                NSFontAttributeName,
-                NSFont.systemFontOfSize_weight_(_USER_FONT_SIZE, 0.0),
-                (0, len(self._utterance_text)),
-            )
-            glow = NSShadow.alloc().init()
-            glow.setShadowColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.15)
-            )
-            glow.setShadowOffset_((0, 0))
-            glow.setShadowBlurRadius_(3.0)
-            utt.addAttribute_value_range_(
-                NSShadowAttributeName, glow, (0, len(self._utterance_text))
-            )
-            combined.appendAttributedString_(utt)
-
-            # Re-inject collapsed thinking text if present
-            if self._collapsed_text:
-                combined.appendAttributedString_(
-                    self._make_collapsed_attributed("\n" + self._collapsed_text)
-                )
-
-            if text:
-                self._append_response_separator(combined)
-
         if text:
             self._response_text = text
+            collapsed_ops = [(kind, value) for kind, value in self._render_ops if kind == "collapsed"]
+            self._render_ops = collapsed_ops
             for kind, fragment_text in self._iter_response_fragments(text):
-                if kind == "tool":
-                    saw_tool_prelude = True
-                    combined.appendAttributedString_(
-                        self._make_tool_indicator_fragment(fragment_text)
-                    )
-                else:
-                    if not self._response_body_started:
-                        fragment_text = fragment_text.lstrip("\n")
-                        if not fragment_text:
-                            continue
-                        if saw_tool_prelude:
-                            self._append_response_separator(combined)
-                        self._response_body_started = True
-                    combined.appendAttributedString_(
-                        self._make_response_fragment(fragment_text)
-                    )
-            self._text_view.textStorage().setAttributedString_(combined)
-            self._update_layout()
+                self._append_render_fragment(kind, fragment_text)
+            self._rebuild_from_render_ops()
         else:
-            self._text_view.textStorage().setAttributedString_(combined)
-            self._update_layout()
+            self._response_text = ""
+            self._render_ops = [(kind, value) for kind, value in self._render_ops if kind == "collapsed"]
+            self._rebuild_from_render_ops()
 
     def _iter_response_fragments(self, text: str):
         """Yield (kind, text) fragments preserving tool-indicator styling.
@@ -847,6 +799,95 @@ class CommandOverlay(NSObject):
             (0, 2),
         )
         target.appendAttributedString_(sep)
+
+    def _append_render_fragment(self, kind: str, text: str) -> None:
+        if not text:
+            return
+        if self._render_ops and self._render_ops[-1][0] == kind and kind != "collapsed":
+            prev_kind, prev_text = self._render_ops[-1]
+            self._render_ops[-1] = (prev_kind, prev_text + text)
+        else:
+            self._render_ops.append((kind, text))
+
+    def _rebuild_from_render_ops(self) -> None:
+        if self._text_view is None or not self._visible:
+            return
+
+        from AppKit import (
+            NSMutableAttributedString,
+            NSForegroundColorAttributeName,
+            NSShadowAttributeName,
+            NSShadow,
+            NSFontAttributeName,
+        )
+
+        combined = NSMutableAttributedString.alloc().initWithString_("")
+        self._response_body_started = False
+        emitted_any = False
+        emitted_noncollapsed = False
+
+        if self._utterance_text:
+            _USER_FONT_SIZE = 13.5
+            user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
+            utt = NSMutableAttributedString.alloc().initWithString_(self._utterance_text)
+            utt.addAttribute_value_range_(
+                NSForegroundColorAttributeName,
+                NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4),
+                (0, len(self._utterance_text)),
+            )
+            utt.addAttribute_value_range_(
+                NSFontAttributeName,
+                NSFont.systemFontOfSize_weight_(_USER_FONT_SIZE, 0.0),
+                (0, len(self._utterance_text)),
+            )
+            glow = NSShadow.alloc().init()
+            glow.setShadowColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.15)
+            )
+            glow.setShadowOffset_((0, 0))
+            glow.setShadowBlurRadius_(3.0)
+            utt.addAttribute_value_range_(
+                NSShadowAttributeName, glow, (0, len(self._utterance_text))
+            )
+            combined.appendAttributedString_(utt)
+
+        for kind, text in self._render_ops:
+            if kind == "collapsed":
+                collapsed_text = text
+                if emitted_any and not collapsed_text.startswith("\n"):
+                    collapsed_text = "\n" + collapsed_text
+                combined.appendAttributedString_(
+                    self._make_collapsed_attributed(collapsed_text)
+                )
+                emitted_any = True
+                continue
+
+            if kind == "tool":
+                if self._utterance_text and not emitted_noncollapsed:
+                    self._append_response_separator(combined)
+                combined.appendAttributedString_(
+                    self._make_tool_indicator_fragment(text)
+                )
+                emitted_any = True
+                emitted_noncollapsed = True
+                continue
+
+            fragment_text = text
+            if not self._response_body_started:
+                fragment_text = fragment_text.lstrip("\n")
+                if not fragment_text:
+                    continue
+                if emitted_any or self._utterance_text:
+                    self._append_response_separator(combined)
+                self._response_body_started = True
+            combined.appendAttributedString_(
+                self._make_response_fragment(fragment_text)
+            )
+            emitted_any = True
+            emitted_noncollapsed = True
+
+        self._text_view.textStorage().setAttributedString_(combined)
+        self._update_layout()
 
     def _current_hue_rgb(self):
         """Get the current hue rotation color as (r, g, b)."""

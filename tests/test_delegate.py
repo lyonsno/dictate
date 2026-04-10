@@ -3628,6 +3628,35 @@ class TestCommandOverlayToggle:
             "\n[calling read_file…]\nDone."
         )
 
+    def test_toggle_command_overlay_replays_ordered_overlay_ops_when_available(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_overlay = MagicMock(_visible=False)
+        d._transcribing = True
+        d._last_command_utterance = "open file"
+        d._command_streaming_text = "\n[calling read_file…]\nDone."
+        d._command_collapsed_text = "Thought for 3s · reading config structure"
+        d._command_overlay_ops = [
+            ("collapsed", "Thought for 3s"),
+            ("token", "\n[calling read_file…]\n"),
+            ("collapsed", " · reading config structure"),
+            ("token", "Done."),
+        ]
+
+        d._toggle_command_overlay()
+
+        d._command_overlay.assert_has_calls([
+            call.show(preserve_thinking_timer=True),
+            call.set_utterance("open file"),
+            call.set_thinking_collapsed("Thought for 3s"),
+            call.append_token("\n[calling read_file…]\n"),
+            call.set_thinking_collapsed(" · reading config structure"),
+            call.append_token("Done."),
+        ])
+        d._command_overlay.set_response_text.assert_not_called()
+
     def test_toggle_command_overlay_recalls_finished_response_via_rebuild_path(
         self, main_module, monkeypatch
     ):

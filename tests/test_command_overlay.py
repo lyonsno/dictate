@@ -78,6 +78,7 @@ def _make_overlay(mock_pyobjc):
     overlay._narrator_suppressed = False
     overlay._collapsed_text = ""
     overlay._response_body_started = False
+    overlay._render_ops = []
     return overlay, mod
 
 
@@ -375,6 +376,23 @@ class TestWindowLayering:
             overlay._text_view.textStorage().appendAttributedString_.call_count
             == append_count_after_tool + 2
         )
+
+    def test_topic_append_after_response_does_not_rebuild_from_flat_response_text(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._utterance_text = "open config"
+        real_set_response_text = overlay.set_response_text
+        overlay.set_response_text = MagicMock(side_effect=real_set_response_text)
+
+        overlay.set_thinking_collapsed("Thought for 3s")
+        overlay.append_token("\n[calling read_file…]\n")
+        overlay.append_token("Done.")
+
+        overlay.set_thinking_collapsed(" · reading config structure")
+
+        overlay.set_response_text.assert_not_called()
 
     def test_hide_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
