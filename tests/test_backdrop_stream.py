@@ -247,6 +247,89 @@ def test_mark_sample_buffer_for_immediate_display_sets_attachment():
     assert attachment["display-immediately"] is True
 
 
+def test_metal_blur_downsample_factor_reads_env(monkeypatch):
+    monkeypatch.setenv("SPOKE_BACKDROP_METAL_BLUR_DOWNSAMPLE", "0.75")
+    mod = _import_module()
+
+    assert mod._METAL_BLUR_DOWNSAMPLE == pytest.approx(0.75)
+
+
+def test_metal_blur_pipeline_renders_into_downsampled_pixel_buffer(monkeypatch):
+    monkeypatch.setenv("SPOKE_BACKDROP_METAL_BLUR_DOWNSAMPLE", "0.75")
+    mod = _import_module()
+
+    fake_quartz = types.ModuleType("Quartz")
+
+    class FakeImage:
+        def __init__(self, width, height):
+            self._extent = _make_rect(0.0, 0.0, width, height)
+
+        def extent(self):
+            return self._extent
+
+        def imageByApplyingTransform_(self, transform):
+            return FakeImage(
+                self._extent.size.width * transform.scale_x,
+                self._extent.size.height * transform.scale_y,
+            )
+
+        def imageByCroppingToRect_(self, rect):
+            return FakeImage(rect.size.width, rect.size.height)
+
+    class FakeCIImage:
+        @staticmethod
+        def imageWithCVPixelBuffer_(pixel_buffer):
+            return FakeImage(680.0, 160.0)
+
+    class FakeBlurFilter:
+        def __init__(self):
+            self._values = {}
+
+        def setDefaults(self):
+            return None
+
+        def setValue_forKey_(self, value, key):
+            self._values[key] = value
+
+        def valueForKey_(self, key):
+            return self._values["inputImage"]
+
+    class FakeCIFilter:
+        @staticmethod
+        def filterWithName_(name):
+            assert name == "CIGaussianBlur"
+            return FakeBlurFilter()
+
+    fake_quartz.CIImage = FakeCIImage
+    fake_quartz.CIFilter = FakeCIFilter
+    fake_quartz.CGAffineTransformMakeScale = lambda sx, sy: SimpleNamespace(scale_x=sx, scale_y=sy)
+    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
+
+    pipeline = mod._MetalBlurPipeline.__new__(mod._MetalBlurPipeline)
+    pipeline._context = MagicMock()
+    pipeline._create_pixel_buffer = MagicMock(return_value="pixel-buffer-out")
+    pipeline._create_format_description = MagicMock(return_value="format-desc")
+    pipeline._create_sample_buffer = MagicMock(return_value="blurred-sample")
+
+    bridge = {
+        "CMSampleBufferGetImageBuffer": lambda sample_buffer: "pixel-buffer-in",
+        "CMSampleBufferGetPresentationTimeStamp": lambda sample_buffer: (1, 60, 1, 0),
+        "CMSampleBufferGetDuration": lambda sample_buffer: (1, 60, 1, 0),
+    }
+
+    sample = pipeline.blurred_sample_buffer(
+        "live-sample",
+        blur_radius_points=5.4,
+        bridge=bridge,
+    )
+
+    assert sample == "blurred-sample"
+    pipeline._create_pixel_buffer.assert_called_once_with(510, 120)
+    render_extent = pipeline._context.render_toCVPixelBuffer_bounds_colorSpace_.call_args[0][2]
+    assert render_extent.size.width == pytest.approx(510.0)
+    assert render_extent.size.height == pytest.approx(120.0)
+
+
 def test_request_stream_start_passes_dedicated_sample_handler_queue(monkeypatch):
     mod = _import_module()
     sentinel_queue = object()

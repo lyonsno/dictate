@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import os
 import threading
 import warnings
 from types import SimpleNamespace
@@ -31,6 +32,10 @@ _COREMEDIA_FRAMEWORK_PATH = "/System/Library/Frameworks/CoreMedia.framework"
 _FRAME_INTERVAL_60_FPS = (1, 60, 0, 0)
 _CV_PIXEL_FORMAT_BGRA = 1111970369
 _CM_TIME_FLAGS_VALID = 1
+_METAL_BLUR_DOWNSAMPLE = min(
+    max(float(os.environ.get("SPOKE_BACKDROP_METAL_BLUR_DOWNSAMPLE", "1.0")), 0.25),
+    1.0,
+)
 
 _BRIDGE_STATE: dict[str, object] | None = None
 _BRIDGE_LOCK = threading.Lock()
@@ -305,7 +310,7 @@ class _MetalBlurPipeline:
         if pixel_buffer is None:
             return None
         try:
-            from Quartz import CIImage, CIFilter
+            from Quartz import CIImage, CIFilter, CGAffineTransformMakeScale
         except Exception:
             return None
 
@@ -316,19 +321,30 @@ class _MetalBlurPipeline:
         if extent is None:
             return None
 
-        output = ci_image
-        if blur_radius_points > 0.0:
+        working_image = ci_image
+        working_extent = extent
+        working_blur_radius = blur_radius_points
+        if _METAL_BLUR_DOWNSAMPLE < 0.999:
+            transform = CGAffineTransformMakeScale(_METAL_BLUR_DOWNSAMPLE, _METAL_BLUR_DOWNSAMPLE)
+            candidate = ci_image.imageByApplyingTransform_(transform)
+            if candidate is not None:
+                working_image = candidate
+                working_extent = candidate.extent() if hasattr(candidate, "extent") else extent
+                working_blur_radius = blur_radius_points * _METAL_BLUR_DOWNSAMPLE
+
+        output = working_image
+        if working_blur_radius > 0.0:
             blur = CIFilter.filterWithName_("CIGaussianBlur")
             if blur is not None:
                 blur.setDefaults()
-                blur.setValue_forKey_(ci_image, "inputImage")
-                blur.setValue_forKey_(blur_radius_points, "inputRadius")
+                blur.setValue_forKey_(working_image, "inputImage")
+                blur.setValue_forKey_(working_blur_radius, "inputRadius")
                 candidate = blur.valueForKey_("outputImage")
                 if candidate is not None:
-                    output = candidate.imageByCroppingToRect_(extent)
+                    output = candidate.imageByCroppingToRect_(working_extent)
 
-        width = max(1, int(round(extent.size.width)))
-        height = max(1, int(round(extent.size.height)))
+        width = max(1, int(round(working_extent.size.width)))
+        height = max(1, int(round(working_extent.size.height)))
         blurred_pixel_buffer = self._create_pixel_buffer(width, height)
         if blurred_pixel_buffer is None:
             return None
@@ -336,7 +352,7 @@ class _MetalBlurPipeline:
             self._context.render_toCVPixelBuffer_bounds_colorSpace_(
                 output,
                 blurred_pixel_buffer,
-                extent,
+                working_extent,
                 None,
             )
         except Exception:
