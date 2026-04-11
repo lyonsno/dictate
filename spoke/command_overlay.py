@@ -95,6 +95,27 @@ _COMMAND_BACKDROP_BLUR_RADIUS = _env("SPOKE_COMMAND_BACKDROP_BLUR_RADIUS", 9.0)
 _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER = _env(
     "SPOKE_COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER", 3.0
 )
+_COMMAND_BACKDROP_PULSE_TIERS = max(
+    1, int(round(_env("SPOKE_COMMAND_BACKDROP_PULSE_TIERS", 4.0)))
+)
+_COMMAND_BACKDROP_PULSE_BLUR_MIN_MULTIPLIER = _env(
+    "SPOKE_COMMAND_BACKDROP_PULSE_BLUR_MIN_MULTIPLIER", 0.74
+)
+_COMMAND_BACKDROP_PULSE_BLUR_MAX_MULTIPLIER = _env(
+    "SPOKE_COMMAND_BACKDROP_PULSE_BLUR_MAX_MULTIPLIER", 1.18
+)
+_COMMAND_BACKDROP_PULSE_MASK_MIN_MULTIPLIER = _env(
+    "SPOKE_COMMAND_BACKDROP_PULSE_MASK_MIN_MULTIPLIER", 0.8
+)
+_COMMAND_BACKDROP_PULSE_MASK_MAX_MULTIPLIER = _env(
+    "SPOKE_COMMAND_BACKDROP_PULSE_MASK_MAX_MULTIPLIER", 1.55
+)
+_COMMAND_BACKDROP_PULSE_OPACITY_MIN = _env(
+    "SPOKE_COMMAND_BACKDROP_PULSE_OPACITY_MIN", 0.86
+)
+_COMMAND_BACKDROP_PULSE_OPACITY_MAX = _env(
+    "SPOKE_COMMAND_BACKDROP_PULSE_OPACITY_MAX", 1.0
+)
 _COMMAND_BACKDROP_REFRESH_S = _env("SPOKE_COMMAND_BACKDROP_REFRESH_S", 1.0 / 30.0)
 _RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
 _EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
@@ -169,6 +190,45 @@ def _thinking_cutout_color_for_brightness(brightness: float) -> tuple[float, flo
 
 def _assistant_text_alpha_for_breath(breath: float) -> float:
     return _lerp(_ASSISTANT_TEXT_ALPHA_MIN, _ASSISTANT_TEXT_ALPHA_MAX, _clamp01(breath))
+
+
+def _quantize_unit_interval(value: float, steps: int) -> float:
+    clamped = _clamp01(value)
+    if steps <= 1:
+        return clamped
+    return round(clamped * (steps - 1)) / float(steps - 1)
+
+
+def _command_backdrop_pulse_style(
+    base_blur_radius_points: float,
+    base_mask_width_multiplier: float,
+    breath: float,
+) -> tuple[float, float, float]:
+    drive = _quantize_unit_interval(breath, _COMMAND_BACKDROP_PULSE_TIERS)
+    blur_radius_points = max(
+        0.0,
+        base_blur_radius_points
+        * _lerp(
+            _COMMAND_BACKDROP_PULSE_BLUR_MIN_MULTIPLIER,
+            _COMMAND_BACKDROP_PULSE_BLUR_MAX_MULTIPLIER,
+            drive,
+        ),
+    )
+    mask_width_multiplier = max(
+        0.0,
+        base_mask_width_multiplier
+        * _lerp(
+            _COMMAND_BACKDROP_PULSE_MASK_MIN_MULTIPLIER,
+            _COMMAND_BACKDROP_PULSE_MASK_MAX_MULTIPLIER,
+            drive,
+        ),
+    )
+    backdrop_opacity = _lerp(
+        _COMMAND_BACKDROP_PULSE_OPACITY_MIN,
+        _COMMAND_BACKDROP_PULSE_OPACITY_MAX,
+        drive,
+    )
+    return blur_radius_points, mask_width_multiplier, backdrop_opacity
 
 
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
@@ -401,7 +461,10 @@ class CommandOverlay(NSObject):
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
         self._brightness_target = 0.0
+        self._backdrop_base_blur_radius_points = _COMMAND_BACKDROP_BLUR_RADIUS
         self._backdrop_blur_radius_points = _COMMAND_BACKDROP_BLUR_RADIUS
+        self._backdrop_base_mask_width_multiplier = _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER
+        self._backdrop_mask_width_multiplier = _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER
         self._backdrop_renderer = make_backdrop_renderer(
             self._screen,
             lambda: _QuartzBackdropRenderer(),
@@ -618,6 +681,53 @@ class CommandOverlay(NSObject):
         if hasattr(layer, "setMask_"):
             layer.setMask_(None)
 
+    def _apply_backdrop_pulse_style(self, breath: float) -> None:
+        layer = getattr(self, "_backdrop_layer", None)
+        if layer is None:
+            return
+        base_blur_radius_points = getattr(
+            self, "_backdrop_base_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS
+        )
+        base_mask_width_multiplier = getattr(
+            self,
+            "_backdrop_base_mask_width_multiplier",
+            _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER,
+        )
+        (
+            blur_radius_points,
+            mask_width_multiplier,
+            backdrop_opacity,
+        ) = _command_backdrop_pulse_style(
+            base_blur_radius_points,
+            base_mask_width_multiplier,
+            breath,
+        )
+        self._backdrop_blur_radius_points = blur_radius_points
+        renderer = getattr(self, "_backdrop_renderer", None)
+        if renderer is not None and hasattr(renderer, "set_live_blur_radius_points"):
+            try:
+                renderer.set_live_blur_radius_points(blur_radius_points)
+            except Exception:
+                logger.debug("Failed to push live command backdrop blur radius", exc_info=True)
+        last_mask_width_multiplier = getattr(
+            self,
+            "_backdrop_mask_width_multiplier",
+            base_mask_width_multiplier,
+        )
+        self._backdrop_mask_width_multiplier = mask_width_multiplier
+        if abs(mask_width_multiplier - last_mask_width_multiplier) > 1e-6:
+            capture_rect = getattr(self, "_backdrop_capture_rect", None)
+            if capture_rect is not None:
+                try:
+                    mask_width = float(capture_rect.size.width)
+                    mask_height = float(capture_rect.size.height)
+                except (TypeError, ValueError):
+                    mask_width = None
+                    mask_height = None
+                if mask_width is not None and mask_height is not None:
+                    self._update_backdrop_mask(mask_width, mask_height)
+        layer.setOpacity_(backdrop_opacity)
+
     # ── public interface ────────────────────────────────────
 
     def show(self, *, preserve_thinking_timer: bool = False) -> None:
@@ -666,6 +776,7 @@ class CommandOverlay(NSObject):
         self._fill_image_brightness = self._brightness
         self._apply_surface_theme()
         self._update_backdrop_capture_geometry()
+        self._apply_backdrop_pulse_style(1.0)
         self._reset_backdrop_layer()
 
         self._window.orderFrontRegardless()
@@ -1087,6 +1198,7 @@ class CommandOverlay(NSObject):
         # (dips quickly). Raw sine → squared so it spends more time high.
         raw_breath = 0.5 * (1.0 + math.cos(2.0 * math.pi * self._pulse_phase_asst))
         breath = raw_breath * raw_breath  # squared: lingers near 1.0, dips briefly
+        self._apply_backdrop_pulse_style(breath)
         pulse_alpha_a = _assistant_text_alpha_for_breath(breath)
 
         # Smooth cross-fade between pulse and TTS-driven alpha over ~500ms.
@@ -1506,7 +1618,18 @@ class CommandOverlay(NSObject):
             )
             alpha = _backdrop_mask_alpha(
                 sdf,
-                width=_command_backdrop_mask_falloff_width(scale),
+                width=max(
+                    scale,
+                    _command_backdrop_mask_falloff_width(scale)
+                    * (
+                        getattr(
+                            self,
+                            "_backdrop_mask_width_multiplier",
+                            _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER,
+                        )
+                        / max(_COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER, 1e-6)
+                    ),
+                ),
             )
             mask_image, self._backdrop_mask_payload = _fill_field_to_image(
                 alpha,

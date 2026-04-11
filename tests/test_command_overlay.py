@@ -295,6 +295,26 @@ class TestShowFinishHide:
 
         overlay._backdrop_layer.flushAndRemoveImage.assert_called_once_with()
 
+    def test_apply_backdrop_pulse_style_updates_quantized_blur_mask_and_opacity(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._backdrop_renderer.set_live_blur_radius_points = MagicMock()
+        overlay._backdrop_capture_rect = _make_rect(0.0, 0.0, 680.0, 160.0)
+        overlay._update_backdrop_mask = MagicMock()
+        overlay._backdrop_base_blur_radius_points = 5.4
+        overlay._backdrop_blur_radius_points = 5.4
+        overlay._backdrop_base_mask_width_multiplier = 9.0
+        overlay._backdrop_mask_width_multiplier = 9.0
+
+        overlay._apply_backdrop_pulse_style(1.0)
+
+        assert overlay._backdrop_blur_radius_points > 5.4
+        assert overlay._backdrop_mask_width_multiplier > 9.0
+        overlay._backdrop_renderer.set_live_blur_radius_points.assert_called_once_with(
+            overlay._backdrop_blur_radius_points
+        )
+        overlay._update_backdrop_mask.assert_called_once_with(680.0, 160.0)
+        overlay._backdrop_layer.setOpacity_.assert_called_with(1.0)
+
     def test_show_starts_low_rate_backdrop_refresh_timer(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
 
@@ -643,6 +663,34 @@ class TestBackdropGeometry:
         mod = importlib.import_module("spoke.command_overlay")
         try:
             assert mod._command_backdrop_mask_falloff_width(2.0) == pytest.approx(18.0)
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_backdrop_pulse_style_quantizes_midrange_breath_into_stable_tier(
+        self, mock_pyobjc
+    ):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            style_a = mod._command_backdrop_pulse_style(5.4, 9.0, 0.41)
+            style_b = mod._command_backdrop_pulse_style(5.4, 9.0, 0.49)
+
+            assert style_a == pytest.approx(style_b)
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_backdrop_pulse_style_expands_blur_and_mask_at_peak_breath(
+        self, mock_pyobjc
+    ):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            low = mod._command_backdrop_pulse_style(5.4, 9.0, 0.0)
+            high = mod._command_backdrop_pulse_style(5.4, 9.0, 1.0)
+
+            assert high[0] > low[0]
+            assert high[1] > low[1]
+            assert high[2] > low[2]
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 

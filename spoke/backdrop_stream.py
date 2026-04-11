@@ -507,6 +507,9 @@ class _ScreenCaptureKitBackdropRenderer:
     def set_sample_buffer_callback(self, callback) -> None:
         self._sample_buffer_callback = callback
 
+    def set_live_blur_radius_points(self, blur_radius_points: float) -> None:
+        self._blur_radius_points = max(float(blur_radius_points), 0.0)
+
     def _sample_handler_queue(self):
         if self._stream_handler_queue is None:
             self._stream_handler_queue = _make_stream_handler_queue("ai.spoke.backdrop-stream")
