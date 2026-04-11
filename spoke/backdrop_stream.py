@@ -233,6 +233,7 @@ class _ScreenCaptureKitBackdropRenderer:
         self._applied_signature = None
         self._latest_image = None
         self._frame_callback = None
+        self._sample_buffer_callback = None
         self._blur_radius_points = 0.0
         self._current_display = None
         self._current_display_frame = None
@@ -264,10 +265,17 @@ class _ScreenCaptureKitBackdropRenderer:
     def set_frame_callback(self, callback) -> None:
         self._frame_callback = callback
 
+    def set_sample_buffer_callback(self, callback) -> None:
+        self._sample_buffer_callback = callback
+
     def _sample_handler_queue(self):
         if self._stream_handler_queue is None:
             self._stream_handler_queue = _make_stream_handler_queue("ai.spoke.backdrop-stream")
         return self._stream_handler_queue
+
+    def uses_direct_sample_buffers(self, blur_radius_points: float | None = None) -> bool:
+        radius = self._blur_radius_points if blur_radius_points is None else max(blur_radius_points, 0.0)
+        return self._sample_buffer_callback is not None and radius <= 0.0
 
     def _dispatch_frame_callback(self, image) -> None:
         callback = self._frame_callback
@@ -282,6 +290,15 @@ class _ScreenCaptureKitBackdropRenderer:
         with self._lock:
             self._latest_image = image
         self._dispatch_frame_callback(image)
+
+    def _publish_live_sample_buffer(self, sample_buffer) -> None:
+        callback = self._sample_buffer_callback
+        if callback is None:
+            return
+        try:
+            callback(sample_buffer)
+        except Exception:
+            logger.debug("ScreenCaptureKit sample buffer callback failed", exc_info=True)
 
     def _signature_for(self, window_number, capture_rect, backing_scale):
         return (
@@ -483,6 +500,9 @@ class _ScreenCaptureKitBackdropRenderer:
             output_type_value = output_type
         if output_type_value != bridge["SCStreamOutputTypeScreen"] or sample_buffer is None:
             return
+        if self.uses_direct_sample_buffers():
+            self._publish_live_sample_buffer(sample_buffer)
+            return
         try:
             pixel_buffer = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
             if pixel_buffer is None:
@@ -521,6 +541,9 @@ class _ScreenCaptureKitBackdropRenderer:
             self._request_stream_start(window_number=window_number, capture_rect=capture_rect)
         else:
             self._update_stream(window_number=window_number, capture_rect=capture_rect)
+
+        if self.uses_direct_sample_buffers(self._blur_radius_points):
+            return None
 
         with self._lock:
             image = self._latest_image

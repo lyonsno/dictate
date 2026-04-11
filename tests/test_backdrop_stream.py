@@ -2,6 +2,7 @@
 
 import importlib
 import sys
+import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -123,6 +124,42 @@ def test_publish_live_image_caches_frame_and_invokes_callback():
 
     assert renderer._latest_image == "fresh-frame"
     callback.assert_called_once_with("fresh-frame")
+
+
+def test_publish_live_sample_buffer_invokes_callback():
+    mod = _import_module()
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    callback = MagicMock()
+    renderer._sample_buffer_callback = callback
+
+    renderer._publish_live_sample_buffer("sample-buffer")
+
+    callback.assert_called_once_with("sample-buffer")
+
+
+def test_consume_sample_buffer_direct_path_skips_image_conversion(monkeypatch):
+    mod = _import_module()
+    monkeypatch.setitem(sys.modules, "Quartz", types.ModuleType("Quartz"))
+    monkeypatch.setattr(
+        mod,
+        "_load_screencapturekit_bridge",
+        lambda: {
+            "SCStreamOutputTypeScreen": 7,
+        },
+    )
+
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._blur_radius_points = 0.0
+    renderer._sample_buffer_callback = MagicMock()
+    renderer._publish_live_sample_buffer = MagicMock()
+    renderer._publish_live_image = MagicMock()
+    renderer._context = MagicMock()
+
+    renderer._consume_sample_buffer("live-sample", 7)
+
+    renderer._publish_live_sample_buffer.assert_called_once_with("live-sample")
+    renderer._publish_live_image.assert_not_called()
+    renderer._context.assert_not_called()
 
 
 def test_request_stream_start_passes_dedicated_sample_handler_queue(monkeypatch):

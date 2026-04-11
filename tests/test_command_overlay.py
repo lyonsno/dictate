@@ -159,6 +159,18 @@ class TestThinkingTimer:
 
         overlay._backdrop_layer.setContents_.assert_called_once_with("live-frame")
 
+    def test_install_backdrop_sample_buffer_callback_enqueues_live_samples(self, mock_pyobjc):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._backdrop_renderer = MagicMock()
+        overlay._backdrop_layer = MagicMock()
+
+        overlay._install_backdrop_sample_buffer_callback()
+
+        callback = overlay._backdrop_renderer.set_sample_buffer_callback.call_args[0][0]
+        callback("live-sample")
+
+        overlay._backdrop_layer.enqueueSampleBuffer_.assert_called_once_with("live-sample")
+
 
 class TestDismissAnimation:
     """Test the pop-then-shrink dismiss animation state machine."""

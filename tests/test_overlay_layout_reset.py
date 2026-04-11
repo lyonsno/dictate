@@ -263,6 +263,20 @@ def test_install_backdrop_frame_callback_pushes_live_frames_into_layer(mock_pyob
     overlay._backdrop_layer.setContents_.assert_called_once_with("live-frame")
 
 
+def test_install_backdrop_sample_buffer_callback_enqueues_live_samples(mock_pyobjc):
+    overlay_module = _import_overlay(mock_pyobjc)
+    overlay = overlay_module.TranscriptionOverlay.__new__(overlay_module.TranscriptionOverlay)
+    overlay._backdrop_renderer = MagicMock()
+    overlay._backdrop_layer = MagicMock()
+
+    overlay._install_backdrop_sample_buffer_callback()
+
+    callback = overlay._backdrop_renderer.set_sample_buffer_callback.call_args[0][0]
+    callback("live-sample")
+
+    overlay._backdrop_layer.enqueueSampleBuffer_.assert_called_once_with("live-sample")
+
+
 def test_show_resets_stale_overlay_chrome_height(mock_pyobjc, monkeypatch):
     overlay_module = _import_overlay(mock_pyobjc)
     monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)

@@ -39,6 +39,7 @@ from .backdrop_stream import make_backdrop_renderer
 from .overlay import _OVERLAY_WINDOW_LEVEL
 
 logger = logging.getLogger(__name__)
+_BACKDROP_DISPLAY_LAYER_CLASS = None
 
 def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
@@ -101,6 +102,26 @@ _USER_TEXT_COLOR_LIGHT = (0.10, 0.12, 0.16)
 _RESPONSE_TEXT_LIGHT_BG_TARGET = (0.07, 0.08, 0.11)
 _THINKING_CUTOUT_DARK = (0.05, 0.05, 0.06)
 _THINKING_CUTOUT_LIGHT = (0.80, 0.80, 0.78)
+
+
+def _backdrop_display_layer_class():
+    global _BACKDROP_DISPLAY_LAYER_CLASS
+    if _BACKDROP_DISPLAY_LAYER_CLASS is not None:
+        return _BACKDROP_DISPLAY_LAYER_CLASS
+    if not hasattr(objc, "loadBundle") or not hasattr(objc, "lookUpClass"):
+        _BACKDROP_DISPLAY_LAYER_CLASS = False
+        return None
+    try:
+        objc.loadBundle(
+            "AVFoundation",
+            globals(),
+            bundle_path="/System/Library/Frameworks/AVFoundation.framework",
+        )
+        _BACKDROP_DISPLAY_LAYER_CLASS = objc.lookUpClass("AVSampleBufferDisplayLayer")
+    except Exception:
+        logger.debug("AVSampleBufferDisplayLayer unavailable for command backdrop", exc_info=True)
+        _BACKDROP_DISPLAY_LAYER_CLASS = False
+    return _BACKDROP_DISPLAY_LAYER_CLASS or None
 
 
 def _clamp01(value: float) -> float:
@@ -435,8 +456,15 @@ class CommandOverlay(NSObject):
 
         self._ridge_scale = self._screen.backingScaleFactor() if hasattr(self._screen, 'backingScaleFactor') else 2.0
 
-        self._backdrop_layer = CALayer.alloc().init()
-        self._backdrop_layer.setContentsGravity_("resize")
+        display_layer_class = (
+            _backdrop_display_layer_class() if self._backdrop_blur_radius_points <= 0.0 else None
+        )
+        backdrop_layer_cls = display_layer_class or CALayer
+        self._backdrop_layer = backdrop_layer_cls.alloc().init()
+        if hasattr(self._backdrop_layer, "setContentsGravity_"):
+            self._backdrop_layer.setContentsGravity_("resize")
+        elif hasattr(self._backdrop_layer, "setVideoGravity_"):
+            self._backdrop_layer.setVideoGravity_("resize")
         self._backdrop_layer.setOpacity_(1.0)
 
         # Fill layer — colored SDF image with baked alpha, same as preview overlay
@@ -448,6 +476,7 @@ class CommandOverlay(NSObject):
         wrapper.layer().insertSublayer_below_(self._backdrop_layer, self._fill_layer)
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
         self._install_backdrop_frame_callback()
+        self._install_backdrop_sample_buffer_callback()
 
         # Cancel spring tint layer — sits above fill, masked to the same SDF shape
         self._spring_tint_layer = CALayer.alloc().init()
@@ -1466,6 +1495,27 @@ class CommandOverlay(NSObject):
 
         renderer.set_frame_callback(apply_live_frame)
 
+    def _install_backdrop_sample_buffer_callback(self):
+        renderer = getattr(self, "_backdrop_renderer", None)
+        layer = getattr(self, "_backdrop_layer", None)
+        if (
+            renderer is None
+            or layer is None
+            or not hasattr(renderer, "set_sample_buffer_callback")
+            or not hasattr(layer, "enqueueSampleBuffer_")
+        ):
+            return
+
+        def apply_live_sample_buffer(sample_buffer) -> None:
+            if self._backdrop_layer is None:
+                return
+            try:
+                self._backdrop_layer.enqueueSampleBuffer_(sample_buffer)
+            except Exception:
+                logger.debug("Failed to enqueue command backdrop sample buffer", exc_info=True)
+
+        renderer.set_sample_buffer_callback(apply_live_sample_buffer)
+
     def _start_backdrop_refresh_timer(self):
         self._cancel_backdrop_refresh()
         if self._backdrop_renderer is None or self._backdrop_layer is None:
@@ -1501,12 +1551,20 @@ class CommandOverlay(NSObject):
             window_number = self._window.windowNumber()
         except Exception:
             return None
+        blur_radius_points = getattr(self, "_backdrop_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS)
         image = self._backdrop_renderer.capture_blurred_image(
             window_number=window_number,
             capture_rect=capture_rect,
-            blur_radius_points=getattr(self, "_backdrop_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS),
+            blur_radius_points=blur_radius_points,
         )
-        if image is None:
+        direct_sample_path = False
+        sample_buffer_query = getattr(self._backdrop_renderer, "uses_direct_sample_buffers", None)
+        if blur_radius_points <= 0.0 and callable(sample_buffer_query):
+            try:
+                direct_sample_path = bool(sample_buffer_query(blur_radius_points))
+            except Exception:
+                direct_sample_path = False
+        if image is None and not direct_sample_path:
             return None
 
         overscan = getattr(self, "_backdrop_capture_overscan_points", _command_backdrop_capture_overscan_points())
@@ -1516,7 +1574,8 @@ class CommandOverlay(NSObject):
         local_w = capture_rect.size.width
         local_h = capture_rect.size.height
         self._backdrop_layer.setFrame_(((local_x, local_y), (local_w, local_h)))
-        self._backdrop_layer.setContents_(image)
+        if image is not None and hasattr(self._backdrop_layer, "setContents_"):
+            self._backdrop_layer.setContents_(image)
         self._update_backdrop_mask(local_w, local_h)
         return image
 
