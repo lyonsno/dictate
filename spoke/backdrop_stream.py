@@ -160,6 +160,24 @@ class _CMSampleTimingInfoStruct(ctypes.Structure):
     ]
 
 
+def _mark_sample_buffer_for_immediate_display(sample_buffer, bridge) -> None:
+    attachments_getter = bridge.get("CMSampleBufferGetSampleAttachmentsArray")
+    display_key = bridge.get("kCMSampleAttachmentKey_DisplayImmediately")
+    if attachments_getter is None or display_key is None:
+        return
+    try:
+        attachments = attachments_getter(sample_buffer, True)
+    except Exception:
+        logger.debug("Failed to fetch sample-buffer attachments for immediate display", exc_info=True)
+        return
+    if not attachments:
+        return
+    try:
+        attachments[0][display_key] = True
+    except Exception:
+        logger.debug("Failed to mark sample buffer for immediate display", exc_info=True)
+
+
 class _MetalBlurPipeline:
     def __init__(self):
         if objc is None:
@@ -278,7 +296,9 @@ class _MetalBlurPipeline:
         if status != 0 or not sample_buffer.value:
             logger.debug("CMSampleBufferCreateReadyWithImageBuffer failed: %r", status)
             return None
-        return objc.objc_object(c_void_p=sample_buffer.value)
+        wrapped_sample = objc.objc_object(c_void_p=sample_buffer.value)
+        _mark_sample_buffer_for_immediate_display(wrapped_sample, bridge)
+        return wrapped_sample
 
     def blurred_sample_buffer(self, sample_buffer, *, blur_radius_points: float, bridge):
         pixel_buffer = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
@@ -365,6 +385,7 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                     ("CMSampleBufferGetImageBuffer", b"^{__CVBuffer=}^{opaqueCMSampleBuffer=}"),
                     ("CMSampleBufferGetPresentationTimeStamp", b"{_CMTime=qiIq}^{opaqueCMSampleBuffer}"),
                     ("CMSampleBufferGetDuration", b"{_CMTime=qiIq}^{opaqueCMSampleBuffer}"),
+                    ("CMSampleBufferGetSampleAttachmentsArray", b"^{__CFArray=}^{opaqueCMSampleBuffer=}B"),
                 ],
             )
 
@@ -379,6 +400,8 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                 "CMSampleBufferGetImageBuffer": CMSampleBufferGetImageBuffer,
                 "CMSampleBufferGetPresentationTimeStamp": CMSampleBufferGetPresentationTimeStamp,
                 "CMSampleBufferGetDuration": CMSampleBufferGetDuration,
+                "CMSampleBufferGetSampleAttachmentsArray": CMSampleBufferGetSampleAttachmentsArray,
+                "kCMSampleAttachmentKey_DisplayImmediately": kCMSampleAttachmentKey_DisplayImmediately,
             }
         except Exception:
             logger.debug("ScreenCaptureKit bridge load failed", exc_info=True)
@@ -474,10 +497,11 @@ class _ScreenCaptureKitBackdropRenderer:
         return self._stream_handler_queue
 
     def _metal_blur_pipeline(self):
-        if self._metal_blur_pipeline_instance is False:
+        instance = getattr(self, "_metal_blur_pipeline_instance", None)
+        if instance is False:
             return None
-        if self._metal_blur_pipeline_instance is not None:
-            return self._metal_blur_pipeline_instance
+        if instance is not None:
+            return instance
         try:
             self._metal_blur_pipeline_instance = _MetalBlurPipeline()
         except Exception:
@@ -739,7 +763,7 @@ class _ScreenCaptureKitBackdropRenderer:
             if blurred_sample_buffer is not None:
                 self._publish_live_sample_buffer(blurred_sample_buffer)
                 return
-        if self.uses_direct_sample_buffers():
+        if self._blur_radius_points <= 0.0 and self.uses_direct_sample_buffers():
             self._publish_live_sample_buffer(sample_buffer)
             return
         try:

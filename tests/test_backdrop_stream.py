@@ -189,6 +189,64 @@ def test_consume_sample_buffer_blurred_sample_path_skips_image_conversion(monkey
     renderer._context.assert_not_called()
 
 
+def test_consume_sample_buffer_blurred_sample_failure_falls_back_to_image_path(monkeypatch):
+    mod = _import_module()
+    fake_quartz = types.ModuleType("Quartz")
+
+    class FakeCIImage:
+        @staticmethod
+        def imageWithCVPixelBuffer_(pixel_buffer):
+            return SimpleNamespace(
+                extent=lambda: _make_rect(0.0, 0.0, 680.0, 160.0),
+            )
+
+    class FakeCIFilter:
+        @staticmethod
+        def filterWithName_(name):
+            return None
+
+    fake_quartz.CIImage = FakeCIImage
+    fake_quartz.CIFilter = FakeCIFilter
+    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
+    monkeypatch.setattr(
+        mod,
+        "_load_screencapturekit_bridge",
+        lambda: {
+            "SCStreamOutputTypeScreen": 7,
+            "CMSampleBufferGetImageBuffer": lambda sample_buffer: "pixel-buffer",
+        },
+    )
+
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._blur_radius_points = 5.4
+    renderer._sample_buffer_callback = MagicMock()
+    renderer._frame_callback = None
+    renderer._blurred_sample_buffer = MagicMock(return_value=None)
+    renderer._publish_live_sample_buffer = MagicMock()
+    renderer._publish_live_image = MagicMock()
+    context = MagicMock()
+    context.createCGImage_fromRect_.return_value = "fallback-image"
+    renderer._context = MagicMock(return_value=context)
+
+    renderer._consume_sample_buffer("live-sample", 7)
+
+    renderer._publish_live_sample_buffer.assert_not_called()
+    renderer._publish_live_image.assert_called_once_with("fallback-image")
+
+
+def test_mark_sample_buffer_for_immediate_display_sets_attachment():
+    mod = _import_module()
+    attachment = {}
+    bridge = {
+        "CMSampleBufferGetSampleAttachmentsArray": lambda sample_buffer, create_if_necessary: [attachment],
+        "kCMSampleAttachmentKey_DisplayImmediately": "display-immediately",
+    }
+
+    mod._mark_sample_buffer_for_immediate_display("sample-buffer", bridge)
+
+    assert attachment["display-immediately"] is True
+
+
 def test_request_stream_start_passes_dedicated_sample_handler_queue(monkeypatch):
     mod = _import_module()
     sentinel_queue = object()
