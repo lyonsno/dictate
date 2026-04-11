@@ -447,6 +447,7 @@ class CommandOverlay(NSObject):
         self._apply_ridge_masks(w, h)
         wrapper.layer().insertSublayer_below_(self._backdrop_layer, self._fill_layer)
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
+        self._install_backdrop_frame_callback()
 
         # Cancel spring tint layer — sits above fill, masked to the same SDF shape
         self._spring_tint_layer = CALayer.alloc().init()
@@ -1452,6 +1453,18 @@ class CommandOverlay(NSObject):
         mask.setContents_(mask_image)
         mask.setContentsGravity_("resize")
         self._backdrop_layer.setMask_(mask)
+
+    def _install_backdrop_frame_callback(self):
+        renderer = getattr(self, "_backdrop_renderer", None)
+        if renderer is None or not hasattr(renderer, "set_frame_callback"):
+            return
+
+        def apply_live_frame(image) -> None:
+            if self._backdrop_layer is None:
+                return
+            self._backdrop_layer.setContents_(image)
+
+        renderer.set_frame_callback(apply_live_frame)
 
     def _start_backdrop_refresh_timer(self):
         self._cancel_backdrop_refresh()

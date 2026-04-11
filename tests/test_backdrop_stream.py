@@ -3,6 +3,7 @@
 import importlib
 import sys
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -108,3 +109,17 @@ def test_configure_stream_geometry_uses_filter_content_rect_and_point_pixel_scal
     assert config.calls["source_rect"].origin.y == pytest.approx(637.0)
     assert config.calls["destination_rect"].origin.x == pytest.approx(0.0)
     assert config.calls["destination_rect"].origin.y == pytest.approx(0.0)
+
+
+def test_publish_live_image_caches_frame_and_invokes_callback():
+    mod = _import_module()
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._lock = mod.threading.Lock()
+    renderer._latest_image = None
+    callback = MagicMock()
+    renderer._frame_callback = callback
+
+    renderer._publish_live_image("fresh-frame")
+
+    assert renderer._latest_image == "fresh-frame"
+    callback.assert_called_once_with("fresh-frame")

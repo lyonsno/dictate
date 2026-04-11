@@ -202,6 +202,7 @@ class _ScreenCaptureKitBackdropRenderer:
         self._pending_signature = None
         self._applied_signature = None
         self._latest_image = None
+        self._frame_callback = None
         self._blur_radius_points = 0.0
         self._current_display = None
         self._current_display_frame = None
@@ -228,6 +229,23 @@ class _ScreenCaptureKitBackdropRenderer:
             logger.debug("Failed to create CIContext for ScreenCaptureKit backdrop", exc_info=True)
             self._ci_context = None
         return self._ci_context
+
+    def set_frame_callback(self, callback) -> None:
+        self._frame_callback = callback
+
+    def _dispatch_frame_callback(self, image) -> None:
+        callback = self._frame_callback
+        if callback is None:
+            return
+        try:
+            callback(image)
+        except Exception:
+            logger.debug("ScreenCaptureKit frame callback failed", exc_info=True)
+
+    def _publish_live_image(self, image) -> None:
+        with self._lock:
+            self._latest_image = image
+        self._dispatch_frame_callback(image)
 
     def _signature_for(self, window_number, capture_rect, backing_scale):
         return (
@@ -457,8 +475,7 @@ class _ScreenCaptureKitBackdropRenderer:
             image = context.createCGImage_fromRect_(output, extent)
             if image is None:
                 return
-            with self._lock:
-                self._latest_image = image
+            self._publish_live_image(image)
         except Exception:
             logger.debug("ScreenCaptureKit sample processing failed", exc_info=True)
 
