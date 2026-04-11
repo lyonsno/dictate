@@ -89,6 +89,7 @@ _OUTER_GLOW_PEAK_TARGET = 0.35
 _BRIGHTNESS_CHASE = 0.08
 _POINTS_PER_CM = 72.0 / 2.54
 _COMMAND_BACKDROP_OVERSCAN_CM = _env("SPOKE_COMMAND_BACKDROP_OVERSCAN_CM", 1.5)
+_COMMAND_BACKDROP_BLUR_RADIUS = _env("SPOKE_COMMAND_BACKDROP_BLUR_RADIUS", 18.0)
 
 # Adaptive compositing for command output.
 _USER_TEXT_COLOR_DARK = (0.92, 0.95, 1.0)
@@ -188,6 +189,92 @@ def _backdrop_capture_pixel_size(capture_rect, backing_scale: float) -> tuple[fl
     )
 
 
+def _backdrop_mask_alpha(signed_distance, width: float):
+    import numpy as np
+
+    outside = np.exp(-np.sqrt(np.maximum(signed_distance, 0.0) / max(width, 1e-6)))
+    return np.where(signed_distance <= 0.0, 1.0, outside).astype(np.float32)
+
+
+class _QuartzBackdropRenderer:
+    """Best-effort snapshot renderer for the assistant backdrop prototype."""
+
+    def __init__(self) -> None:
+        self._ci_context = None
+
+    def _context(self):
+        if self._ci_context is not None:
+            return self._ci_context
+        try:
+            from Quartz import CIContext
+        except Exception:
+            return None
+        try:
+            self._ci_context = CIContext.contextWithOptions_(None)
+        except Exception:
+            logger.debug("Failed to create CIContext for command backdrop", exc_info=True)
+            self._ci_context = None
+        return self._ci_context
+
+    def capture_blurred_image(self, *, window_number: int, capture_rect, blur_radius_points: float):
+        try:
+            from Quartz import (
+                CGWindowListCreateImage,
+                kCGWindowListOptionOnScreenBelowWindow,
+            )
+        except Exception:
+            return None
+
+        rect = (
+            (capture_rect.origin.x, capture_rect.origin.y),
+            (capture_rect.size.width, capture_rect.size.height),
+        )
+        try:
+            image = CGWindowListCreateImage(
+                rect,
+                kCGWindowListOptionOnScreenBelowWindow,
+                window_number,
+                0,
+            )
+        except Exception:
+            logger.debug("Backdrop snapshot capture failed", exc_info=True)
+            return None
+        if image is None or blur_radius_points <= 0.0:
+            return image
+
+        try:
+            from Quartz import CIImage, CIFilter
+        except Exception:
+            return image
+
+        try:
+            context = self._context()
+            if context is None:
+                return image
+            ci_image = CIImage.imageWithCGImage_(image)
+            blur = CIFilter.filterWithName_("CIGaussianBlur")
+            if blur is None:
+                return image
+            blur.setDefaults()
+            blur.setValue_forKey_(ci_image, "inputImage")
+            blur.setValue_forKey_(blur_radius_points, "inputRadius")
+            output = blur.valueForKey_("outputImage")
+            if output is None:
+                return image
+            extent = ci_image.extent() if hasattr(ci_image, "extent") else None
+            if extent is not None and hasattr(output, "imageByCroppingToRect_"):
+                output = output.imageByCroppingToRect_(extent)
+            if extent is None and hasattr(output, "extent"):
+                extent = output.extent()
+            if extent is None or not hasattr(context, "createCGImage_fromRect_"):
+                return image
+            blurred = context.createCGImage_fromRect_(output, extent)
+            return blurred or image
+        except Exception:
+            logger.debug("Backdrop blur pass failed; using unblurred snapshot", exc_info=True)
+            return image
+
+
 def _dismiss_animation_state(elapsed_s: float) -> tuple[str, float, float, bool]:
     elapsed = max(elapsed_s, 0.0)
     if elapsed < _DISMISS_GROW_S:
@@ -265,6 +352,9 @@ class CommandOverlay(NSObject):
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
         self._brightness_target = 0.0
+        self._backdrop_blur_radius_points = _COMMAND_BACKDROP_BLUR_RADIUS
+        self._backdrop_renderer = _QuartzBackdropRenderer()
+        self._backdrop_layer = None
         self._backdrop_capture_overscan_points = _command_backdrop_capture_overscan_points()
         self._backdrop_capture_rect = None
         self._backdrop_capture_pixel_size = None
@@ -320,12 +410,17 @@ class CommandOverlay(NSObject):
 
         self._ridge_scale = self._screen.backingScaleFactor() if hasattr(self._screen, 'backingScaleFactor') else 2.0
 
+        self._backdrop_layer = CALayer.alloc().init()
+        self._backdrop_layer.setContentsGravity_("resize")
+        self._backdrop_layer.setOpacity_(1.0)
+
         # Fill layer — colored SDF image with baked alpha, same as preview overlay
         self._fill_layer = CALayer.alloc().init()
         self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
         self._fill_layer.setContentsGravity_("resize")
 
         self._apply_ridge_masks(w, h)
+        wrapper.layer().insertSublayer_below_(self._backdrop_layer, self._fill_layer)
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
 
         # Cancel spring tint layer — sits above fill, masked to the same SDF shape
@@ -481,6 +576,7 @@ class CommandOverlay(NSObject):
         self._update_backdrop_capture_geometry()
 
         self._window.orderFrontRegardless()
+        self._refresh_backdrop_snapshot()
 
         # Entrance pop — start slightly oversized, ease back to 1.0.
         # Runs concurrently with the fade-in for a subtle "I just arrived" feel.
@@ -1280,6 +1376,81 @@ class CommandOverlay(NSObject):
         self._backdrop_capture_pixel_size = pixel_size
         return capture_rect, pixel_size
 
+    def _update_backdrop_mask(self, width: float, height: float):
+        if self._backdrop_layer is None:
+            return
+        try:
+            from .overlay import (
+                _fill_field_to_image,
+                _overlay_rounded_rect_sdf,
+            )
+        except Exception:
+            return
+
+        overscan = getattr(self, "_backdrop_capture_overscan_points", _command_backdrop_capture_overscan_points())
+        scale = getattr(self, "_ridge_scale", 2.0)
+        inner_width = max(width - 2 * overscan, 1.0)
+        inner_height = max(height - 2 * overscan, 1.0)
+        try:
+            sdf = _overlay_rounded_rect_sdf(
+                width,
+                height,
+                inner_width,
+                inner_height,
+                _OVERLAY_CORNER_RADIUS,
+                scale,
+            )
+            alpha = _backdrop_mask_alpha(sdf, width=3.0 * scale)
+            mask_image, self._backdrop_mask_payload = _fill_field_to_image(
+                alpha,
+                255,
+                255,
+                255,
+            )
+        except Exception:
+            return
+
+        mask = CALayer.alloc().init()
+        mask.setFrame_(((0, 0), (width, height)))
+        mask.setContents_(mask_image)
+        mask.setContentsGravity_("resize")
+        self._backdrop_layer.setMask_(mask)
+
+    def _refresh_backdrop_snapshot(self):
+        if (
+            self._backdrop_renderer is None
+            or self._backdrop_layer is None
+            or self._window is None
+            or self._content_view is None
+        ):
+            return None
+        geometry = self._update_backdrop_capture_geometry()
+        if geometry is None:
+            return None
+        capture_rect, _ = geometry
+        try:
+            window_number = self._window.windowNumber()
+        except Exception:
+            return None
+        image = self._backdrop_renderer.capture_blurred_image(
+            window_number=window_number,
+            capture_rect=capture_rect,
+            blur_radius_points=getattr(self, "_backdrop_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS),
+        )
+        if image is None:
+            return None
+
+        overscan = getattr(self, "_backdrop_capture_overscan_points", _command_backdrop_capture_overscan_points())
+        content_frame = self._content_view.frame()
+        local_x = content_frame.origin.x - overscan
+        local_y = content_frame.origin.y - overscan
+        local_w = capture_rect.size.width
+        local_h = capture_rect.size.height
+        self._backdrop_layer.setFrame_(((local_x, local_y), (local_w, local_h)))
+        self._backdrop_layer.setContents_(image)
+        self._update_backdrop_mask(local_w, local_h)
+        return image
+
     # ── layout ──────────────────────────────────────────────
 
     def _update_layout(self) -> None:
@@ -1311,6 +1482,8 @@ class CommandOverlay(NSObject):
                 )
                 self._apply_ridge_masks(_OVERLAY_WIDTH, new_height)
                 self._update_backdrop_capture_geometry()
+                if self._visible:
+                    self._refresh_backdrop_snapshot()
 
             end = (self._text_view.string().length()
                    if hasattr(self._text_view.string(), 'length')
