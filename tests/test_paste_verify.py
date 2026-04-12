@@ -13,7 +13,9 @@ def _import_module():
     return importlib.import_module("spoke.paste_verify")
 
 
-def _install_fake_ocr_modules(monkeypatch, *, image="fake-image", success=True, error=None, lines=()):
+def _install_fake_ocr_modules(
+    monkeypatch, *, image="fake-image", success=True, error=None, lines=(), capture=None
+):
     class _FakeCandidate:
         def __init__(self, text):
             self._text = text
@@ -36,6 +38,8 @@ def _install_fake_ocr_modules(monkeypatch, *, image="fake-image", success=True, 
             return cls()
 
         def init(self):
+            if capture is not None:
+                capture["request"] = self
             return self
 
         def setRecognitionLevel_(self, level):
@@ -66,6 +70,7 @@ def _install_fake_ocr_modules(monkeypatch, *, image="fake-image", success=True, 
         types.SimpleNamespace(
             VNRecognizeTextRequest=_FakeRequest,
             VNImageRequestHandler=_FakeHandler,
+            VNRequestTextRecognitionLevelAccurate="accurate",
             VNRequestTextRecognitionLevelFast="fast",
         ),
     )
@@ -90,6 +95,16 @@ def _dense_background(*segments):
         "search results panel status indicators connection details",
     ]
     return " ".join([*noise[:2], *segments, *noise[2:]])
+
+
+def _classify_prepost(mod, expected: str, pre_text: str, post_text: str) -> str:
+    """Approximate the current pre/post contract using string fixtures only."""
+    preexisting_match = mod.text_appears_on_screen(expected, pre_text)
+    return mod.classify_paste_result(
+        expected,
+        post_text,
+        preexisting_match=preexisting_match,
+    )
 
 
 class TestTextAppearsOnScreen:
@@ -356,6 +371,83 @@ class TestCaptureScreenText:
         with patch.object(mod, "_capture_active_window_text", return_value=""):
             assert mod.capture_screen_text() == "first line second line"
 
+    def test_full_screen_fallback_uses_accurate_recognition(self, monkeypatch):
+        mod = _import_module()
+        capture = {}
+        _install_fake_ocr_modules(
+            monkeypatch,
+            lines=("first line", "second line"),
+            capture=capture,
+        )
+
+        with patch.object(mod, "_capture_active_window_text", return_value=""):
+            assert mod.capture_screen_text() == "first line second line"
+
+        assert capture["request"].level == "accurate"
+
+
+class TestVerificationSnapshotHelpers:
+    def test_capture_verification_snapshot_returns_downsampled_active_window(self):
+        mod = _import_module()
+        fake_scene_capture = types.SimpleNamespace(
+            _capture_active_window=lambda: ("image", None, None, None),
+            _capture_screen=lambda: None,
+            _downsample_image=lambda image: f"downsampled-{image}",
+            _image_dimensions=lambda image: (640, 320),
+        )
+
+        with patch.dict(sys.modules, {"spoke.scene_capture": fake_scene_capture}):
+            assert mod.capture_verification_snapshot() == (
+                "downsampled-image",
+                640,
+                320,
+                "active_window",
+            )
+
+    def test_capture_verification_snapshot_returns_none_when_capture_fails(self):
+        mod = _import_module()
+        fake_scene_capture = types.SimpleNamespace(
+            _capture_active_window=lambda: None,
+            _capture_screen=lambda: None,
+            _downsample_image=lambda image: image,
+            _image_dimensions=lambda image: (0, 0),
+        )
+
+        with patch.dict(sys.modules, {"spoke.scene_capture": fake_scene_capture}):
+            assert mod.capture_verification_snapshot() is None
+
+    def test_snapshot_contains_text_returns_none_for_empty_ocr_text(self):
+        mod = _import_module()
+        fake_scene_capture = types.SimpleNamespace(
+            _run_ocr=lambda image, width, height, scope, accurate: ("   ", []),
+        )
+
+        with patch.dict(sys.modules, {"spoke.scene_capture": fake_scene_capture}):
+            assert mod.snapshot_contains_text(("image", 640, 320, "screen"), "expected text") is None
+
+    def test_snapshot_contains_text_returns_none_when_ocr_raises(self):
+        mod = _import_module()
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("ocr blew up")
+
+        fake_scene_capture = types.SimpleNamespace(_run_ocr=_boom)
+
+        with patch.dict(sys.modules, {"spoke.scene_capture": fake_scene_capture}):
+            assert mod.snapshot_contains_text(("image", 640, 320, "screen"), "expected text") is None
+
+    def test_snapshot_contains_text_uses_text_match_result(self):
+        mod = _import_module()
+        fake_scene_capture = types.SimpleNamespace(
+            _run_ocr=lambda image, width, height, scope, accurate: ("visible expected text", ["block"]),
+        )
+
+        with patch.dict(sys.modules, {"spoke.scene_capture": fake_scene_capture}), \
+             patch.object(mod, "text_appears_on_screen", return_value=True) as mock_match:
+            assert mod.snapshot_contains_text(("image", 640, 320, "screen"), "expected text") is True
+
+        mock_match.assert_called_once_with("expected text", "visible expected text")
+
 
 class TestClassifyPasteResult:
     def test_empty_capture_is_unavailable(self):
@@ -384,3 +476,94 @@ class TestClassifyPasteResult:
             )
             == "missing"
         )
+
+    def test_match_with_preexisting_signal_is_ambiguous(self):
+        mod = _import_module()
+
+        assert (
+            mod.classify_paste_result(
+                "Hello world this is a test sentence",
+                "Some UI chrome Hello world this is a test sentence more stuff",
+                preexisting_match=True,
+            )
+            == "ambiguous"
+        )
+
+
+class TestPrePostPasteScenes:
+    """Paired pre/post scene fixtures for realistic nasty verification stories."""
+
+    def test_clean_insert_without_preexisting_match_is_confirmed(self):
+        mod = _import_module()
+        expected = (
+            "Please open the quarterly revenue workbook and verify surprising results"
+        )
+        pre = _dense_background(
+            "clipboard history unrelated tabs and account chrome",
+            "quarterly planning notes and revenue dashboard overview",
+        )
+        post = _dense_background(
+            "clipboard history unrelated tabs and account chrome",
+            "Please open the quarterly revenue workbook and verify surprising results",
+        )
+
+        assert _classify_prepost(mod, expected, pre, post) == "confirmed"
+
+    def test_partial_pre_fragment_still_demotes_to_ambiguous_today(self):
+        mod = _import_module()
+        expected = (
+            "This is a long dictated sentence that goes to the edge of the screen"
+        )
+        pre = "some chrome This is a long dictated more stuff"
+        post = (
+            "some chrome This is a long dictated sentence that goes to the edge "
+            "of the screen more stuff"
+        )
+
+        assert _classify_prepost(mod, expected, pre, post) == "ambiguous"
+
+    def test_repeated_scrollback_line_stays_ambiguous_under_current_contract(self):
+        mod = _import_module()
+        expected = (
+            "yeah well i just saw some smoke it pasted successfully into wes term "
+            "where it cannot read the field and where ocr should be helping us "
+            "and ocr did not help us it still caught it anyway"
+        )
+        pre = _dense_background(
+            "shell prompt build output status panel sidebar notifications",
+            "yeah well i just saw some sm0ke it pasted successfully into wes term "
+            "where it cannot read the field and where ocr should be helping us "
+            "and ocr did n0t help us it still caught it anyway",
+            "git status branch ahead prompt terminal session tab bar",
+        )
+        post = _dense_background(
+            "shell prompt build output status panel sidebar notifications",
+            "yeah well i just saw some sm0ke it pasted successfully into wes term "
+            "where it cannot read the field and where ocr should be helping us "
+            "and ocr did n0t help us it still caught it anyway",
+            "editor insert point now also shows yeah well i just saw some smoke "
+            "it pasted successfully into wes term where it cannot read the field "
+            "and where ocr should be helping us and ocr did not help us it still "
+            "caught it anyway",
+        )
+
+        assert _classify_prepost(mod, expected, pre, post) == "ambiguous"
+
+    def test_preexisting_repeated_phrase_elsewhere_keeps_post_ambiguous_today(self):
+        mod = _import_module()
+        expected = (
+            "Please open the quarterly revenue workbook and verify surprising results"
+        )
+        pre = _dense_background(
+            "clipboard history unrelated tabs and account chrome",
+            "Please open the quarterly revenue workbook and verify surprising results",
+            "older note pinned in preview pane",
+        )
+        post = _dense_background(
+            "clipboard history unrelated tabs and account chrome",
+            "Please open the quarterly revenue workbook and verify surprising results",
+            "active editor now also shows Please open the quarterly revenue workbook "
+            "and verify surprising results near the cursor",
+        )
+
+        assert _classify_prepost(mod, expected, pre, post) == "ambiguous"

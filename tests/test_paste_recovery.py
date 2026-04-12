@@ -45,6 +45,8 @@ def _make_delegate(main_module, monkeypatch):
     delegate._recovery_clipboard_state = "idle"
     delegate._recovery_hold_active = False
     delegate._recovery_retry_pending = False
+    delegate._recovery_pending_retry_insert = None
+    delegate._verify_paste_snapshot_capture = None
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
 
@@ -104,6 +106,60 @@ class TestRecoveryFlowBranching:
         assert call_args[0][2] == "verifyPaste:"
         assert d._verify_paste_text == "hello world"
 
+    def test_records_preexisting_focus_match_before_paste(self, main_module, monkeypatch):
+        """Delayed insert should snapshot cheap pre-paste evidence before injection."""
+        d = _make_delegate(main_module, monkeypatch)
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+        with patch("spoke.__main__.save_pasteboard", return_value=None), \
+             patch("spoke.__main__.focused_text_contains", return_value=True), \
+             patch("spoke.__main__.threading.Thread", side_effect=lambda *args, **kwargs: _ImmediateThread(**kwargs)), \
+             patch("spoke.paste_verify.capture_verification_snapshot", return_value="snapshot"), \
+             patch("spoke.__main__.inject_text"):
+            d._inject_result_text("hello world", "Pasted!")
+            d.resultInjectDelayed_(None)
+
+        assert d._verify_paste_preexisting_match is True
+        assert d._verify_paste_preexisting_snapshot == "snapshot"
+
+    def test_starts_snapshot_capture_during_refocus_delay(self, main_module, monkeypatch):
+        """Normal insert should start snapshot capture before the delayed inject fires."""
+        Foundation = __import__("Foundation")
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
+        d = _make_delegate(main_module, monkeypatch)
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+        with patch("spoke.__main__.save_pasteboard", return_value=None), \
+             patch("spoke.__main__.focused_text_contains", return_value=True), \
+             patch("spoke.__main__.threading.Thread", side_effect=lambda *args, **kwargs: _ImmediateThread(**kwargs)), \
+             patch("spoke.paste_verify.capture_verification_snapshot", return_value="snapshot") as mock_capture, \
+             patch("spoke.__main__.inject_text") as mock_inject:
+            d._inject_result_text("hello world", "Pasted!")
+
+            assert mock_capture.call_count == 1
+            mock_inject.assert_not_called()
+
+            d.resultInjectDelayed_(None)
+
+        mock_inject.assert_called_once()
+        assert mock_capture.call_count == 1
+        assert d._verify_paste_preexisting_match is True
+        assert d._verify_paste_preexisting_snapshot == "snapshot"
+
     def test_verify_result_enters_recovery_on_failure(self, main_module, monkeypatch):
         """A normal-path OCR miss should fail open into a silent tray save."""
         d = _make_delegate(main_module, monkeypatch)
@@ -151,10 +207,43 @@ class TestRecoveryFlowBranching:
         """verifyPasteResult_ should clear verify state when text is found."""
         d = _make_delegate(main_module, monkeypatch)
         d._verify_paste_text = "hello world"
+        d._verify_paste_preexisting_match = True
+        d._verify_paste_preexisting_snapshot = "snapshot"
+        d._verify_paste_snapshot_capture = {"inject_started": False, "snapshot": "late"}
 
         d.verifyPasteResult_({"found": True, "text": "hello world", "attempt": 0})
 
         assert d._verify_paste_text is None
+        assert d._verify_paste_preexisting_match is None
+        assert d._verify_paste_preexisting_snapshot is None
+        assert d._verify_paste_snapshot_capture is None
+
+    def test_ambiguous_result_stashes_to_bottom_without_popping(self, main_module, monkeypatch):
+        """Ambiguous verification should preserve the text without claiming success."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._tray_stack = [main_module.TrayEntry("existing newer text")]
+        d._tray_index = 0
+        d._verify_paste_text = "hello world"
+        d._verify_paste_preexisting_match = True
+        d._verify_paste_preexisting_snapshot = "snapshot"
+        d._verify_paste_snapshot_capture = {"inject_started": False, "snapshot": "late"}
+        d._pre_paste_clipboard = [("public.utf8-plain-text", b"original")]
+
+        with patch("spoke.__main__.has_focused_text_input", return_value=True), \
+             patch("spoke.__main__.set_pasteboard_only"), \
+             patch("spoke.__main__.save_pasteboard", return_value=None):
+            d.verifyPasteResult_(
+                {"found": False, "status": "ambiguous", "text": "hello world", "attempt": 1}
+            )
+
+        assert d._verify_paste_text is None
+        assert d._verify_paste_preexisting_match is None
+        assert d._verify_paste_preexisting_snapshot is None
+        assert d._verify_paste_snapshot_capture is None
+        assert d._tray_active is False
+        d._overlay.show_tray.assert_not_called()
+        d._overlay.flash_tray_capture.assert_called_once_with("hello world", owner="user")
+        assert [entry.text for entry in d._tray_stack] == ["hello world", "existing newer text"]
 
 
 class TestRecoveryDismiss:
@@ -267,6 +356,8 @@ class TestRecoveryInsert:
         with patch("spoke.__main__.has_focused_text_input", return_value=True), \
              patch("spoke.__main__.inject_text") as mock_inject:
             d._recovery_retry_insert()
+            mock_inject.assert_not_called()
+            d.doRecoveryRetryInsert_(None)
 
         mock_inject.assert_called_once()
         # Should schedule OCR verification, not dismiss immediately
@@ -274,10 +365,46 @@ class TestRecoveryInsert:
         assert d._verify_paste_text == "transcribed text"
         Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called()
 
+    def test_retry_starts_snapshot_capture_before_delayed_insert(self, main_module, monkeypatch):
+        """Retry should start pre-paste snapshot capture before the delayed paste fires."""
+        Foundation = __import__("Foundation")
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
+        d = _make_delegate(main_module, monkeypatch)
+        d._recovery_text = "transcribed text"
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+        with patch("spoke.__main__.has_focused_text_input", return_value=True), \
+             patch("spoke.__main__.focused_text_contains", return_value=True), \
+             patch("spoke.__main__.threading.Thread", side_effect=lambda *args, **kwargs: _ImmediateThread(**kwargs)), \
+             patch("spoke.paste_verify.capture_verification_snapshot", return_value="snapshot") as mock_capture, \
+             patch("spoke.__main__.inject_text") as mock_inject:
+            d._recovery_retry_insert()
+
+            assert mock_capture.call_count == 1
+            mock_inject.assert_not_called()
+            assert d._recovery_pending_retry_insert == "transcribed text"
+
+            d.doRecoveryRetryInsert_(None)
+
+        mock_inject.assert_called_once_with("transcribed text")
+        assert mock_capture.call_count == 1
+        assert d._verify_paste_preexisting_match is True
+        assert d._verify_paste_preexisting_snapshot == "snapshot"
+
     def test_retry_verify_success_clears_recovery(self, main_module, monkeypatch):
         """OCR verification success after retry should clear recovery state."""
         d = _make_delegate(main_module, monkeypatch)
         d._verify_paste_text = "transcribed text"
+        d._verify_paste_preexisting_match = True
+        d._verify_paste_preexisting_snapshot = "snapshot"
+        d._verify_paste_snapshot_capture = {"inject_started": False, "snapshot": "late"}
         d._recovery_retry_pending = True
         d._recovery_text = "transcribed text"
 
@@ -285,11 +412,17 @@ class TestRecoveryInsert:
 
         assert d._recovery_retry_pending is False
         assert d._recovery_text is None  # cleared
+        assert d._verify_paste_preexisting_match is None
+        assert d._verify_paste_preexisting_snapshot is None
+        assert d._verify_paste_snapshot_capture is None
 
     def test_retry_verify_failure_reenters_recovery(self, main_module, monkeypatch):
         """OCR verification failure after retry should re-enter recovery."""
         d = _make_delegate(main_module, monkeypatch)
         d._verify_paste_text = "transcribed text"
+        d._verify_paste_preexisting_match = True
+        d._verify_paste_preexisting_snapshot = "snapshot"
+        d._verify_paste_snapshot_capture = {"inject_started": False, "snapshot": "late"}
         d._recovery_retry_pending = True
         d._pre_paste_clipboard = None
 
@@ -298,6 +431,9 @@ class TestRecoveryInsert:
             d.verifyPasteResult_({"found": False, "text": "transcribed text", "attempt": 1})
 
         assert d._recovery_retry_pending is False
+        assert d._verify_paste_preexisting_match is None
+        assert d._verify_paste_preexisting_snapshot is None
+        assert d._verify_paste_snapshot_capture is None
         d._overlay.show_tray.assert_called_once()
 
     def test_delayed_insert_reenters_recovery_when_no_text_field(self, main_module, monkeypatch):
@@ -439,10 +575,13 @@ class TestSentinelClipboardPreservation:
 class TestOCRVerifyRetry:
     """Test OCR verification retry path and stale-text guard."""
 
-    def test_verify_paste_confirms_via_focused_value_before_ocr(self, main_module, monkeypatch):
-        """Focused AXValue confirmation should short-circuit the OCR fallback."""
+    def test_verify_paste_does_not_trust_focused_value_without_ocr(
+        self, main_module, monkeypatch
+    ):
+        """A focused AX substring hit alone must not bypass OCR verification."""
         d = _make_delegate(main_module, monkeypatch)
         d._verify_paste_text = "dictated text"
+        d._verify_paste_preexisting_match = True
         dispatched = []
 
         def _dispatch(selector, payload, wait):
@@ -458,26 +597,119 @@ class TestOCRVerifyRetry:
                 if self._target is not None:
                     self._target()
 
-        with patch("spoke.__main__.focused_text_contains", return_value=True), \
-             patch("spoke.__main__.threading.Thread", side_effect=lambda *args, **kwargs: _ImmediateThread(**kwargs)), \
-             patch("spoke.paste_verify.capture_screen_text") as mock_capture, \
-             patch("spoke.paste_verify.classify_paste_result") as mock_classify:
+        with patch("spoke.__main__.threading.Thread", side_effect=lambda *args, **kwargs: _ImmediateThread(**kwargs)), \
+             patch("spoke.paste_verify.capture_screen_text", return_value="screen text") as mock_capture, \
+             patch("spoke.paste_verify.classify_paste_result", return_value="ambiguous") as mock_classify:
             d.verifyPaste_(None)
 
-        mock_capture.assert_not_called()
-        mock_classify.assert_not_called()
+        mock_capture.assert_called_once_with()
+        mock_classify.assert_called_once_with(
+            "dictated text", "screen text", preexisting_match=True
+        )
         assert dispatched == [
             (
                 "verifyPasteResult:",
                 {
-                    "found": True,
-                    "status": "confirmed_ax",
+                    "found": False,
+                    "status": "ambiguous",
                     "text": "dictated text",
                     "attempt": 0,
                 },
                 False,
             )
         ]
+
+    def test_verify_paste_uses_snapshot_evidence_to_demote_confirmation(
+        self, main_module, monkeypatch
+    ):
+        """Pre-paste snapshot OCR should also count as already-there evidence."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._verify_paste_text = "dictated text"
+        d._verify_paste_preexisting_match = None
+        d._verify_paste_preexisting_snapshot = "snapshot"
+        dispatched = []
+
+        def _dispatch(selector, payload, wait):
+            dispatched.append((selector, payload, wait))
+
+        d.performSelectorOnMainThread_withObject_waitUntilDone_.side_effect = _dispatch
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+        with patch("spoke.__main__.threading.Thread", side_effect=lambda *args, **kwargs: _ImmediateThread(**kwargs)), \
+             patch("spoke.paste_verify.capture_screen_text", return_value="screen text") as mock_capture, \
+             patch("spoke.paste_verify.snapshot_contains_text", return_value=True) as mock_snapshot_match, \
+             patch("spoke.paste_verify.classify_paste_result", return_value="ambiguous") as mock_classify:
+            d.verifyPaste_(None)
+
+        mock_capture.assert_called_once_with()
+        mock_snapshot_match.assert_called_once_with("snapshot", "dictated text")
+        mock_classify.assert_called_once_with(
+            "dictated text", "screen text", preexisting_match=True
+        )
+        assert dispatched == [
+            (
+                "verifyPasteResult:",
+                {
+                    "found": False,
+                    "status": "ambiguous",
+                    "text": "dictated text",
+                    "attempt": 0,
+                },
+                False,
+            )
+        ]
+
+    def test_late_snapshot_capture_falls_back_to_ax_without_blocking_inject(
+        self, main_module, monkeypatch
+    ):
+        """Inject should not wait for a snapshot thread that finishes too late."""
+        d = _make_delegate(main_module, monkeypatch)
+        capture_started = []
+        capture_release = []
+
+        class _ControlledThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                capture_started.append(True)
+
+            def finish(self):
+                if self._target is not None:
+                    self._target()
+
+        threads = []
+
+        def _make_thread(*args, **kwargs):
+            thread = _ControlledThread(**kwargs)
+            threads.append(thread)
+            return thread
+
+        with patch("spoke.__main__.save_pasteboard", return_value=None), \
+             patch("spoke.__main__.focused_text_contains", return_value=True), \
+             patch("spoke.__main__.threading.Thread", side_effect=_make_thread), \
+             patch("spoke.paste_verify.capture_verification_snapshot", side_effect=lambda: capture_release.append(True) or "snapshot"), \
+             patch("spoke.__main__.inject_text") as mock_inject:
+            d._inject_result_text("hello world", "Pasted!")
+
+            assert capture_started == [True]
+            d.resultInjectDelayed_(None)
+
+            mock_inject.assert_called_once()
+            assert d._verify_paste_preexisting_match is True
+            assert d._verify_paste_preexisting_snapshot is None
+
+            threads[0].finish()
+
+        assert capture_release == [True]
+        assert d._verify_paste_preexisting_snapshot is None
 
     def test_attempt_0_schedules_retry(self, main_module, monkeypatch):
         """First failed OCR check should schedule a retry, not enter recovery."""
