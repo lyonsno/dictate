@@ -95,7 +95,11 @@ def _capture_full_screen_text() -> str:
     """Legacy full-screen OCR fallback."""
     global _missing_ocr_dependency_logged
     try:
-        from Vision import VNRecognizeTextRequest, VNImageRequestHandler, VNRequestTextRecognitionLevelFast
+        from Vision import (
+            VNRecognizeTextRequest,
+            VNImageRequestHandler,
+            VNRequestTextRecognitionLevelAccurate,
+        )
         from Quartz import (
             CGWindowListCreateImage,
             kCGWindowListOptionOnScreenOnly,
@@ -112,7 +116,7 @@ def _capture_full_screen_text() -> str:
 
         handler = VNImageRequestHandler.alloc().initWithCGImage_options_(image, None)
         request = VNRecognizeTextRequest.alloc().init()
-        request.setRecognitionLevel_(VNRequestTextRecognitionLevelFast)
+        request.setRecognitionLevel_(VNRequestTextRecognitionLevelAccurate)
         request.setUsesLanguageCorrection_(False)
 
         success, error = handler.performRequests_error_([request], None)

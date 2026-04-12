@@ -13,7 +13,9 @@ def _import_module():
     return importlib.import_module("spoke.paste_verify")
 
 
-def _install_fake_ocr_modules(monkeypatch, *, image="fake-image", success=True, error=None, lines=()):
+def _install_fake_ocr_modules(
+    monkeypatch, *, image="fake-image", success=True, error=None, lines=(), capture=None
+):
     class _FakeCandidate:
         def __init__(self, text):
             self._text = text
@@ -36,6 +38,8 @@ def _install_fake_ocr_modules(monkeypatch, *, image="fake-image", success=True, 
             return cls()
 
         def init(self):
+            if capture is not None:
+                capture["request"] = self
             return self
 
         def setRecognitionLevel_(self, level):
@@ -66,6 +70,7 @@ def _install_fake_ocr_modules(monkeypatch, *, image="fake-image", success=True, 
         types.SimpleNamespace(
             VNRecognizeTextRequest=_FakeRequest,
             VNImageRequestHandler=_FakeHandler,
+            VNRequestTextRecognitionLevelAccurate="accurate",
             VNRequestTextRecognitionLevelFast="fast",
         ),
     )
@@ -355,6 +360,20 @@ class TestCaptureScreenText:
 
         with patch.object(mod, "_capture_active_window_text", return_value=""):
             assert mod.capture_screen_text() == "first line second line"
+
+    def test_full_screen_fallback_uses_accurate_recognition(self, monkeypatch):
+        mod = _import_module()
+        capture = {}
+        _install_fake_ocr_modules(
+            monkeypatch,
+            lines=("first line", "second line"),
+            capture=capture,
+        )
+
+        with patch.object(mod, "_capture_active_window_text", return_value=""):
+            assert mod.capture_screen_text() == "first line second line"
+
+        assert capture["request"].level == "accurate"
 
 
 class TestClassifyPasteResult:
