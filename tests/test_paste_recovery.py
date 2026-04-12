@@ -45,6 +45,8 @@ def _make_delegate(main_module, monkeypatch):
     delegate._recovery_clipboard_state = "idle"
     delegate._recovery_hold_active = False
     delegate._recovery_retry_pending = False
+    delegate._recovery_pending_retry_insert = None
+    delegate._verify_paste_snapshot_capture = None
     delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
     return delegate
 
@@ -107,13 +109,54 @@ class TestRecoveryFlowBranching:
     def test_records_preexisting_focus_match_before_paste(self, main_module, monkeypatch):
         """Delayed insert should snapshot cheap pre-paste evidence before injection."""
         d = _make_delegate(main_module, monkeypatch)
-        d._result_pending_inject = ("hello world", "Pasted!")
 
-        with patch("spoke.__main__.focused_text_contains", return_value=True), \
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+        with patch("spoke.__main__.save_pasteboard", return_value=None), \
+             patch("spoke.__main__.focused_text_contains", return_value=True), \
+             patch("spoke.__main__.threading.Thread", side_effect=lambda *args, **kwargs: _ImmediateThread(**kwargs)), \
              patch("spoke.paste_verify.capture_verification_snapshot", return_value="snapshot"), \
              patch("spoke.__main__.inject_text"):
+            d._inject_result_text("hello world", "Pasted!")
             d.resultInjectDelayed_(None)
 
+        assert d._verify_paste_preexisting_match is True
+        assert d._verify_paste_preexisting_snapshot == "snapshot"
+
+    def test_starts_snapshot_capture_during_refocus_delay(self, main_module, monkeypatch):
+        """Normal insert should start snapshot capture before the delayed inject fires."""
+        Foundation = __import__("Foundation")
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
+        d = _make_delegate(main_module, monkeypatch)
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+        with patch("spoke.__main__.save_pasteboard", return_value=None), \
+             patch("spoke.__main__.focused_text_contains", return_value=True), \
+             patch("spoke.__main__.threading.Thread", side_effect=lambda *args, **kwargs: _ImmediateThread(**kwargs)), \
+             patch("spoke.paste_verify.capture_verification_snapshot", return_value="snapshot") as mock_capture, \
+             patch("spoke.__main__.inject_text") as mock_inject:
+            d._inject_result_text("hello world", "Pasted!")
+
+            assert mock_capture.call_count == 1
+            mock_inject.assert_not_called()
+
+            d.resultInjectDelayed_(None)
+
+        mock_inject.assert_called_once()
+        assert mock_capture.call_count == 1
         assert d._verify_paste_preexisting_match is True
         assert d._verify_paste_preexisting_snapshot == "snapshot"
 
@@ -302,12 +345,47 @@ class TestRecoveryInsert:
         with patch("spoke.__main__.has_focused_text_input", return_value=True), \
              patch("spoke.__main__.inject_text") as mock_inject:
             d._recovery_retry_insert()
+            mock_inject.assert_not_called()
+            d.doRecoveryRetryInsert_(None)
 
         mock_inject.assert_called_once()
         # Should schedule OCR verification, not dismiss immediately
         assert d._recovery_retry_pending is True
         assert d._verify_paste_text == "transcribed text"
         Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called()
+
+    def test_retry_starts_snapshot_capture_before_delayed_insert(self, main_module, monkeypatch):
+        """Retry should start pre-paste snapshot capture before the delayed paste fires."""
+        Foundation = __import__("Foundation")
+        Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
+        d = _make_delegate(main_module, monkeypatch)
+        d._recovery_text = "transcribed text"
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+        with patch("spoke.__main__.has_focused_text_input", return_value=True), \
+             patch("spoke.__main__.focused_text_contains", return_value=True), \
+             patch("spoke.__main__.threading.Thread", side_effect=lambda *args, **kwargs: _ImmediateThread(**kwargs)), \
+             patch("spoke.paste_verify.capture_verification_snapshot", return_value="snapshot") as mock_capture, \
+             patch("spoke.__main__.inject_text") as mock_inject:
+            d._recovery_retry_insert()
+
+            assert mock_capture.call_count == 1
+            mock_inject.assert_not_called()
+            assert d._recovery_pending_retry_insert == "transcribed text"
+
+            d.doRecoveryRetryInsert_(None)
+
+        mock_inject.assert_called_once_with("transcribed text")
+        assert mock_capture.call_count == 1
+        assert d._verify_paste_preexisting_match is True
+        assert d._verify_paste_preexisting_snapshot == "snapshot"
 
     def test_retry_verify_success_clears_recovery(self, main_module, monkeypatch):
         """OCR verification success after retry should clear recovery state."""
