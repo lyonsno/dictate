@@ -388,6 +388,25 @@ class TestShowFinishHide:
 
         assert overlay._backdrop_timer is backdrop_timer
 
+    def test_show_skips_backdrop_refresh_timer_in_optical_shell_debug_visualization(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+
+        overlay.show()
+
+        selectors = [
+            call_args[0][2]
+            for call_args in mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args_list
+        ]
+        assert "backdropRefreshTick:" not in selectors, (
+            "Optical-shell debug visualization should seed a static diagnostic field once, "
+            "not rebuild it at the normal live-backdrop refresh cadence."
+        )
+        assert overlay._backdrop_timer is None
+
     def test_debug_visualization_uses_plain_calayer_backdrop(self, mock_pyobjc, monkeypatch):
         monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
         monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE", "1")

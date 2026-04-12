@@ -1852,6 +1852,8 @@ class CommandOverlay(NSObject):
         self._cancel_backdrop_refresh()
         if self._backdrop_renderer is None or self._backdrop_layer is None:
             return
+        if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE:
+            return
         self._backdrop_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             _COMMAND_BACKDROP_REFRESH_S,
             self,
