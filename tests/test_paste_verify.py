@@ -97,6 +97,16 @@ def _dense_background(*segments):
     return " ".join([*noise[:2], *segments, *noise[2:]])
 
 
+def _classify_prepost(mod, expected: str, pre_text: str, post_text: str) -> str:
+    """Approximate the current pre/post contract using string fixtures only."""
+    preexisting_match = mod.text_appears_on_screen(expected, pre_text)
+    return mod.classify_paste_result(
+        expected,
+        post_text,
+        preexisting_match=preexisting_match,
+    )
+
+
 class TestTextAppearsOnScreen:
     """Test the fuzzy matching logic (no OCR dependency needed)."""
 
@@ -415,3 +425,82 @@ class TestClassifyPasteResult:
             )
             == "ambiguous"
         )
+
+
+class TestPrePostPasteScenes:
+    """Paired pre/post scene fixtures for realistic nasty verification stories."""
+
+    def test_clean_insert_without_preexisting_match_is_confirmed(self):
+        mod = _import_module()
+        expected = (
+            "Please open the quarterly revenue workbook and verify surprising results"
+        )
+        pre = _dense_background(
+            "clipboard history unrelated tabs and account chrome",
+            "quarterly planning notes and revenue dashboard overview",
+        )
+        post = _dense_background(
+            "clipboard history unrelated tabs and account chrome",
+            "Please open the quarterly revenue workbook and verify surprising results",
+        )
+
+        assert _classify_prepost(mod, expected, pre, post) == "confirmed"
+
+    def test_partial_pre_fragment_still_demotes_to_ambiguous_today(self):
+        mod = _import_module()
+        expected = (
+            "This is a long dictated sentence that goes to the edge of the screen"
+        )
+        pre = "some chrome This is a long dictated more stuff"
+        post = (
+            "some chrome This is a long dictated sentence that goes to the edge "
+            "of the screen more stuff"
+        )
+
+        assert _classify_prepost(mod, expected, pre, post) == "ambiguous"
+
+    def test_repeated_scrollback_line_stays_ambiguous_under_current_contract(self):
+        mod = _import_module()
+        expected = (
+            "yeah well i just saw some smoke it pasted successfully into wes term "
+            "where it cannot read the field and where ocr should be helping us "
+            "and ocr did not help us it still caught it anyway"
+        )
+        pre = _dense_background(
+            "shell prompt build output status panel sidebar notifications",
+            "yeah well i just saw some sm0ke it pasted successfully into wes term "
+            "where it cannot read the field and where ocr should be helping us "
+            "and ocr did n0t help us it still caught it anyway",
+            "git status branch ahead prompt terminal session tab bar",
+        )
+        post = _dense_background(
+            "shell prompt build output status panel sidebar notifications",
+            "yeah well i just saw some sm0ke it pasted successfully into wes term "
+            "where it cannot read the field and where ocr should be helping us "
+            "and ocr did n0t help us it still caught it anyway",
+            "editor insert point now also shows yeah well i just saw some smoke "
+            "it pasted successfully into wes term where it cannot read the field "
+            "and where ocr should be helping us and ocr did not help us it still "
+            "caught it anyway",
+        )
+
+        assert _classify_prepost(mod, expected, pre, post) == "ambiguous"
+
+    def test_preexisting_repeated_phrase_elsewhere_keeps_post_ambiguous_today(self):
+        mod = _import_module()
+        expected = (
+            "Please open the quarterly revenue workbook and verify surprising results"
+        )
+        pre = _dense_background(
+            "clipboard history unrelated tabs and account chrome",
+            "Please open the quarterly revenue workbook and verify surprising results",
+            "older note pinned in preview pane",
+        )
+        post = _dense_background(
+            "clipboard history unrelated tabs and account chrome",
+            "Please open the quarterly revenue workbook and verify surprising results",
+            "active editor now also shows Please open the quarterly revenue workbook "
+            "and verify surprising results near the cursor",
+        )
+
+        assert _classify_prepost(mod, expected, pre, post) == "ambiguous"
