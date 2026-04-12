@@ -1017,6 +1017,7 @@ class SpokeAppDelegate(NSObject):
         self._pre_paste_clipboard: list[tuple[str, bytes]] | None | object = _NOT_CAPTURED
         self._verify_paste_text: str | None = None
         self._verify_paste_preexisting_match: bool | None = None
+        self._verify_paste_preexisting_snapshot = None
         self._verify_paste_attempt: int = 0
         self._result_pending_inject = None
         self._recovery_saved_clipboard: list[tuple[str, bytes]] | None = None
@@ -1641,6 +1642,7 @@ class SpokeAppDelegate(NSObject):
         # Tray intercept: shift+space from tray = navigation, plain space = record.
         self._verify_paste_text = None
         self._verify_paste_preexisting_match = None
+        self._verify_paste_preexisting_snapshot = None
         if getattr(self, "_tray_active", False):
             shift_at_press = getattr(self._detector, '_shift_at_press', False)
             logger.info("Tray hold: shift_at_press=%s, shift_latched=%s",
@@ -3410,14 +3412,24 @@ class SpokeAppDelegate(NSObject):
         # Run OCR in background thread to avoid blocking the main thread
         import threading
         def _verify():
-            from .paste_verify import capture_screen_text, classify_paste_result
+            from .paste_verify import (
+                capture_screen_text,
+                classify_paste_result,
+                snapshot_contains_text,
+            )
             screen_text = capture_screen_text()
+            preexisting_match = getattr(self, "_verify_paste_preexisting_match", None)
+            if preexisting_match is not True:
+                snapshot_match = snapshot_contains_text(
+                    getattr(self, "_verify_paste_preexisting_snapshot", None),
+                    text,
+                )
+                if snapshot_match is True:
+                    preexisting_match = True
             status = classify_paste_result(
                 text,
                 screen_text,
-                preexisting_match=getattr(
-                    self, "_verify_paste_preexisting_match", None
-                ),
+                preexisting_match=preexisting_match,
             )
             found = status == "confirmed"
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3450,6 +3462,7 @@ class SpokeAppDelegate(NSObject):
             logger.info("Paste verified by OCR (attempt %d)", attempt + 1)
             self._verify_paste_text = None
             self._verify_paste_preexisting_match = None
+            self._verify_paste_preexisting_snapshot = None
             if is_retry:
                 # Retry succeeded — clear recovery state
                 self._recovery_retry_pending = False
@@ -3471,6 +3484,7 @@ class SpokeAppDelegate(NSObject):
         # Second check also failed
         self._verify_paste_text = None
         self._verify_paste_preexisting_match = None
+        self._verify_paste_preexisting_snapshot = None
         if is_retry:
             # Retry from recovery failed — bounce the overlay back
             logger.warning("Recovery retry not verified by OCR — bouncing back")
@@ -5597,7 +5611,10 @@ class SpokeAppDelegate(NSObject):
                 if not self._resume_handsfree_after_hold():
                     self._menubar.set_status_text("Ready — hold spacebar")
 
+        from .paste_verify import capture_verification_snapshot
+
         self._verify_paste_preexisting_match = focused_text_contains(text)
+        self._verify_paste_preexisting_snapshot = capture_verification_snapshot()
         inject_text(text, on_restored=_on_clipboard_restored)
         if self._menubar is not None:
             self._menubar.set_status_text(status_text)
@@ -5655,7 +5672,10 @@ class SpokeAppDelegate(NSObject):
             self._overlay.order_out()
 
         # Paste
+        from .paste_verify import capture_verification_snapshot
+
         self._verify_paste_preexisting_match = focused_text_contains(text)
+        self._verify_paste_preexisting_snapshot = capture_verification_snapshot()
         inject_text(text)
 
         # OCR verify — reuse the same verification pipeline

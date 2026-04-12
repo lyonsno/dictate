@@ -31,6 +31,9 @@ _ORDERED_WORD_SPAN_SLACK = 5
 # strings (1-2 words) are too likely to appear in UI chrome.
 _MIN_VERIFY_LENGTH = 15
 
+# Snapshot shape: (cg_image, width, height, scope)
+VerificationSnapshot = tuple[object, int, int, str]
+
 
 def capture_screen_text() -> str:
     """Capture the full screen and return all recognized text.
@@ -42,6 +45,68 @@ def capture_screen_text() -> str:
     if window_text:
         return window_text
     return _capture_full_screen_text()
+
+
+def capture_verification_snapshot() -> VerificationSnapshot | None:
+    """Capture a pre-paste image snapshot for later OCR comparison.
+
+    This avoids doing a full OCR pass on the hot paste path. We capture the
+    image cheaply up front, then OCR it later in the background verify thread.
+    """
+    try:
+        from .scene_capture import (
+            _capture_active_window,
+            _capture_screen,
+            _downsample_image,
+            _image_dimensions,
+        )
+
+        result = _capture_active_window()
+        scope = "active_window"
+        if result is None:
+            result = _capture_screen()
+            scope = "screen"
+        if result is None:
+            return None
+
+        image, _, _, _ = result
+        image = _downsample_image(image)
+        width, height = _image_dimensions(image)
+        return (image, width, height, scope)
+    except Exception:
+        logger.debug("Pre-paste verification snapshot capture failed", exc_info=True)
+        return None
+
+
+def snapshot_contains_text(snapshot: VerificationSnapshot | None, expected: str) -> bool | None:
+    """Return whether a pre-paste snapshot already showed the expected text."""
+    if snapshot is None:
+        return None
+
+    try:
+        from .scene_capture import _run_ocr
+
+        image, width, height, scope = snapshot
+        ocr_text, blocks = _run_ocr(
+            image,
+            width,
+            height,
+            f"paste-verify-pre-{scope}",
+            accurate=True,
+        )
+        if not " ".join(ocr_text.split()):
+            return None
+        logger.info(
+            "Pre-paste OCR captured %d blocks from %s (%dx%d, accurate)",
+            len(blocks),
+            scope,
+            width,
+            height,
+        )
+        return text_appears_on_screen(expected, ocr_text)
+    except Exception:
+        logger.debug("Pre-paste snapshot OCR failed", exc_info=True)
+        return None
 
 
 def _capture_active_window_text() -> str:

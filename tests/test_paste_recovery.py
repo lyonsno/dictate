@@ -110,10 +110,12 @@ class TestRecoveryFlowBranching:
         d._result_pending_inject = ("hello world", "Pasted!")
 
         with patch("spoke.__main__.focused_text_contains", return_value=True), \
+             patch("spoke.paste_verify.capture_verification_snapshot", return_value="snapshot"), \
              patch("spoke.__main__.inject_text"):
             d.resultInjectDelayed_(None)
 
         assert d._verify_paste_preexisting_match is True
+        assert d._verify_paste_preexisting_snapshot == "snapshot"
 
     def test_verify_result_enters_recovery_on_failure(self, main_module, monkeypatch):
         """A normal-path OCR miss should fail open into a silent tray save."""
@@ -500,6 +502,53 @@ class TestOCRVerifyRetry:
             d.verifyPaste_(None)
 
         mock_capture.assert_called_once_with()
+        mock_classify.assert_called_once_with(
+            "dictated text", "screen text", preexisting_match=True
+        )
+        assert dispatched == [
+            (
+                "verifyPasteResult:",
+                {
+                    "found": False,
+                    "status": "ambiguous",
+                    "text": "dictated text",
+                    "attempt": 0,
+                },
+                False,
+            )
+        ]
+
+    def test_verify_paste_uses_snapshot_evidence_to_demote_confirmation(
+        self, main_module, monkeypatch
+    ):
+        """Pre-paste snapshot OCR should also count as already-there evidence."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._verify_paste_text = "dictated text"
+        d._verify_paste_preexisting_match = None
+        d._verify_paste_preexisting_snapshot = "snapshot"
+        dispatched = []
+
+        def _dispatch(selector, payload, wait):
+            dispatched.append((selector, payload, wait))
+
+        d.performSelectorOnMainThread_withObject_waitUntilDone_.side_effect = _dispatch
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None):
+                self._target = target
+
+            def start(self):
+                if self._target is not None:
+                    self._target()
+
+        with patch("spoke.__main__.threading.Thread", side_effect=lambda *args, **kwargs: _ImmediateThread(**kwargs)), \
+             patch("spoke.paste_verify.capture_screen_text", return_value="screen text") as mock_capture, \
+             patch("spoke.paste_verify.snapshot_contains_text", return_value=True) as mock_snapshot_match, \
+             patch("spoke.paste_verify.classify_paste_result", return_value="ambiguous") as mock_classify:
+            d.verifyPaste_(None)
+
+        mock_capture.assert_called_once_with()
+        mock_snapshot_match.assert_called_once_with("snapshot", "dictated text")
         mock_classify.assert_called_once_with(
             "dictated text", "screen text", preexisting_match=True
         )
