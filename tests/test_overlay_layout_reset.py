@@ -296,6 +296,15 @@ def test_preview_backdrop_mask_falloff_width_uses_configured_multiplier(mock_pyo
     assert overlay_module._preview_backdrop_mask_falloff_width(2.0) == pytest.approx(18.0)
 
 
+def test_preview_backdrop_rms_style_boosts_blur_when_overlay_comes_forward(mock_pyobjc):
+    overlay_module = _import_overlay(mock_pyobjc)
+
+    idle = overlay_module._preview_backdrop_rms_style(5.4, 0.0)
+    active = overlay_module._preview_backdrop_rms_style(5.4, 1.0)
+
+    assert active > idle
+
+
 def test_choose_backdrop_layer_uses_display_layer_when_renderer_supports_sample_buffers(mock_pyobjc, monkeypatch):
     overlay_module = _import_overlay(mock_pyobjc)
     sentinel_layer_class = MagicMock()

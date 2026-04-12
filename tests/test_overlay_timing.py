@@ -32,6 +32,8 @@ class TestOverlayTiming:
             overlay._visible = True
             overlay._text_view = MagicMock()
             overlay._text_amplitude = 0.0
+            overlay._backdrop_renderer = MagicMock()
+            overlay._backdrop_base_blur_radius_points = mod._PREVIEW_BACKDROP_BLUR_RADIUS
 
             mod.NSColor.colorWithSRGBRed_green_blue_alpha_.reset_mock()
 
@@ -40,6 +42,7 @@ class TestOverlayTiming:
             _, _, _, applied_alpha = mod.NSColor.colorWithSRGBRed_green_blue_alpha_.call_args[0]
             # Text is anchored at a fixed high alpha, not driven by amplitude
             assert applied_alpha == pytest.approx(0.88)
+            overlay._backdrop_renderer.set_live_blur_radius_points.assert_called_once()
         finally:
             sys.modules.pop("spoke.overlay", None)
 

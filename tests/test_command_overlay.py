@@ -307,8 +307,8 @@ class TestShowFinishHide:
 
         overlay._apply_backdrop_pulse_style(1.0)
 
-        assert overlay._backdrop_blur_radius_points > 5.4
-        assert overlay._backdrop_mask_width_multiplier > 9.0
+        assert overlay._backdrop_blur_radius_points < 5.4
+        assert overlay._backdrop_mask_width_multiplier < 9.0
         overlay._backdrop_renderer.set_live_blur_radius_points.assert_called_once_with(
             overlay._backdrop_blur_radius_points
         )
@@ -679,6 +679,19 @@ class TestBackdropGeometry:
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
+    def test_backdrop_attack_release_envelope_rises_faster_than_it_falls(
+        self, mock_pyobjc
+    ):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            rising = mod._advance_attack_release(0.2, 1.0, attack=0.4, release=0.1)
+            falling = mod._advance_attack_release(0.8, 0.0, attack=0.4, release=0.1)
+
+            assert rising - 0.2 > 0.8 - falling
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
     def test_backdrop_pulse_style_expands_blur_and_mask_at_peak_breath(
         self, mock_pyobjc
     ):
@@ -690,7 +703,7 @@ class TestBackdropGeometry:
 
             assert high[0] > low[0]
             assert high[1] > low[1]
-            assert high[2] > low[2]
+            assert high[2] < low[2]
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 

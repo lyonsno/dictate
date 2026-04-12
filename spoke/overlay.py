@@ -117,6 +117,12 @@ _PREVIEW_BACKDROP_BLUR_RADIUS = _env("SPOKE_PREVIEW_BACKDROP_BLUR_RADIUS", 9.0)
 _PREVIEW_BACKDROP_MASK_WIDTH_MULTIPLIER = _env(
     "SPOKE_PREVIEW_BACKDROP_MASK_WIDTH_MULTIPLIER", 3.0
 )
+_PREVIEW_BACKDROP_ACTIVE_BLUR_MIN_MULTIPLIER = _env(
+    "SPOKE_PREVIEW_BACKDROP_ACTIVE_BLUR_MIN_MULTIPLIER", 0.58
+)
+_PREVIEW_BACKDROP_ACTIVE_BLUR_MAX_MULTIPLIER = _env(
+    "SPOKE_PREVIEW_BACKDROP_ACTIVE_BLUR_MAX_MULTIPLIER", 1.18
+)
 _PREVIEW_BACKDROP_REFRESH_S = _env("SPOKE_PREVIEW_BACKDROP_REFRESH_S", 1.0 / 30.0)
 _RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
 _EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
@@ -394,6 +400,19 @@ def _preview_backdrop_mask_falloff_width(scale: float) -> float:
     return max(scale, 1e-6) * max(_PREVIEW_BACKDROP_MASK_WIDTH_MULTIPLIER, 0.0)
 
 
+def _preview_backdrop_rms_style(base_blur_radius_points: float, activity: float) -> float:
+    drive = min(max(activity, 0.0), 1.0)
+    return max(
+        0.0,
+        base_blur_radius_points
+        * _lerp(
+            _PREVIEW_BACKDROP_ACTIVE_BLUR_MIN_MULTIPLIER,
+            _PREVIEW_BACKDROP_ACTIVE_BLUR_MAX_MULTIPLIER,
+            drive,
+        ),
+    )
+
+
 class _QuartzBackdropRenderer:
     """Best-effort snapshot renderer for overlay backdrop blur prototypes."""
 
@@ -532,6 +551,7 @@ class TranscriptionOverlay(NSObject):
         self._brightness_target = 0.0
         self._fill_override_rgb: tuple[float, float, float] | None = None
         self._fill_override_opacity: float | None = None
+        self._backdrop_base_blur_radius_points = _PREVIEW_BACKDROP_BLUR_RADIUS
         self._backdrop_blur_radius_points = _PREVIEW_BACKDROP_BLUR_RADIUS
         self._backdrop_renderer = make_backdrop_renderer(
             self._screen,
@@ -1051,6 +1071,16 @@ class TranscriptionOverlay(NSObject):
         # On dark backgrounds use linear response so soft sounds register.
         # On light backgrounds use squared so the fill leads the glow.
         fill_drive = _lerp(scaled, scaled * scaled, t)
+        self._backdrop_blur_radius_points = _preview_backdrop_rms_style(
+            getattr(self, "_backdrop_base_blur_radius_points", _PREVIEW_BACKDROP_BLUR_RADIUS),
+            fill_drive,
+        )
+        renderer = getattr(self, "_backdrop_renderer", None)
+        if renderer is not None and hasattr(renderer, "set_live_blur_radius_points"):
+            try:
+                renderer.set_live_blur_radius_points(self._backdrop_blur_radius_points)
+            except Exception:
+                logger.debug("Failed to push live preview backdrop blur radius", exc_info=True)
         fill_min = _lerp(0.06, 0.84, t)   # light: 2x rest presence — much more material
         fill_max = _lerp(0.92, 0.99, t)   # saturates near-full on both backgrounds
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)

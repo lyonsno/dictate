@@ -98,6 +98,8 @@ _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER = _env(
 _COMMAND_BACKDROP_PULSE_TIERS = max(
     1, int(round(_env("SPOKE_COMMAND_BACKDROP_PULSE_TIERS", 4.0)))
 )
+_COMMAND_BACKDROP_PULSE_ATTACK = _env("SPOKE_COMMAND_BACKDROP_PULSE_ATTACK", 0.38)
+_COMMAND_BACKDROP_PULSE_RELEASE = _env("SPOKE_COMMAND_BACKDROP_PULSE_RELEASE", 0.12)
 _COMMAND_BACKDROP_PULSE_BLUR_MIN_MULTIPLIER = _env(
     "SPOKE_COMMAND_BACKDROP_PULSE_BLUR_MIN_MULTIPLIER", 0.74
 )
@@ -199,12 +201,17 @@ def _quantize_unit_interval(value: float, steps: int) -> float:
     return round(clamped * (steps - 1)) / float(steps - 1)
 
 
+def _advance_attack_release(current: float, target: float, *, attack: float, release: float) -> float:
+    rate = attack if target > current else release
+    return current + (_clamp01(target) - current) * _clamp01(rate)
+
+
 def _command_backdrop_pulse_style(
     base_blur_radius_points: float,
     base_mask_width_multiplier: float,
-    breath: float,
+    blur_drive: float,
 ) -> tuple[float, float, float]:
-    drive = _quantize_unit_interval(breath, _COMMAND_BACKDROP_PULSE_TIERS)
+    drive = _quantize_unit_interval(blur_drive, _COMMAND_BACKDROP_PULSE_TIERS)
     blur_radius_points = max(
         0.0,
         base_blur_radius_points
@@ -224,11 +231,15 @@ def _command_backdrop_pulse_style(
         ),
     )
     backdrop_opacity = _lerp(
-        _COMMAND_BACKDROP_PULSE_OPACITY_MIN,
         _COMMAND_BACKDROP_PULSE_OPACITY_MAX,
+        _COMMAND_BACKDROP_PULSE_OPACITY_MIN,
         drive,
     )
     return blur_radius_points, mask_width_multiplier, backdrop_opacity
+
+
+def _command_backdrop_blur_target_for_presence(presence: float) -> float:
+    return 1.0 - _clamp01(presence)
 
 
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
@@ -465,6 +476,7 @@ class CommandOverlay(NSObject):
         self._backdrop_blur_radius_points = _COMMAND_BACKDROP_BLUR_RADIUS
         self._backdrop_base_mask_width_multiplier = _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER
         self._backdrop_mask_width_multiplier = _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER
+        self._backdrop_blur_drive = 0.0
         self._backdrop_renderer = make_backdrop_renderer(
             self._screen,
             lambda: _QuartzBackdropRenderer(),
@@ -685,6 +697,13 @@ class CommandOverlay(NSObject):
         layer = getattr(self, "_backdrop_layer", None)
         if layer is None:
             return
+        blur_target = _command_backdrop_blur_target_for_presence(breath)
+        self._backdrop_blur_drive = _advance_attack_release(
+            getattr(self, "_backdrop_blur_drive", blur_target),
+            blur_target,
+            attack=_COMMAND_BACKDROP_PULSE_ATTACK,
+            release=_COMMAND_BACKDROP_PULSE_RELEASE,
+        )
         base_blur_radius_points = getattr(
             self, "_backdrop_base_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS
         )
@@ -700,7 +719,7 @@ class CommandOverlay(NSObject):
         ) = _command_backdrop_pulse_style(
             base_blur_radius_points,
             base_mask_width_multiplier,
-            breath,
+            self._backdrop_blur_drive,
         )
         self._backdrop_blur_radius_points = blur_radius_points
         renderer = getattr(self, "_backdrop_renderer", None)
