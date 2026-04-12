@@ -50,6 +50,30 @@ def _make_rect(x, y, width, height):
     )
 
 
+def _rounded_rect_sdf(field_width: int, field_height: int, rect_width: float, rect_height: float, corner_radius: float):
+    import numpy as np
+
+    pw, ph = max(int(field_width), 1), max(int(field_height), 1)
+    rw, rh = float(rect_width), float(rect_height)
+    x = np.arange(pw, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(ph, dtype=np.float32)[:, None] + 0.5
+    cx = x - pw * 0.5
+    cy = y - ph * 0.5
+    r = float(corner_radius)
+    qx = np.abs(cx) - (rw * 0.5 - r)
+    qy = np.abs(cy) - (rh * 0.5 - r)
+    outside = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0))
+    inside = np.minimum(np.maximum(qx, qy), 0.0)
+    return (outside + inside - r).astype(np.float32)
+
+
+def _smoothstep01(value):
+    import numpy as np
+
+    clamped = np.clip(value, 0.0, 1.0)
+    return (clamped * clamped * (3.0 - 2.0 * clamped)).astype(np.float32)
+
+
 def _screen_capture_kit_available() -> bool:
     return _load_screencapturekit_bridge() is not None
 
@@ -347,6 +371,73 @@ class _MetalBlurPipeline:
         transform = CGAffineTransformTranslate(transform, center_x, center_y)
         return transform
 
+    def _displacement_image_for_shell(self, extent, shell_config):
+        import numpy as np
+        from Foundation import NSData
+        from Quartz import (
+            CGColorSpaceCreateDeviceRGB,
+            CGDataProviderCreateWithCFData,
+            CGImageCreate,
+            kCGImageAlphaPremultipliedLast,
+            kCGRenderingIntentDefault,
+        )
+
+        width = max(1, int(round(extent.size.width)))
+        height = max(1, int(round(extent.size.height)))
+        content_width = min(max(float(shell_config.get("content_width_points", width)), 1.0), float(width))
+        content_height = min(max(float(shell_config.get("content_height_points", height)), 1.0), float(height))
+        corner_radius = min(
+            max(float(shell_config.get("corner_radius_points", 16.0)), 0.0),
+            max(min(content_width, content_height) * 0.5 - 1.0, 0.0),
+        )
+        sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)
+        grad_y, grad_x = np.gradient(sdf)
+        norm = np.hypot(grad_x, grad_y)
+        norm = np.maximum(norm, 1e-4)
+        unit_x = grad_x / norm
+        unit_y = grad_y / norm
+
+        band = max(float(shell_config.get("band_width_points", 12.0)), 1.0)
+        tail = max(float(shell_config.get("tail_width_points", 9.0)), 1.0)
+        core_mag = max(float(shell_config.get("core_magnification", 1.0)) - 1.0, 0.0)
+        core_radius = max(min(content_width, content_height) * 0.5 - band, 1.0)
+
+        inside_push = _smoothstep01((-sdf - band) / core_radius)
+        ring_peak = np.exp(-np.square(sdf / max(band * 0.35, 1e-4))).astype(np.float32)
+        outer_tail = np.exp(-np.maximum(sdf, 0.0) / tail).astype(np.float32)
+        outside_mask = (sdf > 0.0).astype(np.float32)
+
+        displacement_points = (
+            (core_mag * max(min(content_width, content_height) * 0.18, 8.0)) * inside_push
+            + max(band * 1.8, 12.0) * ring_peak
+            + max(tail * 0.65, 4.0) * outer_tail * outside_mask
+        ).astype(np.float32)
+        max_displacement = float(max(np.max(displacement_points), 1.0))
+
+        encoded_x = np.clip(0.5 + 0.5 * ((unit_x * displacement_points) / max_displacement), 0.0, 1.0)
+        encoded_y = np.clip(0.5 + 0.5 * ((unit_y * displacement_points) / max_displacement), 0.0, 1.0)
+        rgba = np.empty((height, width, 4), dtype=np.uint8)
+        rgba[..., 0] = np.clip(encoded_x * 255.0, 0.0, 255.0).astype(np.uint8)
+        rgba[..., 1] = np.clip(encoded_y * 255.0, 0.0, 255.0).astype(np.uint8)
+        rgba[..., 2] = 127
+        rgba[..., 3] = 255
+        payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
+        provider = CGDataProviderCreateWithCFData(payload)
+        image = CGImageCreate(
+            width,
+            height,
+            8,
+            32,
+            width * 4,
+            CGColorSpaceCreateDeviceRGB(),
+            kCGImageAlphaPremultipliedLast,
+            provider,
+            None,
+            False,
+            kCGRenderingIntentDefault,
+        )
+        return image, payload, max_displacement
+
     def blurred_sample_buffer(self, sample_buffer, *, blur_radius_points: float, bridge):
         pixel_buffer = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
         if pixel_buffer is None:
@@ -434,75 +525,33 @@ class _MetalBlurPipeline:
             if hasattr(working_image, "imageByClampingToExtent")
             else working_image
         )
-        content_width = max(float(shell_config.get("content_width_points", working_extent.size.width)), 1.0)
-        content_height = max(float(shell_config.get("content_height_points", working_extent.size.height)), 1.0)
-        aspect_scale_x = min(max(content_height / content_width, 0.08), 1.0)
-        normalized = clamped
-        if abs(aspect_scale_x - 1.0) > 1e-6:
-            transform = self._centered_scale_transform(working_extent, aspect_scale_x, 1.0)
-            candidate = clamped.imageByApplyingTransform_(transform)
-            if candidate is not None:
-                normalized = candidate
-
-        core_magnification = max(float(shell_config.get("core_magnification", 1.0)), 1.0)
-        if core_magnification > 1.0:
-            transform = self._centered_scale_transform(
-                working_extent,
-                core_magnification,
-                core_magnification,
-            )
-            candidate = normalized.imageByApplyingTransform_(transform)
-            if candidate is not None:
-                normalized = candidate
-
-        center_x = working_extent.origin.x + (working_extent.size.width / 2.0)
-        center_y = working_extent.origin.y + (working_extent.size.height / 2.0)
-        normalized_content_width = content_width * _METAL_BLUR_DOWNSAMPLE * aspect_scale_x
-        normalized_content_height = content_height * _METAL_BLUR_DOWNSAMPLE
-        shell_radius = max(
-            2.0,
-            min(normalized_content_width, normalized_content_height) * 0.5
-            - 0.5 * float(shell_config.get("band_width_points", 12.0)),
+        displacement_image, _payload, displacement_scale = self._displacement_image_for_shell(
+            working_extent,
+            {
+                **shell_config,
+                "content_width_points": float(shell_config.get("content_width_points", working_extent.size.width))
+                * _METAL_BLUR_DOWNSAMPLE,
+                "content_height_points": float(shell_config.get("content_height_points", working_extent.size.height))
+                * _METAL_BLUR_DOWNSAMPLE,
+                "corner_radius_points": float(shell_config.get("corner_radius_points", 16.0))
+                * _METAL_BLUR_DOWNSAMPLE,
+                "band_width_points": float(shell_config.get("band_width_points", 12.0))
+                * _METAL_BLUR_DOWNSAMPLE,
+                "tail_width_points": float(shell_config.get("tail_width_points", 9.0))
+                * _METAL_BLUR_DOWNSAMPLE,
+            },
         )
-        band_width = max(
-            1.0,
-            float(shell_config.get("band_width_points", 12.0)) * _METAL_BLUR_DOWNSAMPLE,
-        )
-        tail_width = max(
-            band_width,
-            float(shell_config.get("tail_width_points", 9.0)) * _METAL_BLUR_DOWNSAMPLE,
-        )
-
-        output = normalized
-        torus = CIFilter.filterWithName_("CITorusLensDistortion")
-        if torus is not None:
-            torus.setDefaults()
-            torus.setValue_forKey_(output, "inputImage")
-            torus.setValue_forKey_((center_x, center_y), "inputCenter")
-            torus.setValue_forKey_(shell_radius, "inputRadius")
-            torus.setValue_forKey_(band_width, "inputWidth")
-            torus.setValue_forKey_(float(shell_config.get("ring_refraction", 2.0)), "inputRefraction")
-            candidate = torus.valueForKey_("outputImage")
-            if candidate is not None:
-                output = candidate
-
-        tail = CIFilter.filterWithName_("CITorusLensDistortion")
-        if tail is not None:
-            tail.setDefaults()
-            tail.setValue_forKey_(output, "inputImage")
-            tail.setValue_forKey_((center_x, center_y), "inputCenter")
-            tail.setValue_forKey_(shell_radius + 0.25 * band_width, "inputRadius")
-            tail.setValue_forKey_(tail_width, "inputWidth")
-            tail.setValue_forKey_(float(shell_config.get("tail_refraction", 0.6)), "inputRefraction")
-            candidate = tail.valueForKey_("outputImage")
-            if candidate is not None:
-                output = candidate
-
-        if abs(aspect_scale_x - 1.0) > 1e-6:
-            transform = self._centered_scale_transform(working_extent, 1.0 / aspect_scale_x, 1.0)
-            candidate = output.imageByApplyingTransform_(transform)
-            if candidate is not None:
-                output = candidate
+        output = clamped
+        if displacement_image is not None:
+            displacement = CIFilter.filterWithName_("CIDisplacementDistortion")
+            if displacement is not None and hasattr(CIImage, "imageWithCGImage_"):
+                displacement.setDefaults()
+                displacement.setValue_forKey_(output, "inputImage")
+                displacement.setValue_forKey_(CIImage.imageWithCGImage_(displacement_image), "inputDisplacementImage")
+                displacement.setValue_forKey_(displacement_scale, "inputScale")
+                candidate = displacement.valueForKey_("outputImage")
+                if candidate is not None:
+                    output = candidate
 
         if hasattr(output, "imageByCroppingToRect_"):
             output = output.imageByCroppingToRect_(working_extent)

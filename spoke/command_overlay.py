@@ -291,6 +291,7 @@ def _command_optical_shell_config() -> dict[str, float | bool] | None:
         "enabled": True,
         "content_width_points": _OVERLAY_WIDTH,
         "content_height_points": _OVERLAY_HEIGHT,
+        "corner_radius_points": _OVERLAY_CORNER_RADIUS,
         "core_magnification": _COMMAND_BACKDROP_OPTICAL_SHELL_CORE_MAGNIFICATION,
         "band_width_points": _cm_to_points(_COMMAND_BACKDROP_OPTICAL_SHELL_BAND_MM / 10.0),
         "tail_width_points": _cm_to_points(_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_MM / 10.0),
