@@ -747,6 +747,8 @@ class CommandOverlay(NSObject):
         self._update_backdrop_capture_geometry()
 
     def _choose_backdrop_layer_class(self):
+        if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE:
+            return CALayer
         renderer = getattr(self, "_backdrop_renderer", None)
         blur_radius_points = getattr(self, "_backdrop_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS)
         if renderer is not None and hasattr(renderer, "supports_sample_buffer_presentation"):

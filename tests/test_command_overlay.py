@@ -375,6 +375,22 @@ class TestShowFinishHide:
 
         assert overlay._backdrop_timer is backdrop_timer
 
+    def test_debug_visualization_uses_plain_calayer_backdrop(self, mock_pyobjc, monkeypatch):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+        sentinel_layer_class = MagicMock()
+        monkeypatch.setattr(mod, "_backdrop_display_layer_class", lambda: sentinel_layer_class)
+        overlay._backdrop_renderer = MagicMock()
+        overlay._backdrop_renderer.supports_sample_buffer_presentation.return_value = True
+
+        layer_class = overlay._choose_backdrop_layer_class()
+
+        assert layer_class is mod.CALayer, (
+            "Debug visualization should force a plain CALayer so direct diagnostic images "
+            "are actually visible instead of disappearing into the sample-buffer presenter."
+        )
+
     def test_backdrop_refresh_timer_is_added_to_scroll_surviving_run_loop_modes(
         self, mock_pyobjc
     ):
