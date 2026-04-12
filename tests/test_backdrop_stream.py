@@ -512,6 +512,72 @@ def test_optical_shell_debug_visualization_bypasses_warp_kernel(monkeypatch):
     kernel.applyWithExtent_roiCallback_inputImage_arguments_.assert_not_called()
 
 
+def test_optical_shell_debug_visualization_skips_cleanup_blur(monkeypatch):
+    monkeypatch.setenv("SPOKE_BACKDROP_METAL_BLUR_DOWNSAMPLE", "1.0")
+    mod = _import_module()
+
+    fake_quartz = types.ModuleType("Quartz")
+
+    class FakeImage:
+        def __init__(self, width, height):
+            self._extent = _make_rect(0.0, 0.0, width, height)
+
+        def extent(self):
+            return self._extent
+
+        def imageByApplyingTransform_(self, transform):
+            return self
+
+        def imageByClampingToExtent(self):
+            return self
+
+        def imageByCroppingToRect_(self, rect):
+            return self
+
+        @staticmethod
+        def imageWithCVPixelBuffer_(pixel_buffer):
+            return FakeImage(680.0, 160.0)
+
+    blur_filter = MagicMock()
+    blur_filter.valueForKey_.return_value = FakeImage(680.0, 160.0)
+    fake_quartz.CIImage = FakeImage
+    fake_quartz.CIFilter = types.SimpleNamespace(filterWithName_=MagicMock(return_value=blur_filter))
+    fake_quartz.CGAffineTransformIdentity = object()
+    fake_quartz.CGAffineTransformScale = lambda transform, sx, sy: ("scale", sx, sy)
+    fake_quartz.CGAffineTransformTranslate = lambda transform, tx, ty: ("translate", tx, ty)
+    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
+
+    pipeline = mod._MetalBlurPipeline.__new__(mod._MetalBlurPipeline)
+    pipeline._context = MagicMock()
+    pipeline._create_pixel_buffer = MagicMock(return_value="pixel-buffer-out")
+    pipeline._create_format_description = MagicMock(return_value="format-desc")
+    pipeline._create_sample_buffer = MagicMock(return_value="shell-sample")
+    helper = MagicMock(return_value=FakeImage(680.0, 160.0))
+    monkeypatch.setattr(mod, "_debug_shell_ci_image", helper, raising=False)
+
+    bridge = {
+        "CMSampleBufferGetImageBuffer": lambda sample_buffer: "pixel-buffer-in",
+        "CMSampleBufferGetPresentationTimeStamp": lambda sample_buffer: (1, 60, 1, 0),
+        "CMSampleBufferGetDuration": lambda sample_buffer: (1, 60, 1, 0),
+    }
+
+    sample = pipeline.optical_shell_sample_buffer(
+        "live-sample",
+        shell_config={
+            "content_width_points": 600.0,
+            "content_height_points": 80.0,
+            "corner_radius_points": 16.0,
+            "debug_visualize": True,
+        },
+        cleanup_blur_radius_points=0.75,
+        bridge=bridge,
+    )
+
+    assert sample == "shell-sample"
+    helper.assert_called_once()
+    fake_quartz.CIFilter.filterWithName_.assert_not_called()
+
+
 def test_request_stream_start_passes_dedicated_sample_handler_queue(monkeypatch):
     mod = _import_module()
     sentinel_queue = object()

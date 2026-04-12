@@ -173,12 +173,19 @@ def _debug_shell_ci_image(extent, shell_config):
     ring_vis = np.clip(ring_peak * min(ring_refraction / 3.0, 2.0), 0.0, 1.0)
     tail_vis = np.clip(outer_tail * outside_mask * min(tail_refraction / 0.75, 2.0), 0.0, 1.0)
     heat = np.clip(np.maximum(center_vis * 0.55, np.maximum(ring_vis, tail_vis * 0.75)), 0.0, 1.0)
+    contour = np.mod(np.maximum(-sdf, 0.0), max(band * 0.35, 3.0))
+    contour = (contour < max(band * 0.08, 1.25)).astype(np.float32) * inside_push
+    ring_outline = (np.abs(sdf) < max(band * 0.12, 1.5)).astype(np.float32)
 
     rgba = np.empty((height, width, 4), dtype=np.uint8)
-    rgba[..., 0] = np.clip((0.08 + 0.92 * ring_vis + 0.30 * tail_vis) * 255.0, 0.0, 255.0).astype(np.uint8)
-    rgba[..., 1] = np.clip((0.06 + 0.55 * center_vis + 0.35 * tail_vis) * 255.0, 0.0, 255.0).astype(np.uint8)
-    rgba[..., 2] = np.clip((0.18 + 0.78 * center_vis + 0.20 * ring_vis) * 255.0, 0.0, 255.0).astype(np.uint8)
-    rgba[..., 3] = np.clip((0.12 + 0.88 * heat) * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 0] = np.clip((0.05 + 0.95 * ring_vis + 0.95 * ring_outline) * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 1] = np.clip((0.02 + 0.85 * tail_vis + 0.90 * contour) * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 2] = np.clip((0.06 + 0.95 * center_vis + 0.85 * contour) * 255.0, 0.0, 255.0).astype(np.uint8)
+    rgba[..., 3] = np.where(
+        heat > 0.02,
+        255,
+        0,
+    ).astype(np.uint8)
 
     payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
     provider = CGDataProviderCreateWithCFData(payload)
@@ -588,6 +595,7 @@ class _MetalBlurPipeline:
             candidate = _debug_shell_ci_image(working_extent, shell_config)
             if candidate is not None:
                 output = candidate
+            cleanup_blur = 0.0
         else:
             warp_kernel = _shell_warp_kernel()
             if warp_kernel is not None:
