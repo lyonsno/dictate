@@ -1355,9 +1355,9 @@ class TranscriptionOverlay(NSObject):
         )
         direct_sample_path = False
         sample_buffer_query = getattr(self._backdrop_renderer, "uses_direct_sample_buffers", None)
-        if blur_radius_points <= 0.0 and callable(sample_buffer_query):
+        if callable(sample_buffer_query):
             try:
-                direct_sample_path = bool(sample_buffer_query(blur_radius_points))
+                direct_sample_path = sample_buffer_query(blur_radius_points) is True
             except Exception:
                 direct_sample_path = False
         if image is None and not direct_sample_path:
