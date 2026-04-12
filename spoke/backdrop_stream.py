@@ -37,6 +37,8 @@ _METAL_BLUR_DOWNSAMPLE = min(
     max(float(os.environ.get("SPOKE_BACKDROP_METAL_BLUR_DOWNSAMPLE", "1.0")), 0.25),
     1.0,
 )
+_OPTICAL_SHELL_CORNER_RADIUS_INFLATION = 0.95
+_OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER = 0.22
 _SHELL_WARP_KERNEL = None
 _SHELL_WARP_KERNEL_SOURCE = """
 float sdRoundRect(vec2 p, vec2 b, float r) {
@@ -61,7 +63,7 @@ kernel vec2 opticalShellWarp(
     vec2 p = d - c;
     vec2 halfRect = vec2(rectWidth * 0.5, rectHeight * 0.5);
     float sdf = sdRoundRect(p, halfRect, cornerRadius);
-    float eps = 1.0;
+    float eps = max(1.0, bandWidth * __OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__);
     float sdfx = sdRoundRect(p + vec2(eps, 0.0), halfRect, cornerRadius)
         - sdRoundRect(p - vec2(eps, 0.0), halfRect, cornerRadius);
     float sdfy = sdRoundRect(p + vec2(0.0, eps), halfRect, cornerRadius)
@@ -87,7 +89,7 @@ kernel vec2 opticalShellWarp(
     src -= n * disp;
     return src;
 }
-"""
+""".replace("__OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__", str(_OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER))
 
 _BRIDGE_STATE: dict[str, object] | None = None
 _BRIDGE_LOCK = threading.Lock()
@@ -144,8 +146,12 @@ def _optical_shell_center_envelope(
     return t * t * (3.0 - 2.0 * t)
 
 
+def _optical_shell_gradient_epsilon(band_width: float) -> float:
+    return max(1.0, max(float(band_width), 0.0) * _OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER)
+
+
 def _optical_shell_effective_corner_radius(corner_radius: float, band_width: float) -> float:
-    return max(float(corner_radius), 0.0) + max(float(band_width), 0.0) * 0.65
+    return max(float(corner_radius), 0.0) + max(float(band_width), 0.0) * _OPTICAL_SHELL_CORNER_RADIUS_INFLATION
 
 
 def _shell_warp_kernel():

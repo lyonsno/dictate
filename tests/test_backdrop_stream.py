@@ -868,7 +868,19 @@ def test_apply_optical_shell_warp_inflates_corner_radius_for_smoother_field(monk
     )
 
     args = kernel.applyWithExtent_roiCallback_inputImage_arguments_.call_args[0][3]
-    assert args[4] > 16.0
+    assert args[4] == pytest.approx(
+        mod._optical_shell_effective_corner_radius(16.0, 11.338583)
+    )
+
+
+def test_optical_shell_gradient_epsilon_scales_with_band_width_for_corner_smoothing():
+    mod = _import_module()
+
+    narrow = mod._optical_shell_gradient_epsilon(2.0)
+    wide = mod._optical_shell_gradient_epsilon(11.338583)
+
+    assert narrow == 1.0
+    assert wide > 2.0
 
 
 def test_capture_blurred_image_debug_visualize_skips_stream_start(monkeypatch):
