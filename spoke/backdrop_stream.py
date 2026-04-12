@@ -157,7 +157,7 @@ def _debug_shell_grid_ci_image(extent, shell_config):
         max(min(content_width, content_height) * 0.5 - 1.0, 0.0),
     )
     rgba = np.empty((height, width, 4), dtype=np.uint8)
-    rgba[..., :] = 255
+    rgba[..., :] = np.array([210, 255, 240, 255], dtype=np.uint8)
 
     xs = np.arange(width, dtype=np.float32)[None, :]
     ys = np.arange(height, dtype=np.float32)[:, None]
@@ -166,21 +166,41 @@ def _debug_shell_grid_ci_image(extent, shell_config):
     center_x = width * 0.5
     center_y = height * 0.5
 
+    checker = (
+        (
+            (np.floor(np.abs(xs - center_x) / spacing).astype(np.int32)
+             + np.floor(np.abs(ys - center_y) / spacing).astype(np.int32))
+            % 2
+        )
+        == 0
+    )
+    rgba[checker] = np.array([255, 244, 170, 255], dtype=np.uint8)
+
     minor_vertical = np.broadcast_to(np.mod(np.abs(xs - center_x), spacing) < 1.0, (height, width))
     minor_horizontal = np.broadcast_to(np.mod(np.abs(ys - center_y), spacing) < 1.0, (height, width))
-    major_vertical = np.broadcast_to(np.mod(np.abs(xs - center_x), major) < 1.5, (height, width))
-    major_horizontal = np.broadcast_to(np.mod(np.abs(ys - center_y), major) < 1.5, (height, width))
+    major_vertical = np.broadcast_to(np.mod(np.abs(xs - center_x), major) < 2.5, (height, width))
+    major_horizontal = np.broadcast_to(np.mod(np.abs(ys - center_y), major) < 2.5, (height, width))
     grid = minor_vertical | minor_horizontal
     major_grid = major_vertical | major_horizontal
 
-    rgba[grid] = np.array([180, 180, 180, 255], dtype=np.uint8)
-    rgba[major_grid] = np.array([40, 40, 40, 255], dtype=np.uint8)
+    rgba[grid] = np.array([0, 120, 255, 255], dtype=np.uint8)
+    rgba[major_grid] = np.array([15, 15, 15, 255], dtype=np.uint8)
 
     sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)
     ring = np.abs(sdf) < max(float(shell_config.get("band_width_points", 12.0)) * 0.12, 1.5)
     interior = sdf < 0.0
-    rgba[interior] = np.clip(rgba[interior].astype(np.int16) - np.array([10, 0, 0, 0]), 0, 255).astype(np.uint8)
-    rgba[ring] = np.array([255, 0, 0, 255], dtype=np.uint8)
+    rgba[interior] = np.clip(
+        rgba[interior].astype(np.int16) + np.array([0, -16, -10, 0]),
+        0,
+        255,
+    ).astype(np.uint8)
+    rgba[ring] = np.array([255, 0, 120, 255], dtype=np.uint8)
+
+    center_cross = (
+        np.broadcast_to(np.abs(xs - center_x) < 3.0, (height, width))
+        | np.broadcast_to(np.abs(ys - center_y) < 3.0, (height, width))
+    )
+    rgba[center_cross] = np.array([0, 255, 80, 255], dtype=np.uint8)
 
     payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
     provider = CGDataProviderCreateWithCFData(payload)
