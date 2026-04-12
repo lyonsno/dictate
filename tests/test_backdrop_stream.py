@@ -860,7 +860,7 @@ def test_optical_shell_interior_flow_bridges_center_and_rim_regions():
 
     flow = mod._optical_shell_interior_flow(0.42, 0.28)
 
-    assert flow > 0.58
+    assert flow > 0.72
     assert flow > 0.42
 
 

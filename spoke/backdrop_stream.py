@@ -76,7 +76,8 @@ kernel vec2 opticalShellWarp(
     float centerRadius = length(centerNorm);
     float centerShell = 1.0 - smoothstep(0.12, 1.08, centerRadius);
     float insideShell = exp(-pow(insideDepth / max(bandWidth * 1.35, 1.0), 2.0)) * (1.0 - outside);
-    float interiorFlow = 1.0 - (1.0 - centerShell) * (1.0 - min(insideShell * 1.35, 1.0));
+    float boostedInsideShell = min(insideShell * 1.35, 1.0);
+    float interiorFlow = min(1.0, centerShell + boostedInsideShell - centerShell * boostedInsideShell * 0.35);
     float ringPeak = exp(-pow(sdf / max(bandWidth * 0.35, 0.001), 2.0));
     float outerTail = exp(-max(sdf, 0.0) / max(tailWidth, 0.001)) * outside;
     float zoom = mix(1.0, coreMagnification, interiorFlow);
@@ -157,7 +158,7 @@ def _optical_shell_center_envelope(
 def _optical_shell_interior_flow(center_envelope: float, inside_envelope: float) -> float:
     center = min(max(float(center_envelope), 0.0), 1.0)
     inside = min(max(float(inside_envelope) * 1.35, 0.0), 1.0)
-    return 1.0 - (1.0 - center) * (1.0 - inside)
+    return min(1.0, center + inside - center * inside * 0.35)
 
 
 def _optical_shell_gradient_epsilon(band_width: float) -> float:
@@ -253,7 +254,8 @@ def _debug_shell_grid_ci_image(extent, shell_config):
         np.abs(ys - center_y) / center_half_height,
     ).astype(np.float32)
     center_env = 1.0 - _smoothstep01((center_radius - 0.12) / (1.08 - 0.12))
-    shell_env = 1.0 - (1.0 - center_env) * (1.0 - np.minimum(inside_env * 1.35, 1.0))
+    boosted_inside_env = np.minimum(inside_env * 1.35, 1.0)
+    shell_env = np.minimum(1.0, center_env + boosted_inside_env - center_env * boosted_inside_env * 0.35)
     rgba[interior] = np.clip(
         rgba[interior].astype(np.int16)
         + np.stack(
