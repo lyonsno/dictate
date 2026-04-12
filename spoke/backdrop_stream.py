@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import math
 import os
 import threading
 import warnings
@@ -66,14 +67,14 @@ kernel vec2 opticalShellWarp(
     float sdfy = sdRoundRect(p + vec2(0.0, eps), halfRect, cornerRadius)
         - sdRoundRect(p - vec2(0.0, eps), halfRect, cornerRadius);
     vec2 n = normalize(vec2(sdfx, sdfy) + vec2(1e-4, 1e-4));
-    float coreRadius = max(min(rectWidth, rectHeight) * 0.5 - bandWidth, 1.0);
-    float insidePush = smoothstep(0.0, 1.0, clamp((-sdf - bandWidth) / coreRadius, 0.0, 1.0));
-    float ringPeak = exp(-pow(sdf / max(bandWidth * 0.35, 0.001), 2.0));
     float outside = step(0.0, sdf);
+    float insideDepth = max(-sdf, 0.0);
+    float insideShell = exp(-pow(insideDepth / max(bandWidth * 1.35, 1.0), 2.0)) * (1.0 - outside);
+    float ringPeak = exp(-pow(sdf / max(bandWidth * 0.35, 0.001), 2.0));
     float outerTail = exp(-max(sdf, 0.0) / max(tailWidth, 0.001)) * outside;
-    float zoom = mix(1.0, coreMagnification, insidePush);
+    float zoom = mix(1.0, coreMagnification, insideShell);
     vec2 src = c + (d - c) / zoom;
-    float coreDisp = (coreMagnification - 1.0) * max(min(rectWidth, rectHeight) * 0.18, 8.0) * insidePush;
+    float coreDisp = (coreMagnification - 1.0) * max(min(rectWidth, rectHeight) * 0.14, 4.0) * insideShell;
     float ringDisp = max(ringAmplitudePoints, 12.0) * ringPeak;
     float tailDisp = max(tailAmplitudePoints, 4.0) * outerTail;
     float disp = coreDisp + ringDisp + tailDisp;
@@ -117,6 +118,12 @@ def _smoothstep01(value):
 
     clamped = np.clip(value, 0.0, 1.0)
     return (clamped * clamped * (3.0 - 2.0 * clamped)).astype(np.float32)
+
+
+def _optical_shell_inside_envelope(distance_inside: float, band_width: float) -> float:
+    depth = max(float(distance_inside), 0.0)
+    falloff = max(float(band_width) * 1.35, 1.0)
+    return math.exp(-((depth / falloff) ** 2.0))
 
 
 def _shell_warp_kernel():
@@ -189,8 +196,25 @@ def _debug_shell_grid_ci_image(extent, shell_config):
     sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)
     ring = np.abs(sdf) < max(float(shell_config.get("band_width_points", 12.0)) * 0.12, 1.5)
     interior = sdf < 0.0
+    inside_depth = np.maximum(-sdf, 0.0)
+    inside_env = np.exp(
+        -(
+            inside_depth
+            / max(float(shell_config.get("band_width_points", 12.0)) * 1.35, 1.0)
+        )
+        ** 2.0
+    ).astype(np.float32)
     rgba[interior] = np.clip(
-        rgba[interior].astype(np.int16) + np.array([0, -16, -10, 0]),
+        rgba[interior].astype(np.int16)
+        + np.stack(
+            [
+                np.zeros_like(inside_env, dtype=np.int16),
+                np.rint(-42.0 * inside_env).astype(np.int16),
+                np.rint(-26.0 * inside_env).astype(np.int16),
+                np.zeros_like(inside_env, dtype=np.int16),
+            ],
+            axis=-1,
+        )[interior],
         0,
         255,
     ).astype(np.uint8)

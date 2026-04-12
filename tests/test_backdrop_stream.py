@@ -793,6 +793,18 @@ def test_capture_blurred_image_debug_visualize_warps_seeded_grid(monkeypatch):
     kernel.applyWithExtent_roiCallback_inputImage_arguments_.assert_called_once()
 
 
+def test_optical_shell_inside_envelope_is_edge_localized():
+    mod = _import_module()
+
+    center = mod._optical_shell_inside_envelope(40.0, 15.874016)
+    near_edge = mod._optical_shell_inside_envelope(2.0, 15.874016)
+    outside = mod._optical_shell_inside_envelope(0.0, 15.874016)
+
+    assert center < 0.08
+    assert near_edge > 0.9
+    assert outside == 1.0
+
+
 def test_capture_blurred_image_debug_visualize_skips_stream_start(monkeypatch):
     mod = _import_module()
     renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
