@@ -69,12 +69,18 @@ kernel vec2 opticalShellWarp(
     vec2 n = normalize(vec2(sdfx, sdfy) + vec2(1e-4, 1e-4));
     float outside = step(0.0, sdf);
     float insideDepth = max(-sdf, 0.0);
+    float contentHalfExtent = max(min(rectWidth, rectHeight) * 0.5, 1.0);
+    float centerShell = smoothstep(
+        0.0,
+        1.0,
+        clamp((insideDepth - bandWidth) / max(contentHalfExtent - bandWidth, 1.0), 0.0, 1.0)
+    );
     float insideShell = exp(-pow(insideDepth / max(bandWidth * 1.35, 1.0), 2.0)) * (1.0 - outside);
     float ringPeak = exp(-pow(sdf / max(bandWidth * 0.35, 0.001), 2.0));
     float outerTail = exp(-max(sdf, 0.0) / max(tailWidth, 0.001)) * outside;
-    float zoom = mix(1.0, coreMagnification, insideShell);
+    float zoom = mix(1.0, coreMagnification, centerShell);
     vec2 src = c + (d - c) / zoom;
-    float coreDisp = (coreMagnification - 1.0) * max(min(rectWidth, rectHeight) * 0.14, 4.0) * insideShell;
+    float coreDisp = (coreMagnification - 1.0) * max(min(rectWidth, rectHeight) * 0.05, 2.0) * insideShell;
     float ringDisp = max(ringAmplitudePoints, 12.0) * ringPeak;
     float tailDisp = max(tailAmplitudePoints, 4.0) * outerTail;
     float disp = coreDisp + ringDisp + tailDisp;
@@ -124,6 +130,18 @@ def _optical_shell_inside_envelope(distance_inside: float, band_width: float) ->
     depth = max(float(distance_inside), 0.0)
     falloff = max(float(band_width) * 1.35, 1.0)
     return math.exp(-((depth / falloff) ** 2.0))
+
+
+def _optical_shell_center_envelope(
+    *,
+    distance_inside: float,
+    band_width: float,
+    content_half_extent: float,
+) -> float:
+    depth = max(float(distance_inside), 0.0)
+    active_span = max(float(content_half_extent) - float(band_width), 1.0)
+    t = min(max((depth - float(band_width)) / active_span, 0.0), 1.0)
+    return t * t * (3.0 - 2.0 * t)
 
 
 def _shell_warp_kernel():

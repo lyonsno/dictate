@@ -805,6 +805,30 @@ def test_optical_shell_inside_envelope_is_edge_localized():
     assert outside == 1.0
 
 
+def test_optical_shell_center_envelope_saturates_in_center_and_fades_at_rim():
+    mod = _import_module()
+
+    center = mod._optical_shell_center_envelope(
+        distance_inside=40.0,
+        band_width=11.338583,
+        content_half_extent=40.0,
+    )
+    shoulder = mod._optical_shell_center_envelope(
+        distance_inside=20.0,
+        band_width=11.338583,
+        content_half_extent=40.0,
+    )
+    near_edge = mod._optical_shell_center_envelope(
+        distance_inside=2.0,
+        band_width=11.338583,
+        content_half_extent=40.0,
+    )
+
+    assert center > 0.97
+    assert 0.15 < shoulder < 0.85
+    assert near_edge < 0.05
+
+
 def test_capture_blurred_image_debug_visualize_skips_stream_start(monkeypatch):
     mod = _import_module()
     renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
