@@ -816,28 +816,43 @@ def test_optical_shell_inside_envelope_is_edge_localized():
     assert outside == 1.0
 
 
-def test_optical_shell_center_envelope_saturates_in_center_and_fades_at_rim():
+def test_optical_shell_center_envelope_prefers_center_and_rounds_shoulders():
     mod = _import_module()
 
     center = mod._optical_shell_center_envelope(
-        distance_inside=40.0,
+        offset_x=0.0,
+        offset_y=0.0,
+        content_width=600.0,
+        content_height=80.0,
         band_width=11.338583,
-        content_half_extent=40.0,
     )
-    shoulder = mod._optical_shell_center_envelope(
-        distance_inside=20.0,
+    axis_shoulder = mod._optical_shell_center_envelope(
+        offset_x=180.0,
+        offset_y=0.0,
+        content_width=600.0,
+        content_height=80.0,
         band_width=11.338583,
-        content_half_extent=40.0,
     )
-    near_edge = mod._optical_shell_center_envelope(
-        distance_inside=2.0,
+    diagonal_shoulder = mod._optical_shell_center_envelope(
+        offset_x=180.0,
+        offset_y=22.0,
+        content_width=600.0,
+        content_height=80.0,
         band_width=11.338583,
-        content_half_extent=40.0,
+    )
+    near_rim = mod._optical_shell_center_envelope(
+        offset_x=285.0,
+        offset_y=0.0,
+        content_width=600.0,
+        content_height=80.0,
+        band_width=11.338583,
     )
 
     assert center > 0.97
-    assert 0.15 < shoulder < 0.85
-    assert near_edge < 0.05
+    assert 0.15 < axis_shoulder < 0.85
+    assert diagonal_shoulder < 0.1
+    assert axis_shoulder > diagonal_shoulder + 0.2
+    assert near_rim < 0.05
 
 
 def test_apply_optical_shell_warp_inflates_corner_radius_for_smoother_field(monkeypatch):
