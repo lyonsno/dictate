@@ -71,6 +71,7 @@ _SAFETY_TIMEOUT_S = 300.0  # 5 minutes — covers long dictations, only for trul
 _FORWARDING_TIMEOUT_S = 0.1  # auto-clear _forwarding if events never arrive
 _ENTER_RELEASE_GRACE_S = 0.15  # small post-release grace so Enter can land a beat late
 _DOUBLE_TAP_WINDOW_S = 0.3  # 300ms window for double-tap detection
+_ENTER_STALE_GRACE_S = 0.75  # stale enter observations must not poison later space taps
 
 
 def _current_enter_key_state() -> bool | None:
@@ -137,6 +138,7 @@ class SpacebarHoldDetector(NSObject):
         self._enter_held = False  # True if enter is currently held (for command fast path)
         self._enter_observed = False  # True if we actually saw an Enter keyDown since idle
         self._enter_latched = False  # True if enter joined a latched-exit chord
+        self._enter_last_down_monotonic = 0.0
         self._on_cancel_spring_start: Callable[[], None] | None = None
         self._on_cancel_spring_release: Callable[[], None] | None = None
         self.cancel_spring_active = False  # set by app when spring is winding
@@ -270,6 +272,7 @@ class SpacebarHoldDetector(NSObject):
         self._enter_held = False
         self._enter_observed = False
         self._enter_latched = False
+        self._enter_last_down_monotonic = 0.0
         self._suppress_enter_keyup = False
         self._awaiting_space_release = False
         self._latched_space_down = False
@@ -595,6 +598,12 @@ class SpacebarHoldDetector(NSObject):
         self._pending_release_shift_held = False
         self._on_hold_end(shift_held=shift_held, enter_held=enter_held)
 
+    def _enter_observation_is_fresh(self) -> bool:
+        last_down = getattr(self, "_enter_last_down_monotonic", 0.0) or 0.0
+        if last_down <= 0.0:
+            return False
+        return (time.monotonic() - last_down) <= _ENTER_STALE_GRACE_S
+
 
 # ── module-level callback ────────────────────────────────────
 
@@ -626,6 +635,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         if keycode in ENTER_KEYCODES:
             det._enter_held = True
             det._enter_observed = True
+            det._enter_last_down_monotonic = time.monotonic()
             if getattr(det, "_pending_release_active", False):
                 det._finish_pending_release(enter_held=True)
                 return None
@@ -672,11 +682,18 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 if actual_enter_held is not None:
                     det._enter_held = actual_enter_held
                     det._enter_observed = actual_enter_held
-                elif not getattr(det, '_enter_observed', False):
+                    if not actual_enter_held:
+                        det._enter_last_down_monotonic = 0.0
+                elif (
+                    not getattr(det, '_enter_observed', False)
+                    or not det._enter_observation_is_fresh()
+                ):
                     # If Quartz cannot answer and we have not actually seen
-                    # an Enter keyDown since returning idle, do not let a
+                    # a fresh Enter keyDown since returning idle, do not let a
                     # stale command-chord state poison a fresh space press.
                     det._enter_held = False
+                    det._enter_observed = False
+                    det._enter_last_down_monotonic = 0.0
                 det._space_keydown_timestamp_ns = event_timestamp_ns
             elif det._state == _State.WAITING and det._waiting_elapsed_meets_threshold(
                 event_timestamp_ns
@@ -696,6 +713,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             if getattr(det, 'cancel_spring_active', False):
                 det._enter_held = False
                 det._enter_observed = False
+                det._enter_last_down_monotonic = 0.0
                 cb = getattr(det, '_on_cancel_spring_release', None)
                 if cb is not None:
                     cb()
@@ -704,6 +722,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 det._suppress_enter_keyup = False
                 det._enter_held = False
                 det._enter_observed = False
+                det._enter_last_down_monotonic = 0.0
                 return None
             if det._state in (_State.WAITING, _State.RECORDING):
                 shift_held = bool(flags & kCGEventFlagMaskShift) or getattr(
@@ -711,6 +730,7 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 )
                 det._enter_held = False
                 det._enter_observed = False
+                det._enter_last_down_monotonic = 0.0
                 det._finish_enter_release(shift_held=shift_held)
                 return None
             if det._state == _State.LATCHED and getattr(det, '_latched_space_down', False):
@@ -719,10 +739,12 @@ def _event_tap_callback(proxy, event_type, event, refcon):
                 )
                 det._enter_held = False
                 det._enter_observed = False
+                det._enter_last_down_monotonic = 0.0
                 det._finish_enter_release(shift_held=shift_held)
                 return None
             det._enter_held = False
             det._enter_observed = False
+            det._enter_last_down_monotonic = 0.0
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:

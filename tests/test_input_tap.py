@@ -1,6 +1,6 @@
 """Tests for the CGEventTap spacebar hold detection state machine."""
 
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, call, patch
 
 
 class TestSpacebarStateMachine:
@@ -989,6 +989,7 @@ class TestTrayAwareness:
         det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
         det._enter_held = True
         det._enter_observed = True
+        det._enter_last_down_monotonic = 10.0
         mod._active_detector = det
 
         Quartz.CGEventSourceKeyState.side_effect = RuntimeError("boom")
@@ -996,13 +997,43 @@ class TestTrayAwareness:
         Quartz.CGEventGetFlags.return_value = 0
         event = MagicMock()
 
-        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        with patch.object(mod.time, "monotonic", return_value=10.2):
+            result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
         assert result_down is None
         assert det._enter_held is True
 
         det.holdTimerFired_(None)
         assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
         on_end.assert_called_once_with(shift_held=False, enter_held=True)
+
+    def test_space_keydown_clears_stale_observed_enter_when_probe_unavailable(
+        self, input_tap_module
+    ):
+        """A long-stale Enter observation must not poison fresh space taps forever."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        det._enter_held = True
+        det._enter_observed = True
+        det._enter_last_down_monotonic = 10.0
+        mod._active_detector = det
+
+        Quartz.CGEventSourceKeyState.side_effect = RuntimeError("boom")
+        Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        event = MagicMock()
+
+        with patch.object(mod.time, "monotonic", return_value=11.0):
+            result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+
+        assert result_down is None
+        assert det._enter_held is False
+        assert det._enter_observed is False
+
+        det.holdTimerFired_(None)
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0) is True
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
 
     def test_space_keydown_preserves_real_enter_first_chord(
         self, input_tap_module

@@ -2085,6 +2085,40 @@ class TestDualModelConfiguration:
             )
         ]
 
+    def test_init_prefers_env_command_model_over_stale_persisted_local_selection(
+        self, main_module, monkeypatch
+    ):
+        """Smoke env should override a dead persisted local assistant model at bootstrap."""
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL", "step-3p5-flash-mixedp-final")
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_model_preference",
+            lambda self: "Harmonic-27B-MLX-16bit",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "local",
+            raising=False,
+        )
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            MockCommand.return_value = MagicMock()
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", True)],
+            ):
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
+
+        assert result is not None
+        MockCommand.assert_called_once_with(
+            base_url="http://localhost:8001",
+            model="step-3p5-flash-mixedp-final",
+        )
+        assert d._command_model_id == "step-3p5-flash-mixedp-final"
+
     def test_init_seeds_command_model_options_without_sync_discovery(
         self, main_module, monkeypatch
     ):
