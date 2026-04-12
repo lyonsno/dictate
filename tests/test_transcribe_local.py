@@ -356,29 +356,70 @@ class TestLocalTranscriptionClient:
     @patch("spoke.transcribe_local.load_model")
     def test_prepare_uses_float16_for_unquantized_whisper_repos(self, mock_load_model):
         """Unquantized MLX Whisper repos should warm with float16."""
-        from spoke.transcribe_local import LocalTranscriptionClient, mx
+        import spoke.transcribe_local as transcribe_local
+        from spoke.transcribe_local import LocalTranscriptionClient, _resolve_cached_model_source
 
         mock_load_model.return_value = MagicMock()
         client = LocalTranscriptionClient(model="mlx-community/whisper-small.en-mlx")
         client.prepare()
 
         mock_load_model.assert_called_once_with(
-            "mlx-community/whisper-small.en-mlx",
-            dtype=mx.float16,
+            _resolve_cached_model_source("mlx-community/whisper-small.en-mlx"),
+            dtype=transcribe_local.mx.float16,
         )
 
     @patch("spoke.transcribe_local.load_model")
     def test_prepare_keeps_float16_for_quantized_whisper_repos(self, mock_load_model):
         """Quantized Whisper repos should keep the float16 warmup path."""
-        from spoke.transcribe_local import LocalTranscriptionClient, mx
+        import spoke.transcribe_local as transcribe_local
+        from spoke.transcribe_local import LocalTranscriptionClient, _resolve_cached_model_source
 
         mock_load_model.return_value = MagicMock()
         client = LocalTranscriptionClient(model="mlx-community/whisper-small.en-mlx-8bit")
         client.prepare()
 
         mock_load_model.assert_called_once_with(
-            "mlx-community/whisper-small.en-mlx-8bit",
-            dtype=mx.float16,
+            _resolve_cached_model_source("mlx-community/whisper-small.en-mlx-8bit"),
+            dtype=transcribe_local.mx.float16,
+        )
+
+    def test_resolve_cached_snapshot_path_prefers_local_hf_cache(self, monkeypatch, tmp_path):
+        """Cached Hugging Face snapshots should be used directly when present."""
+        from spoke.transcribe_local import _resolve_cached_model_source
+
+        snapshot = (
+            tmp_path
+            / "models--mlx-community--whisper-small.en-mlx"
+            / "snapshots"
+            / "abc123"
+        )
+        snapshot.mkdir(parents=True)
+        (snapshot / "config.json").write_text("{}")
+        (snapshot / "model.safetensors").write_text("weights")
+        monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", str(tmp_path))
+
+        resolved = _resolve_cached_model_source("mlx-community/whisper-small.en-mlx")
+
+        assert resolved == str(snapshot)
+
+    @patch("spoke.transcribe_local.load_model")
+    def test_prepare_uses_cached_snapshot_path_when_available(self, mock_load_model, monkeypatch):
+        """prepare() should warm from a cached snapshot path instead of a repo id."""
+        import spoke.transcribe_local as transcribe_local
+        from spoke.transcribe_local import LocalTranscriptionClient
+
+        mock_load_model.return_value = MagicMock()
+        monkeypatch.setattr(
+            "spoke.transcribe_local._resolve_cached_model_source",
+            lambda _model: "/tmp/cached-whisper-snapshot",
+        )
+
+        client = LocalTranscriptionClient(model="mlx-community/whisper-small.en-mlx")
+        client.prepare()
+
+        mock_load_model.assert_called_once_with(
+            "/tmp/cached-whisper-snapshot",
+            dtype=transcribe_local.mx.float16,
         )
 
 

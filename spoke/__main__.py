@@ -925,9 +925,10 @@ class SpokeAppDelegate(NSObject):
                     self._command_cloud_provider,
                 )
             else:
+                env_command_model = os.environ.get("SPOKE_COMMAND_MODEL")
                 self._command_model_id = (
-                    self._load_command_model_preference()
-                    or os.environ.get("SPOKE_COMMAND_MODEL")
+                    env_command_model
+                    or self._load_command_model_preference()
                     or _DEFAULT_COMMAND_MODEL
                 )
             client_kwargs = {

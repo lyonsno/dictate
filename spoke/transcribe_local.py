@@ -29,6 +29,49 @@ mlx_whisper = None
 load_model = None
 
 
+def _huggingface_hub_cache_dir() -> Path:
+    cache_dir = os.environ.get("HUGGINGFACE_HUB_CACHE", "").strip()
+    if cache_dir:
+        return Path(cache_dir).expanduser()
+    hf_home = os.environ.get("HF_HOME", "").strip()
+    if hf_home:
+        return Path(hf_home).expanduser() / "hub"
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def _is_whisper_snapshot_dir(path: Path) -> bool:
+    if not (path / "config.json").exists():
+        return False
+    return any(
+        (path / filename).exists()
+        for filename in ("model.safetensors", "weights.safetensors", "weights.npz")
+    )
+
+
+def _resolve_cached_model_source(path_or_hf_repo: str) -> str:
+    model_path = Path(path_or_hf_repo).expanduser()
+    if model_path.exists():
+        return str(model_path)
+
+    if "/" not in path_or_hf_repo:
+        return path_or_hf_repo
+
+    cache_root = _huggingface_hub_cache_dir()
+    snapshots = cache_root / f"models--{path_or_hf_repo.replace('/', '--')}" / "snapshots"
+    if not snapshots.is_dir():
+        return path_or_hf_repo
+
+    candidates = sorted(
+        (candidate for candidate in snapshots.iterdir() if candidate.is_dir()),
+        key=lambda candidate: candidate.stat().st_mtime,
+        reverse=True,
+    )
+    for candidate in candidates:
+        if _is_whisper_snapshot_dir(candidate):
+            return str(candidate)
+    return path_or_hf_repo
+
+
 def _ensure_mlx_whisper_runtime():
     """Import MLX Whisper only when the local client is actually used."""
     global mx, mlx_whisper, load_model
@@ -116,7 +159,11 @@ class LocalTranscriptionClient:
             return
         _, _, runtime_load_model = _ensure_mlx_whisper_runtime()
         logger.info("Preloading Whisper model %s", self._model)
-        self._model_instance = runtime_load_model(self._model, dtype=self._load_dtype())
+        model_source = _resolve_cached_model_source(self._model)
+        self._model_instance = runtime_load_model(
+            model_source,
+            dtype=self._load_dtype(),
+        )
         self._loaded = True
         self._install_model_holder()
 
