@@ -675,6 +675,7 @@ def _reconcile_local_command_model_id(
     *,
     current_model: str | None,
     persisted_model: str | None,
+    relaunch_model: str | None,
     env_model: str | None,
     options: list[tuple[str, str, bool]],
 ) -> str | None:
@@ -683,10 +684,13 @@ def _reconcile_local_command_model_id(
     if not option_ids:
         return current_model
 
+    relaunch = (relaunch_model or "").strip() or None
     persisted = (persisted_model or "").strip() or None
     env = (env_model or "").strip() or None
     current = (current_model or "").strip() or None
 
+    if relaunch and relaunch in option_ids:
+        return relaunch
     if persisted and persisted in option_ids:
         return persisted
     if env and env in option_ids:
@@ -968,6 +972,9 @@ class SpokeAppDelegate(NSObject):
                     self._command_cloud_provider,
                 )
             else:
+                relaunch_command_model = (
+                    os.environ.pop("SPOKE_RELAUNCH_COMMAND_MODEL", "").strip() or None
+                )
                 env_command_model = os.environ.get("SPOKE_COMMAND_MODEL")
                 persisted_command_model = self._load_command_model_preference()
                 local_model_dir = Path(
@@ -975,7 +982,7 @@ class SpokeAppDelegate(NSObject):
                 ).expanduser()
                 self._command_model_id = _bootstrap_local_command_model_id(
                     persisted_model=persisted_command_model,
-                    env_model=env_command_model,
+                    env_model=relaunch_command_model or env_command_model,
                     model_dir=local_model_dir,
                 )
             client_kwargs = {
@@ -1002,6 +1009,7 @@ class SpokeAppDelegate(NSObject):
                 reconciled_command_model_id = _reconcile_local_command_model_id(
                     current_model=self._command_model_id,
                     persisted_model=persisted_command_model,
+                    relaunch_model=relaunch_command_model,
                     env_model=env_command_model,
                     options=self._command_model_options,
                 )
@@ -5050,6 +5058,7 @@ class SpokeAppDelegate(NSObject):
                 getattr(self, "_command_cloud_provider", self._load_cloud_provider_preference()),
                 model_id,
             )
+        os.environ["SPOKE_RELAUNCH_COMMAND_MODEL"] = model_id
         self._command_model_id = model_id
         self._relaunch()
 
