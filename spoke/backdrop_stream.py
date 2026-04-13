@@ -82,7 +82,12 @@ kernel vec2 opticalShellWarp(
         max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
     );
     float source01 = depthRemap(inside01, curveBoost);
-    float sourceDepth = source01 * centerDepth;
+    float localCenterDepth = min(
+        halfRect.x / max(abs(n.x), 1e-3),
+        halfRect.y / max(abs(n.y), 1e-3)
+    );
+    localCenterDepth = max(localCenterDepth, 1.0);
+    float sourceDepth = source01 * localCenterDepth;
     vec2 boundary = d - n * sdf;
     vec2 src = boundary - n * sourceDepth;
     float outsideTail = max(tailAmplitudePoints, 4.0) * exp(-max(sdf, 0.0) / max(tailWidth, 0.001));
@@ -183,6 +188,23 @@ def _optical_shell_depth_remap(inside01: float, curve_boost: float) -> float:
 
 def _optical_shell_source_depth_points(source01: float, center_depth: float) -> float:
     return min(max(float(source01), 0.0), 1.0) * max(float(center_depth), 0.0)
+
+
+def _optical_shell_local_center_depth(
+    normal_x: float,
+    normal_y: float,
+    content_width: float,
+    content_height: float,
+) -> float:
+    half_width = max(float(content_width) * 0.5, 1.0)
+    half_height = max(float(content_height) * 0.5, 1.0)
+    return max(
+        min(
+            half_width / max(abs(float(normal_x)), 1e-3),
+            half_height / max(abs(float(normal_y)), 1e-3),
+        ),
+        1.0,
+    )
 
 
 def _optical_shell_inside_depth01_from_sdf(
