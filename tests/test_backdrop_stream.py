@@ -957,12 +957,28 @@ def test_debug_shell_grid_profile_is_sparse_major_lines_only():
     assert profile["major_halfwidth"] == 2.5
 
 
-def test_optical_shell_kernel_keeps_ring_amplitude_independent_of_corner_relief():
+def test_optical_shell_depth_remap_is_monotone_and_center_weighted():
+    mod = _import_module()
+
+    rim = mod._optical_shell_depth_remap(0.0, 0.95)
+    quarter = mod._optical_shell_depth_remap(0.25, 0.95)
+    midpoint = mod._optical_shell_depth_remap(0.5, 0.95)
+    near_center = mod._optical_shell_depth_remap(0.85, 0.95)
+    center = mod._optical_shell_depth_remap(1.0, 0.95)
+
+    assert rim == 0.0
+    assert 0.4 < quarter < midpoint < near_center < center <= 1.0
+    assert midpoint > 0.72
+    assert near_center > 0.94
+
+
+def test_optical_shell_kernel_uses_single_depth_remap_curve():
     mod = _import_module()
 
     source = mod._SHELL_WARP_KERNEL_SOURCE
 
-    assert "float ringPeak = exp(-pow(sdf / max(bandWidth * 0.35, 0.001), 2.0));" in source
+    assert "float source01 = depthRemap(inside01, curveBoost);" in source
+    assert "vec2 src = mix(boundary, c, source01);" in source
 
 
 def test_capture_blurred_image_debug_visualize_skips_stream_start(monkeypatch):

@@ -46,16 +46,9 @@ float sdRoundRect(vec2 p, vec2 b, float r) {
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 }
 
-float cornerRelief(vec2 p, vec2 halfRect, float cornerRadius, float bandWidth) {
-    vec2 inner = max(halfRect - vec2(cornerRadius + bandWidth * 0.2), vec2(1.0));
-    vec2 norm = abs(p) / inner;
-    float cornerness = smoothstep(0.38, 0.86, min(norm.x, norm.y));
-    return mix(1.0, 0.68, cornerness);
-}
-
-float coreDispEnvelope(float centerShell, float insideShell) {
-    float shoulder = insideShell * (1.0 - centerShell);
-    return min(shoulder * 1.25, 1.0);
+float depthRemap(float inside01, float curveBoost) {
+    float x = clamp(inside01, 0.0, 1.0);
+    return clamp(x + curveBoost * x * (1.0 - x), 0.0, 1.0);
 }
 
 kernel vec2 opticalShellWarp(
@@ -82,25 +75,20 @@ kernel vec2 opticalShellWarp(
         - sdRoundRect(p - vec2(0.0, eps), halfRect, cornerRadius);
     vec2 n = normalize(vec2(sdfx, sdfy) + vec2(1e-4, 1e-4));
     float outside = step(0.0, sdf);
-    float insideDepth = max(-sdf, 0.0);
     vec2 centerHalf = max(halfRect - vec2(bandWidth * 0.2), vec2(1.0));
     vec2 centerNorm = abs(p) / centerHalf;
     float centerRadius = length(centerNorm);
-    float centerShell = 1.0 - smoothstep(0.08, 1.02, centerRadius);
-    float relief = cornerRelief(p, halfRect, cornerRadius, bandWidth);
-    float insideShell = exp(-pow(insideDepth / max(bandWidth * 1.35, 1.0), 2.0)) * (1.0 - outside) * relief;
-    float boostedInsideShell = min(insideShell * 1.35, 1.0);
-    float interiorFlow = min(1.0, centerShell + boostedInsideShell - centerShell * boostedInsideShell * 0.35);
-    float ringPeak = exp(-pow(sdf / max(bandWidth * 0.35, 0.001), 2.0));
-    float outerTail = exp(-max(sdf, 0.0) / max(tailWidth, 0.001)) * outside;
-    float zoom = mix(1.0, coreMagnification, interiorFlow);
-    vec2 src = c + (d - c) / zoom;
-    float coreDisp = (coreMagnification - 1.0) * max(min(rectWidth, rectHeight) * 0.05, 2.0) * coreDispEnvelope(centerShell, insideShell);
-    float ringDisp = max(ringAmplitudePoints, 12.0) * ringPeak;
-    float tailDisp = max(tailAmplitudePoints, 4.0) * outerTail;
-    float disp = coreDisp + ringDisp + tailDisp;
-    src -= n * disp;
-    return src;
+    float inside01 = clamp(1.0 - centerRadius, 0.0, 1.0);
+    float curveBoost = min(
+        0.95,
+        max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
+    );
+    float source01 = depthRemap(inside01, curveBoost);
+    vec2 boundary = d - n * sdf;
+    vec2 src = mix(boundary, c, source01);
+    float outsideTail = max(tailAmplitudePoints, 4.0) * exp(-max(sdf, 0.0) / max(tailWidth, 0.001));
+    vec2 outsideSrc = d - n * outsideTail;
+    return mix(src, outsideSrc, outside);
 }
 """.replace("__OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__", str(_OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER))
 
@@ -178,6 +166,20 @@ def _optical_shell_core_displacement_envelope(center_envelope: float, inside_env
     center = min(max(float(center_envelope), 0.0), 1.0)
     inside = min(max(float(inside_envelope), 0.0), 1.0)
     return min(inside * (1.0 - center) * 1.25, 1.0)
+
+
+def _optical_shell_curve_boost(core_magnification: float, ring_amplitude_points: float) -> float:
+    return min(
+        0.95,
+        max(0.0, (float(core_magnification) - 1.0) * 0.35)
+        + min(max(float(ring_amplitude_points), 0.0) / 240.0, 0.55),
+    )
+
+
+def _optical_shell_depth_remap(inside01: float, curve_boost: float) -> float:
+    inside = min(max(float(inside01), 0.0), 1.0)
+    boost = min(max(float(curve_boost), 0.0), 0.95)
+    return min(max(inside + boost * inside * (1.0 - inside), 0.0), 1.0)
 
 
 def _optical_shell_gradient_epsilon(band_width: float) -> float:
@@ -281,48 +283,26 @@ def _debug_shell_grid_ci_image(extent, shell_config):
     sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)
     ring = np.abs(sdf) < max(float(shell_config.get("band_width_points", 12.0)) * 0.12, 1.5)
     interior = sdf < 0.0
-    inside_depth = np.maximum(-sdf, 0.0)
-    inside_env = np.exp(
-        -(
-            inside_depth
-            / max(float(shell_config.get("band_width_points", 12.0)) * 1.35, 1.0)
-        )
-        ** 2.0
-    ).astype(np.float32)
-    center_half_width = max(content_width * 0.5 - float(shell_config.get("band_width_points", 12.0)) * 0.5, 1.0)
-    center_half_height = max(content_height * 0.5 - float(shell_config.get("band_width_points", 12.0)) * 0.2, 1.0)
     center_half_width = max(content_width * 0.5 - float(shell_config.get("band_width_points", 12.0)) * 0.2, 1.0)
+    center_half_height = max(content_height * 0.5 - float(shell_config.get("band_width_points", 12.0)) * 0.2, 1.0)
     center_radius = np.hypot(
         np.abs(xs - center_x) / center_half_width,
         np.abs(ys - center_y) / center_half_height,
     ).astype(np.float32)
-    center_env = 1.0 - _smoothstep01((center_radius - 0.08) / (1.02 - 0.08))
-    relief = np.empty_like(center_env, dtype=np.float32)
-    band_width = float(shell_config.get("band_width_points", 12.0))
-    corner_radius = float(shell_config.get("corner_radius_points", 16.0))
-    for row in range(height):
-        offset_y = (row + 0.5) - center_y
-        for col in range(width):
-            offset_x = (col + 0.5) - center_x
-            relief[row, col] = _optical_shell_corner_relief(
-                offset_x=offset_x,
-                offset_y=offset_y,
-                content_width=content_width,
-                content_height=content_height,
-                corner_radius=corner_radius,
-                band_width=band_width,
-            )
-    boosted_inside_env = np.minimum(inside_env * 1.35, 1.0)
-    boosted_inside_env *= relief
-    shell_env = np.minimum(1.0, center_env + boosted_inside_env - center_env * boosted_inside_env * 0.35)
+    inside01 = np.clip(1.0 - center_radius, 0.0, 1.0).astype(np.float32)
+    curve_boost = _optical_shell_curve_boost(
+        float(shell_config.get("core_magnification", 1.0)),
+        float(shell_config.get("ring_amplitude_points", 12.0)),
+    )
+    source01 = np.clip(inside01 + curve_boost * inside01 * (1.0 - inside01), 0.0, 1.0).astype(np.float32)
     rgba[interior] = np.clip(
         rgba[interior].astype(np.int16)
         + np.stack(
             [
-                np.rint(-28.0 * center_env).astype(np.int16),
-                np.rint(-46.0 * shell_env).astype(np.int16),
-                np.rint(-22.0 * shell_env).astype(np.int16),
-                np.zeros_like(shell_env, dtype=np.int16),
+                np.rint(-18.0 * source01).astype(np.int16),
+                np.rint(-40.0 * source01).astype(np.int16),
+                np.rint(-20.0 * source01).astype(np.int16),
+                np.zeros_like(source01, dtype=np.int16),
             ],
             axis=-1,
         )[interior],
