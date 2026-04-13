@@ -4,23 +4,45 @@ from spoke.handsfree import HandsFreeController, HandsFreeState
 
 
 class TestHandsFreeControllerWakeWords:
-    def test_sleep_wake_word_disables_handsfree_while_listening(self):
+    def test_sleep_wake_word_keeps_listener_active_while_listening(self):
         controller = HandsFreeController(delegate=MagicMock())
         controller._state = HandsFreeState.LISTENING
         controller.disable = MagicMock()
+        controller._stop_dictating = MagicMock()
 
         controller.handle_wake_word("sleep")
 
-        controller.disable.assert_called_once_with()
+        controller.disable.assert_not_called()
+        controller._stop_dictating.assert_not_called()
+        assert controller.state == HandsFreeState.LISTENING
 
-    def test_sleep_wake_word_disables_handsfree_while_dictating(self):
+    def test_sleep_wake_word_returns_dictating_to_listener(self):
         controller = HandsFreeController(delegate=MagicMock())
         controller._state = HandsFreeState.DICTATING
         controller.disable = MagicMock()
+        controller._stop_dictating = MagicMock(
+            side_effect=lambda: controller._set_state(HandsFreeState.LISTENING)
+        )
 
         controller.handle_wake_word("sleep")
 
-        controller.disable.assert_called_once_with()
+        controller.disable.assert_not_called()
+        controller._stop_dictating.assert_called_once_with()
+        assert controller.state == HandsFreeState.LISTENING
+
+    def test_sleep_wake_word_returns_transcribing_to_listener(self):
+        controller = HandsFreeController(delegate=MagicMock())
+        controller._state = HandsFreeState.TRANSCRIBING
+        controller.disable = MagicMock()
+        controller._stop_dictating = MagicMock(
+            side_effect=lambda: controller._set_state(HandsFreeState.LISTENING)
+        )
+
+        controller.handle_wake_word("sleep")
+
+        controller.disable.assert_not_called()
+        controller._stop_dictating.assert_called_once_with()
+        assert controller.state == HandsFreeState.LISTENING
 
     def test_segment_transcription_of_sleep_word_routes_to_wake_handler(self, monkeypatch):
         class ImmediateThread:
