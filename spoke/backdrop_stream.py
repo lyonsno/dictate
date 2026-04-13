@@ -217,6 +217,12 @@ def _debug_shell_grid_profile(shell_config: dict) -> dict[str, float | bool]:
         "checker_enabled": False,
         "minor_enabled": False,
         "major_halfwidth": 2.5,
+        "ring_color": (190, 70, 130, 255),
+        "ring_halfwidth": 1.0,
+        "center_marker_shape": "oval",
+        "center_marker_width_points": 16.0,
+        "center_marker_height_points": 28.0,
+        "center_marker_color": (0, 235, 90, 255),
     }
 
 
@@ -281,7 +287,7 @@ def _debug_shell_grid_ci_image(extent, shell_config):
     rgba[major_grid] = np.array([15, 15, 15, 255], dtype=np.uint8)
 
     sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)
-    ring = np.abs(sdf) < max(float(shell_config.get("band_width_points", 12.0)) * 0.12, 1.5)
+    ring = np.abs(sdf) < float(profile["ring_halfwidth"])
     interior = sdf < 0.0
     center_half_width = max(content_width * 0.5 - float(shell_config.get("band_width_points", 12.0)) * 0.2, 1.0)
     center_half_height = max(content_height * 0.5 - float(shell_config.get("band_width_points", 12.0)) * 0.2, 1.0)
@@ -309,13 +315,15 @@ def _debug_shell_grid_ci_image(extent, shell_config):
         0,
         255,
     ).astype(np.uint8)
-    rgba[ring] = np.array([255, 0, 120, 255], dtype=np.uint8)
+    rgba[ring] = np.array(profile["ring_color"], dtype=np.uint8)
 
-    center_cross = (
-        np.broadcast_to(np.abs(xs - center_x) < 3.0, (height, width))
-        | np.broadcast_to(np.abs(ys - center_y) < 3.0, (height, width))
-    )
-    rgba[center_cross] = np.array([0, 255, 80, 255], dtype=np.uint8)
+    marker_width = float(profile["center_marker_width_points"]) * 0.5
+    marker_height = float(profile["center_marker_height_points"]) * 0.5
+    center_marker = (
+        ((xs - center_x) / max(marker_width, 1.0)) ** 2
+        + ((ys - center_y) / max(marker_height, 1.0)) ** 2
+    ) <= 1.0
+    rgba[center_marker] = np.array(profile["center_marker_color"], dtype=np.uint8)
 
     payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
     provider = CGDataProviderCreateWithCFData(payload)
