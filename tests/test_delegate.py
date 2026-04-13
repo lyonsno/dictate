@@ -1057,7 +1057,7 @@ class TestDualModelConfiguration:
         d._command_model_id = "qwen3p5-35B-A3B"
         d._command_model_options = [
             ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
-            ("qwen3-14b", "qwen3-14b", True),
+            ("qwen3-14b", "qwen3-14b", False),
         ]
 
         model_state = d._handle_model_menu_action(None)

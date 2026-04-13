@@ -3666,7 +3666,14 @@ class SpokeAppDelegate(NSObject):
                 state["assistant"] = {
                     "title": assistant_title,
                     "selected": self._command_model_id,
-                    "models": [] if server_unreachable else self._command_model_options,
+                    "models": (
+                        []
+                        if server_unreachable
+                        else [
+                            (model_id, label, True)
+                            for model_id, label, _selected in self._command_model_options
+                        ]
+                    ),
                 }
                 state["assistant_backend"] = {
                     "title": "Assistant Backend",
