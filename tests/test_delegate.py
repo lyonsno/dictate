@@ -1536,6 +1536,7 @@ class TestDualModelConfiguration:
 
         d._save_command_model_preference.assert_called_once_with("qwen3-14b")
         assert "SPOKE_COMMAND_MODEL" not in os.environ
+        assert os.environ.get("SPOKE_RELAUNCH_COMMAND_MODEL") == "qwen3-14b"
         mock_execv.assert_called_once()
 
     def test_selecting_assistant_model_survives_relaunch_via_saved_preferences(
@@ -2090,6 +2091,7 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch
     ):
         """Smoke env should override a dead persisted local assistant model at bootstrap."""
+        monkeypatch.delenv("SPOKE_RELAUNCH_COMMAND_MODEL", raising=False)
         monkeypatch.setenv("SPOKE_COMMAND_MODEL", "step-3p5-flash-mixedp-final")
         monkeypatch.setattr(
             main_module.SpokeAppDelegate,
@@ -2124,6 +2126,7 @@ class TestDualModelConfiguration:
         self, main_module, monkeypatch, tmp_path
     ):
         """A valid local assistant choice should survive relaunch even when smoke env pins a default."""
+        monkeypatch.delenv("SPOKE_RELAUNCH_COMMAND_MODEL", raising=False)
         monkeypatch.setenv("SPOKE_COMMAND_MODEL", "step-3p5-flash-mixedp-final")
         monkeypatch.setattr(
             main_module.SpokeAppDelegate,
@@ -2151,16 +2154,51 @@ class TestDualModelConfiguration:
                 result = d.init()
 
         assert result is not None
-        MockCommand.assert_called_once_with(
-            base_url="http://localhost:8001",
-            model="step-3p5-flash-mixedp-final",
-        )
         assert d._command_model_id == "qwen3-14b"
         assert d._command_client._model == "qwen3-14b"
         assert d._command_model_options == [
             ("qwen3-14b", "qwen3-14b", True),
             ("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", False),
         ]
+
+    def test_init_prefers_relaunch_command_model_override_over_smoke_env(
+        self, main_module, monkeypatch
+    ):
+        """The immediate relaunch override should beat the smoke-env default for the next process."""
+        monkeypatch.setenv("SPOKE_RELAUNCH_COMMAND_MODEL", "qwen3-14b")
+        monkeypatch.setenv("SPOKE_COMMAND_MODEL", "step-3p5-flash-mixedp-final")
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_model_preference",
+            lambda self: "qwen3p5-35B-A3B",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "local",
+            raising=False,
+        )
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            MockCommand.return_value = MagicMock()
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[
+                    ("qwen3-14b", "qwen3-14b", True),
+                    ("step-3p5-flash-mixedp-final", "step-3p5-flash-mixedp-final", False),
+                ],
+            ):
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
+
+        assert result is not None
+        assert d._command_model_id == "qwen3-14b"
+        MockCommand.assert_called_once_with(
+            base_url="http://localhost:8001",
+            model="qwen3-14b",
+        )
+        assert "SPOKE_RELAUNCH_COMMAND_MODEL" not in os.environ
 
     def test_init_seeds_command_model_options_without_sync_discovery(
         self, main_module, monkeypatch
