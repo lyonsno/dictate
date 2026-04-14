@@ -77,8 +77,15 @@ kernel vec2 opticalShellWarp(
     float outside = step(0.0, sdf);
     float capsuleRadius = max(halfRect.y, 1.0);
     float spineHalf = max(halfRect.x - capsuleRadius, 1.0);
-    float spineX = clamp(p.x, -spineHalf, spineHalf);
-    vec2 radial = vec2(p.x - spineX, p.y);
+    float px = p.x;
+    float absPx = abs(px);
+    float joinBlend = max(capsuleRadius * 0.18, 1.0);
+    float excess = max(absPx - spineHalf, 0.0);
+    float smoothExcess = excess * smoothstep(0.0, joinBlend, excess);
+    float spineAbs = absPx - smoothExcess;
+    float spineX = sign(px) * spineAbs;
+    float radialX = px - spineX;
+    vec2 radial = vec2(radialX, p.y);
     float radialLen = length(radial);
     float axial01 = clamp(abs(spineX) / spineHalf, 0.0, 1.0);
     float radial01 = clamp(radialLen / capsuleRadius, 0.0, 1.0);
@@ -194,6 +201,26 @@ def _optical_shell_source_depth_points(source01: float, center_depth: float) -> 
 
 def _optical_shell_capsule_spine_half_length(content_width: float, content_height: float) -> float:
     return max(float(content_width) * 0.5 - float(content_height) * 0.5, 1.0)
+
+
+def _optical_shell_capsule_axis_decomposition(
+    offset_x: float,
+    spine_half: float,
+    capsule_radius: float,
+) -> tuple[float, float]:
+    px = float(offset_x)
+    spine_half = max(float(spine_half), 1.0)
+    join_blend = max(float(capsule_radius) * 0.18, 1.0)
+    abs_px = abs(px)
+    excess = max(abs_px - spine_half, 0.0)
+    if join_blend > 0.0:
+        smooth_excess = excess * _smoothstep_scalar(0.0, join_blend, excess)
+    else:
+        smooth_excess = excess
+    spine_abs = max(abs_px - smooth_excess, 0.0)
+    spine_x = math.copysign(spine_abs, px)
+    radial_x = px - spine_x
+    return spine_x, radial_x
 
 
 def _optical_shell_center_bias_coordinate(coord01: float, curve_boost: float) -> float:
