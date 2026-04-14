@@ -159,6 +159,7 @@ def _build_synthesizer(args: argparse.Namespace) -> Callable[[WakewordSampleSpec
                 temperature=args.temperature,
                 top_k=args.top_k,
                 top_p=args.top_p,
+                max_tokens=args.max_tokens,
             )
         elif spec.backend == "cloud":
             client = CloudTTSClient(
@@ -205,6 +206,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.5)
     parser.add_argument("--top-k", type=int, default=50)
     parser.add_argument("--top-p", type=float, default=0.95)
+    parser.add_argument("--max-tokens", type=int, default=None)
     parser.add_argument("--timeout", type=float, default=30.0)
     return parser.parse_args(argv)
 

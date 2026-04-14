@@ -241,6 +241,7 @@ def omnivoice_load(model_id: str):
 
 def _generate_kwargs(model, *, text: str, voice: str | None,
                      temperature: float, top_k: int, top_p: float,
+                     max_tokens: int | None = None,
                      model_id: str | None = None) -> dict:
     """Build kwargs for model.generate(), passing only params it accepts.
 
@@ -273,6 +274,8 @@ def _generate_kwargs(model, *, text: str, voice: str | None,
                 "top_p": top_p,
             }
         )
+        if max_tokens is not None:
+            all_extras["max_tokens"] = max_tokens
     kwargs: dict = {"text": text}
     if not named or has_var_keyword:
         # Can't tell what's accepted — forward everything
@@ -394,6 +397,7 @@ class TTSClient:
         temperature: float = _DEFAULT_TEMPERATURE,
         top_k: int = _DEFAULT_TOP_K,
         top_p: float = _DEFAULT_TOP_P,
+        max_tokens: int | None = None,
         gpu_lock: threading.Lock | None = None,
     ):
         self._model_id = model_id
@@ -401,6 +405,7 @@ class TTSClient:
         self._temperature = temperature
         self._top_k = top_k
         self._top_p = top_p
+        self._max_tokens = max_tokens
         self._model = None
         self._cancelled = False
         self._gpu_lock = gpu_lock
@@ -437,7 +442,17 @@ class TTSClient:
         temperature = float(os.environ.get("SPOKE_TTS_TEMPERATURE", str(_DEFAULT_TEMPERATURE)))
         top_k = int(os.environ.get("SPOKE_TTS_TOP_K", str(_DEFAULT_TOP_K)))
         top_p = float(os.environ.get("SPOKE_TTS_TOP_P", str(_DEFAULT_TOP_P)))
-        return cls(model_id=model_id, voice=voice, temperature=temperature, top_k=top_k, top_p=top_p, gpu_lock=gpu_lock)
+        max_tokens_raw = os.environ.get("SPOKE_TTS_MAX_TOKENS", "").strip()
+        max_tokens = int(max_tokens_raw) if max_tokens_raw else None
+        return cls(
+            model_id=model_id,
+            voice=voice,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            gpu_lock=gpu_lock,
+        )
 
     def _ensure_model(self):
         """Load the model on first use."""
@@ -644,6 +659,7 @@ class TTSClient:
                 temperature=self._temperature,
                 top_k=self._top_k,
                 top_p=self._top_p,
+                max_tokens=self._max_tokens,
                 model_id=self._model_id,
             )
             results = self._model.generate(**gen_kwargs)

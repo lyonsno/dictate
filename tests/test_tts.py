@@ -511,6 +511,41 @@ class TestTTSConfig:
         assert kwargs == {"text": "hi", "voice": "af",
                           "temperature": 0.3, "top_k": 10, "top_p": 0.9}
 
+    def test_generate_kwargs_passes_max_tokens_when_supported(self):
+        """Voxtral-style signature should receive a requested output-token cap."""
+        from spoke.tts import _generate_kwargs
+
+        def generate(
+            self,
+            text: str,
+            voice: str = "casual_male",
+            temperature: float = 0.8,
+            top_k: int = 50,
+            top_p: float = 0.95,
+            max_tokens: int = 4096,
+            **kwargs,
+        ): pass
+        model = MagicMock()
+        model.generate = generate
+
+        kwargs = _generate_kwargs(
+            model,
+            text="hi",
+            voice="af",
+            temperature=0.3,
+            top_k=10,
+            top_p=0.9,
+            max_tokens=64,
+        )
+        assert kwargs == {
+            "text": "hi",
+            "voice": "af",
+            "temperature": 0.3,
+            "top_k": 10,
+            "top_p": 0.9,
+            "max_tokens": 64,
+        }
+
     def test_generate_kwargs_strict_signature_drops_unknown(self):
         """Model without **kwargs only gets params it declares."""
         from spoke.tts import _generate_kwargs

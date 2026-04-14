@@ -4,7 +4,13 @@ import wave
 
 import numpy as np
 
-from spoke.wakeword_samples import WakewordSampleSpec, load_phrase_lines, write_sample_batch
+from spoke.wakeword_samples import (
+    WakewordSampleSpec,
+    _build_synthesizer,
+    _parse_args,
+    load_phrase_lines,
+    write_sample_batch,
+)
 
 
 def test_load_phrase_lines_ignores_blanks_and_comments(tmp_path):
@@ -60,3 +66,48 @@ def test_write_sample_batch_writes_wavs_and_manifest(tmp_path):
             assert wav_file.getframerate() == 16000
             assert wav_file.getnchannels() == 1
             assert wav_file.getnframes() == 3
+
+
+def test_build_synthesizer_passes_max_tokens_to_local_tts(monkeypatch):
+    captured = {}
+
+    class FakeTTSClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def synthesize_audio(self, text: str):
+            assert text == "tessera"
+            return types.SimpleNamespace(
+                audio=np.array([[0.1], [-0.1]], dtype=np.float32),
+                sample_rate=24000,
+            )
+
+    monkeypatch.setattr("spoke.wakeword_samples.TTSClient", FakeTTSClient)
+    args = _parse_args(
+        [
+            "--backend", "local",
+            "--text", "tessera",
+            "--voice", "casual_female",
+            "--output-dir", "/tmp/ignored",
+            "--max-tokens", "64",
+        ]
+    )
+
+    synthesize = _build_synthesizer(args)
+    synthesize(
+        WakewordSampleSpec(
+            text="tessera",
+            backend="local",
+            model="local-model",
+            voice="casual_female",
+        )
+    )
+
+    assert captured == {
+        "model_id": "local-model",
+        "voice": "casual_female",
+        "temperature": 0.5,
+        "top_k": 50,
+        "top_p": 0.95,
+        "max_tokens": 64,
+    }

@@ -60,13 +60,15 @@ uv run python -m spoke.wakeword_samples \
   --backend local \
   --text tessera \
   --voice casual_female \
+  --max-tokens 32 \
   --voice neutral_male \
   --output-dir /tmp/tessera-samples
 ```
 
 Add `--text-file phrases.txt` for one phrase per line, switch to
 `--backend cloud` to use Gemini cloud TTS, or provide `--sidecar-url` for a
-remote OpenAI-compatible speech sidecar.
+remote OpenAI-compatible speech sidecar. For short wakewords, `--max-tokens`
+is useful when you want to keep the render from wandering into trailing filler.
 
 The full gesture surface lives in
 [`docs/keyboard-grammar.md`](docs/keyboard-grammar.md).
