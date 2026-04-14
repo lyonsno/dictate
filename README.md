@@ -51,6 +51,23 @@ Hands-free mode can also be started by voice. Set
 the wake-word listener; without that key the wake-word path is inert and only
 the keyboard gestures above are active.
 
+If you want to prepare custom Porcupine keyword training material, `spoke`
+now also ships a batch sample generator that renders WAVs through the same
+local, sidecar, or Gemini cloud TTS surfaces:
+
+```sh
+uv run python -m spoke.wakeword_samples \
+  --backend local \
+  --text tessera \
+  --voice casual_female \
+  --voice neutral_male \
+  --output-dir /tmp/tessera-samples
+```
+
+Add `--text-file phrases.txt` for one phrase per line, switch to
+`--backend cloud` to use Gemini cloud TTS, or provide `--sidecar-url` for a
+remote OpenAI-compatible speech sidecar.
+
 The full gesture surface lives in
 [`docs/keyboard-grammar.md`](docs/keyboard-grammar.md).
 

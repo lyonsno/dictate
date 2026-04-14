@@ -314,6 +314,42 @@ def _materialize_generation_result(result, sample_rate_hint: int | None) -> _Pla
     return _PlaybackResult(audio=audio, sample_rate=sample_rate)
 
 
+def _audio_as_matrix(audio: np.ndarray) -> np.ndarray:
+    matrix = np.asarray(audio, dtype=np.float32)
+    if matrix.ndim == 1:
+        matrix = matrix.reshape(-1, 1)
+    return matrix
+
+
+def _concatenate_playback_results(
+    results: list[_PlaybackResult],
+    *,
+    gap_samples: int = 0,
+) -> _PlaybackResult:
+    if not results:
+        raise RuntimeError("No TTS audio was generated")
+
+    sample_rate = int(results[0].sample_rate)
+    channels = _audio_as_matrix(results[0].audio).shape[1]
+    parts: list[np.ndarray] = []
+
+    for idx, result in enumerate(results):
+        if int(result.sample_rate) != sample_rate:
+            raise RuntimeError(
+                f"Mismatched TTS sample rates: {sample_rate} vs {result.sample_rate}"
+            )
+        audio = _audio_as_matrix(result.audio)
+        if audio.shape[1] != channels:
+            raise RuntimeError(
+                f"Mismatched TTS channel counts: {channels} vs {audio.shape[1]}"
+            )
+        if idx > 0 and gap_samples > 0:
+            parts.append(np.zeros((gap_samples, channels), dtype=np.float32))
+        parts.append(audio)
+
+    return _PlaybackResult(audio=np.concatenate(parts, axis=0), sample_rate=sample_rate)
+
+
 def _iter_playback_results(results, sample_rate_hint: int | None):
     if results is None:
         return
@@ -615,6 +651,32 @@ class TTSClient:
             logger.info("TTS speak: generate() returned for: %s", sentence[:40])
         return _iter_playback_results(results, sample_rate_hint)
 
+    def synthesize_audio(self, text: str) -> _PlaybackResult:
+        """Render *text* to audio without opening a playback stream."""
+        if not text or not text.strip():
+            raise ValueError("Cannot synthesize empty text")
+
+        sentences = _split_sentences(text)
+        if not sentences:
+            raise RuntimeError("No TTS sentences available after split")
+
+        sentence_results: list[_PlaybackResult] = []
+        with self._speak_lock:
+            self._cancelled = False
+            for sentence in sentences:
+                results_iter = self._start_generation(sentence)
+                if results_iter is None:
+                    continue
+                chunks = list(results_iter)
+                if chunks:
+                    sentence_results.append(_concatenate_playback_results(chunks))
+
+        if not sentence_results:
+            raise RuntimeError("TTS synthesis produced no audio")
+
+        gap_samples = int(sentence_results[0].sample_rate * 0.08)
+        return _concatenate_playback_results(sentence_results, gap_samples=gap_samples)
+
     def speak(
         self,
         text: str,
@@ -886,6 +948,72 @@ class RemoteTTSClient:
 
         return audio.reshape(-1, channels), sample_rate
 
+    def _request_wav(self, text: str) -> bytes:
+        import urllib.request
+        import urllib.error
+
+        payload = {
+            "model": self._model_id,
+            "voice": self._voice,
+            "input": text,
+            "response_format": "wav",
+        }
+        data = _json.dumps(payload).encode()
+        req = urllib.request.Request(
+            self._url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        logger.info(
+            "TTS sidecar request: url=%s model=%s voice=%s text=%d chars",
+            self._url, self._model_id, self._voice, len(text),
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                content_type = resp.headers.get("Content-Type", "")
+                wav_bytes = resp.read()
+        except urllib.error.HTTPError as exc:
+            body = ""
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            raise RuntimeError(
+                f"TTS sidecar HTTP {exc.code} from {self._url}: {body or exc.reason} "
+                f"(model={self._model_id}, voice={self._voice})"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"TTS sidecar unreachable at {self._base_url}: {exc.reason}"
+            ) from exc
+        except Exception as exc:
+            raise RuntimeError(
+                f"TTS sidecar request failed ({self._url}, model={self._model_id}, "
+                f"voice={self._voice}): {type(exc).__name__}: {exc}"
+            ) from exc
+
+        logger.info(
+            "TTS sidecar response: %d bytes, content-type=%s",
+            len(wav_bytes), content_type,
+        )
+
+        if not wav_bytes:
+            raise RuntimeError(
+                f"TTS sidecar returned empty response (model={self._model_id}, "
+                f"voice={self._voice}, url={self._url})"
+            )
+        return wav_bytes
+
+    def synthesize_audio(self, text: str) -> _PlaybackResult:
+        """Render *text* to audio without opening a playback stream."""
+        if not text or not text.strip():
+            raise ValueError("Cannot synthesize empty text")
+        self._cancelled = False
+        wav_bytes = self._request_wav(text)
+        audio, sample_rate = self._decode_wav(wav_bytes)
+        return _PlaybackResult(audio=np.asarray(audio, dtype=np.float32), sample_rate=sample_rate)
+
     def _play_audio(
         self,
         audio: np.ndarray,
@@ -951,63 +1079,10 @@ class RemoteTTSClient:
         if not text:
             return
         self._cancelled = False
-
-        import urllib.request
-        import urllib.error
-        payload = {
-            "model": self._model_id,
-            "voice": self._voice,
-            "input": text,
-            "response_format": "wav",
-        }
-        data = _json.dumps(payload).encode()
-        req = urllib.request.Request(
-            self._url,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        logger.info(
-            "TTS sidecar request: url=%s model=%s voice=%s text=%d chars",
-            self._url, self._model_id, self._voice, len(text),
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                content_type = resp.headers.get("Content-Type", "")
-                wav_bytes = resp.read()
-        except urllib.error.HTTPError as exc:
-            body = ""
-            try:
-                body = exc.read().decode("utf-8", errors="replace")
-            except Exception:
-                pass
-            raise RuntimeError(
-                f"TTS sidecar HTTP {exc.code} from {self._url}: {body or exc.reason} "
-                f"(model={self._model_id}, voice={self._voice})"
-            ) from exc
-        except urllib.error.URLError as exc:
-            raise RuntimeError(
-                f"TTS sidecar unreachable at {self._base_url}: {exc.reason}"
-            ) from exc
-        except Exception as exc:
-            raise RuntimeError(
-                f"TTS sidecar request failed ({self._url}, model={self._model_id}, "
-                f"voice={self._voice}): {type(exc).__name__}: {exc}"
-            ) from exc
+        wav_bytes = self._request_wav(text)
 
         if self._cancelled:
             return
-
-        logger.info(
-            "TTS sidecar response: %d bytes, content-type=%s",
-            len(wav_bytes), content_type,
-        )
-
-        if not wav_bytes:
-            raise RuntimeError(
-                f"TTS sidecar returned empty response (model={self._model_id}, "
-                f"voice={self._voice}, url={self._url})"
-            )
 
         try:
             audio, sample_rate = self._decode_wav(wav_bytes)
@@ -1237,6 +1312,28 @@ class CloudTTSClient:
     def toggle_audio(self) -> bool:
         """Cloud client doesn't support gain fade — always audible."""
         return True
+
+    def synthesize_audio(self, text: str) -> _PlaybackResult:
+        """Render *text* to audio without opening a playback stream."""
+        if not text or not text.strip():
+            raise ValueError("Cannot synthesize empty text")
+        self._cancelled = False
+        paragraph_results: list[_PlaybackResult] = []
+        for paragraph in self._split_paragraphs(text):
+            if self._cancelled:
+                break
+            result = self._synthesize(paragraph)
+            if self._cancelled or result is None:
+                break
+            audio_bytes, mime_type = result
+            audio, sample_rate = self._decode_audio(audio_bytes, mime_type)
+            paragraph_results.append(
+                _PlaybackResult(audio=np.asarray(audio, dtype=np.float32), sample_rate=sample_rate)
+            )
+        if not paragraph_results:
+            raise RuntimeError("Cloud TTS synthesis produced no audio")
+        gap_samples = int(paragraph_results[0].sample_rate * 0.12)
+        return _concatenate_playback_results(paragraph_results, gap_samples=gap_samples)
 
     # -- internals ----------------------------------------------------------
 

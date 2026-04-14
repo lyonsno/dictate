@@ -9,6 +9,7 @@ from unittest.mock import patch, MagicMock, call
 from pathlib import Path
 
 import pytest
+import numpy as np
 
 
 def _fake_result():
@@ -80,6 +81,23 @@ class TestTTSClient:
 
         _, kwargs = fake_model.generate.call_args
         assert kwargs["voice"] == "neutral_male"
+
+    @patch("spoke.tts.tts_load")
+    def test_synthesize_audio_materializes_local_generation_without_playback(self, mock_load):
+        """synthesize_audio() should render audio without opening an output stream."""
+        fake_model = MagicMock()
+        fake_model.generate.return_value = iter([_fake_result()])
+        mock_load.return_value = fake_model
+
+        client = self._make_client()
+        result = client.synthesize_audio("Hello world")
+
+        fake_model.generate.assert_called_once_with(
+            text="Hello world", voice="casual_female",
+            temperature=0.5, top_k=50, top_p=0.95,
+        )
+        assert result.sample_rate == 24000
+        assert result.audio.shape == (3, 1)
 
     @patch("spoke.tts.sd")
     @patch("spoke.tts.tts_load")
@@ -1158,3 +1176,19 @@ class TestCloudTTSClient:
         audio, sr = client._decode_audio(raw_pcm, "audio/L16;rate=16000")
         assert sr == 16000
         assert len(audio) == 10
+
+    def test_synthesize_audio_decodes_cloud_response_without_playback(self):
+        """synthesize_audio() should return decoded audio without touching playback."""
+        from spoke.tts import CloudTTSClient
+
+        client = CloudTTSClient(api_key="test-key", voice="Aoede")
+        decoded_audio = np.array([[0.1], [-0.2], [0.3]], dtype=np.float32)
+
+        with patch.object(client, "_synthesize", return_value=(b"abc", "audio/L16;rate=24000")) as mock_synth:
+            with patch.object(client, "_decode_audio", return_value=(decoded_audio, 24000)) as mock_decode:
+                result = client.synthesize_audio("Hello")
+
+        mock_synth.assert_called_once_with("Hello")
+        mock_decode.assert_called_once_with(b"abc", "audio/L16;rate=24000")
+        assert result.sample_rate == 24000
+        np.testing.assert_allclose(result.audio, decoded_audio)
