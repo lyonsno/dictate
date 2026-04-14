@@ -1008,11 +1008,11 @@ def test_optical_shell_capsule_field01_couples_axial_and_radial_position():
     shoulder = mod._optical_shell_capsule_field01(0.6, 0.6)
 
     assert center == 0.0
-    assert 0.60 < axial < 0.62
-    assert 0.60 < radial < 0.62
-    assert axial == radial
-    assert shoulder > axial
-    assert 0.75 < shoulder < 0.78
+    assert 0.49 < axial < 0.52
+    assert 0.59 < radial < 0.62
+    assert axial < radial
+    assert shoulder > radial
+    assert 0.68 < shoulder < 0.71
 
 
 def test_optical_shell_inside_depth01_tracks_rounded_rect_depth():
@@ -1037,7 +1037,8 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
     assert "float spineHalf = max(halfRect.x - capsuleRadius, 1.0);" in source
     assert "float axial01 = clamp(abs(spineX) / spineHalf, 0.0, 1.0);" in source
     assert "float fieldPower = 3.0;" in source
-    assert "float field01 = clamp(pow(pow(axial01, fieldPower) + pow(radial01, fieldPower), 1.0 / fieldPower), 0.0, 1.0);" in source
+    assert "float axialWeight = 0.82;" in source
+    assert "float field01 = clamp(pow(pow(axial01 * axialWeight, fieldPower) + pow(radial01, fieldPower), 1.0 / fieldPower), 0.0, 1.0);" in source
     assert "float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);" in source
     assert "float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;" in source
     assert "vec2 src = c + vec2(spineX, 0.0) * scale + radial * scale;" in source

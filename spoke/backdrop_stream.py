@@ -87,7 +87,8 @@ kernel vec2 opticalShellWarp(
         max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
     );
     float fieldPower = 3.0;
-    float field01 = clamp(pow(pow(axial01, fieldPower) + pow(radial01, fieldPower), 1.0 / fieldPower), 0.0, 1.0);
+    float axialWeight = 0.82;
+    float field01 = clamp(pow(pow(axial01 * axialWeight, fieldPower) + pow(radial01, fieldPower), 1.0 / fieldPower), 0.0, 1.0);
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;
     vec2 src = c + vec2(spineX, 0.0) * scale + radial * scale;
@@ -204,7 +205,8 @@ def _optical_shell_capsule_field01(axial01: float, radial01: float) -> float:
     axial = min(max(float(axial01), 0.0), 1.0)
     radial = min(max(float(radial01), 0.0), 1.0)
     field_power = 3.0
-    return min((axial**field_power + radial**field_power) ** (1.0 / field_power), 1.0)
+    axial_weight = 0.82
+    return min(((axial * axial_weight) ** field_power + radial**field_power) ** (1.0 / field_power), 1.0)
 
 
 def _optical_shell_local_center_depth(
