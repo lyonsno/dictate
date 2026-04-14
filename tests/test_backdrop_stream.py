@@ -945,16 +945,19 @@ def test_optical_shell_corner_relief_preserves_flats_but_softens_corners():
     assert flat > corner + 0.12
 
 
-def test_debug_shell_grid_profile_is_sparse_major_lines_only():
+def test_debug_shell_grid_profile_uses_light_high_resolution_lines():
     mod = _import_module()
 
     profile = mod._debug_shell_grid_profile({"debug_grid_spacing_points": 14.0})
 
     assert profile["spacing"] == 14.0
-    assert profile["major"] == 56.0
+    assert profile["major"] == 42.0
     assert profile["checker_enabled"] is False
-    assert profile["minor_enabled"] is False
-    assert profile["major_halfwidth"] == 2.5
+    assert profile["minor_enabled"] is True
+    assert profile["minor_halfwidth"] == 0.9
+    assert profile["minor_color"] == (70, 70, 70, 90)
+    assert profile["major_halfwidth"] == 1.6
+    assert profile["major_color"] == (45, 45, 45, 190)
     assert profile["ring_color"] == (90, 90, 90, 144)
     assert profile["ring_halfwidth"] == 0.75
     assert profile["center_marker_shape"] == "circle"

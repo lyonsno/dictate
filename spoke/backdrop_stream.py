@@ -278,10 +278,13 @@ def _debug_shell_grid_profile(shell_config: dict) -> dict[str, float | bool]:
     spacing = max(float(shell_config.get("debug_grid_spacing_points", 18.0)), 6.0)
     return {
         "spacing": spacing,
-        "major": spacing * 4.0,
+        "major": spacing * 3.0,
         "checker_enabled": False,
-        "minor_enabled": False,
-        "major_halfwidth": 2.5,
+        "minor_enabled": True,
+        "minor_halfwidth": 0.9,
+        "minor_color": (70, 70, 70, 90),
+        "major_halfwidth": 1.6,
+        "major_color": (45, 45, 45, 190),
         "ring_color": (90, 90, 90, 144),
         "ring_halfwidth": 0.75,
         "center_marker_shape": "circle",
@@ -349,7 +352,19 @@ def _debug_shell_grid_ci_image(extent, shell_config):
     )
     major_grid = major_vertical | major_horizontal
 
-    rgba[major_grid] = np.array([15, 15, 15, 255], dtype=np.uint8)
+    if bool(profile.get("minor_enabled", False)):
+        minor_vertical = np.broadcast_to(
+            np.mod(np.abs(xs - center_x), spacing) < float(profile["minor_halfwidth"]),
+            (height, width),
+        )
+        minor_horizontal = np.broadcast_to(
+            np.mod(np.abs(ys - center_y), spacing) < float(profile["minor_halfwidth"]),
+            (height, width),
+        )
+        minor_grid = (minor_vertical | minor_horizontal) & ~major_grid
+        rgba[minor_grid] = np.array(profile["minor_color"], dtype=np.uint8)
+
+    rgba[major_grid] = np.array(profile["major_color"], dtype=np.uint8)
 
     sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)
     ring = np.abs(sdf) < float(profile["ring_halfwidth"])
