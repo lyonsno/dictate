@@ -996,16 +996,20 @@ def test_optical_shell_capsule_spine_half_length_uses_half_height_radius():
     assert mod._optical_shell_capsule_spine_half_length(100.0, 100.0) == 1.0
 
 
-def test_optical_shell_center_bias_coordinate_compresses_toward_center():
+def test_optical_shell_capsule_field01_couples_axial_and_radial_position():
     mod = _import_module()
 
-    center = mod._optical_shell_center_bias_coordinate(0.0, 0.95)
-    midpoint = mod._optical_shell_center_bias_coordinate(0.5, 0.95)
-    rim = mod._optical_shell_center_bias_coordinate(1.0, 0.95)
+    center = mod._optical_shell_capsule_field01(0.0, 0.0)
+    axial = mod._optical_shell_capsule_field01(0.6, 0.2)
+    radial = mod._optical_shell_capsule_field01(0.2, 0.6)
+    shoulder = mod._optical_shell_capsule_field01(0.6, 0.6)
 
     assert center == 0.0
-    assert 0.0 < midpoint < 0.5
-    assert rim == 1.0
+    assert 0.58 < axial < 0.62
+    assert 0.58 < radial < 0.62
+    assert axial == radial
+    assert shoulder > axial
+    assert shoulder < 0.7
 
 
 def test_optical_shell_inside_depth01_tracks_rounded_rect_depth():
@@ -1029,9 +1033,10 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
     assert "float capsuleRadius = max(halfRect.y, 1.0);" in source
     assert "float spineHalf = max(halfRect.x - capsuleRadius, 1.0);" in source
     assert "float axial01 = clamp(abs(spineX) / spineHalf, 0.0, 1.0);" in source
-    assert "float sourceAxial01 = 1.0 - depthRemap(1.0 - axial01, curveBoost);" in source
-    assert "float sourceRadial01 = 1.0 - depthRemap(1.0 - radial01, curveBoost);" in source
-    assert "vec2 src = c + vec2(sourceSpineX, 0.0) + radialDir * sourceRadial;" in source
+    assert "float field01 = clamp(smoothCapsuleField(axial01, radial01), 0.0, 1.0);" in source
+    assert "float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);" in source
+    assert "float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;" in source
+    assert "vec2 src = c + vec2(spineX, 0.0) * scale + radial * scale;" in source
 
 
 def test_optical_shell_kernel_avoids_global_center_depth_mix():
