@@ -1076,6 +1076,21 @@ def test_optical_shell_capsule_field01_couples_axial_and_radial_position():
     assert 0.68 < shoulder < 0.71
 
 
+def test_optical_shell_debug_field01_uses_remapped_scalar_not_raw_capsule_field():
+    mod = _import_module()
+
+    raw_mid = mod._optical_shell_capsule_field01(0.6, 0.2)
+    debug_mid = mod._optical_shell_debug_field01(0.6, 0.2, 0.95)
+    raw_shoulder = mod._optical_shell_capsule_field01(0.6, 0.6)
+    debug_shoulder = mod._optical_shell_debug_field01(0.6, 0.6, 0.95)
+
+    assert 0.49 < raw_mid < 0.52
+    assert 0.25 < debug_mid < raw_mid
+    assert 0.68 < raw_shoulder < 0.71
+    assert 0.47 < debug_shoulder < raw_shoulder
+    assert debug_mid < debug_shoulder
+
+
 def test_optical_shell_inside_depth01_tracks_rounded_rect_depth():
     mod = _import_module()
 

@@ -297,6 +297,11 @@ def _optical_shell_capsule_field01(axial01: float, radial01: float) -> float:
     return min(((axial * axial_weight) ** field_power + radial**field_power) ** (1.0 / field_power), 1.0)
 
 
+def _optical_shell_debug_field01(axial01: float, radial01: float, curve_boost: float) -> float:
+    field01 = _optical_shell_capsule_field01(axial01, radial01)
+    return _optical_shell_center_bias_coordinate(field01, curve_boost)
+
+
 def _optical_shell_local_center_depth(
     normal_x: float,
     normal_y: float,
@@ -431,7 +436,7 @@ def _debug_shell_grid_ci_image(extent, shell_config):
         distance = np.abs(normalized - np.rint(normalized)) * float(step)
         return distance < float(halfwidth)
 
-    field01 = np.clip(
+    raw_field01 = np.clip(
         (
             (longitudinal01 * 0.82) ** 3.0
             + radial01**3.0
@@ -442,15 +447,10 @@ def _debug_shell_grid_ci_image(extent, shell_config):
     ).astype(np.float32)
 
     major_field = _contour_mask(
-        field01,
+        raw_field01,
         float(profile["field_major_step"]),
         float(profile["field_contour_halfwidth"]),
     )
-    minor_field = _contour_mask(
-        field01,
-        float(profile["field_minor_step"]),
-        float(profile["field_minor_contour_halfwidth"]),
-    ) & ~major_field
     longitudinal_hints = _contour_mask(
         longitudinal01,
         float(profile["longitudinal_hint_step"]),
@@ -478,6 +478,21 @@ def _debug_shell_grid_ci_image(extent, shell_config):
         float(shell_config.get("core_magnification", 1.0)),
         float(shell_config.get("ring_amplitude_points", 12.0)),
     )
+    field01 = np.clip(
+        1.0 - np.clip((1.0 - raw_field01) + curve_boost * (1.0 - raw_field01) * raw_field01, 0.0, 1.0),
+        0.0,
+        1.0,
+    ).astype(np.float32)
+    major_field = _contour_mask(
+        field01,
+        float(profile["field_major_step"]),
+        float(profile["field_contour_halfwidth"]),
+    )
+    minor_field = _contour_mask(
+        field01,
+        float(profile["field_minor_step"]),
+        float(profile["field_minor_contour_halfwidth"]),
+    ) & ~major_field
     source01 = np.clip(inside01 + curve_boost * inside01 * (1.0 - inside01), 0.0, 1.0).astype(np.float32)
     rgba[interior] = np.clip(
         rgba[interior].astype(np.int16)
