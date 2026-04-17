@@ -1022,6 +1022,19 @@ def test_optical_shell_capsule_axis_decomposition_blends_into_endcaps():
     assert cap_radial == pytest.approx(50.0)
 
 
+def test_optical_shell_capsule_longitudinal01_tracks_cap_angle():
+    mod = _import_module()
+
+    body = mod._optical_shell_capsule_longitudinal01(60.0, 0.0, 240.0, 100.0)
+    cap_axis = mod._optical_shell_capsule_longitudinal01(110.0, 0.0, 240.0, 100.0)
+    cap_shoulder = mod._optical_shell_capsule_longitudinal01(110.0, 35.0, 240.0, 100.0)
+
+    assert 0.45 < body < 0.52
+    assert 0.98 < cap_axis <= 1.0
+    assert body < cap_shoulder < cap_axis
+    assert 0.76 < cap_shoulder < 0.86
+
+
 def test_optical_shell_capsule_field01_couples_axial_and_radial_position():
     mod = _import_module()
 
@@ -1062,10 +1075,15 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
     assert "float spineAbs = -log(exp(-joinSharpness * absPx) + exp(-joinSharpness * spineHalf)) / joinSharpness;" in source
     assert "float spineX = sign(px) * spineAbs;" in source
     assert "float radialX = px - spineX;" in source
-    assert "float axial01 = clamp(abs(spineX) / spineHalf, 0.0, 1.0);" in source
+    assert "float totalHalf = spineHalf + capsuleRadius;" in source
+    assert "float bodyLongitudinal01 = clamp(abs(spineX) / totalHalf, 0.0, 1.0);" in source
+    assert "float capAngle01 = 1.0 - clamp(atan2(abs(radial.y), max(abs(radialX), 1e-4)) / 1.5707963267948966, 0.0, 1.0);" in source
+    assert "float capLongitudinal01 = clamp((spineHalf + capsuleRadius * capAngle01) / totalHalf, 0.0, 1.0);" in source
+    assert "float capBlend = smoothstep(max(spineHalf - capsuleRadius * 0.18, 0.0), spineHalf + capsuleRadius * 0.12, absPx);" in source
+    assert "float longitudinal01 = mix(bodyLongitudinal01, capLongitudinal01, capBlend);" in source
     assert "float fieldPower = 3.0;" in source
     assert "float axialWeight = 0.82;" in source
-    assert "float field01 = clamp(pow(pow(axial01 * axialWeight, fieldPower) + pow(radial01, fieldPower), 1.0 / fieldPower), 0.0, 1.0);" in source
+    assert "float field01 = clamp(pow(pow(longitudinal01 * axialWeight, fieldPower) + pow(radial01, fieldPower), 1.0 / fieldPower), 0.0, 1.0);" in source
     assert "float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);" in source
     assert "float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;" in source
     assert "vec2 src = c + vec2(spineX, 0.0) * scale + radial * scale;" in source

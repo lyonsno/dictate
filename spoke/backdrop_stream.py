@@ -85,7 +85,12 @@ kernel vec2 opticalShellWarp(
     float radialX = px - spineX;
     vec2 radial = vec2(radialX, p.y);
     float radialLen = length(radial);
-    float axial01 = clamp(abs(spineX) / spineHalf, 0.0, 1.0);
+    float totalHalf = spineHalf + capsuleRadius;
+    float bodyLongitudinal01 = clamp(abs(spineX) / totalHalf, 0.0, 1.0);
+    float capAngle01 = 1.0 - clamp(atan2(abs(radial.y), max(abs(radialX), 1e-4)) / 1.5707963267948966, 0.0, 1.0);
+    float capLongitudinal01 = clamp((spineHalf + capsuleRadius * capAngle01) / totalHalf, 0.0, 1.0);
+    float capBlend = smoothstep(max(spineHalf - capsuleRadius * 0.18, 0.0), spineHalf + capsuleRadius * 0.12, absPx);
+    float longitudinal01 = mix(bodyLongitudinal01, capLongitudinal01, capBlend);
     float radial01 = clamp(radialLen / capsuleRadius, 0.0, 1.0);
     float curveBoost = min(
         0.95,
@@ -93,7 +98,7 @@ kernel vec2 opticalShellWarp(
     );
     float fieldPower = 3.0;
     float axialWeight = 0.82;
-    float field01 = clamp(pow(pow(axial01 * axialWeight, fieldPower) + pow(radial01, fieldPower), 1.0 / fieldPower), 0.0, 1.0);
+    float field01 = clamp(pow(pow(longitudinal01 * axialWeight, fieldPower) + pow(radial01, fieldPower), 1.0 / fieldPower), 0.0, 1.0);
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;
     vec2 src = c + vec2(spineX, 0.0) * scale + radial * scale;
@@ -216,6 +221,30 @@ def _optical_shell_capsule_axis_decomposition(
     spine_x = math.copysign(spine_abs, px)
     radial_x = px - spine_x
     return spine_x, radial_x
+
+
+def _optical_shell_capsule_longitudinal01(
+    offset_x: float,
+    offset_y: float,
+    content_width: float,
+    content_height: float,
+) -> float:
+    spine_half = _optical_shell_capsule_spine_half_length(content_width, content_height)
+    capsule_radius = max(float(content_height) * 0.5, 1.0)
+    spine_x, radial_x = _optical_shell_capsule_axis_decomposition(offset_x, spine_half, capsule_radius)
+    total_half = spine_half + capsule_radius
+    body_longitudinal = min(max(abs(spine_x) / total_half, 0.0), 1.0)
+    cap_angle = 1.0 - min(
+        max(math.atan2(abs(float(offset_y)), max(abs(radial_x), 1e-4)) / (0.5 * math.pi), 0.0),
+        1.0,
+    )
+    cap_longitudinal = min(max((spine_half + capsule_radius * cap_angle) / total_half, 0.0), 1.0)
+    cap_blend = _smoothstep_scalar(
+        max(spine_half - capsule_radius * 0.18, 0.0),
+        spine_half + capsule_radius * 0.12,
+        abs(float(offset_x)),
+    )
+    return body_longitudinal * (1.0 - cap_blend) + cap_longitudinal * cap_blend
 
 
 def _optical_shell_center_bias_coordinate(coord01: float, curve_boost: float) -> float:
