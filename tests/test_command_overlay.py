@@ -372,6 +372,33 @@ class TestShowFinishHide:
             mod._COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS
         )
 
+    def test_command_overlay_size_can_be_overridden_for_smoke_surface(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_OVERLAY_WIDTH", "1200.0")
+        monkeypatch.setenv("SPOKE_COMMAND_OVERLAY_HEIGHT", "160.0")
+        monkeypatch.setenv("SPOKE_COMMAND_OVERLAY_CORNER_RADIUS", "32.0")
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._backdrop_renderer.set_live_blur_radius_points = MagicMock()
+        overlay._backdrop_renderer.set_live_optical_shell_config = MagicMock()
+        overlay._backdrop_capture_rect = _make_rect(0.0, 0.0, 1280.0, 240.0)
+        overlay._update_backdrop_mask = MagicMock()
+        overlay._backdrop_base_blur_radius_points = 5.4
+        overlay._backdrop_blur_radius_points = 5.4
+        overlay._backdrop_base_mask_width_multiplier = 9.0
+        overlay._backdrop_mask_width_multiplier = 9.0
+
+        overlay._apply_backdrop_pulse_style(1.0)
+
+        config = overlay._backdrop_renderer.set_live_optical_shell_config.call_args[0][0]
+        assert mod._OVERLAY_WIDTH == pytest.approx(1200.0)
+        assert mod._OVERLAY_HEIGHT == pytest.approx(160.0)
+        assert mod._OVERLAY_CORNER_RADIUS == pytest.approx(32.0)
+        assert config["content_width_points"] == pytest.approx(1200.0)
+        assert config["content_height_points"] == pytest.approx(160.0)
+        assert config["corner_radius_points"] == pytest.approx(32.0)
+
     def test_show_starts_low_rate_backdrop_refresh_timer(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
 
