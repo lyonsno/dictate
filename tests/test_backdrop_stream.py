@@ -960,8 +960,8 @@ def test_debug_shell_grid_profile_prioritizes_field_contours_over_coordinate_hin
     assert profile["longitudinal_hint_step"] == 0.125
     assert profile["radial_hint_step"] == 0.125
     assert profile["hint_contour_halfwidth"] == 0.004
-    assert profile["longitudinal_hint_color"] == (65, 65, 65, 65)
-    assert profile["radial_hint_color"] == (80, 80, 80, 50)
+    assert profile["longitudinal_hint_color"] == (65, 65, 65, 28)
+    assert profile["radial_hint_color"] == (80, 80, 80, 22)
     assert profile["ring_color"] == (90, 90, 90, 144)
     assert profile["ring_halfwidth"] == 0.75
     assert profile["center_marker_shape"] == "circle"
@@ -1111,11 +1111,11 @@ def test_optical_shell_capsule_field01_couples_axial_and_radial_position():
     shoulder = mod._optical_shell_capsule_field01(0.6, 0.6)
 
     assert center == 0.0
-    assert 0.49 < axial < 0.52
+    assert 0.43 < axial < 0.46
     assert 0.59 < radial < 0.62
     assert axial < radial
     assert shoulder > radial
-    assert 0.68 < shoulder < 0.71
+    assert 0.66 < shoulder < 0.69
 
 
 def test_optical_shell_debug_field01_uses_remapped_scalar_not_raw_capsule_field():
@@ -1126,10 +1126,10 @@ def test_optical_shell_debug_field01_uses_remapped_scalar_not_raw_capsule_field(
     raw_shoulder = mod._optical_shell_capsule_field01(0.6, 0.6)
     debug_shoulder = mod._optical_shell_debug_field01(0.6, 0.6, 0.95)
 
-    assert 0.49 < raw_mid < 0.52
-    assert 0.25 < debug_mid < raw_mid
-    assert 0.68 < raw_shoulder < 0.71
-    assert 0.47 < debug_shoulder < raw_shoulder
+    assert 0.43 < raw_mid < 0.46
+    assert 0.20 < debug_mid < raw_mid
+    assert 0.66 < raw_shoulder < 0.69
+    assert 0.44 < debug_shoulder < raw_shoulder
     assert debug_mid < debug_shoulder
 
 
@@ -1164,7 +1164,7 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
     assert "float capBlend = smoothstep(max(spineHalf - capsuleRadius * 0.18, 0.0), spineHalf + capsuleRadius * 0.12, absPx);" in source
     assert "float longitudinal01 = mix(bodyLongitudinal01, capLongitudinal01, capBlend);" in source
     assert "float fieldPower = 3.0;" in source
-    assert "float axialWeight = 0.82;" in source
+    assert "float axialWeight = 0.72;" in source
     assert "float field01 = clamp(pow(pow(longitudinal01 * axialWeight, fieldPower) + pow(radial01, fieldPower), 1.0 / fieldPower), 0.0, 1.0);" in source
     assert "float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);" in source
     assert "float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;" in source

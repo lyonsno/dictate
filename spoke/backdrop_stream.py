@@ -97,7 +97,7 @@ kernel vec2 opticalShellWarp(
         max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
     );
     float fieldPower = 3.0;
-    float axialWeight = 0.82;
+    float axialWeight = 0.72;
     float field01 = clamp(pow(pow(longitudinal01 * axialWeight, fieldPower) + pow(radial01, fieldPower), 1.0 / fieldPower), 0.0, 1.0);
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;
@@ -293,7 +293,7 @@ def _optical_shell_capsule_field01(axial01: float, radial01: float) -> float:
     axial = min(max(float(axial01), 0.0), 1.0)
     radial = min(max(float(radial01), 0.0), 1.0)
     field_power = 3.0
-    axial_weight = 0.82
+    axial_weight = 0.72
     return min(((axial * axial_weight) ** field_power + radial**field_power) ** (1.0 / field_power), 1.0)
 
 
@@ -368,8 +368,8 @@ def _debug_shell_grid_profile(shell_config: dict) -> dict[str, float | bool]:
         "longitudinal_hint_step": 0.125,
         "radial_hint_step": 0.125,
         "hint_contour_halfwidth": 0.004,
-        "longitudinal_hint_color": (65, 65, 65, 65),
-        "radial_hint_color": (80, 80, 80, 50),
+        "longitudinal_hint_color": (65, 65, 65, 28),
+        "radial_hint_color": (80, 80, 80, 22),
         "ring_color": (90, 90, 90, 144),
         "ring_halfwidth": 0.75,
         "center_marker_shape": "circle",
