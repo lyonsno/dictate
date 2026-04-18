@@ -41,7 +41,16 @@ _OPTICAL_SHELL_CORNER_RADIUS_INFLATION = 0.95
 _OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER = 0.22
 _SHELL_WARP_KERNEL = None
 _SHELL_WARP_KERNEL_SOURCE = """
+float sdCapsule(vec2 p, float spineHalf, float radius) {
+    // SDF for a horizontal capsule (pill).  Iso-contours are themselves pills.
+    p.x = abs(p.x);
+    float spine_dist = max(p.x - spineHalf, 0.0);
+    return length(vec2(spine_dist, p.y)) - radius;
+}
+
 float sdRoundRect(vec2 p, vec2 b, float r) {
+    // Kept only for outside-tail normal estimation where rounded-rect
+    // normals still give the best outward direction near the content edge.
     vec2 q = abs(p) - b + vec2(r);
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 }
@@ -67,24 +76,36 @@ kernel vec2 opticalShellWarp(
     vec2 c = vec2(width * 0.5, height * 0.5);
     vec2 p = d - c;
     vec2 halfRect = vec2(rectWidth * 0.5, rectHeight * 0.5);
-    float sdf = sdRoundRect(p, halfRect, cornerRadius);
+    float capsuleRadius = max(halfRect.y, 1.0);
+    float spineHalf = max(halfRect.x - capsuleRadius, 0.0);
+
+    // --- capsule SDF for the interior field ---
+    float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);
+
+    // --- rounded-rect SDF for outside-tail normals only ---
+    float rrSdf = sdRoundRect(p, halfRect, cornerRadius);
     float eps = max(1.0, bandWidth * __OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__);
     float sdfx = sdRoundRect(p + vec2(eps, 0.0), halfRect, cornerRadius)
         - sdRoundRect(p - vec2(eps, 0.0), halfRect, cornerRadius);
     float sdfy = sdRoundRect(p + vec2(0.0, eps), halfRect, cornerRadius)
         - sdRoundRect(p - vec2(0.0, eps), halfRect, cornerRadius);
     vec2 n = normalize(vec2(sdfx, sdfy) + vec2(1e-4, 1e-4));
-    float outside = step(0.0, sdf);
-    float capsuleRadius = max(halfRect.y, 1.0);
+    float outside = step(0.0, capsuleSdf);
+
     float curveBoost = min(
         0.95,
         max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
     );
-    float field01 = clamp(1.0 + sdf / capsuleRadius, 0.0, 1.0);
+
+    // field01: 0 at center, 1 at capsule boundary.
+    // Because sdCapsule iso-contours are pills, every intermediate
+    // value of field01 traces a pill — nested pills all the way in.
+    float field01 = clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0);
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;
     vec2 src = c + p * scale;
-    float outsideTail = max(tailAmplitudePoints, 4.0) * exp(-max(sdf, 0.0) / max(tailWidth, 0.001));
+
+    float outsideTail = max(tailAmplitudePoints, 4.0) * exp(-max(capsuleSdf, 0.0) / max(tailWidth, 0.001));
     vec2 outsideSrc = d - n * outsideTail;
     return mix(src, outsideSrc, outside);
 }
@@ -446,20 +467,21 @@ def _debug_shell_grid_ci_image(extent, shell_config):
         distance = np.abs(normalized - np.rint(normalized)) * float(step)
         return distance < float(halfwidth)
 
-    spine_half = _optical_shell_capsule_spine_half_length(content_width, content_height)
     capsule_radius = max(content_height * 0.5, 1.0)
-    rho = np.hypot(xs, ys).astype(np.float32)
-    dir_x = np.divide(np.abs(xs), np.maximum(rho, 1e-6))
-    support_radius = spine_half * dir_x + capsule_radius
-    raw_field01 = np.clip(rho / np.maximum(support_radius, 1e-3), 0.0, 1.0).astype(np.float32)
+    spine_half = max(content_width * 0.5 - capsule_radius, 0.0)
 
-    sdf = _rounded_rect_sdf(width, height, content_width, content_height, corner_radius)
-    ring = np.abs(sdf) < float(profile["ring_halfwidth"])
-    interior = sdf < 0.0
+    # Capsule SDF: distance to horizontal line segment minus radius.
+    # Iso-contours are pills at every depth.
+    spine_dist = np.maximum(np.abs(xs) - spine_half, 0.0)
+    capsule_sdf = (np.hypot(spine_dist, ys) - capsule_radius).astype(np.float32)
+
+    ring = np.abs(capsule_sdf) < float(profile["ring_halfwidth"])
+    interior = capsule_sdf < 0.0
     curve_boost = _optical_shell_curve_boost(
         float(shell_config.get("core_magnification", 1.0)),
         float(shell_config.get("ring_amplitude_points", 12.0)),
     )
+    raw_field01 = np.clip(1.0 + capsule_sdf / capsule_radius, 0.0, 1.0).astype(np.float32)
     field01 = np.clip(
         1.0 - np.clip((1.0 - raw_field01) + curve_boost * (1.0 - raw_field01) * raw_field01, 0.0, 1.0),
         0.0,

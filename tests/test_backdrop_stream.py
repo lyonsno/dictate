@@ -1181,7 +1181,8 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
     source = mod._SHELL_WARP_KERNEL_SOURCE
 
     assert "float capsuleRadius = max(halfRect.y, 1.0);" in source
-    assert "float field01 = clamp(1.0 + sdf / capsuleRadius, 0.0, 1.0);" in source
+    assert "float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);" in source
+    assert "float field01 = clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0);" in source
     assert "float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);" in source
     assert "float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;" in source
     assert "vec2 src = c + p * scale;" in source
