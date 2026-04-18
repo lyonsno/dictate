@@ -39,7 +39,6 @@ _METAL_BLUR_DOWNSAMPLE = min(
 )
 _OPTICAL_SHELL_CORNER_RADIUS_INFLATION = 0.95
 _OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER = 0.22
-_OPTICAL_SHELL_SUPPORT_DIRECTION_EXPONENT = 0.72
 _SHELL_WARP_KERNEL = None
 _SHELL_WARP_KERNEL_SOURCE = """
 float sdRoundRect(vec2 p, vec2 b, float r) {
@@ -77,16 +76,11 @@ kernel vec2 opticalShellWarp(
     vec2 n = normalize(vec2(sdfx, sdfy) + vec2(1e-4, 1e-4));
     float outside = step(0.0, sdf);
     float capsuleRadius = max(halfRect.y, 1.0);
-    float spineHalf = max(halfRect.x - capsuleRadius, 1.0);
-    float rho = length(p);
-    vec2 dir = rho > 1e-4 ? p / rho : vec2(0.0, 1.0);
-    float supportDir = pow(abs(dir.x), __OPTICAL_SHELL_SUPPORT_DIRECTION_EXPONENT__);
-    float supportRadius = spineHalf * supportDir + capsuleRadius;
     float curveBoost = min(
         0.95,
         max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
     );
-    float field01 = clamp(rho / max(supportRadius, 1e-3), 0.0, 1.0);
+    float field01 = clamp(1.0 + sdf / capsuleRadius, 0.0, 1.0);
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;
     vec2 src = c + p * scale;
@@ -94,10 +88,7 @@ kernel vec2 opticalShellWarp(
     vec2 outsideSrc = d - n * outsideTail;
     return mix(src, outsideSrc, outside);
 }
-""".replace("__OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__", str(_OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER)).replace(
-    "__OPTICAL_SHELL_SUPPORT_DIRECTION_EXPONENT__",
-    str(_OPTICAL_SHELL_SUPPORT_DIRECTION_EXPONENT),
-)
+""".replace("__OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__", str(_OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER))
 
 _BRIDGE_STATE: dict[str, object] | None = None
 _BRIDGE_LOCK = threading.Lock()
@@ -280,18 +271,20 @@ def _optical_shell_center_bias_coordinate(coord01: float, curve_boost: float) ->
     return 1.0 - _optical_shell_depth_remap(1.0 - coord, curve_boost)
 
 
-def _optical_shell_pill_support_radius(
+def _optical_shell_pill_offset_sdf(
     offset_x: float,
     offset_y: float,
     content_width: float,
     content_height: float,
 ) -> float:
-    spine_half = _optical_shell_capsule_spine_half_length(content_width, content_height)
-    capsule_radius = max(float(content_height) * 0.5, 1.0)
-    rho = math.hypot(float(offset_x), float(offset_y))
-    dir_x = abs(float(offset_x)) / rho if rho > 1e-6 else 0.0
-    support_dir = dir_x ** _OPTICAL_SHELL_SUPPORT_DIRECTION_EXPONENT
-    return spine_half * support_dir + capsule_radius
+    half_width = max(float(content_width) * 0.5, 1.0)
+    half_height = max(float(content_height) * 0.5, 1.0)
+    corner_radius = half_height
+    qx = abs(float(offset_x)) - half_width + corner_radius
+    qy = abs(float(offset_y)) - half_height + corner_radius
+    outside = math.hypot(max(qx, 0.0), max(qy, 0.0))
+    inside = min(max(qx, qy), 0.0)
+    return outside + inside - corner_radius
 
 
 def _optical_shell_pill_field01(
@@ -300,14 +293,14 @@ def _optical_shell_pill_field01(
     content_width: float,
     content_height: float,
 ) -> float:
-    rho = math.hypot(float(offset_x), float(offset_y))
-    support_radius = _optical_shell_pill_support_radius(
+    capsule_radius = max(float(content_height) * 0.5, 1.0)
+    sdf = _optical_shell_pill_offset_sdf(
         offset_x,
         offset_y,
         content_width,
         content_height,
     )
-    return min(rho / max(support_radius, 1e-3), 1.0)
+    return min(max(1.0 + sdf / capsule_radius, 0.0), 1.0)
 
 
 def _optical_shell_debug_field01(

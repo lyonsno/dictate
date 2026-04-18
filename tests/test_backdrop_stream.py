@@ -1099,41 +1099,35 @@ def test_optical_shell_capsule_longitudinal01_tracks_cap_angle():
     assert 0.76 < cap_shoulder < 0.86
 
 
-def test_optical_shell_pill_support_radius_tracks_capsule_direction():
+def test_optical_shell_pill_offset_sdf_tracks_nested_pill_offsets():
     mod = _import_module()
 
-    horizontal = mod._optical_shell_pill_support_radius(120.0, 0.0, 240.0, 100.0)
-    vertical = mod._optical_shell_pill_support_radius(0.0, 30.0, 240.0, 100.0)
-    diagonal = mod._optical_shell_pill_support_radius(40.0, 20.0, 240.0, 100.0)
+    center = mod._optical_shell_pill_offset_sdf(0.0, 0.0, 240.0, 100.0)
+    body = mod._optical_shell_pill_offset_sdf(110.0, 0.0, 240.0, 100.0)
+    side = mod._optical_shell_pill_offset_sdf(0.0, 40.0, 240.0, 100.0)
+    cap = mod._optical_shell_pill_offset_sdf(70.0 + 40.0 / math.sqrt(2.0), 40.0 / math.sqrt(2.0), 240.0, 100.0)
 
-    assert horizontal == pytest.approx(120.0)
-    assert vertical == pytest.approx(50.0)
-    assert vertical < diagonal < horizontal
-
-
-def test_optical_shell_support_direction_softens_interior_angles():
-    mod = _import_module()
-
-    quarter = 0.25 ** mod._OPTICAL_SHELL_SUPPORT_DIRECTION_EXPONENT
-    diagonal = 0.5 ** mod._OPTICAL_SHELL_SUPPORT_DIRECTION_EXPONENT
-
-    assert quarter > 0.35
-    assert diagonal > 0.6
-    assert diagonal < 1.0
+    assert center == pytest.approx(-50.0)
+    assert body == pytest.approx(-10.0)
+    assert side == pytest.approx(-10.0)
+    assert cap == pytest.approx(-10.0, abs=1e-3)
 
 
 def test_optical_shell_pill_field01_tracks_scaled_capsule_family():
     mod = _import_module()
 
-    support = mod._optical_shell_pill_support_radius(40.0, 20.0, 240.0, 100.0)
-    scale = 0.5 * support / math.hypot(40.0, 20.0)
-    field_x = mod._optical_shell_pill_field01(60.0, 0.0, 240.0, 100.0)
-    field_y = mod._optical_shell_pill_field01(0.0, 25.0, 240.0, 100.0)
-    field_diag = mod._optical_shell_pill_field01(40.0 * scale, 20.0 * scale, 240.0, 100.0)
+    field_x = mod._optical_shell_pill_field01(110.0, 0.0, 240.0, 100.0)
+    field_y = mod._optical_shell_pill_field01(0.0, 40.0, 240.0, 100.0)
+    field_diag = mod._optical_shell_pill_field01(
+        70.0 + 40.0 / math.sqrt(2.0),
+        40.0 / math.sqrt(2.0),
+        240.0,
+        100.0,
+    )
 
-    assert field_x == pytest.approx(0.5)
-    assert field_y == pytest.approx(0.5)
-    assert field_diag == pytest.approx(0.5, abs=1e-3)
+    assert field_x == pytest.approx(0.8)
+    assert field_y == pytest.approx(0.8)
+    assert field_diag == pytest.approx(0.8, abs=1e-3)
 
 
 def test_optical_shell_debug_field01_uses_remapped_scalar_not_raw_capsule_field():
@@ -1144,26 +1138,28 @@ def test_optical_shell_debug_field01_uses_remapped_scalar_not_raw_capsule_field(
     raw_shoulder = mod._optical_shell_pill_field01(75.0, 20.0, 240.0, 100.0)
     debug_shoulder = mod._optical_shell_debug_field01(75.0, 20.0, 240.0, 100.0, 0.95)
 
-    assert raw_mid == pytest.approx(0.5)
-    assert 0.26 < debug_mid < raw_mid
+    assert raw_mid == pytest.approx(0.0)
+    assert debug_mid == pytest.approx(0.0)
     assert raw_shoulder > raw_mid
-    assert 0.43 < debug_shoulder < raw_shoulder
+    assert 0.26 < debug_shoulder < raw_shoulder
     assert debug_mid < debug_shoulder
 
 
 def test_optical_shell_debug_field01_keeps_body_flatter_before_rim_steepening():
     mod = _import_module()
 
-    center_near = mod._optical_shell_debug_field01(30.0, 0.0, 240.0, 100.0, 0.95)
+    center = mod._optical_shell_debug_field01(0.0, 0.0, 240.0, 100.0, 0.95)
     mid_body = mod._optical_shell_debug_field01(60.0, 0.0, 240.0, 100.0, 0.95)
     shoulder = mod._optical_shell_debug_field01(75.0, 20.0, 240.0, 100.0, 0.95)
-    near_rim = mod._optical_shell_debug_field01(105.0, 0.0, 240.0, 100.0, 0.95)
+    inset_body = mod._optical_shell_debug_field01(110.0, 0.0, 240.0, 100.0, 0.95)
+    near_rim = mod._optical_shell_debug_field01(119.0, 0.0, 240.0, 100.0, 0.95)
 
-    assert 0.1 < center_near < 0.16
-    assert 0.35 < mid_body < 0.4
-    assert 0.56 < shoulder < 0.61
-    assert 0.84 < near_rim < 0.88
-    assert center_near < mid_body < shoulder < near_rim
+    assert center == pytest.approx(0.0)
+    assert mid_body == pytest.approx(0.0)
+    assert 0.26 < shoulder < 0.3
+    assert 0.75 < inset_body < 0.79
+    assert 0.97 < near_rim < 0.99
+    assert center == mid_body < shoulder < inset_body < near_rim
 
 
 def test_optical_shell_inside_depth01_tracks_rounded_rect_depth():
@@ -1185,12 +1181,7 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
     source = mod._SHELL_WARP_KERNEL_SOURCE
 
     assert "float capsuleRadius = max(halfRect.y, 1.0);" in source
-    assert "float spineHalf = max(halfRect.x - capsuleRadius, 1.0);" in source
-    assert "float rho = length(p);" in source
-    assert "vec2 dir = rho > 1e-4 ? p / rho : vec2(0.0, 1.0);" in source
-    assert "float supportDir = pow(abs(dir.x), 0.72);" in source
-    assert "float supportRadius = spineHalf * supportDir + capsuleRadius;" in source
-    assert "float field01 = clamp(rho / max(supportRadius, 1e-3), 0.0, 1.0);" in source
+    assert "float field01 = clamp(1.0 + sdf / capsuleRadius, 0.0, 1.0);" in source
     assert "float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);" in source
     assert "float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;" in source
     assert "vec2 src = c + p * scale;" in source
