@@ -16,6 +16,7 @@ import logging
 import math
 import os
 from collections.abc import Callable
+from types import SimpleNamespace
 
 import objc
 from AppKit import (
@@ -31,24 +32,37 @@ from AppKit import (
     NSWindowCollectionBehaviorFullScreenAuxiliary,
     NSWindowCollectionBehaviorStationary,
 )
-from Foundation import NSMakeRect, NSObject, NSTimer
+from Foundation import NSMakeRect, NSObject, NSRunLoop, NSTimer
 from Quartz import CALayer, CAShapeLayer, CGPathCreateWithRoundedRect
 
+from .backdrop_stream import (
+    _apply_optical_shell_warp_ci_image,
+    _debug_shell_grid_ci_image,
+    make_backdrop_renderer,
+)
 from .overlay import _OVERLAY_WINDOW_LEVEL
 
 logger = logging.getLogger(__name__)
+_BACKDROP_DISPLAY_LAYER_CLASS = None
 
 def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
     return float(v) if v is not None else default
 
 
-_OVERLAY_WIDTH = 600.0
-_OVERLAY_HEIGHT = 80.0
+def _env_bool(name: str, default: bool) -> bool:
+    v = os.environ.get(name)
+    if v is None:
+        return default
+    return v not in {"0", "false", "False", "no", "off"}
+
+
+_OVERLAY_WIDTH = _env("SPOKE_COMMAND_OVERLAY_WIDTH", 600.0)
+_OVERLAY_HEIGHT = _env("SPOKE_COMMAND_OVERLAY_HEIGHT", 80.0)
 _COMMAND_OVERLAY_WINDOW_LEVEL = _OVERLAY_WINDOW_LEVEL + 1
 _OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 300.0)
 _OVERLAY_TOP_MARGIN = _env("SPOKE_COMMAND_OVERLAY_TOP_MARGIN", 140.0)
-_OVERLAY_CORNER_RADIUS = 16.0
+_OVERLAY_CORNER_RADIUS = _env("SPOKE_COMMAND_OVERLAY_CORNER_RADIUS", 16.0)
 _FONT_SIZE = 16.0
 _FADE_IN_S = 0.7
 _ENTRANCE_POP_SCALE = 1.015  # ~1mm overshoot on a 600px overlay
@@ -86,6 +100,98 @@ _OUTER_FEATHER = 220.0  # match preview overlay — room for the stretched-exp t
 _INNER_GLOW_DEPTH = 30.0
 _OUTER_GLOW_PEAK_TARGET = 0.35
 _BRIGHTNESS_CHASE = 0.08
+_POINTS_PER_CM = 72.0 / 2.54
+_COMMAND_BACKDROP_OVERSCAN_CM = _env("SPOKE_COMMAND_BACKDROP_OVERSCAN_CM", 1.5)
+_COMMAND_BACKDROP_BLUR_RADIUS = _env("SPOKE_COMMAND_BACKDROP_BLUR_RADIUS", 9.0)
+_COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER = _env(
+    "SPOKE_COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER", 3.0
+)
+_COMMAND_BACKDROP_PULSE_TIERS = max(
+    1, int(round(_env("SPOKE_COMMAND_BACKDROP_PULSE_TIERS", 4.0)))
+)
+_COMMAND_BACKDROP_PULSE_ATTACK = _env("SPOKE_COMMAND_BACKDROP_PULSE_ATTACK", 0.38)
+_COMMAND_BACKDROP_PULSE_RELEASE = _env("SPOKE_COMMAND_BACKDROP_PULSE_RELEASE", 0.12)
+_COMMAND_BACKDROP_PULSE_BLUR_MIN_MULTIPLIER = _env(
+    "SPOKE_COMMAND_BACKDROP_PULSE_BLUR_MIN_MULTIPLIER", 0.74
+)
+_COMMAND_BACKDROP_PULSE_BLUR_MAX_MULTIPLIER = _env(
+    "SPOKE_COMMAND_BACKDROP_PULSE_BLUR_MAX_MULTIPLIER", 1.18
+)
+_COMMAND_BACKDROP_PULSE_MASK_MIN_MULTIPLIER = _env(
+    "SPOKE_COMMAND_BACKDROP_PULSE_MASK_MIN_MULTIPLIER", 0.8
+)
+_COMMAND_BACKDROP_PULSE_MASK_MAX_MULTIPLIER = _env(
+    "SPOKE_COMMAND_BACKDROP_PULSE_MASK_MAX_MULTIPLIER", 1.55
+)
+_COMMAND_BACKDROP_PULSE_OPACITY_MIN = _env(
+    "SPOKE_COMMAND_BACKDROP_PULSE_OPACITY_MIN", 0.86
+)
+_COMMAND_BACKDROP_PULSE_OPACITY_MAX = _env(
+    "SPOKE_COMMAND_BACKDROP_PULSE_OPACITY_MAX", 1.0
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED = _env_bool(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", False
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_CORE_MAGNIFICATION = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_CORE_MAGNIFICATION", 1.55
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_BAND_MM = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_BAND_MM", 4.0
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_MM = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_MM", 3.0
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_RING_REFRACTION_LEGACY = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_REFRACTION", 2.6
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_REFRACTION_LEGACY = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_REFRACTION", 0.75
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_RING_AMPLITUDE_POINTS = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_RING_AMPLITUDE_POINTS",
+    (_COMMAND_BACKDROP_OPTICAL_SHELL_BAND_MM / 10.0)
+    * _POINTS_PER_CM
+    * _COMMAND_BACKDROP_OPTICAL_SHELL_RING_REFRACTION_LEGACY,
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS",
+    (_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_MM / 10.0)
+    * _POINTS_PER_CM
+    * _COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_REFRACTION_LEGACY,
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS", 0.75
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_DARK = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_DARK", 0.08
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_DARK = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_DARK", 0.18
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_LIGHT = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_LIGHT", 0.14
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_LIGHT = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_LIGHT", 0.38
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_SPRING_OPACITY_SCALE = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_SPRING_OPACITY_SCALE", 0.16
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL = _env_bool(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL", False
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE = _env_bool(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE", False
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_MASK_WIDTH_MULTIPLIER = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_MASK_WIDTH_MULTIPLIER", 0.18
+)
+_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS = _env(
+    "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS", 18.0
+)
+_COMMAND_BACKDROP_REFRESH_S = _env("SPOKE_COMMAND_BACKDROP_REFRESH_S", 1.0 / 30.0)
+_RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
+_EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
 
 # Adaptive compositing for command output.
 _USER_TEXT_COLOR_DARK = (0.92, 0.95, 1.0)
@@ -93,6 +199,26 @@ _USER_TEXT_COLOR_LIGHT = (0.10, 0.12, 0.16)
 _RESPONSE_TEXT_LIGHT_BG_TARGET = (0.07, 0.08, 0.11)
 _THINKING_CUTOUT_DARK = (0.05, 0.05, 0.06)
 _THINKING_CUTOUT_LIGHT = (0.80, 0.80, 0.78)
+
+
+def _backdrop_display_layer_class():
+    global _BACKDROP_DISPLAY_LAYER_CLASS
+    if _BACKDROP_DISPLAY_LAYER_CLASS is not None:
+        return _BACKDROP_DISPLAY_LAYER_CLASS
+    if not hasattr(objc, "loadBundle") or not hasattr(objc, "lookUpClass"):
+        _BACKDROP_DISPLAY_LAYER_CLASS = False
+        return None
+    try:
+        objc.loadBundle(
+            "AVFoundation",
+            globals(),
+            bundle_path="/System/Library/Frameworks/AVFoundation.framework",
+        )
+        _BACKDROP_DISPLAY_LAYER_CLASS = objc.lookUpClass("AVSampleBufferDisplayLayer")
+    except Exception:
+        logger.debug("AVSampleBufferDisplayLayer unavailable for command backdrop", exc_info=True)
+        _BACKDROP_DISPLAY_LAYER_CLASS = False
+    return _BACKDROP_DISPLAY_LAYER_CLASS or None
 
 
 def _clamp01(value: float) -> float:
@@ -139,6 +265,72 @@ def _assistant_text_alpha_for_breath(breath: float) -> float:
     return _lerp(_ASSISTANT_TEXT_ALPHA_MIN, _ASSISTANT_TEXT_ALPHA_MAX, _clamp01(breath))
 
 
+def _quantize_unit_interval(value: float, steps: int) -> float:
+    clamped = _clamp01(value)
+    if steps <= 1:
+        return clamped
+    return round(clamped * (steps - 1)) / float(steps - 1)
+
+
+def _advance_attack_release(current: float, target: float, *, attack: float, release: float) -> float:
+    rate = attack if target > current else release
+    return current + (_clamp01(target) - current) * _clamp01(rate)
+
+
+def _command_backdrop_pulse_style(
+    base_blur_radius_points: float,
+    base_mask_width_multiplier: float,
+    blur_drive: float,
+) -> tuple[float, float, float]:
+    drive = _quantize_unit_interval(blur_drive, _COMMAND_BACKDROP_PULSE_TIERS)
+    blur_radius_points = max(
+        0.0,
+        base_blur_radius_points
+        * _lerp(
+            _COMMAND_BACKDROP_PULSE_BLUR_MIN_MULTIPLIER,
+            _COMMAND_BACKDROP_PULSE_BLUR_MAX_MULTIPLIER,
+            drive,
+        ),
+    )
+    mask_width_multiplier = max(
+        0.0,
+        base_mask_width_multiplier
+        * _lerp(
+            _COMMAND_BACKDROP_PULSE_MASK_MIN_MULTIPLIER,
+            _COMMAND_BACKDROP_PULSE_MASK_MAX_MULTIPLIER,
+            drive,
+        ),
+    )
+    # The sampled backdrop is the replacement background inside the masked region.
+    # If we fade it down during the airy phase, the live crisp desktop leaks through
+    # the transparent window and the blur reads like a translucent wash instead.
+    backdrop_opacity = 1.0
+    return blur_radius_points, mask_width_multiplier, backdrop_opacity
+
+
+def _command_backdrop_blur_target_for_presence(presence: float) -> float:
+    return 1.0 - _clamp01(presence)
+
+
+def _command_optical_shell_config() -> dict[str, float | bool] | None:
+    if not _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+        return None
+    return {
+        "enabled": True,
+        "content_width_points": _OVERLAY_WIDTH,
+        "content_height_points": _OVERLAY_HEIGHT,
+        "corner_radius_points": _OVERLAY_CORNER_RADIUS,
+        "core_magnification": _COMMAND_BACKDROP_OPTICAL_SHELL_CORE_MAGNIFICATION,
+        "band_width_points": _cm_to_points(_COMMAND_BACKDROP_OPTICAL_SHELL_BAND_MM / 10.0),
+        "tail_width_points": _cm_to_points(_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_MM / 10.0),
+        "ring_amplitude_points": _COMMAND_BACKDROP_OPTICAL_SHELL_RING_AMPLITUDE_POINTS,
+        "tail_amplitude_points": _COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS,
+        "debug_visualize": _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE,
+        "debug_grid_spacing_points": _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS,
+        "cleanup_blur_radius_points": _COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS,
+    }
+
+
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
     from .overlay import _fill_compositing_filter_for_brightness as _preview_fill_compositing_filter_for_brightness
 
@@ -148,6 +340,164 @@ def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
 def _ease_in(progress: float) -> float:
     clamped = _clamp01(progress)
     return clamped * clamped
+
+
+def _cm_to_points(cm: float) -> float:
+    return max(cm, 0.0) * _POINTS_PER_CM
+
+
+def _command_backdrop_capture_overscan_points() -> float:
+    # The blur neighborhood only needs enough extra image to support a
+    # graceful fade beyond the bubble perimeter; it should stay much tighter
+    # than the full SDF feather/glow margin.
+    return _cm_to_points(_COMMAND_BACKDROP_OVERSCAN_CM)
+
+
+def _command_backdrop_capture_overscan_pixels(backing_scale: float) -> float:
+    return _command_backdrop_capture_overscan_points() * max(backing_scale, 0.0)
+
+
+def _backdrop_capture_rect(screen_frame, window_frame, content_frame, overscan_points: float):
+    overscan = max(overscan_points, 0.0)
+    x = window_frame.origin.x + content_frame.origin.x - overscan
+    width = content_frame.size.width + 2 * overscan
+    height = content_frame.size.height + 2 * overscan
+    cocoa_y = window_frame.origin.y + content_frame.origin.y - overscan
+    screen_origin_y = getattr(screen_frame.origin, "y", 0.0)
+    screen_height = getattr(screen_frame.size, "height", 0.0)
+    y = screen_origin_y + screen_height - (cocoa_y - screen_origin_y) - height
+    return SimpleNamespace(
+        origin=SimpleNamespace(x=x, y=y),
+        size=SimpleNamespace(width=width, height=height),
+    )
+
+
+def _backdrop_capture_pixel_size(capture_rect, backing_scale: float) -> tuple[float, float]:
+    scale = max(backing_scale, 0.0)
+    return (
+        capture_rect.size.width * scale,
+        capture_rect.size.height * scale,
+    )
+
+
+def _pin_timer_to_active_run_loop_modes(timer) -> None:
+    if timer is None:
+        return
+    try:
+        run_loop = NSRunLoop.currentRunLoop()
+    except Exception:
+        return
+    for mode in (_RUN_LOOP_COMMON_MODE, _EVENT_TRACKING_RUN_LOOP_MODE):
+        try:
+            run_loop.addTimer_forMode_(timer, mode)
+        except Exception:
+            logger.debug("Failed to add command backdrop timer to run loop mode %s", mode, exc_info=True)
+
+
+def _backdrop_mask_alpha(signed_distance, width: float):
+    import numpy as np
+
+    outside = np.exp(-np.sqrt(np.maximum(signed_distance, 0.0) / max(width, 1e-6)))
+    return np.where(signed_distance <= 0.0, 1.0, outside).astype(np.float32)
+
+
+def _command_backdrop_mask_falloff_width(scale: float) -> float:
+    return max(scale, 1e-6) * max(_COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER, 0.0)
+
+
+class _QuartzBackdropRenderer:
+    """Best-effort snapshot renderer for the assistant backdrop prototype."""
+
+    def __init__(self) -> None:
+        self._ci_context = None
+
+    def _context(self):
+        if self._ci_context is not None:
+            return self._ci_context
+        try:
+            from Quartz import CIContext
+        except Exception:
+            return None
+        try:
+            self._ci_context = CIContext.contextWithOptions_(None)
+        except Exception:
+            logger.debug("Failed to create CIContext for command backdrop", exc_info=True)
+            self._ci_context = None
+        return self._ci_context
+
+    def capture_blurred_image(self, *, window_number: int, capture_rect, blur_radius_points: float):
+        if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE:
+            context = self._context()
+            if context is not None and hasattr(context, "createCGImage_fromRect_"):
+                shell_config = _command_optical_shell_config()
+                if shell_config is not None:
+                    extent = NSMakeRect(0.0, 0.0, capture_rect.size.width, capture_rect.size.height)
+                    output = _debug_shell_grid_ci_image(extent, shell_config)
+                    if output is not None:
+                        output = _apply_optical_shell_warp_ci_image(output, extent, shell_config)
+                        try:
+                            image = context.createCGImage_fromRect_(output, extent)
+                        except Exception:
+                            logger.debug("Failed to seed debug shell grid image in Quartz backdrop renderer", exc_info=True)
+                            image = None
+                        if image is not None:
+                            return image
+        try:
+            from Quartz import (
+                CGWindowListCreateImage,
+                kCGWindowListOptionOnScreenBelowWindow,
+            )
+        except Exception:
+            return None
+
+        rect = (
+            (capture_rect.origin.x, capture_rect.origin.y),
+            (capture_rect.size.width, capture_rect.size.height),
+        )
+        try:
+            image = CGWindowListCreateImage(
+                rect,
+                kCGWindowListOptionOnScreenBelowWindow,
+                window_number,
+                0,
+            )
+        except Exception:
+            logger.debug("Backdrop snapshot capture failed", exc_info=True)
+            return None
+        if image is None or blur_radius_points <= 0.0:
+            return image
+
+        try:
+            from Quartz import CIImage, CIFilter
+        except Exception:
+            return image
+
+        try:
+            context = self._context()
+            if context is None:
+                return image
+            ci_image = CIImage.imageWithCGImage_(image)
+            blur = CIFilter.filterWithName_("CIGaussianBlur")
+            if blur is None:
+                return image
+            blur.setDefaults()
+            blur.setValue_forKey_(ci_image, "inputImage")
+            blur.setValue_forKey_(blur_radius_points, "inputRadius")
+            output = blur.valueForKey_("outputImage")
+            if output is None:
+                return image
+            extent = ci_image.extent() if hasattr(ci_image, "extent") else None
+            if extent is not None and hasattr(output, "imageByCroppingToRect_"):
+                output = output.imageByCroppingToRect_(extent)
+            if extent is None and hasattr(output, "extent"):
+                extent = output.extent()
+            if extent is None or not hasattr(context, "createCGImage_fromRect_"):
+                return image
+            blurred = context.createCGImage_fromRect_(output, extent)
+            return blurred or image
+        except Exception:
+            logger.debug("Backdrop blur pass failed; using unblurred snapshot", exc_info=True)
+            return image
 
 
 def _dismiss_animation_state(elapsed_s: float) -> tuple[str, float, float, bool]:
@@ -227,6 +577,20 @@ class CommandOverlay(NSObject):
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
         self._brightness_target = 0.0
+        self._backdrop_base_blur_radius_points = _COMMAND_BACKDROP_BLUR_RADIUS
+        self._backdrop_blur_radius_points = _COMMAND_BACKDROP_BLUR_RADIUS
+        self._backdrop_base_mask_width_multiplier = _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER
+        self._backdrop_mask_width_multiplier = _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER
+        self._backdrop_blur_drive = 0.0
+        self._backdrop_renderer = make_backdrop_renderer(
+            self._screen,
+            lambda: _QuartzBackdropRenderer(),
+        )
+        self._backdrop_layer = None
+        self._backdrop_capture_overscan_points = _command_backdrop_capture_overscan_points()
+        self._backdrop_capture_rect = None
+        self._backdrop_capture_pixel_size = None
+        self._backdrop_timer: NSTimer | None = None
 
         return self
 
@@ -279,13 +643,27 @@ class CommandOverlay(NSObject):
 
         self._ridge_scale = self._screen.backingScaleFactor() if hasattr(self._screen, 'backingScaleFactor') else 2.0
 
+        backdrop_layer_cls = self._choose_backdrop_layer_class()
+        self._backdrop_layer = backdrop_layer_cls.alloc().init()
+        self._backdrop_layer_is_sample_buffer_display = (
+            backdrop_layer_cls is not CALayer and hasattr(self._backdrop_layer, "enqueueSampleBuffer_")
+        )
+        if hasattr(self._backdrop_layer, "setContentsGravity_"):
+            self._backdrop_layer.setContentsGravity_("resize")
+        elif hasattr(self._backdrop_layer, "setVideoGravity_"):
+            self._backdrop_layer.setVideoGravity_("resize")
+        self._backdrop_layer.setOpacity_(1.0)
+
         # Fill layer — colored SDF image with baked alpha, same as preview overlay
         self._fill_layer = CALayer.alloc().init()
         self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
         self._fill_layer.setContentsGravity_("resize")
 
         self._apply_ridge_masks(w, h)
+        wrapper.layer().insertSublayer_below_(self._backdrop_layer, self._fill_layer)
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
+        self._install_backdrop_frame_callback()
+        self._install_backdrop_sample_buffer_callback()
 
         # Cancel spring tint layer — sits above fill, masked to the same SDF shape
         self._spring_tint_layer = CALayer.alloc().init()
@@ -386,8 +764,111 @@ class CommandOverlay(NSObject):
         self._window.setAlphaValue_(0.0)
         self._apply_surface_theme()
         self._set_overlay_scale(1.0)
+        self._update_backdrop_capture_geometry()
+
+    def _choose_backdrop_layer_class(self):
+        if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE:
+            return CALayer
+        renderer = getattr(self, "_backdrop_renderer", None)
+        blur_radius_points = getattr(self, "_backdrop_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS)
+        if renderer is not None and hasattr(renderer, "supports_sample_buffer_presentation"):
+            try:
+                if renderer.supports_sample_buffer_presentation(blur_radius_points):
+                    display_layer_class = _backdrop_display_layer_class()
+                    if display_layer_class is not None:
+                        return display_layer_class
+            except Exception:
+                logger.debug("Command backdrop renderer sample-buffer capability check failed", exc_info=True)
+        return CALayer
 
         logger.info("Command overlay created")
+
+    def _backdrop_layer_uses_sample_buffers(self) -> bool:
+        return bool(getattr(self, "_backdrop_layer_is_sample_buffer_display", False))
+
+    def _reset_backdrop_layer(self) -> None:
+        layer = getattr(self, "_backdrop_layer", None)
+        if layer is None:
+            return
+        if self._backdrop_layer_uses_sample_buffers() and hasattr(layer, "flushAndRemoveImage"):
+            try:
+                layer.flushAndRemoveImage()
+            except Exception:
+                logger.debug("Failed to flush command backdrop display layer", exc_info=True)
+        if hasattr(layer, "setContents_"):
+            layer.setContents_(None)
+        if hasattr(layer, "setMask_"):
+            layer.setMask_(None)
+
+    def _apply_backdrop_pulse_style(self, breath: float) -> None:
+        layer = getattr(self, "_backdrop_layer", None)
+        if layer is None:
+            return
+        blur_target = _command_backdrop_blur_target_for_presence(breath)
+        self._backdrop_blur_drive = _advance_attack_release(
+            getattr(self, "_backdrop_blur_drive", blur_target),
+            blur_target,
+            attack=_COMMAND_BACKDROP_PULSE_ATTACK,
+            release=_COMMAND_BACKDROP_PULSE_RELEASE,
+        )
+        base_blur_radius_points = getattr(
+            self, "_backdrop_base_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS
+        )
+        base_mask_width_multiplier = getattr(
+            self,
+            "_backdrop_base_mask_width_multiplier",
+            _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER,
+        )
+        (
+            blur_radius_points,
+            mask_width_multiplier,
+            backdrop_opacity,
+        ) = _command_backdrop_pulse_style(
+            base_blur_radius_points,
+            base_mask_width_multiplier,
+            self._backdrop_blur_drive,
+        )
+        if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE:
+            mask_width_multiplier = min(
+                mask_width_multiplier,
+                _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_MASK_WIDTH_MULTIPLIER,
+            )
+        renderer = getattr(self, "_backdrop_renderer", None)
+        shell_config = _command_optical_shell_config()
+        effective_blur_radius_points = blur_radius_points
+        if shell_config is not None:
+            effective_blur_radius_points = float(
+                shell_config["cleanup_blur_radius_points"]
+            )
+        self._backdrop_blur_radius_points = effective_blur_radius_points
+        if renderer is not None and hasattr(renderer, "set_live_blur_radius_points"):
+            try:
+                renderer.set_live_blur_radius_points(effective_blur_radius_points)
+            except Exception:
+                logger.debug("Failed to push live command backdrop blur radius", exc_info=True)
+        if renderer is not None and hasattr(renderer, "set_live_optical_shell_config"):
+            try:
+                renderer.set_live_optical_shell_config(shell_config)
+            except Exception:
+                logger.debug("Failed to push command optical-shell config", exc_info=True)
+        last_mask_width_multiplier = getattr(
+            self,
+            "_backdrop_mask_width_multiplier",
+            base_mask_width_multiplier,
+        )
+        self._backdrop_mask_width_multiplier = mask_width_multiplier
+        if abs(mask_width_multiplier - last_mask_width_multiplier) > 1e-6:
+            capture_rect = getattr(self, "_backdrop_capture_rect", None)
+            if capture_rect is not None:
+                try:
+                    mask_width = float(capture_rect.size.width)
+                    mask_height = float(capture_rect.size.height)
+                except (TypeError, ValueError):
+                    mask_width = None
+                    mask_height = None
+                if mask_width is not None and mask_height is not None:
+                    self._update_backdrop_mask(mask_width, mask_height)
+        layer.setOpacity_(backdrop_opacity)
 
     # ── public interface ────────────────────────────────────
 
@@ -436,8 +917,12 @@ class CommandOverlay(NSObject):
         self._apply_ridge_masks(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         self._fill_image_brightness = self._brightness
         self._apply_surface_theme()
+        self._update_backdrop_capture_geometry()
+        self._apply_backdrop_pulse_style(1.0)
+        self._reset_backdrop_layer()
 
         self._window.orderFrontRegardless()
+        self._refresh_backdrop_snapshot()
 
         # Entrance pop — start slightly oversized, ease back to 1.0.
         # Runs concurrently with the fade-in for a subtle "I just arrived" feel.
@@ -470,6 +955,7 @@ class CommandOverlay(NSObject):
 
         # Start or resume the thinking timer.
         self._start_thinking_timer(reset=not preserve_thinking_timer)
+        self._start_backdrop_refresh_timer()
 
     def set_brightness(self, brightness: float, immediate: bool = False) -> None:
         """Set screen brightness (0.0 dark – 1.0 bright) for adaptive compositing."""
@@ -518,6 +1004,7 @@ class CommandOverlay(NSObject):
             self._cancel_dismiss_animation()
             self._window.setAlphaValue_(0.0)
             self._set_overlay_scale(1.0)
+            self._reset_backdrop_layer()
             self._window.orderOut_(None)
             self._visible = False
             self._cancel_pulse()
@@ -809,6 +1296,7 @@ class CommandOverlay(NSObject):
             self._cancel_fade()
             if self._fade_direction == -1:
                 self._window.setAlphaValue_(0.0)
+                self._reset_backdrop_layer()
                 self._window.orderOut_(None)
                 self._cancel_pulse()  # now kill the pulse
             else:
@@ -852,6 +1340,7 @@ class CommandOverlay(NSObject):
         # (dips quickly). Raw sine → squared so it spends more time high.
         raw_breath = 0.5 * (1.0 + math.cos(2.0 * math.pi * self._pulse_phase_asst))
         breath = raw_breath * raw_breath  # squared: lingers near 1.0, dips briefly
+        self._apply_backdrop_pulse_style(breath)
         pulse_alpha_a = _assistant_text_alpha_for_breath(breath)
 
         # Smooth cross-fade between pulse and TTS-driven alpha over ~500ms.
@@ -996,10 +1485,31 @@ class CommandOverlay(NSObject):
         # Pulse the glow with assistant phase oscillating color
         glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
         glow_opacity = 0.5 + 0.3 * breath
-        # Drive the SDF fill layer with the pulse — the fill breathes
-        # with the assistant's thinking/response animation.
+        # Keep the assistant surface in the same materially present opacity
+        # band as the preview overlay on bright backgrounds. The preview gets
+        # its presence from a much more assertive fill ramp than the command
+        # overlay previously used, so mirror that shape here while preserving
+        # the pulse-driven rhythm.
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
-            self._fill_layer.setOpacity_(min(glow_opacity * 0.7, 0.85))
+            fill_drive = _lerp(breath, breath * breath, t)
+            if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+                fill_min = _lerp(
+                    _COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_DARK,
+                    _COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_LIGHT,
+                    t,
+                )
+                fill_max = _lerp(
+                    _COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_DARK,
+                    _COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_LIGHT,
+                    t,
+                )
+                if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL:
+                    fill_min = 0.0
+                    fill_max = 0.0
+            else:
+                fill_min = _lerp(0.30, 0.84, t)
+                fill_max = _lerp(0.92, 0.99, t)
+            self._fill_layer.setOpacity_(min(_lerp(fill_min, fill_max, fill_drive), 0.99))
         # Cancel spring: warm amber tint over the overlay shape.
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
             if spring > 0.01:
@@ -1007,7 +1517,14 @@ class CommandOverlay(NSObject):
                 # Warm golden-amber tint — visible, thermal, not alarming
                 cg_color = CGColorCreateSRGB(0.55, 0.38, 0.05, 1.0)
                 self._spring_tint_layer.setBackgroundColor_(cg_color)
-                self._spring_tint_layer.setOpacity_(0.5 * spring)
+                spring_scale = (
+                    _COMMAND_BACKDROP_OPTICAL_SHELL_SPRING_OPACITY_SCALE
+                    if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+                    else 0.5
+                )
+                if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL:
+                    spring_scale = 0.0
+                self._spring_tint_layer.setOpacity_(spring_scale * spring)
             else:
                 self._spring_tint_layer.setOpacity_(0.0)
 
@@ -1044,6 +1561,11 @@ class CommandOverlay(NSObject):
             self._linger_timer.invalidate()
             self._linger_timer = None
 
+    def _cancel_backdrop_refresh(self) -> None:
+        if self._backdrop_timer is not None:
+            self._backdrop_timer.invalidate()
+            self._backdrop_timer = None
+
     def _cancel_dismiss_animation(self) -> None:
         if self._cancel_timer_anim is not None:
             self._cancel_timer_anim.invalidate()
@@ -1060,6 +1582,7 @@ class CommandOverlay(NSObject):
         self._cancel_fade()
         self._cancel_pulse()
         self._cancel_linger()
+        self._cancel_backdrop_refresh()
         self._stop_thinking_timer()
 
     def _set_overlay_scale(self, scale: float) -> None:
@@ -1209,6 +1732,187 @@ class CommandOverlay(NSObject):
             mask.setContentsGravity_("resize")
             self._spring_tint_layer.setMask_(mask)
 
+    def _update_backdrop_capture_geometry(self):
+        if self._window is None or self._content_view is None or self._screen is None:
+            return None
+        try:
+            screen_frame = self._screen.frame()
+            win_frame = self._window.frame()
+            content_frame = self._content_view.frame()
+        except Exception:
+            return None
+
+        capture_rect = _backdrop_capture_rect(
+            screen_frame,
+            win_frame,
+            content_frame,
+            getattr(self, "_backdrop_capture_overscan_points", _command_backdrop_capture_overscan_points()),
+        )
+        pixel_size = _backdrop_capture_pixel_size(
+            capture_rect,
+            getattr(self, "_ridge_scale", 1.0),
+        )
+        self._backdrop_capture_rect = capture_rect
+        self._backdrop_capture_pixel_size = pixel_size
+        return capture_rect, pixel_size
+
+    def _update_backdrop_mask(self, width: float, height: float):
+        if self._backdrop_layer is None:
+            return
+        try:
+            from .overlay import (
+                _fill_field_to_image,
+                _overlay_rounded_rect_sdf,
+            )
+        except Exception:
+            return
+
+        overscan = getattr(self, "_backdrop_capture_overscan_points", _command_backdrop_capture_overscan_points())
+        scale = getattr(self, "_ridge_scale", 2.0)
+        inner_width = max(width - 2 * overscan, 1.0)
+        inner_height = max(height - 2 * overscan, 1.0)
+        try:
+            sdf = _overlay_rounded_rect_sdf(
+                width,
+                height,
+                inner_width,
+                inner_height,
+                _OVERLAY_CORNER_RADIUS,
+                scale,
+            )
+            alpha = _backdrop_mask_alpha(
+                sdf,
+                width=max(
+                    scale,
+                    _command_backdrop_mask_falloff_width(scale)
+                    * (
+                        getattr(
+                            self,
+                            "_backdrop_mask_width_multiplier",
+                            _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER,
+                        )
+                        / max(_COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER, 1e-6)
+                    ),
+                ),
+            )
+            mask_image, self._backdrop_mask_payload = _fill_field_to_image(
+                alpha,
+                255,
+                255,
+                255,
+            )
+        except Exception:
+            return
+
+        mask = CALayer.alloc().init()
+        mask.setFrame_(((0, 0), (width, height)))
+        mask.setContents_(mask_image)
+        mask.setContentsGravity_("resize")
+        self._backdrop_layer.setMask_(mask)
+
+    def _install_backdrop_frame_callback(self):
+        renderer = getattr(self, "_backdrop_renderer", None)
+        if renderer is None or not hasattr(renderer, "set_frame_callback"):
+            return
+        if self._backdrop_layer_uses_sample_buffers() or (
+            _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE
+        ):
+            renderer.set_frame_callback(None)
+            return
+
+        def apply_live_frame(image) -> None:
+            if self._backdrop_layer is None:
+                return
+            self._backdrop_layer.setContents_(image)
+
+        renderer.set_frame_callback(apply_live_frame)
+
+    def _install_backdrop_sample_buffer_callback(self):
+        renderer = getattr(self, "_backdrop_renderer", None)
+        layer = getattr(self, "_backdrop_layer", None)
+        if (
+            renderer is None
+            or layer is None
+            or not hasattr(renderer, "set_sample_buffer_callback")
+            or not hasattr(layer, "enqueueSampleBuffer_")
+        ):
+            return
+
+        def apply_live_sample_buffer(sample_buffer) -> None:
+            if self._backdrop_layer is None:
+                return
+            try:
+                self._backdrop_layer.enqueueSampleBuffer_(sample_buffer)
+            except Exception:
+                logger.debug("Failed to enqueue command backdrop sample buffer", exc_info=True)
+
+        renderer.set_sample_buffer_callback(apply_live_sample_buffer)
+
+    def _start_backdrop_refresh_timer(self):
+        self._cancel_backdrop_refresh()
+        if self._backdrop_renderer is None or self._backdrop_layer is None:
+            return
+        if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE:
+            return
+        self._backdrop_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _COMMAND_BACKDROP_REFRESH_S,
+            self,
+            "backdropRefreshTick:",
+            None,
+            True,
+        )
+        _pin_timer_to_active_run_loop_modes(self._backdrop_timer)
+
+    def backdropRefreshTick_(self, timer) -> None:
+        if not self._visible:
+            self._cancel_backdrop_refresh()
+            return
+        self._refresh_backdrop_snapshot()
+
+    def _refresh_backdrop_snapshot(self):
+        if (
+            self._backdrop_renderer is None
+            or self._backdrop_layer is None
+            or self._window is None
+            or self._content_view is None
+        ):
+            return None
+        geometry = self._update_backdrop_capture_geometry()
+        if geometry is None:
+            return None
+        capture_rect, _ = geometry
+        try:
+            window_number = self._window.windowNumber()
+        except Exception:
+            return None
+        blur_radius_points = getattr(self, "_backdrop_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS)
+        image = self._backdrop_renderer.capture_blurred_image(
+            window_number=window_number,
+            capture_rect=capture_rect,
+            blur_radius_points=blur_radius_points,
+        )
+        direct_sample_path = False
+        sample_buffer_query = getattr(self._backdrop_renderer, "uses_direct_sample_buffers", None)
+        if callable(sample_buffer_query):
+            try:
+                direct_sample_path = sample_buffer_query(blur_radius_points) is True
+            except Exception:
+                direct_sample_path = False
+        if image is None and not direct_sample_path:
+            return None
+
+        overscan = getattr(self, "_backdrop_capture_overscan_points", _command_backdrop_capture_overscan_points())
+        content_frame = self._content_view.frame()
+        local_x = content_frame.origin.x - overscan
+        local_y = content_frame.origin.y - overscan
+        local_w = capture_rect.size.width
+        local_h = capture_rect.size.height
+        self._backdrop_layer.setFrame_(((local_x, local_y), (local_w, local_h)))
+        if image is not None and hasattr(self._backdrop_layer, "setContents_"):
+            self._backdrop_layer.setContents_(image)
+        self._update_backdrop_mask(local_w, local_h)
+        return image
+
     # ── layout ──────────────────────────────────────────────
 
     def _update_layout(self) -> None:
@@ -1239,6 +1943,9 @@ class CommandOverlay(NSObject):
                     NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16)
                 )
                 self._apply_ridge_masks(_OVERLAY_WIDTH, new_height)
+                self._update_backdrop_capture_geometry()
+                if self._visible:
+                    self._refresh_backdrop_snapshot()
 
             end = (self._text_view.string().length()
                    if hasattr(self._text_view.string(), 'length')
