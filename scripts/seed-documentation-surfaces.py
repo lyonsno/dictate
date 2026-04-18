@@ -14,7 +14,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from spoke.documentation_surfaces import load_manifest, merge_seeded_entries, render_manifest
+from spoke.documentation_surfaces import (
+    collect_missing_seed_entries,
+    load_manifest,
+    merge_seeded_entries,
+    render_manifest,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,20 +42,28 @@ def main() -> int:
     args = parse_args()
     output_path = Path(args.output)
     manifest = load_manifest(output_path)
+    missing_entries: dict[str, dict] = {}
 
     for source in args.sources:
         source_path = Path(source)
+        new_entries = collect_missing_seed_entries(
+            manifest=manifest,
+            source_path=source_path,
+            markdown=source_path.read_text(encoding="utf-8"),
+        )
+        missing_entries.update(new_entries)
         manifest = merge_seeded_entries(
             manifest=manifest,
             source_path=source_path,
             markdown=source_path.read_text(encoding="utf-8"),
         )
 
-    rendered = render_manifest(manifest)
     if args.dry_run:
-        print(rendered, end="")
+        if missing_entries:
+            print(render_manifest({"capabilities": missing_entries}), end="")
         return 0
 
+    rendered = render_manifest(manifest)
     output_path.write_text(rendered, encoding="utf-8")
     print(f"Updated {output_path}")
     return 0

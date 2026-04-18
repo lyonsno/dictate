@@ -132,5 +132,17 @@ def merge_seeded_entries(
     return {"capabilities": capabilities}
 
 
+def collect_missing_seed_entries(
+    manifest: dict[str, Any],
+    source_path: Path,
+    markdown: str,
+) -> dict[str, dict[str, Any]]:
+    return seed_entries_from_markdown(
+        source_path=source_path,
+        markdown=markdown,
+        existing_ids=set(manifest.get("capabilities", {})),
+    )
+
+
 def _escape_toml_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
