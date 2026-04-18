@@ -48,7 +48,7 @@ float sdRoundRect(vec2 p, vec2 b, float r) {
 
 float depthRemap(float inside01, float curveBoost) {
     float x = clamp(inside01, 0.0, 1.0);
-    return clamp(x + curveBoost * x * (1.0 - x), 0.0, 1.0);
+    return clamp(x + curveBoost * x * x * (1.0 - x), 0.0, 1.0);
 }
 
 kernel vec2 opticalShellWarp(
@@ -181,7 +181,7 @@ def _optical_shell_curve_boost(core_magnification: float, ring_amplitude_points:
 def _optical_shell_depth_remap(inside01: float, curve_boost: float) -> float:
     inside = min(max(float(inside01), 0.0), 1.0)
     boost = min(max(float(curve_boost), 0.0), 0.95)
-    return min(max(inside + boost * inside * (1.0 - inside), 0.0), 1.0)
+    return min(max(inside + boost * inside * inside * (1.0 - inside), 0.0), 1.0)
 
 
 def _optical_shell_source_depth_points(source01: float, center_depth: float) -> float:

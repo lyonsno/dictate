@@ -1039,8 +1039,8 @@ def test_optical_shell_depth_remap_is_monotone_and_center_weighted():
     center = mod._optical_shell_depth_remap(1.0, 0.95)
 
     assert rim == 0.0
-    assert 0.4 < quarter < midpoint < near_center < center <= 1.0
-    assert midpoint > 0.72
+    assert 0.28 < quarter < midpoint < near_center < center <= 1.0
+    assert 0.58 < midpoint < 0.66
     assert near_center > 0.94
 
 
@@ -1138,6 +1138,21 @@ def test_optical_shell_debug_field01_uses_remapped_scalar_not_raw_capsule_field(
     assert raw_shoulder > raw_mid
     assert 0.43 < debug_shoulder < raw_shoulder
     assert debug_mid < debug_shoulder
+
+
+def test_optical_shell_debug_field01_keeps_body_flatter_before_rim_steepening():
+    mod = _import_module()
+
+    center_near = mod._optical_shell_debug_field01(30.0, 0.0, 240.0, 100.0, 0.95)
+    mid_body = mod._optical_shell_debug_field01(60.0, 0.0, 240.0, 100.0, 0.95)
+    shoulder = mod._optical_shell_debug_field01(75.0, 20.0, 240.0, 100.0, 0.95)
+    near_rim = mod._optical_shell_debug_field01(105.0, 0.0, 240.0, 100.0, 0.95)
+
+    assert 0.1 < center_near < 0.16
+    assert 0.35 < mid_body < 0.4
+    assert 0.56 < shoulder < 0.61
+    assert 0.84 < near_rim < 0.88
+    assert center_near < mid_body < shoulder < near_rim
 
 
 def test_optical_shell_inside_depth01_tracks_rounded_rect_depth():
