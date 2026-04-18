@@ -1111,6 +1111,17 @@ def test_optical_shell_pill_support_radius_tracks_capsule_direction():
     assert vertical < diagonal < horizontal
 
 
+def test_optical_shell_support_direction_softens_interior_angles():
+    mod = _import_module()
+
+    quarter = 0.25 ** mod._OPTICAL_SHELL_SUPPORT_DIRECTION_EXPONENT
+    diagonal = 0.5 ** mod._OPTICAL_SHELL_SUPPORT_DIRECTION_EXPONENT
+
+    assert quarter > 0.35
+    assert diagonal > 0.6
+    assert diagonal < 1.0
+
+
 def test_optical_shell_pill_field01_tracks_scaled_capsule_family():
     mod = _import_module()
 
@@ -1177,7 +1188,8 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
     assert "float spineHalf = max(halfRect.x - capsuleRadius, 1.0);" in source
     assert "float rho = length(p);" in source
     assert "vec2 dir = rho > 1e-4 ? p / rho : vec2(0.0, 1.0);" in source
-    assert "float supportRadius = spineHalf * abs(dir.x) + capsuleRadius;" in source
+    assert "float supportDir = pow(abs(dir.x), 0.72);" in source
+    assert "float supportRadius = spineHalf * supportDir + capsuleRadius;" in source
     assert "float field01 = clamp(rho / max(supportRadius, 1e-3), 0.0, 1.0);" in source
     assert "float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);" in source
     assert "float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;" in source

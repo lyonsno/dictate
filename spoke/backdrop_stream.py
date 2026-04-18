@@ -39,6 +39,7 @@ _METAL_BLUR_DOWNSAMPLE = min(
 )
 _OPTICAL_SHELL_CORNER_RADIUS_INFLATION = 0.95
 _OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER = 0.22
+_OPTICAL_SHELL_SUPPORT_DIRECTION_EXPONENT = 0.72
 _SHELL_WARP_KERNEL = None
 _SHELL_WARP_KERNEL_SOURCE = """
 float sdRoundRect(vec2 p, vec2 b, float r) {
@@ -79,7 +80,8 @@ kernel vec2 opticalShellWarp(
     float spineHalf = max(halfRect.x - capsuleRadius, 1.0);
     float rho = length(p);
     vec2 dir = rho > 1e-4 ? p / rho : vec2(0.0, 1.0);
-    float supportRadius = spineHalf * abs(dir.x) + capsuleRadius;
+    float supportDir = pow(abs(dir.x), __OPTICAL_SHELL_SUPPORT_DIRECTION_EXPONENT__);
+    float supportRadius = spineHalf * supportDir + capsuleRadius;
     float curveBoost = min(
         0.95,
         max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
@@ -92,7 +94,10 @@ kernel vec2 opticalShellWarp(
     vec2 outsideSrc = d - n * outsideTail;
     return mix(src, outsideSrc, outside);
 }
-""".replace("__OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__", str(_OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER))
+""".replace("__OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__", str(_OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER)).replace(
+    "__OPTICAL_SHELL_SUPPORT_DIRECTION_EXPONENT__",
+    str(_OPTICAL_SHELL_SUPPORT_DIRECTION_EXPONENT),
+)
 
 _BRIDGE_STATE: dict[str, object] | None = None
 _BRIDGE_LOCK = threading.Lock()
@@ -285,7 +290,8 @@ def _optical_shell_pill_support_radius(
     capsule_radius = max(float(content_height) * 0.5, 1.0)
     rho = math.hypot(float(offset_x), float(offset_y))
     dir_x = abs(float(offset_x)) / rho if rho > 1e-6 else 0.0
-    return spine_half * dir_x + capsule_radius
+    support_dir = dir_x ** _OPTICAL_SHELL_SUPPORT_DIRECTION_EXPONENT
+    return spine_half * support_dir + capsule_radius
 
 
 def _optical_shell_pill_field01(
