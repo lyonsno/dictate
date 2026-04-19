@@ -435,7 +435,9 @@ def _boundary_outline_ci_image(extent, shell_config):
     capsule_sdf = np.hypot(spine_dist, ys) - capsule_radius
 
     rgba = np.zeros((height, width, 4), dtype=np.uint8)
-    boundary = np.abs(capsule_sdf) < 1.5
+    # Only draw boundary on the right half for comparison.
+    right_half = xs >= 0.0
+    boundary = (np.abs(capsule_sdf) < 1.5) & right_half
     rgba[boundary] = (255, 255, 255, 60)
 
     payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
