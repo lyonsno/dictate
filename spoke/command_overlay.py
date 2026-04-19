@@ -405,8 +405,8 @@ def _command_backdrop_mask_falloff_width(scale: float) -> float:
     return max(scale, 1e-6) * max(_COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER, 0.0)
 
 
-def _guide_grid_ci_image(extent):
-    """Faint grid overlay for visual reference during smoke testing."""
+def _boundary_outline_ci_image(extent, shell_config):
+    """Faint pill-shaped outline at the sdf=0 boundary of the optical shell."""
     import numpy as np
     from Foundation import NSData
     from Quartz import (
@@ -420,32 +420,31 @@ def _guide_grid_ci_image(extent):
 
     width = max(1, int(round(extent.size.width)))
     height = max(1, int(round(extent.size.height)))
+    content_w = float(shell_config.get("content_width_points", width))
+    content_h = float(shell_config.get("content_height_points", height))
+    capsule_radius = max(content_h * 0.5, 1.0)
+    spine_half = max(content_w * 0.5 - capsule_radius, 0.0)
+
+    cx = width * 0.5
+    cy = height * 0.5
+    xs = np.arange(width, dtype=np.float32)[None, :] + 0.5 - cx
+    ys = np.arange(height, dtype=np.float32)[:, None] + 0.5 - cy
+
+    # Capsule SDF matching the kernel.
+    spine_dist = np.maximum(np.abs(xs) - spine_half, 0.0)
+    capsule_sdf = np.hypot(spine_dist, ys) - capsule_radius
+
     rgba = np.zeros((height, width, 4), dtype=np.uint8)
-
-    # Horizontal lines — roughly 10 across the height.
-    h_step = max(height // 10, 8)
-    for y in range(0, height, h_step):
-        rgba[y, :] = (255, 255, 255, 28)
-
-    # Vertical lines — roughly 30 across the width.
-    v_step = max(width // 30, 8)
-    for x in range(0, width, v_step):
-        rgba[:, x] = (255, 255, 255, 28)
+    boundary = np.abs(capsule_sdf) < 1.5
+    rgba[boundary] = (255, 255, 255, 60)
 
     payload = NSData.dataWithBytes_length_(rgba.tobytes(), int(rgba.nbytes))
     provider = CGDataProviderCreateWithCFData(payload)
     image = CGImageCreate(
-        width,
-        height,
-        8,
-        32,
-        width * 4,
+        width, height, 8, 32, width * 4,
         CGColorSpaceCreateDeviceRGB(),
         kCGImageAlphaPremultipliedLast,
-        provider,
-        None,
-        False,
-        kCGRenderingIntentDefault,
+        provider, None, False, kCGRenderingIntentDefault,
     )
     ci_image = CIImage.imageWithCGImage_(image)
     return ci_image.imageByCroppingToRect_(extent) if hasattr(ci_image, "imageByCroppingToRect_") else ci_image
@@ -538,16 +537,16 @@ class _QuartzBackdropRenderer:
                         if hasattr(output, "imageByCroppingToRect_"):
                             output = output.imageByCroppingToRect_(extent)
 
-                    # Faint guide grid over the warped backdrop.
+                    # Faint boundary outline over the warped backdrop.
                     if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL:
-                        grid_image = _guide_grid_ci_image(extent)
-                        if grid_image is not None:
+                        outline = _boundary_outline_ci_image(extent, shell_config)
+                        if outline is not None:
                             try:
                                 from Quartz import CIFilter
                                 comp = CIFilter.filterWithName_("CISourceOverCompositing")
                                 if comp is not None:
                                     comp.setDefaults()
-                                    comp.setValue_forKey_(grid_image, "inputImage")
+                                    comp.setValue_forKey_(outline, "inputImage")
                                     comp.setValue_forKey_(output, "inputBackgroundImage")
                                     composited = comp.valueForKey_("outputImage")
                                     if composited is not None:
