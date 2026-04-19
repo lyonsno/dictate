@@ -636,8 +636,9 @@ def _configure_stream_geometry(config, *, content_rect, capture_rect, point_pixe
 
 def make_backdrop_renderer(screen, fallback_factory):
     sck_avail = _screen_capture_kit_available()
-    logger.info("make_backdrop_renderer: SCK available=%s", sck_avail)
-    if sck_avail:
+    sck_disabled = os.environ.get("SPOKE_BACKDROP_DISABLE_SCK", "").strip() not in ("", "0")
+    logger.info("make_backdrop_renderer: SCK available=%s disabled=%s", sck_avail, sck_disabled)
+    if sck_avail and not sck_disabled:
         try:
             renderer = _ScreenCaptureKitBackdropRenderer(screen, fallback_factory)
             logger.info("Backdrop renderer: ScreenCaptureKit (streaming)")
