@@ -117,10 +117,14 @@ kernel vec2 opticalShellWarp(
         field01 = 1.0 + outsideFade * 0.15;
     }
 
-    float sourceField01 = 1.0 - depthRemap(1.0 - clamp(field01, 0.0, 1.0), curveBoost);
+    // Floor field01 to prevent the center fold singularity.
+    // At the center, field01 → 0 and scale = sourceField01/field01
+    // diverges, creating a seam where the gradient flips direction.
+    // The floor keeps the ratio finite and the fold soft.
+    float fieldClamped = max(clamp(field01, 0.0, 1.0), 0.08);
+    float sourceField01 = 1.0 - depthRemap(1.0 - fieldClamped, curveBoost);
     // Outside the boundary, blend scale toward 1.0 (identity).
-    float interiorScale = field01 > 1e-3 && field01 <= 1.0
-        ? sourceField01 / field01 : (field01 > 1.0 ? 1.0 : 0.0);
+    float interiorScale = sourceField01 / fieldClamped;
     float outsideFactor = field01 > 1.0
         ? exp(-max(capsuleSdf, 0.0) / bleedWidth) : 0.0;
     float scale = field01 <= 1.0
