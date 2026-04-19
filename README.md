@@ -205,9 +205,11 @@ set of env vars is still useful. For normal use, prefer the menus.
 | `SPOKE_WAKEWORD_SLEEP` | `terminator` | Wake word that returns hands-free mode to dormant. |
 
 If you need deeper backend or smoke-surface plumbing than that, you are in
-developer territory and should inspect the codepaths in
-[`spoke/__main__.py`](spoke/__main__.py) and related modules rather than treat
-the README as a full configuration reference.
+developer territory. Use
+[`docs/developer-operator-surfaces.md`](docs/developer-operator-surfaces.md)
+and [`docs/local-smoke-runbook.md`](docs/local-smoke-runbook.md) as the
+canonical deeper surfaces rather than treating the README as a full
+configuration reference.
 
 ## Development
 
@@ -237,7 +239,7 @@ spoke/
 ├── command_overlay.py    # assistant overlay
 ├── overlay.py            # live transcription overlay
 ├── glow.py               # screen-edge glow
-├── terraform_hud.py      # Terror Form HUD
+├── terraform_hud.py      # smoke-status HUD
 ├── menubar.py            # status item and menu
 └── tool_dispatch.py      # local tool execution surface
 ```

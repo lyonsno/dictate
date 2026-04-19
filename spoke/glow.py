@@ -64,14 +64,56 @@ _EDGE_OUTER_SATURATION_SCALE = 1.80
 # Keyed by (native_pixel_width, native_pixel_height).
 _DISPLAY_CORNER_RADII: dict[tuple[int, int], tuple[float, float]] = {
     # 16" MacBook Pro (2021+): 3456×2234 native
-    (3456, 2234): (10.0, 6.0),
+    (3456, 2234): (20.0, 8.0),
     # 14" MacBook Pro (2021+): 3024×1964 native
-    (3024, 1964): (10.0, 6.0),  # start from 16" values, tune visually
+    (3024, 1964): (10.0, 6.0),  # same baseline as 16"; we tune visually from here
+}
+_DISPLAY_NOTCH_PROFILE: dict[tuple[int, int], dict[str, float]] = {
+    # Exact top-edge notch row profiles extracted from Apple's official
+    # MacBook Pro M4 bezel PSD resources after flattening the visible opening.
+    # We use M4 as the public-source baseline for current 14"/16" MacBook Pro
+    # panels because it is closer to the local M2 Pro hardware than the newer
+    # M5 package, and the big-box 16" machine is itself M4.
+    # Values are the center-gap widths, in native pixels, for each row from
+    # the top edge of the opening down through the 64 px notch height.
+    (3024, 1964): {
+        "profile_widths": (
+            386, 380, 376, 376, 374, 372, 372, 372, 372, 372, 372, 370, 370,
+            370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370,
+            370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 370,
+            370, 370, 370, 370, 370, 370, 370, 370, 370, 370, 368, 368, 366,
+            366, 364, 364, 362, 360, 358, 356, 354, 352, 348, 344, 336,
+        ),
+        "bottom_radius": 0.0,
+        "shoulder_smoothing": 3.0,
+    },
+    (3456, 2234): {
+        "profile_widths": (
+            386, 380, 378, 376, 374, 372, 372, 372, 372, 372, 372, 372, 372,
+            372, 372, 372, 372, 372, 372, 372, 372, 372, 372, 372, 372, 372,
+            372, 372, 372, 372, 372, 372, 372, 372, 372, 372, 372, 372, 372,
+            372, 372, 372, 372, 370, 370, 370, 370, 370, 370, 368, 368, 368,
+            366, 366, 364, 362, 360, 360, 356, 354, 352, 348, 344, 336,
+        ),
+        "bottom_radius": 0.0,
+        "shoulder_smoothing": 3.0,
+    },
+}
+_DISPLAY_CORNER_FINISH_RADII: dict[tuple[int, int], tuple[float, float]] = {
+    # Physical-ish bezel read for the outer-corner finish field. We keep the
+    # live outline slightly tighter, then borrow these broader radii only in a
+    # bounded corner zone so the visible roll feels softer without moving the
+    # main perimeter contract.
+    (3456, 2234): (20.0, 8.0),
+    (3024, 1964): (18.0, 10.0),
 }
 _CORNER_RADIUS_TOP_DEFAULT = 10.0
 _CORNER_RADIUS_BOTTOM_DEFAULT = 6.0
+_CORNER_FINISH_RADIUS_TOP_DEFAULT = 18.0
+_CORNER_FINISH_RADIUS_BOTTOM_DEFAULT = 10.0
 
 _GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "21.4"))
+_GLOW_TEST_RMS = os.environ.get("SPOKE_GLOW_TEST_RMS")
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
 _DIM_OPACITY_DARK = 0.42  # dim on dark backgrounds
 _DIM_OPACITY_LIGHT = 0.636  # pumped 50%
@@ -108,6 +150,18 @@ _NOTCH_SHOULDER_SMOOTHING = 9.5
 _LIGHT_BACKGROUND_EDGE_START = 0.55
 _LIGHT_BACKGROUND_EDGE_BOOST = 0.664
 _VIGNETTE_OPACITY_SCALE = 4.575  # back to original
+_NOTCH_TOP_CORNER_GLOW_X_BAND = 14.0
+_NOTCH_TOP_CORNER_GLOW_Y_BAND = 36.0
+_NOTCH_TOP_CORNER_GLOW_ATTENUATION = 0.95
+_NOTCH_TOP_CORNER_HELPER_X_BAND = 28.0
+_NOTCH_TOP_CORNER_HELPER_Y_BAND = 52.0
+_NOTCH_TOP_CORNER_HELPER_ATTENUATION = 1.0
+_NOTCH_TOP_CORNER_HELPER_FALLOFF_SCALE = 1.75
+_SCREEN_CORNER_HELPER_X_BAND = 34.0
+_SCREEN_CORNER_HELPER_Y_BAND = 34.0
+_SCREEN_CORNER_HELPER_ATTENUATION = 0.8
+_SCREEN_CORNER_HELPER_CORNER_SMOOTHING = 40.0
+_SCREEN_CORNER_HELPER_FALLOFF_SCALE = 1.4
 
 
 def _sample_screen_brightness(screen) -> float:
@@ -293,14 +347,28 @@ def _display_shape_geometry(screen, width_pt: float, height_pt: float, scale: fl
     notch_height = max(height_pt - notch_base_y, 0.0)
     if notch_width <= 0.0 or notch_height <= 0.0:
         return geometry
+    notch_profile = _DISPLAY_NOTCH_PROFILE.get((pixel_width, pixel_height), {})
+    notch_bottom_r = notch_profile.get("bottom_radius", _NOTCH_BOTTOM_RADIUS)
+    notch_shoulder = notch_profile.get("shoulder_smoothing", _NOTCH_SHOULDER_SMOOTHING)
+    helper_bottom_r = _NOTCH_BOTTOM_RADIUS
+    helper_shoulder = _NOTCH_SHOULDER_SMOOTHING
 
     geometry["notch"] = {
         "x": left_max_x * scale,
         "y": notch_base_y * scale,
         "width": notch_width * scale,
         "height": notch_height * scale,
-        "bottom_radius": min(notch_height * scale * 0.45, _NOTCH_BOTTOM_RADIUS * scale),
-        "shoulder_smoothing": _NOTCH_SHOULDER_SMOOTHING * scale,
+        "bottom_radius": min(notch_height * scale * 0.45, notch_bottom_r * scale),
+        "helper_bottom_radius": min(
+            notch_height * scale * 0.45,
+            helper_bottom_r * scale,
+        ),
+        "helper_shoulder_smoothing": helper_shoulder * scale,
+        "shoulder_smoothing": notch_shoulder * scale,
+        "body_inset": max(notch_profile.get("body_inset", 0.0), 0.0) * scale,
+        "top_cap_height": max(notch_profile.get("top_cap_height", 0.0), 0.0) * scale,
+        "top_cap_bottom_radius": max(notch_profile.get("top_cap_bottom_radius", 0.0), 0.0) * scale,
+        "profile_widths": notch_profile.get("profile_widths"),
     }
     return geometry
 
@@ -312,6 +380,7 @@ def _asymmetric_rounded_rect_sdf(
     height: float,
     top_radius: float,
     bottom_radius: float,
+    corner_smoothing: float = 24.0,
 ) :
     import numpy as np
 
@@ -321,17 +390,246 @@ def _asymmetric_rounded_rect_sdf(
     qx = np.abs(x) - (half_width - radii)
     qy = np.abs(y) - (half_height - radii)
     outside = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0))
-    
-    # Smooth the inner corner ridge where the negative distances meet
-    corner_smoothing = 24.0
+
+    if corner_smoothing <= 0.0:
+        inside = np.minimum(np.maximum(qx, qy), 0.0)
+        return outside + inside - radii
+
+    # Smooth the inner corner ridge where the negative distances meet.
     seam = np.maximum(corner_smoothing - np.abs(qx - qy), 0.0)
     smoothed_max = np.maximum(qx, qy) + (seam * seam) * (0.25 / corner_smoothing)
-    
     inside = np.minimum(smoothed_max, 0.0)
     return outside + inside - radii
 
 
-def _display_signed_distance_field(geometry: dict):
+def _notch_signed_distance_field(centered_x, centered_y, notch: dict):
+    import numpy as np
+
+    width = notch["width"]
+    height = notch["height"]
+    profile_widths = notch.get("profile_widths")
+    if profile_widths:
+        half_widths = _notch_profile_half_widths(centered_y, notch)
+        horizontal_signed = np.abs(centered_x) - half_widths
+        vertical_signed = np.maximum(centered_y - (height * 0.5), (-height * 0.5) - centered_y)
+        return np.maximum(horizontal_signed, vertical_signed)
+
+    body_inset = max(notch.get("body_inset", 0.0), 0.0)
+    top_cap_height = min(max(notch.get("top_cap_height", 0.0), 0.0), height)
+    top_cap_bottom_radius = max(notch.get("top_cap_bottom_radius", 0.0), 0.0)
+
+    notch_signed = _asymmetric_rounded_rect_sdf(
+        centered_x,
+        centered_y,
+        width,
+        height,
+        0.0,
+        notch["bottom_radius"],
+        corner_smoothing=0.0,
+    )
+    if body_inset <= 0.0 or top_cap_height <= 0.0 or top_cap_height >= height:
+        return notch_signed
+
+    body_width = max(width - body_inset * 2.0, 1.0)
+    body_height = max(height - top_cap_height, 1.0)
+    top_cap_center_y = height * 0.5 - top_cap_height * 0.5
+    body_center_y = -top_cap_height * 0.5
+
+    top_cap_signed = _asymmetric_rounded_rect_sdf(
+        centered_x,
+        centered_y - top_cap_center_y,
+        width,
+        top_cap_height,
+        0.0,
+        top_cap_bottom_radius,
+        corner_smoothing=0.0,
+    )
+    body_signed = _asymmetric_rounded_rect_sdf(
+        centered_x,
+        centered_y - body_center_y,
+        body_width,
+        body_height,
+        0.0,
+        notch["bottom_radius"],
+        corner_smoothing=0.0,
+    )
+    return np.minimum(top_cap_signed, body_signed)
+
+
+def _resampled_notch_profile_widths(notch: dict):
+    import numpy as np
+
+    profile_widths = notch.get("profile_widths")
+    if not profile_widths:
+        return None
+
+    height = notch["height"]
+    profile = np.asarray(profile_widths, dtype=np.float32)
+    target_height = max(int(round(height)), 1)
+    if profile.size != target_height:
+        src_rows = np.arange(profile.size, dtype=np.float32)
+        dst_rows = np.linspace(0.0, profile.size - 1.0, num=target_height, dtype=np.float32)
+        profile = np.interp(dst_rows, src_rows, profile).astype(np.float32)
+    return profile
+
+
+def _notch_profile_half_widths(centered_y, notch: dict):
+    import numpy as np
+
+    profile = _resampled_notch_profile_widths(notch)
+    if profile is None:
+        return np.full_like(centered_y, notch["width"] * 0.5, dtype=np.float32)
+
+    target_height = profile.size
+    height = notch["height"]
+    row_from_top = (height * 0.5) - centered_y - 0.5
+    sample_rows = np.clip(row_from_top, 0.0, float(target_height - 1))
+    row_indices = np.rint(sample_rows).astype(np.int32, copy=False)
+    return (profile[row_indices] * 0.5).astype(np.float32, copy=False)
+
+
+def _notch_bottom_half_width(notch: dict) -> float:
+    profile_widths = notch.get("profile_widths")
+    if profile_widths:
+        return float(profile_widths[-1]) * 0.5
+    return float(notch["width"]) * 0.5
+
+
+def _notch_shoulder_distance_field(centered_x, centered_y, notch: dict):
+    helper_notch = dict(notch)
+    helper_notch.pop("profile_widths", None)
+    helper_notch["bottom_radius"] = max(
+        helper_notch.get("helper_bottom_radius", 0.0),
+        helper_notch.get("bottom_radius", 0.0),
+    )
+    return _notch_signed_distance_field(centered_x, centered_y, helper_notch)
+
+
+def _legacy_notch_corner_signed_distance_field(geometry: dict):
+    """Replay the pre-Apple continuous notch field for corner finishing only."""
+    import numpy as np
+
+    width = geometry["pixel_width"]
+    height = geometry["pixel_height"]
+    x = np.arange(width, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(height, dtype=np.float32)[:, None] + 0.5
+    centered_x = x - (width * 0.5)
+    centered_y = (height - y) - (height * 0.5)
+
+    signed = _asymmetric_rounded_rect_sdf(
+        centered_x,
+        centered_y,
+        width,
+        height,
+        geometry["top_radius"],
+        geometry["bottom_radius"],
+    )
+
+    notch = geometry.get("notch")
+    if notch is None:
+        return signed.astype(np.float32, copy=False)
+
+    helper_notch = dict(notch)
+    helper_notch.pop("profile_widths", None)
+    helper_notch["bottom_radius"] = max(
+        helper_notch.get("helper_bottom_radius", 0.0),
+        helper_notch.get("bottom_radius", 0.0),
+    )
+    helper_notch["shoulder_smoothing"] = max(
+        helper_notch.get("helper_shoulder_smoothing", 0.0),
+        helper_notch.get("shoulder_smoothing", 0.0),
+    )
+
+    notch_center_x = notch["x"] + notch["width"] * 0.5 - width * 0.5
+    notch_center_y = notch["y"] + notch["height"] * 0.5 - height * 0.5
+    notch_signed = _notch_signed_distance_field(
+        centered_x - notch_center_x,
+        centered_y - notch_center_y,
+        helper_notch,
+    )
+    outline = np.maximum(signed, -notch_signed)
+    shoulder_smoothing = max(helper_notch.get("shoulder_smoothing", 0.0), 0.0)
+    if shoulder_smoothing <= 0.0:
+        return outline.astype(np.float32, copy=False)
+
+    seam = np.maximum(shoulder_smoothing - np.abs(signed + notch_signed), 0.0)
+    softened = outline + (seam * seam) * (0.25 / shoulder_smoothing)
+    return softened.astype(np.float32, copy=False)
+
+
+def _screen_corner_glow_lift_mask(
+    geometry: dict,
+    *,
+    x_band: float | None = None,
+    y_band: float | None = None,
+    attenuation: float | None = None,
+):
+    import numpy as np
+
+    width = geometry["pixel_width"]
+    height = geometry["pixel_height"]
+    x = np.arange(width, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(height, dtype=np.float32)[:, None] + 0.5
+    centered_y = (height - y) - (height * 0.5)
+
+    x_band = (
+        _SCREEN_CORNER_HELPER_X_BAND if x_band is None else float(x_band)
+    )
+    y_band = (
+        _SCREEN_CORNER_HELPER_Y_BAND if y_band is None else float(y_band)
+    )
+    attenuation = (
+        _SCREEN_CORNER_HELPER_ATTENUATION
+        if attenuation is None
+        else float(attenuation)
+    )
+
+    left = np.maximum(x_band - x, 0.0) / x_band
+    right = np.maximum(x_band - (width - x), 0.0) / x_band
+    top = np.maximum(y_band - ((height * 0.5) - centered_y), 0.0) / y_band
+    bottom = np.maximum(y_band - ((height * 0.5) + centered_y), 0.0) / y_band
+    horizontal = np.maximum(left, right)
+    vertical = np.maximum(top, bottom)
+    horizontal = horizontal * horizontal * (3.0 - (2.0 * horizontal))
+    vertical = vertical * vertical * (3.0 - (2.0 * vertical))
+    return np.clip(horizontal * vertical * attenuation, 0.0, 1.0).astype(
+        np.float32, copy=False
+    )
+
+
+def _soft_display_corner_signed_distance_field(geometry: dict):
+    import numpy as np
+
+    width = geometry["pixel_width"]
+    height = geometry["pixel_height"]
+    x = np.arange(width, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(height, dtype=np.float32)[:, None] + 0.5
+    centered_x = x - (width * 0.5)
+    centered_y = (height - y) - (height * 0.5)
+    pixel_key = (width, height)
+    base_top, base_bottom = _DISPLAY_CORNER_RADII.get(
+        pixel_key,
+        (_CORNER_RADIUS_TOP_DEFAULT, _CORNER_RADIUS_BOTTOM_DEFAULT),
+    )
+    finish_top, finish_bottom = _DISPLAY_CORNER_FINISH_RADII.get(
+        pixel_key,
+        (_CORNER_FINISH_RADIUS_TOP_DEFAULT, _CORNER_FINISH_RADIUS_BOTTOM_DEFAULT),
+    )
+    top_scale = geometry["top_radius"] / max(base_top, 1e-6)
+    bottom_scale = geometry["bottom_radius"] / max(base_bottom, 1e-6)
+    finish_top_radius = max(geometry["top_radius"], finish_top * top_scale)
+    finish_bottom_radius = max(geometry["bottom_radius"], finish_bottom * bottom_scale)
+    return _asymmetric_rounded_rect_sdf(
+        centered_x,
+        centered_y,
+        width,
+        height,
+        finish_top_radius,
+        finish_bottom_radius,
+        corner_smoothing=_SCREEN_CORNER_HELPER_CORNER_SMOOTHING,
+    ).astype(np.float32, copy=False)
+
+def _display_signed_distance_field(geometry: dict, *, soften_notch_shoulders: bool = False):
     """Signed distance field for the live display outline, including the notch when available."""
     import numpy as np
 
@@ -357,20 +655,48 @@ def _display_signed_distance_field(geometry: dict):
 
     notch_center_x = notch["x"] + notch["width"] * 0.5 - width * 0.5
     notch_center_y = notch["y"] + notch["height"] * 0.5 - height * 0.5
-    notch_signed = _asymmetric_rounded_rect_sdf(
-        centered_x - notch_center_x,
-        centered_y - notch_center_y,
-        notch["width"],
-        notch["height"],
-        0.0,
-        notch["bottom_radius"],
+    notch_local_x = centered_x - notch_center_x
+    notch_local_y = centered_y - notch_center_y
+    notch_signed = _notch_signed_distance_field(
+        notch_local_x,
+        notch_local_y,
+        notch,
     )
+    outline = np.maximum(signed, -notch_signed)
     shoulder_smoothing = max(notch.get("shoulder_smoothing", 0.0), 0.0)
-    if shoulder_smoothing <= 0.0:
-        return np.maximum(signed, -notch_signed).astype(np.float32, copy=False)
+    if shoulder_smoothing <= 0.0 or not soften_notch_shoulders:
+        return outline.astype(np.float32, copy=False)
 
-    seam = np.maximum(shoulder_smoothing - np.abs(signed + notch_signed), 0.0)
-    softened = np.maximum(signed, -notch_signed) + (seam * seam) * (0.25 / shoulder_smoothing)
+    shoulder_notch_signed = _notch_shoulder_distance_field(
+        notch_local_x, notch_local_y, notch
+    )
+    helper_outline = np.maximum(signed, -shoulder_notch_signed)
+    shoulder_anchor = _notch_bottom_half_width(notch)
+    helper_shoulder_smoothing = max(
+        notch.get("helper_shoulder_smoothing", shoulder_smoothing),
+        shoulder_smoothing,
+    )
+    shoulder_band = helper_shoulder_smoothing * 4.0
+    shoulder_proximity = np.maximum(
+        shoulder_band - np.abs(np.abs(notch_local_x) - shoulder_anchor),
+        0.0,
+    ) / shoulder_band
+    bottom_edge_y = -notch["height"] * 0.5
+    shoulder_vertical = (
+        (notch_local_y <= notch["height"] * 0.5)
+        & (notch_local_y >= bottom_edge_y - shoulder_band)
+    )
+    inside_margin = 2.0
+    shoulder_zone = (
+        (shoulder_proximity > 0.0)
+        & (shoulder_vertical > 0.0)
+        & ((-outline) > inside_margin)
+    )
+    softened = outline.copy()
+    softened[shoulder_zone] = np.minimum(
+        helper_outline[shoulder_zone],
+        -inside_margin,
+    )
     return softened.astype(np.float32, copy=False)
 
 
@@ -385,6 +711,57 @@ def _distance_field_alpha(signed_distance, falloff: float, power: float):
     distance = np.clip(-signed_distance, 0.0, None)
     alpha = np.exp(-np.power(distance / max(falloff, 1e-6), power, dtype=np.float32))
     return np.where(signed_distance < 0.0, alpha, 0.0).astype(np.float32, copy=False)
+
+
+def _notch_top_corner_glow_mask(
+    geometry: dict,
+    *,
+    x_band: float | None = None,
+    y_band: float | None = None,
+    attenuation: float | None = None,
+):
+    import numpy as np
+
+    notch = geometry.get("notch")
+    if notch is None:
+        return None
+
+    width = geometry["pixel_width"]
+    height = geometry["pixel_height"]
+    x = np.arange(width, dtype=np.float32)[None, :] + 0.5
+    y = np.arange(height, dtype=np.float32)[:, None] + 0.5
+    centered_x = x - (width * 0.5)
+    centered_y = (height - y) - (height * 0.5)
+
+    notch_center_x = notch["x"] + notch["width"] * 0.5 - width * 0.5
+    notch_center_y = notch["y"] + notch["height"] * 0.5 - height * 0.5
+    notch_local_x = centered_x - notch_center_x
+    notch_local_y = centered_y - notch_center_y
+
+    top_half_width = (
+        float(notch["profile_widths"][0]) * 0.5
+        if notch.get("profile_widths")
+        else notch["width"] * 0.5
+    )
+    x_band = _NOTCH_TOP_CORNER_GLOW_X_BAND if x_band is None else float(x_band)
+    y_band = _NOTCH_TOP_CORNER_GLOW_Y_BAND if y_band is None else float(y_band)
+    attenuation = (
+        _NOTCH_TOP_CORNER_GLOW_ATTENUATION
+        if attenuation is None
+        else float(attenuation)
+    )
+    x_proximity = np.maximum(
+        x_band - np.abs(np.abs(notch_local_x) - top_half_width),
+        0.0,
+    ) / x_band
+    y_proximity = np.maximum(
+        y_band - ((notch["height"] * 0.5) - notch_local_y),
+        0.0,
+    ) / y_band
+    x_proximity = x_proximity * x_proximity * (3.0 - (2.0 * x_proximity))
+    y_proximity = y_proximity * y_proximity * (3.0 - (2.0 * y_proximity))
+    attenuation = 1.0 - (x_proximity * y_proximity * attenuation)
+    return np.clip(attenuation, 1e-4, 1.0).astype(np.float32, copy=False)
 
 
 def _alpha_field_to_image(alpha):
@@ -423,17 +800,86 @@ def _alpha_field_to_image(alpha):
     return image, payload
 
 
-def _distance_field_masks_for_specs(geometry: dict, specs: list[dict]) -> list[dict]:
-    signed_distance = _display_signed_distance_field(geometry)
-    masks = []
+def _distance_field_alphas_for_specs(
+    geometry: dict,
+    specs: list[dict],
+    *,
+    signed_distance=None,
+) -> list[dict]:
+    import numpy as np
+
+    if signed_distance is None:
+        signed_distance = _display_signed_distance_field(
+            geometry, soften_notch_shoulders=True
+        )
+    notch_top_corner_mask = _notch_top_corner_glow_mask(geometry)
+    notch_corner_lift = None
+    helper_signed_distance = None
+    screen_corner_lift = None
+    screen_corner_helper_signed_distance = None
+    if notch_top_corner_mask is not None and any(
+        spec.get("fill_role") is not None for spec in specs
+    ):
+        helper_corner_mask = _notch_top_corner_glow_mask(
+            geometry,
+            x_band=_NOTCH_TOP_CORNER_HELPER_X_BAND,
+            y_band=_NOTCH_TOP_CORNER_HELPER_Y_BAND,
+            attenuation=_NOTCH_TOP_CORNER_HELPER_ATTENUATION,
+        )
+        helper_signed_distance = _legacy_notch_corner_signed_distance_field(geometry)
+        notch_corner_lift = (1.0 - helper_corner_mask).astype(
+            np.float32, copy=False
+        )
+    screen_corner_lift = _screen_corner_glow_lift_mask(geometry)
+    screen_corner_helper_signed_distance = _soft_display_corner_signed_distance_field(
+        geometry
+    )
+
+    alphas = []
     for spec in specs:
         alpha = _distance_field_alpha(
             signed_distance,
             spec["falloff"] * geometry["scale"],
             spec["power"],
         )
-        image, payload = _alpha_field_to_image(alpha)
-        masks.append({"image": image, "payload": payload, "spec": spec})
+        if spec.get("fill_role") is not None and notch_top_corner_mask is not None:
+            alpha = (alpha * notch_top_corner_mask).astype(np.float32, copy=False)
+            if helper_signed_distance is not None and notch_corner_lift is not None:
+                helper_alpha = _distance_field_alpha(
+                    helper_signed_distance,
+                    spec["falloff"]
+                    * geometry["scale"]
+                    * _NOTCH_TOP_CORNER_HELPER_FALLOFF_SCALE,
+                    spec["power"],
+                )
+                alpha = (
+                    (alpha * (1.0 - notch_corner_lift))
+                    + (helper_alpha * notch_corner_lift)
+                ).astype(np.float32, copy=False)
+        if (
+            screen_corner_helper_signed_distance is not None
+            and screen_corner_lift is not None
+        ):
+            screen_corner_helper_alpha = _distance_field_alpha(
+                screen_corner_helper_signed_distance,
+                spec["falloff"]
+                * geometry["scale"]
+                * _SCREEN_CORNER_HELPER_FALLOFF_SCALE,
+                spec["power"],
+            )
+            alpha = (
+                (alpha * (1.0 - screen_corner_lift))
+                + (screen_corner_helper_alpha * screen_corner_lift)
+            ).astype(np.float32, copy=False)
+        alphas.append({"alpha": alpha, "spec": spec})
+    return alphas
+
+
+def _distance_field_masks_for_specs(geometry: dict, specs: list[dict]) -> list[dict]:
+    masks = []
+    for entry in _distance_field_alphas_for_specs(geometry, specs):
+        image, payload = _alpha_field_to_image(entry["alpha"])
+        masks.append({"image": image, "payload": payload, "spec": entry["spec"]})
     return masks
 
 
@@ -853,6 +1299,12 @@ class GlowOverlay(NSObject):
         # Don't override the fade-in animation
         if time.monotonic() < self._fade_in_until:
             return
+
+        if _GLOW_TEST_RMS is not None:
+            try:
+                rms = min(max(float(_GLOW_TEST_RMS), 0.0), 1.0)
+            except ValueError:
+                pass
 
         self._update_count += 1
 
