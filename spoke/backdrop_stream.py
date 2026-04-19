@@ -114,15 +114,16 @@ kernel vec2 opticalShellWarp(
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = sourceField01 / field01;
 
-    // Sharp exponential falloff outside the capsule boundary.
-    // Content just outside gets pushed outward (away from the pill)
-    // with a steep exponential decay back to identity.
-    float outsideAmount = capsuleSdf > 0.0
-        ? exp(-capsuleSdf * 0.15) * (1.0 / max(scale, 0.01) - 1.0) * 0.15
+    // Exterior push: content just outside the inner capsule boundary
+    // gets pushed outward with steep exponential decay.
+    // Push strength proportional to curveBoost so more aggressive
+    // interior warp = more exterior push.
+    float outsidePush = capsuleSdf > 0.0
+        ? curveBoost * 0.12 * exp(-capsuleSdf * 0.6)
         : 0.0;
     float finalScale = capsuleSdf <= 0.0
         ? scale
-        : 1.0 + outsideAmount;
+        : 1.0 + outsidePush;
     vec2 src = c + p * finalScale;
     return src;
 }
