@@ -115,12 +115,15 @@ kernel vec2 opticalShellWarp(
     float scale = sourceField01 / field01;
 
     // Sharp exponential falloff outside the capsule boundary.
-    // The warp decays rapidly but not instantly, pulling nearby
-    // content inward with a steep attack.
-    float outsideBlend = capsuleSdf > 0.0
-        ? 1.0 - exp(-capsuleSdf * 0.3)
+    // Content just outside gets pushed outward (away from the pill)
+    // with a steep exponential decay back to identity.
+    float outsideAmount = capsuleSdf > 0.0
+        ? exp(-capsuleSdf * 0.15) * (1.0 / max(scale, 0.01) - 1.0) * 0.15
         : 0.0;
-    vec2 src = c + p * mix(scale, 1.0, outsideBlend);
+    float finalScale = capsuleSdf <= 0.0
+        ? scale
+        : 1.0 + outsideAmount;
+    vec2 src = c + p * finalScale;
     return src;
 }
 """.replace("__OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__", str(_OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER))
