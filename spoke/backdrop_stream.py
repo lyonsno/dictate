@@ -63,7 +63,7 @@ float depthRemap(float inside01, float curveBoost) {
     // is still aggressively evacuated.
     float x = clamp(inside01, 0.0, 1.0);
     float baseExp = max(1.0 - curveBoost * 0.98, 0.02);
-    float rimExp = mix(0.7, 1.0, 1.0 - curveBoost);
+    float rimExp = mix(0.85, 1.0, 1.0 - curveBoost);
     // Blend between rim exponent (near edge) and base exponent (center).
     float exponent = mix(baseExp, rimExp, x * x);
     return pow(x, exponent);
@@ -118,8 +118,8 @@ kernel vec2 opticalShellWarp(
     if (capsuleSdf <= 0.0) {
         src = c + p * scale;
     } else {
-        float pushAmount = curveBoost * capsuleRadius * 0.2
-            * exp(-capsuleSdf * 0.8);
+        float pushAmount = curveBoost * capsuleRadius * 0.4
+            * exp(-capsuleSdf * 1.6);
         src = d + capsuleN * pushAmount;
     }
     return src;
