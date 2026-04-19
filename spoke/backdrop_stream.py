@@ -56,11 +56,16 @@ float sdRoundRect(vec2 p, vec2 b, float r) {
 }
 
 float depthRemap(float inside01, float curveBoost) {
-    // Power-curve remap: exponent < 1 evacuates the center aggressively.
-    // curveBoost in [0, 0.95] maps to exponent in [1.0, 0.1].
+    // Power-curve remap with rim reservation.
+    // The power curve evacuates the center; the rim blend ensures
+    // the outermost 15% of the field stays close to identity so
+    // content spreads out at the edge instead of piling into one pixel.
     float x = clamp(inside01, 0.0, 1.0);
     float exponent = max(1.0 - curveBoost * 0.95, 0.05);
-    return pow(x, exponent);
+    float warped = pow(x, exponent);
+    // Blend back toward identity near the rim (x > 0.85).
+    float rimBlend = smoothstep(0.85, 1.0, x);
+    return mix(warped, x, rimBlend);
 }
 
 kernel vec2 opticalShellWarp(
@@ -93,28 +98,41 @@ kernel vec2 opticalShellWarp(
     float sdfy = sdRoundRect(p + vec2(0.0, eps), halfRect, cornerRadius)
         - sdRoundRect(p - vec2(0.0, eps), halfRect, cornerRadius);
     vec2 n = normalize(vec2(sdfx, sdfy) + vec2(1e-4, 1e-4));
-    float outside = step(0.0, capsuleSdf);
 
     float curveBoost = min(
         0.95,
         max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
     );
 
-    // field01: 0 at center, 1 at capsule boundary.
-    // Because sdCapsule iso-contours are pills, every intermediate
-    // value of field01 traces a pill — nested pills all the way in.
-    float field01 = clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0);
-    float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
-    float scale = field01 > 1e-3 ? sourceField01 / field01 : 0.0;
+    // Extend field outside the capsule boundary with steep exponential
+    // decay so the effect bleeds a few pixels outward with sharp attack.
+    // Inside: field01 goes from 0 (center) to 1 (boundary) as before.
+    // Outside: field01 continues above 1.0, decaying toward a max.
+    float bleedWidth = max(bandWidth * 0.5, 4.0);
+    float field01;
+    if (capsuleSdf <= 0.0) {
+        field01 = clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0);
+    } else {
+        // Sharp exponential attack outside the boundary.
+        float outsideFade = exp(-capsuleSdf / bleedWidth);
+        field01 = 1.0 + outsideFade * 0.15;
+    }
+
+    float sourceField01 = 1.0 - depthRemap(1.0 - clamp(field01, 0.0, 1.0), curveBoost);
+    // Outside the boundary, blend scale toward 1.0 (identity).
+    float interiorScale = field01 > 1e-3 && field01 <= 1.0
+        ? sourceField01 / field01 : (field01 > 1.0 ? 1.0 : 0.0);
+    float outsideFactor = field01 > 1.0
+        ? exp(-max(capsuleSdf, 0.0) / bleedWidth) : 0.0;
+    float scale = field01 <= 1.0
+        ? interiorScale
+        : mix(1.0, interiorScale, outsideFactor);
 
     // Anisotropic scaling: full warp on Y, partial on X.
     // Vertical push dominates but horizontal still contributes.
     vec2 src = c + vec2(p.x * mix(1.0, scale, 0.55),
                         p.y * scale);
-
-    float outsideTail = max(tailAmplitudePoints, 4.0) * exp(-max(capsuleSdf, 0.0) / max(tailWidth, 0.001));
-    vec2 outsideSrc = d - n * outsideTail;
-    return mix(src, outsideSrc, outside);
+    return src;
 }
 """.replace("__OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__", str(_OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER))
 
