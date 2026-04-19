@@ -635,13 +635,15 @@ def _configure_stream_geometry(config, *, content_rect, capture_rect, point_pixe
 
 
 def make_backdrop_renderer(screen, fallback_factory):
-    if _screen_capture_kit_available():
+    sck_avail = _screen_capture_kit_available()
+    logger.info("make_backdrop_renderer: SCK available=%s", sck_avail)
+    if sck_avail:
         try:
             renderer = _ScreenCaptureKitBackdropRenderer(screen, fallback_factory)
             logger.info("Backdrop renderer: ScreenCaptureKit (streaming)")
             return renderer
         except Exception:
-            logger.debug("Falling back to Quartz backdrop renderer after ScreenCaptureKit init failure", exc_info=True)
+            logger.info("Falling back to Quartz after SCK init failure", exc_info=True)
     logger.info("Backdrop renderer: Quartz snapshot fallback (SLOW)")
     return fallback_factory()
 
@@ -1054,8 +1056,10 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                 "kCMSampleAttachmentKey_DisplayImmediately": kCMSampleAttachmentKey_DisplayImmediately,
             }
         except Exception:
-            logger.debug("ScreenCaptureKit bridge load failed", exc_info=True)
+            logger.info("ScreenCaptureKit bridge load FAILED", exc_info=True)
             _BRIDGE_STATE = None
+        if _BRIDGE_STATE is not None:
+            logger.info("ScreenCaptureKit bridge loaded OK")
         return _BRIDGE_STATE
 
 
