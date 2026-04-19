@@ -105,18 +105,22 @@ kernel vec2 opticalShellWarp(
         max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
     );
 
-    // Smoothly remap field so the center plateau is wide and the
-    // transition to the rim is gradual, not a hard clamp.
+    // Remap field with a floor and monotonic curve.
+    // pow(rawField, 0.5) = sqrt pushes values toward 1 (more content
+    // near the rim) while keeping the mapping strictly monotonic —
+    // no S-curve reversal that sucks content back inward.
     float rawField = clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0);
-    // smoothstep from 0→0.5 of raw field maps to 0.35→0.5 of output,
-    // creating a wide magnified center zone with smooth falloff.
-    float field01 = mix(0.35, 1.0, smoothstep(0.0, 1.0, rawField));
+    float field01 = mix(0.35, 1.0, pow(rawField, 0.5));
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = sourceField01 / field01;
 
-    // Inside the capsule: full warp. Outside: identity (no effect).
-    float outside = step(0.0, capsuleSdf);
-    vec2 src = c + p * mix(scale, 1.0, outside);
+    // Sharp exponential falloff outside the capsule boundary.
+    // The warp decays rapidly but not instantly, pulling nearby
+    // content inward with a steep attack.
+    float outsideBlend = capsuleSdf > 0.0
+        ? 1.0 - exp(-capsuleSdf * 0.3)
+        : 0.0;
+    vec2 src = c + p * mix(scale, 1.0, outsideBlend);
     return src;
 }
 """.replace("__OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__", str(_OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER))
