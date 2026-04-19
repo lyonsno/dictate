@@ -457,6 +457,8 @@ class _QuartzBackdropRenderer:
 
     def __init__(self) -> None:
         self._ci_context = None
+        self._cached_center_mask_ci = None  # cached CIImage mask
+        self._cached_center_mask_key = None  # (mw, mh, content_w, content_h) cache key
 
     def _context(self):
         if self._ci_context is not None:
@@ -553,39 +555,46 @@ class _QuartzBackdropRenderer:
                             kCGRenderingIntentDefault,
                         )
 
-                        # Build inset capsule alpha mask.
-                        # Must match the kernel's capsule geometry: radius = halfHeight,
-                        # spineHalf = halfWidth - radius. Then inset uniformly.
+                        # Build inset capsule alpha mask (cached — only
+                        # recomputed when dimensions change).
                         mw = max(1, int(round(extent.size.width)))
                         mh = max(1, int(round(extent.size.height)))
                         content_w = float(shell_config.get("content_width_points", mw))
                         content_h = float(shell_config.get("content_height_points", mh))
-                        outer_radius = max(content_h * 0.5, 1.0)
-                        outer_spine = max(content_w * 0.5 - outer_radius, 0.0)
-                        inset_px = outer_radius * 0.45  # inset by 45% of radius
-                        inner_radius = max(outer_radius - inset_px, 1.0)
-                        inner_spine = max(outer_spine, 0.0)  # spine stays same length
-                        mxs = np.arange(mw, dtype=np.float32)[None, :] + 0.5 - mw * 0.5
-                        mys = np.arange(mh, dtype=np.float32)[:, None] + 0.5 - mh * 0.5
-                        inner_sdf = (np.hypot(
-                            np.maximum(np.abs(mxs) - inner_spine, 0.0), mys
-                        ) - inner_radius).astype(np.float32)
-                        # Smooth alpha: 1 inside, fading to 0 over ~24px
-                        center_alpha = np.clip(1.0 - inner_sdf / 24.0, 0.0, 1.0).astype(np.float32)
-                        mask_rgba = np.zeros((mh, mw, 4), dtype=np.uint8)
-                        mask_rgba[..., 0] = 255
-                        mask_rgba[..., 1] = 255
-                        mask_rgba[..., 2] = 255
-                        mask_rgba[..., 3] = (center_alpha * 255).astype(np.uint8)
-                        mask_payload = NSData.dataWithBytes_length_(mask_rgba.tobytes(), int(mask_rgba.nbytes))
-                        mask_provider = CGDataProviderCreateWithCFData(mask_payload)
-                        mask_cg = CGImageCreate(
-                            mw, mh, 8, 32, mw * 4,
-                            CGColorSpaceCreateDeviceRGB(),
-                            kCGImageAlphaPremultipliedLast,
-                            mask_provider, None, False, kCGRenderingIntentDefault,
-                        )
-                        mask_ci = CIImage.imageWithCGImage_(mask_cg)
+                        mask_key = (mw, mh, content_w, content_h)
+                        if self._cached_center_mask_key == mask_key and self._cached_center_mask_ci is not None:
+                            mask_ci = self._cached_center_mask_ci
+                        else:
+                            outer_radius = max(content_h * 0.5, 1.0)
+                            outer_spine = max(content_w * 0.5 - outer_radius, 0.0)
+                            inset_px = outer_radius * 0.25  # inset by 25% — larger wash region
+                            inner_radius = max(outer_radius - inset_px, 1.0)
+                            inner_spine = max(outer_spine, 0.0)
+                            mxs = np.arange(mw, dtype=np.float32)[None, :] + 0.5 - mw * 0.5
+                            mys = np.arange(mh, dtype=np.float32)[:, None] + 0.5 - mh * 0.5
+                            inner_sdf = (np.hypot(
+                                np.maximum(np.abs(mxs) - inner_spine, 0.0), mys
+                            ) - inner_radius).astype(np.float32)
+                            # Smooth alpha: 1 inside, smoothstep fade over ~48px
+                            feather_width = 48.0
+                            t = np.clip(inner_sdf / feather_width, 0.0, 1.0).astype(np.float32)
+                            center_alpha = (1.0 - t * t * (3.0 - 2.0 * t)).astype(np.float32)
+                            mask_rgba = np.zeros((mh, mw, 4), dtype=np.uint8)
+                            mask_rgba[..., 0] = 255
+                            mask_rgba[..., 1] = 255
+                            mask_rgba[..., 2] = 255
+                            mask_rgba[..., 3] = (center_alpha * 255).astype(np.uint8)
+                            mask_payload = NSData.dataWithBytes_length_(mask_rgba.tobytes(), int(mask_rgba.nbytes))
+                            mask_provider = CGDataProviderCreateWithCFData(mask_payload)
+                            mask_cg = CGImageCreate(
+                                mw, mh, 8, 32, mw * 4,
+                                CGColorSpaceCreateDeviceRGB(),
+                                kCGImageAlphaPremultipliedLast,
+                                mask_provider, None, False, kCGRenderingIntentDefault,
+                            )
+                            mask_ci = CIImage.imageWithCGImage_(mask_cg)
+                            self._cached_center_mask_ci = mask_ci
+                            self._cached_center_mask_key = mask_key
 
                         # Downsample the original capture aggressively, warp it
                         # (cheap — few pixels), then upsample. The upsample

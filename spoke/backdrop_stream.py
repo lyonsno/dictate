@@ -48,23 +48,21 @@ float sdCapsule(vec2 p, float spineHalf, float radius) {
     return length(vec2(spine_dist, p.y)) - radius;
 }
 
-float sdRoundRect(vec2 p, vec2 b, float r) {
-    // Kept only for outside-tail normal estimation where rounded-rect
-    // normals still give the best outward direction near the content edge.
-    vec2 q = abs(p) - b + vec2(r);
-    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+vec2 capsuleGradient(vec2 p, float spineHalf) {
+    // Analytical gradient of sdCapsule.  The SDF is distance-to-segment
+    // minus radius; its gradient is the unit vector from the nearest
+    // point on the spine segment toward p.
+    float clampedX = clamp(p.x, -spineHalf, spineHalf);
+    vec2 toP = p - vec2(clampedX, 0.0);
+    float len = length(toP);
+    return len > 1e-6 ? toP / len : vec2(0.0, 1.0);
 }
 
 float depthRemap(float inside01, float curveBoost) {
     // Dual-exponent remap: gentle near the rim, violent through the body.
-    // Near edge (x close to 1): exponent ~0.7 — mild compression.
-    // Through body/center (x close to 0): exponent drops toward 0.02.
-    // This gives content room to spread at the rim while the center
-    // is still aggressively evacuated.
     float x = clamp(inside01, 0.0, 1.0);
     float baseExp = max(1.0 - curveBoost * 0.98, 0.02);
     float rimExp = mix(0.92, 1.0, 1.0 - curveBoost);
-    // Blend between rim exponent (near edge) and base exponent (center).
     float exponent = mix(baseExp, rimExp, x * x);
     return pow(x, exponent);
 }
@@ -88,24 +86,18 @@ kernel vec2 opticalShellWarp(
     float capsuleRadius = max(halfRect.y, 1.0);
     float spineHalf = max(halfRect.x - capsuleRadius, 0.0);
 
-    // --- capsule SDF (cheap — one call) ---
+    // --- capsule SDF (one call) ---
     float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);
 
     // Early bailout: far exterior (identity) and deep interior
-    // (will be blurred over anyway). Only the active band around
-    // the boundary needs the expensive gradient + remap work.
-    float activeOuterLimit = capsuleRadius * 0.5;  // ~40px outside
-    float activeInnerLimit = capsuleRadius * 0.45; // ~36px inside from boundary
-    if (capsuleSdf > activeOuterLimit) return d;   // far exterior: identity
-    if (capsuleSdf < -activeInnerLimit) return c;  // deep interior: center (blurred away)
+    // (will be blurred over anyway).
+    float activeOuterLimit = capsuleRadius * 0.5;
+    float activeInnerLimit = capsuleRadius * 0.55;
+    if (capsuleSdf > activeOuterLimit) return d;
+    if (capsuleSdf < -activeInnerLimit) return c;
 
-    // --- capsule gradient (only computed in the active band) ---
-    float eps = max(1.0, bandWidth * __OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__);
-    float csdx = sdCapsule(p + vec2(eps, 0.0), spineHalf, capsuleRadius)
-        - sdCapsule(p - vec2(eps, 0.0), spineHalf, capsuleRadius);
-    float csdy = sdCapsule(p + vec2(0.0, eps), spineHalf, capsuleRadius)
-        - sdCapsule(p - vec2(0.0, eps), spineHalf, capsuleRadius);
-    vec2 capsuleN = normalize(vec2(csdx, csdy) + vec2(1e-4, 1e-4));
+    // --- analytical capsule gradient (no extra SDF calls) ---
+    vec2 capsuleN = capsuleGradient(p, spineHalf);
 
     float curveBoost = min(
         0.95,
@@ -129,7 +121,7 @@ kernel vec2 opticalShellWarp(
     }
     return src;
 }
-""".replace("__OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__", str(_OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER))
+"""
 
 _BRIDGE_STATE: dict[str, object] | None = None
 _BRIDGE_LOCK = threading.Lock()
