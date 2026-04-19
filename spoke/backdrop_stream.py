@@ -88,17 +88,14 @@ kernel vec2 opticalShellWarp(
     float capsuleRadius = max(halfRect.y, 1.0);
     float spineHalf = max(halfRect.x - capsuleRadius, 0.0);
 
-    // --- capsule SDF for the interior field ---
+    // --- capsule SDF and gradient (outward normal) ---
     float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);
-
-    // --- rounded-rect SDF for outside-tail normals only ---
-    float rrSdf = sdRoundRect(p, halfRect, cornerRadius);
     float eps = max(1.0, bandWidth * __OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__);
-    float sdfx = sdRoundRect(p + vec2(eps, 0.0), halfRect, cornerRadius)
-        - sdRoundRect(p - vec2(eps, 0.0), halfRect, cornerRadius);
-    float sdfy = sdRoundRect(p + vec2(0.0, eps), halfRect, cornerRadius)
-        - sdRoundRect(p - vec2(0.0, eps), halfRect, cornerRadius);
-    vec2 n = normalize(vec2(sdfx, sdfy) + vec2(1e-4, 1e-4));
+    float csdx = sdCapsule(p + vec2(eps, 0.0), spineHalf, capsuleRadius)
+        - sdCapsule(p - vec2(eps, 0.0), spineHalf, capsuleRadius);
+    float csdy = sdCapsule(p + vec2(0.0, eps), spineHalf, capsuleRadius)
+        - sdCapsule(p - vec2(0.0, eps), spineHalf, capsuleRadius);
+    vec2 capsuleN = normalize(vec2(csdx, csdy) + vec2(1e-4, 1e-4));
 
     float curveBoost = min(
         0.95,
@@ -114,17 +111,17 @@ kernel vec2 opticalShellWarp(
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = sourceField01 / field01;
 
-    // Exterior push: content just outside the inner capsule boundary
-    // gets pushed outward with steep exponential decay.
-    // Push strength proportional to curveBoost so more aggressive
-    // interior warp = more exterior push.
-    float outsidePush = capsuleSdf > 0.0
-        ? curveBoost * 0.12 * exp(-capsuleSdf * 0.6)
-        : 0.0;
-    float finalScale = capsuleSdf <= 0.0
-        ? scale
-        : 1.0 + outsidePush;
-    vec2 src = c + p * finalScale;
+    // Interior: radial scaling from center.
+    // Exterior: push along capsule normal (outward from surface).
+    // This makes content deflect around the pill rather than toward center.
+    vec2 src;
+    if (capsuleSdf <= 0.0) {
+        src = c + p * scale;
+    } else {
+        float pushAmount = curveBoost * capsuleRadius * 0.15
+            * exp(-capsuleSdf * 0.4);
+        src = d + capsuleN * pushAmount;
+    }
     return src;
 }
 """.replace("__OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__", str(_OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER))
