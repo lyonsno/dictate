@@ -566,8 +566,8 @@ class _QuartzBackdropRenderer:
                         inner_sdf = (np.hypot(
                             np.maximum(np.abs(mxs) - inner_spine, 0.0), mys
                         ) - inner_radius).astype(np.float32)
-                        # Smooth alpha: 1 inside, fading to 0 over ~8px
-                        center_alpha = np.clip(1.0 - inner_sdf / 8.0, 0.0, 1.0).astype(np.float32)
+                        # Smooth alpha: 1 inside, fading to 0 over ~24px
+                        center_alpha = np.clip(1.0 - inner_sdf / 24.0, 0.0, 1.0).astype(np.float32)
                         mask_rgba = np.zeros((mh, mw, 4), dtype=np.uint8)
                         mask_rgba[..., 0] = 255
                         mask_rgba[..., 1] = 255
@@ -588,7 +588,7 @@ class _QuartzBackdropRenderer:
                         if blur is not None:
                             blur.setDefaults()
                             blur.setValue_forKey_(output, "inputImage")
-                            blur.setValue_forKey_(24.0, "inputRadius")
+                            blur.setValue_forKey_(32.0, "inputRadius")
                             blurred = blur.valueForKey_("outputImage")
                             if blurred is not None and hasattr(blurred, "imageByCroppingToRect_"):
                                 blurred = blurred.imageByCroppingToRect_(extent)
