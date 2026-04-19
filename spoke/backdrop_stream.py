@@ -56,15 +56,14 @@ float sdRoundRect(vec2 p, vec2 b, float r) {
 }
 
 float depthRemap(float inside01, float curveBoost) {
-    // Power-curve remap with rim reservation.
-    // The power curve evacuates the center; the rim blend ensures
-    // the outermost 15% of the field stays close to identity so
-    // content spreads out at the edge instead of piling into one pixel.
+    // Power-curve remap with narrow rim reservation.
+    // Low exponent evacuates the center violently; the rim blend
+    // keeps only the outermost 5% close to identity so content
+    // has somewhere to land at the edge.
     float x = clamp(inside01, 0.0, 1.0);
-    float exponent = max(1.0 - curveBoost * 0.95, 0.05);
+    float exponent = max(1.0 - curveBoost * 0.98, 0.02);
     float warped = pow(x, exponent);
-    // Blend back toward identity near the rim (x > 0.85).
-    float rimBlend = smoothstep(0.85, 1.0, x);
+    float rimBlend = smoothstep(0.95, 1.0, x);
     return mix(warped, x, rimBlend);
 }
 
@@ -128,10 +127,9 @@ kernel vec2 opticalShellWarp(
         ? interiorScale
         : mix(1.0, interiorScale, outsideFactor);
 
-    // Anisotropic scaling: full warp on Y, partial on X.
-    // Vertical push dominates but horizontal still contributes.
-    vec2 src = c + vec2(p.x * mix(1.0, scale, 0.55),
-                        p.y * scale);
+    // Full isotropic scaling — content flows around center equally
+    // in all directions.
+    vec2 src = c + p * scale;
     return src;
 }
 """.replace("__OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER__", str(_OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER))
