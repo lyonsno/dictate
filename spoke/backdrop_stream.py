@@ -56,15 +56,17 @@ float sdRoundRect(vec2 p, vec2 b, float r) {
 }
 
 float depthRemap(float inside01, float curveBoost) {
-    // Power-curve remap with narrow rim reservation.
-    // Low exponent evacuates the center violently; the rim blend
-    // keeps only the outermost 5% close to identity so content
-    // has somewhere to land at the edge.
+    // Dual-exponent remap: gentle near the rim, violent through the body.
+    // Near edge (x close to 1): exponent ~0.7 — mild compression.
+    // Through body/center (x close to 0): exponent drops toward 0.02.
+    // This gives content room to spread at the rim while the center
+    // is still aggressively evacuated.
     float x = clamp(inside01, 0.0, 1.0);
-    float exponent = max(1.0 - curveBoost * 0.98, 0.02);
-    float warped = pow(x, exponent);
-    float rimBlend = smoothstep(0.95, 1.0, x);
-    return mix(warped, x, rimBlend);
+    float baseExp = max(1.0 - curveBoost * 0.98, 0.02);
+    float rimExp = mix(0.7, 1.0, 1.0 - curveBoost);
+    // Blend between rim exponent (near edge) and base exponent (center).
+    float exponent = mix(baseExp, rimExp, x * x);
+    return pow(x, exponent);
 }
 
 kernel vec2 opticalShellWarp(
@@ -103,8 +105,9 @@ kernel vec2 opticalShellWarp(
         max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
     );
 
-    // Floor field01 to prevent the center fold singularity.
-    float field01 = max(clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0), 0.08);
+    // Floor field01 to create a wide center plateau.
+    // Higher floor = thicker central band that content flows around.
+    float field01 = max(clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0), 0.35);
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = sourceField01 / field01;
 
