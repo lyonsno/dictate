@@ -539,6 +539,74 @@ class _QuartzBackdropRenderer:
                         if hasattr(output, "imageByCroppingToRect_"):
                             output = output.imageByCroppingToRect_(extent)
 
+                    # Center blur: heavily blur an inset capsule region
+                    # so the medial-axis seam disappears into a soft wash.
+                    try:
+                        from Quartz import CIFilter
+                        import numpy as np
+                        from Foundation import NSData
+                        from Quartz import (
+                            CGColorSpaceCreateDeviceRGB,
+                            CGDataProviderCreateWithCFData,
+                            CGImageCreate,
+                            kCGImageAlphaPremultipliedLast,
+                            kCGRenderingIntentDefault,
+                        )
+
+                        # Build inset capsule alpha mask.
+                        mw = max(1, int(round(extent.size.width)))
+                        mh = max(1, int(round(extent.size.height)))
+                        content_w = float(shell_config.get("content_width_points", mw))
+                        content_h = float(shell_config.get("content_height_points", mh))
+                        inset_factor = 0.55  # inner capsule is 55% of the full one
+                        inner_radius = max(content_h * 0.5 * inset_factor, 1.0)
+                        inner_spine = max(content_w * 0.5 * inset_factor - inner_radius, 0.0)
+                        mxs = np.arange(mw, dtype=np.float32)[None, :] + 0.5 - mw * 0.5
+                        mys = np.arange(mh, dtype=np.float32)[:, None] + 0.5 - mh * 0.5
+                        inner_sdf = (np.hypot(
+                            np.maximum(np.abs(mxs) - inner_spine, 0.0), mys
+                        ) - inner_radius).astype(np.float32)
+                        # Smooth alpha: 1 inside, fading to 0 over ~8px
+                        center_alpha = np.clip(1.0 - inner_sdf / 8.0, 0.0, 1.0).astype(np.float32)
+                        mask_rgba = np.zeros((mh, mw, 4), dtype=np.uint8)
+                        mask_rgba[..., 0] = 255
+                        mask_rgba[..., 1] = 255
+                        mask_rgba[..., 2] = 255
+                        mask_rgba[..., 3] = (center_alpha * 255).astype(np.uint8)
+                        mask_payload = NSData.dataWithBytes_length_(mask_rgba.tobytes(), int(mask_rgba.nbytes))
+                        mask_provider = CGDataProviderCreateWithCFData(mask_payload)
+                        mask_cg = CGImageCreate(
+                            mw, mh, 8, 32, mw * 4,
+                            CGColorSpaceCreateDeviceRGB(),
+                            kCGImageAlphaPremultipliedLast,
+                            mask_provider, None, False, kCGRenderingIntentDefault,
+                        )
+                        mask_ci = CIImage.imageWithCGImage_(mask_cg)
+
+                        # Blur the warped image heavily.
+                        blur = CIFilter.filterWithName_("CIGaussianBlur")
+                        if blur is not None:
+                            blur.setDefaults()
+                            blur.setValue_forKey_(output, "inputImage")
+                            blur.setValue_forKey_(24.0, "inputRadius")
+                            blurred = blur.valueForKey_("outputImage")
+                            if blurred is not None and hasattr(blurred, "imageByCroppingToRect_"):
+                                blurred = blurred.imageByCroppingToRect_(extent)
+                                # Composite: blurred center over warped backdrop using mask
+                                blend = CIFilter.filterWithName_("CIBlendWithMask")
+                                if blend is not None:
+                                    blend.setDefaults()
+                                    blend.setValue_forKey_(blurred, "inputImage")
+                                    blend.setValue_forKey_(output, "inputBackgroundImage")
+                                    blend.setValue_forKey_(mask_ci, "inputMaskImage")
+                                    blended = blend.valueForKey_("outputImage")
+                                    if blended is not None:
+                                        output = blended
+                                        if hasattr(output, "imageByCroppingToRect_"):
+                                            output = output.imageByCroppingToRect_(extent)
+                    except Exception:
+                        pass
+
                     # Faint boundary outline over the warped backdrop.
                     if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL:
                         outline = _boundary_outline_ci_image(extent, shell_config)
