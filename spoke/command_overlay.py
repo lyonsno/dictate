@@ -1839,14 +1839,25 @@ class CommandOverlay(NSObject):
         inner_width = max(width - 2 * overscan, 1.0)
         inner_height = max(height - 2 * overscan, 1.0)
         try:
-            sdf = _overlay_rounded_rect_sdf(
-                width,
-                height,
-                inner_width,
-                inner_height,
-                _OVERLAY_CORNER_RADIUS,
-                scale,
-            )
+            if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+                # Use capsule SDF for the mask to match the warp shape.
+                import numpy as np
+                pw, ph = max(int(width), 1), max(int(height), 1)
+                xs = np.arange(pw, dtype=np.float32)[None, :] + 0.5 - pw * 0.5
+                ys = np.arange(ph, dtype=np.float32)[:, None] + 0.5 - ph * 0.5
+                capsule_radius = max(inner_height * 0.5, 1.0)
+                spine_half = max(inner_width * 0.5 - capsule_radius, 0.0)
+                spine_dist = np.maximum(np.abs(xs) - spine_half, 0.0)
+                sdf = (np.hypot(spine_dist, ys) - capsule_radius).astype(np.float32)
+            else:
+                sdf = _overlay_rounded_rect_sdf(
+                    width,
+                    height,
+                    inner_width,
+                    inner_height,
+                    _OVERLAY_CORNER_RADIUS,
+                    scale,
+                )
             alpha = _backdrop_mask_alpha(
                 sdf,
                 width=max(
