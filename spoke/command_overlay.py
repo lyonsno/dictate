@@ -587,11 +587,11 @@ class _QuartzBackdropRenderer:
                         )
                         mask_ci = CIImage.imageWithCGImage_(mask_cg)
 
-                        # Blur the warped image heavily.
+                        # Blur the ORIGINAL capture (pre-warp) for a clean center wash.
                         blur = CIFilter.filterWithName_("CIGaussianBlur")
                         if blur is not None:
                             blur.setDefaults()
-                            blur.setValue_forKey_(output, "inputImage")
+                            blur.setValue_forKey_(ci_image, "inputImage")
                             blur.setValue_forKey_(32.0, "inputRadius")
                             blurred = blur.valueForKey_("outputImage")
                             if blurred is not None and hasattr(blurred, "imageByCroppingToRect_"):
