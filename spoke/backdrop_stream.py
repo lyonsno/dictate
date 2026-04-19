@@ -63,7 +63,7 @@ float depthRemap(float inside01, float curveBoost) {
     // is still aggressively evacuated.
     float x = clamp(inside01, 0.0, 1.0);
     float baseExp = max(1.0 - curveBoost * 0.98, 0.02);
-    float rimExp = mix(0.85, 1.0, 1.0 - curveBoost);
+    float rimExp = mix(0.95, 1.0, 1.0 - curveBoost);
     // Blend between rim exponent (near edge) and base exponent (center).
     float exponent = mix(baseExp, rimExp, x * x);
     return pow(x, exponent);
@@ -107,20 +107,20 @@ kernel vec2 opticalShellWarp(
     // near the rim) while keeping the mapping strictly monotonic —
     // no S-curve reversal that sucks content back inward.
     float rawField = clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0);
-    float field01 = mix(0.72, 1.0, pow(rawField, 0.5));
+    float field01 = mix(0.80, 1.0, pow(rawField, 0.35));
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = sourceField01 / field01;
 
-    // Interior: radial scaling from center.
-    // Exterior: push along capsule normal (outward from surface).
-    // This makes content deflect around the pill rather than toward center.
+    // Interior: radial scaling from center (evacuation).
+    // Exterior: radial magnification that decays with distance.
+    // Content approaching the capsule starts to magnify — like
+    // entering a lens field before hitting the boundary.
     vec2 src;
     if (capsuleSdf <= 0.0) {
         src = c + p * scale;
     } else {
-        float pushAmount = curveBoost * capsuleRadius * 0.4
-            * exp(-capsuleSdf * 1.6);
-        src = d + capsuleN * pushAmount;
+        float mag = curveBoost * 0.25 * exp(-capsuleSdf * 0.12);
+        src = c + p * (1.0 + mag);
     }
     return src;
 }
