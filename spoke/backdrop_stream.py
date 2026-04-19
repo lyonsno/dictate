@@ -112,15 +112,19 @@ kernel vec2 opticalShellWarp(
     float scale = sourceField01 / field01;
 
     // Interior: radial scaling from center (evacuation).
-    // Exterior: radial magnification that decays with distance.
-    // Content approaching the capsule starts to magnify — like
-    // entering a lens field before hitting the boundary.
+    // Exterior: displace along capsule normal (away from surface).
+    // Content flows around the capsule — pushed away from the nearest
+    // point on the surface, not toward/away from center.
     vec2 src;
     if (capsuleSdf <= 0.0) {
         src = c + p * scale;
     } else {
-        float mag = curveBoost * 0.25 * exp(-capsuleSdf * 0.12);
-        src = c + p * (1.0 + mag);
+        float pushDist = curveBoost * capsuleRadius * 0.25
+            * exp(-capsuleSdf * 0.12);
+        // capsuleN points outward from surface.  Displacing the
+        // *source* lookup inward (opposite to normal) makes the
+        // rendered content appear to have been pushed outward.
+        src = d - capsuleN * pushDist;
     }
     return src;
 }
