@@ -48,16 +48,6 @@ float sdCapsule(vec2 p, float spineHalf, float radius) {
     return length(vec2(spine_dist, p.y)) - radius;
 }
 
-vec2 capsuleGradient(vec2 p, float spineHalf) {
-    // Analytical gradient of sdCapsule.  The SDF is distance-to-segment
-    // minus radius; its gradient is the unit vector from the nearest
-    // point on the spine segment toward p.
-    float clampedX = clamp(p.x, -spineHalf, spineHalf);
-    vec2 toP = p - vec2(clampedX, 0.0);
-    float len = length(toP);
-    return len > 1e-6 ? toP / len : vec2(0.0, 1.0);
-}
-
 float depthRemap(float inside01, float curveBoost) {
     // Dual-exponent remap: gentle near the rim, violent through the body.
     float x = clamp(inside01, 0.0, 1.0);
@@ -89,15 +79,10 @@ kernel vec2 opticalShellWarp(
     // --- capsule SDF (one call) ---
     float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);
 
-    // Early bailout: far exterior (identity) and deep interior
-    // (will be blurred over anyway).
-    float activeOuterLimit = capsuleRadius * 0.5;
+    // Early bailout: far exterior and deep interior.
     float activeInnerLimit = capsuleRadius * 0.55;
-    if (capsuleSdf > activeOuterLimit) return d;
-    if (capsuleSdf < -activeInnerLimit) return c;
-
-    // --- analytical capsule gradient (no extra SDF calls) ---
-    vec2 capsuleN = capsuleGradient(p, spineHalf);
+    if (capsuleSdf > 0.0) return d;              // exterior: identity
+    if (capsuleSdf < -activeInnerLimit) return c; // deep interior: center
 
     float curveBoost = min(
         0.95,
@@ -110,21 +95,8 @@ kernel vec2 opticalShellWarp(
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = sourceField01 / field01;
 
-    // Interior: radial scaling. Exterior: normal displacement.
-    vec2 src;
-    if (capsuleSdf <= 0.0) {
-        src = c + p * scale;
-    } else {
-        // Attenuate push near capsule tips where gradient curvature
-        // is highest — prevents sampling far outside the image.
-        float tipDist = max(abs(p.x) - spineHalf, 0.0);
-        float tipFade = 1.0 - smoothstep(0.0, capsuleRadius * 0.8, tipDist);
-        float pushDist = curveBoost * capsuleRadius * 0.25
-            * exp(-capsuleSdf * 0.12) * tipFade;
-        src = d - capsuleN * pushDist;
-    }
-    // Clamp to image bounds to avoid sampling garbage at edges.
-    src = clamp(src, vec2(0.0, 0.0), vec2(width, height));
+    // Interior only: radial scaling from center.
+    vec2 src = c + p * scale;
     return src;
 }
 """
