@@ -637,9 +637,12 @@ def _configure_stream_geometry(config, *, content_rect, capture_rect, point_pixe
 def make_backdrop_renderer(screen, fallback_factory):
     if _screen_capture_kit_available():
         try:
-            return _ScreenCaptureKitBackdropRenderer(screen, fallback_factory)
+            renderer = _ScreenCaptureKitBackdropRenderer(screen, fallback_factory)
+            logger.info("Backdrop renderer: ScreenCaptureKit (streaming)")
+            return renderer
         except Exception:
             logger.debug("Falling back to Quartz backdrop renderer after ScreenCaptureKit init failure", exc_info=True)
+    logger.info("Backdrop renderer: Quartz snapshot fallback (SLOW)")
     return fallback_factory()
 
 
