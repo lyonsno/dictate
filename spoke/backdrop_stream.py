@@ -1765,29 +1765,35 @@ class _ScreenCaptureKitBackdropRenderer:
             )
         if self._sample_buffer_callback is not None:
             if optical_shell_config is not None:
-                shell_sample_buffer = self._optical_shell_sample_buffer(sample_buffer)
-                if shell_sample_buffer is not None:
-                    # Extract CGImage from the rendered sample buffer for
-                    # display via setContents_ on a plain CALayer.
+                # Direct CIImage path: extract image from SCK sample buffer,
+                # apply warp, render to CGImage, publish.  Bypasses the Metal
+                # sample-buffer pipeline entirely — simpler and avoids the
+                # stale-IOSurface caching issue.
+                ci_from_sb = bridge.get("_CIImage_from_sample_buffer")
+                if ci_from_sb is not None:
                     try:
-                        pb = bridge["CMSampleBufferGetImageBuffer"](shell_sample_buffer)
-                        if pb is not None:
-                            from Quartz import CIImage
-                            ci = CIImage.imageWithCVPixelBuffer_(pb)
-                            if ci is not None:
-                                ext = ci.extent()
+                        from Quartz import CIImage
+                        ci_image = ci_from_sb(sample_buffer)
+                        if ci_image is not None:
+                            extent = ci_image.extent()
+                            if extent is not None:
+                                warped = _apply_optical_shell_warp_ci_image(
+                                    ci_image.imageByClampingToExtent() if hasattr(ci_image, "imageByClampingToExtent") else ci_image,
+                                    extent,
+                                    optical_shell_config,
+                                )
+                                if warped is not None:
+                                    output = warped.imageByCroppingToRect_(extent) if hasattr(warped, "imageByCroppingToRect_") else warped
+                                else:
+                                    output = ci_image
                                 ctx = self._context()
                                 if ctx is not None:
-                                    cg = ctx.createCGImage_fromRect_(ci, ext)
+                                    cg = ctx.createCGImage_fromRect_(output, extent)
                                     if cg is not None:
                                         self._publish_live_image(cg)
                                         return
                     except Exception:
-                        logger.debug("SCK: shell sample buffer CGImage extraction failed", exc_info=True)
-                    # Fallback: publish sample buffer directly (works if layer
-                    # is AVSampleBufferDisplayLayer).
-                    self._publish_live_sample_buffer(shell_sample_buffer)
-                    return
+                        logger.debug("SCK: direct CIImage optical shell path failed", exc_info=True)
             elif self._blur_radius_points <= 0.0:
                 self._publish_live_sample_buffer(sample_buffer)
                 return

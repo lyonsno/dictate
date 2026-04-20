@@ -190,30 +190,32 @@ def test_consume_sample_buffer_blurred_sample_path_skips_image_conversion(monkey
     renderer._context.assert_not_called()
 
 
-def test_consume_sample_buffer_optical_shell_uses_metal_then_extracts_cgimage(monkeypatch):
-    """When optical shell is active, consume runs the Metal warp pipeline,
-    then extracts a CGImage from the output for display via publish_live_image."""
+def test_consume_sample_buffer_optical_shell_direct_ciimage_path(monkeypatch):
+    """When optical shell is active, consume extracts a CIImage from the
+    SCK sample buffer, applies the warp, renders to CGImage, and publishes."""
     mod = _import_module()
 
-    fake_quartz = types.ModuleType("Quartz")
     fake_ci_image = MagicMock()
     fake_ci_image.extent.return_value = MagicMock(size=MagicMock(width=100, height=50))
+    fake_ci_image.imageByClampingToExtent.return_value = fake_ci_image
+    fake_ci_image.imageByCroppingToRect_.return_value = fake_ci_image
+    fake_quartz = types.ModuleType("Quartz")
     fake_quartz.CIImage = MagicMock()
-    fake_quartz.CIImage.imageWithCVPixelBuffer_ = MagicMock(return_value=fake_ci_image)
     monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
 
     bridge = {
         "SCStreamOutputTypeScreen": 7,
         "CMSampleBufferGetImageBuffer": MagicMock(return_value="pixel-buf"),
+        "_CIImage_from_sample_buffer": MagicMock(return_value=fake_ci_image),
     }
     monkeypatch.setattr(mod, "_load_screencapturekit_bridge", lambda: bridge)
+    monkeypatch.setattr(mod, "_apply_optical_shell_warp_ci_image", MagicMock(return_value=fake_ci_image))
 
     renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
     renderer._blur_radius_points = 0.2
     renderer._sample_buffer_callback = MagicMock()
     renderer._frame_callback = MagicMock()
     renderer._optical_shell_config = {"enabled": True}
-    renderer._optical_shell_sample_buffer = MagicMock(return_value="shell-sample")
     renderer._publish_live_sample_buffer = MagicMock()
     renderer._publish_live_image = MagicMock()
     fake_context = MagicMock()
@@ -225,10 +227,11 @@ def test_consume_sample_buffer_optical_shell_uses_metal_then_extracts_cgimage(mo
 
     renderer._consume_sample_buffer("live-sample", 7)
 
-    # Should go through Metal pipeline first
-    renderer._optical_shell_sample_buffer.assert_called_once_with("live-sample")
-    # Should extract CGImage and publish via live image path
+    # Should use _CIImage_from_sample_buffer, not Metal pipeline
+    bridge["_CIImage_from_sample_buffer"].assert_called_once_with("live-sample")
+    # Should publish via live image path
     renderer._publish_live_image.assert_called_once()
+    renderer._publish_live_sample_buffer.assert_not_called()
 
 
 def test_consume_sample_buffer_blurred_sample_failure_falls_back_to_image_path(monkeypatch):
