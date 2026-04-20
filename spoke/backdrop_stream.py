@@ -1124,16 +1124,23 @@ class _MetalBlurPipeline:
         bridge,
     ):
         _sck_timer.begin("total")
-        pixel_buffer = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
-        if pixel_buffer is None:
-            logger.info("SCK: CMSampleBufferGetImageBuffer returned None")
-            return None
         try:
             from Quartz import CIImage, CIFilter
         except Exception:
             return None
         _sck_timer.begin("ci_setup")
-        ci_image = CIImage.imageWithCVPixelBuffer_(pixel_buffer)
+        # Use _CIImage_from_sample_buffer if available — handles IOSurface
+        # fallback for SCK sample buffers where CMSampleBufferGetImageBuffer
+        # returns NULL through the ctypes bridge.
+        ci_from_sb = bridge.get("_CIImage_from_sample_buffer")
+        if ci_from_sb is not None:
+            ci_image = ci_from_sb(sample_buffer)
+        else:
+            pixel_buffer = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
+            if pixel_buffer is None:
+                logger.info("SCK: CMSampleBufferGetImageBuffer returned None")
+                return None
+            ci_image = CIImage.imageWithCVPixelBuffer_(pixel_buffer)
         if ci_image is None:
             return None
         extent = ci_image.extent() if hasattr(ci_image, "extent") else None
@@ -1263,15 +1270,38 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
             _cm_lib.CMSampleBufferGetImageBuffer.argtypes = [ctypes.c_void_p]
             _cm_lib.CMSampleBufferGetImageBuffer.restype = ctypes.c_void_p
 
+            _cv_lib = ctypes.CDLL(f"{_COREVIDEO_FRAMEWORK_PATH}/CoreVideo")
+            _cv_lib.CVPixelBufferGetIOSurface.argtypes = [ctypes.c_void_p]
+            _cv_lib.CVPixelBufferGetIOSurface.restype = ctypes.c_void_p
+
+            _iosurface_lib = ctypes.CDLL("/System/Library/Frameworks/IOSurface.framework/IOSurface")
+
             def _CMSampleBufferGetImageBuffer_via_ctypes(sample_buffer):
-                try:
-                    raw_ptr = sample_buffer.__c_void_p__().value
-                except AttributeError:
-                    raw_ptr = objc.pyobjc_id(sample_buffer)
+                # Use pyobjc_id for the raw ObjC pointer — more reliable
+                # than __c_void_p__ for toll-free bridged CF types.
+                raw_ptr = objc.pyobjc_id(sample_buffer)
                 result_ptr = _cm_lib.CMSampleBufferGetImageBuffer(raw_ptr)
                 if not result_ptr:
                     return None
                 return objc.objc_object(c_void_p=result_ptr)
+
+            def _CIImage_from_sample_buffer(sample_buffer):
+                """Extract a CIImage from a CMSampleBuffer, trying pixel
+                buffer first, then IOSurface fallback."""
+                from Quartz import CIImage
+                raw_ptr = objc.pyobjc_id(sample_buffer)
+                pb_ptr = _cm_lib.CMSampleBufferGetImageBuffer(raw_ptr)
+                if pb_ptr:
+                    pb_obj = objc.objc_object(c_void_p=pb_ptr)
+                    ci = CIImage.imageWithCVPixelBuffer_(pb_obj)
+                    if ci is not None:
+                        return ci
+                    # Pixel buffer exists but CIImage failed — try IOSurface
+                    ios_ptr = _cv_lib.CVPixelBufferGetIOSurface(pb_ptr)
+                    if ios_ptr:
+                        ios_obj = objc.objc_object(c_void_p=ios_ptr)
+                        return CIImage.imageWithIOSurface_(ios_obj)
+                return None
 
             CMSampleBufferGetImageBuffer = _CMSampleBufferGetImageBuffer_via_ctypes
 
@@ -1288,6 +1318,7 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                 "SCFrameStatusComplete": SCFrameStatusComplete,
                 "SCStreamFrameInfoStatus": SCStreamFrameInfoStatus,
                 "CMSampleBufferGetImageBuffer": CMSampleBufferGetImageBuffer,
+                "_CIImage_from_sample_buffer": _CIImage_from_sample_buffer,
                 "CMSampleBufferGetPresentationTimeStamp": CMSampleBufferGetPresentationTimeStamp,
                 "CMSampleBufferGetDuration": CMSampleBufferGetDuration,
                 "CMSampleBufferGetSampleAttachmentsArray": CMSampleBufferGetSampleAttachmentsArray,
@@ -1769,12 +1800,16 @@ class _ScreenCaptureKitBackdropRenderer:
             self._publish_live_sample_buffer(sample_buffer)
             return
         try:
-            pixel_buffer = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
-            if pixel_buffer is None:
-                return
             from Quartz import CIImage, CIFilter
 
-            ci_image = CIImage.imageWithCVPixelBuffer_(pixel_buffer)
+            ci_from_sb = bridge.get("_CIImage_from_sample_buffer")
+            if ci_from_sb is not None:
+                ci_image = ci_from_sb(sample_buffer)
+            else:
+                pixel_buffer = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
+                if pixel_buffer is None:
+                    return
+                ci_image = CIImage.imageWithCVPixelBuffer_(pixel_buffer)
             if ci_image is None:
                 return
             extent = ci_image.extent() if hasattr(ci_image, "extent") else None
