@@ -104,8 +104,8 @@ _WARP_Y_SQUEEZE = 1.5
 # creates a lens/magnification effect around the boundary.  The pull
 # decays exponentially with distance from the capsule surface.
 # Strength is fraction of capsuleRadius; higher = stronger lens.
-_WARP_EXTERIOR_MAG_STRENGTH = 3.0   # cranked for debugging
-_WARP_EXTERIOR_MAG_DECAY = 0.5     # very slow falloff so it's visible far out
+_WARP_EXTERIOR_MAG_STRENGTH = 1.2
+_WARP_EXTERIOR_MAG_DECAY = 1.0
 
 _SHELL_WARP_KERNEL = None
 
@@ -189,7 +189,12 @@ kernel vec2 opticalShellWarp(
     float magRampIn = smoothstep(0.0, capsuleRadius * 0.15, exteriorT);
     float magDecay = exp(-exteriorT / capsuleRadius * %(ext_mag_decay)s);
     vec2 n = capsuleGradient(p, spineHalf);
-    float mag = %(ext_mag_strength)s * capsuleRadius * magRampIn * magDecay;
+    // Attenuate at endcaps so tips don't vortex while body gets a
+    // uniform lens.  Inverse of interior spine proximity: 1 on the
+    // straight body, fading to 0 at the tip poles.
+    float tipDist = max(abs(p.x) - spineHalf, 0.0);
+    float tipAtten = 1.0 - smoothstep(0.0, capsuleRadius * 0.8, tipDist);
+    float mag = %(ext_mag_strength)s * capsuleRadius * magRampIn * magDecay * tipAtten;
     vec2 magSrc = d - n * mag;
     magSrc = clamp(magSrc, vec2(0.0, 0.0), vec2(width, height));
     // Blend: interior warp → magnified exterior over the bleed zone.
