@@ -1247,11 +1247,11 @@ class CommandOverlay(NSObject):
 
         # Pulse the glow with assistant phase oscillating color
         glow_nscolor = NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 1.0)
-        glow_opacity = 0.5 + 0.3 * breath
+        glow_opacity = 0.74 + 0.238 * breath
         # Drive the SDF fill layer with the pulse — the fill breathes
         # with the assistant's thinking/response animation.
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
-            self._fill_layer.setOpacity_(min(glow_opacity * 0.7, 0.85))
+            self._fill_layer.setOpacity_(glow_opacity)
         # Cancel spring: warm amber tint over the overlay shape.
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
             if spring > 0.01:
