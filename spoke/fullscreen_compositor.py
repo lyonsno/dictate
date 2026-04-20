@@ -190,7 +190,7 @@ class FullScreenCompositor:
         result = {"content": None, "error": None}
         event = threading.Event()
 
-        def got_content(content):
+        def got_content(content, *args):
             result["content"] = content
             event.set()
 
@@ -223,9 +223,7 @@ class FullScreenCompositor:
         config.setQueueDepth_(8)
         config.setShowsCursor_(True)
         config.setPixelFormat_(1111970369)  # kCVPixelFormatType_32BGRA
-        if hasattr(config, "setMinimumFrameInterval_"):
-            # Target display refresh rate
-            config.setMinimumFrameInterval_(objc.nil)
+        # Don't set minimumFrameInterval — let SCK deliver at max rate
         if hasattr(config, "setContentScale_"):
             config.setContentScale_(scale)
 
