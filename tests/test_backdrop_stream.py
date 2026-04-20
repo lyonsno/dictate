@@ -103,14 +103,11 @@ def test_configure_stream_geometry_uses_filter_content_rect_and_point_pixel_scal
         point_pixel_scale=1.5,
     )
 
-    assert config.calls["width"] == 1020
-    assert config.calls["height"] == 240
+    # Width/height/sourceRect not set — full display capture.
+    assert "width" not in config.calls
+    assert "source_rect" not in config.calls
     assert config.calls["queue_depth"] == 3
     assert config.calls["shows_cursor"] is False
-    assert config.calls["source_rect"].origin.x == pytest.approx(480.0)
-    assert config.calls["source_rect"].origin.y == pytest.approx(637.0)
-    assert config.calls["destination_rect"].origin.x == pytest.approx(0.0)
-    assert config.calls["destination_rect"].origin.y == pytest.approx(0.0)
 
 
 def test_publish_live_image_caches_frame_and_invokes_callback():
