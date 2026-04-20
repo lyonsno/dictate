@@ -52,7 +52,7 @@ float depthRemap(float inside01, float curveBoost) {
     // Dual-exponent remap: gentle near the rim, violent through the body.
     float x = clamp(inside01, 0.0, 1.0);
     float baseExp = max(1.0 - curveBoost * 0.98, 0.02);
-    float rimExp = mix(0.92, 1.0, 1.0 - curveBoost);
+    float rimExp = mix(0.70, 1.0, 1.0 - curveBoost);
     float exponent = mix(baseExp, rimExp, x * x);
     return pow(x, exponent);
 }
@@ -81,7 +81,7 @@ kernel vec2 opticalShellWarp(
 
     // Exterior bleed zone: let the warp continue past the boundary
     // so content wraps around the endcaps instead of clipping.
-    float bleedZone = capsuleRadius * 0.25;
+    float bleedZone = capsuleRadius * 0.5;
     if (capsuleSdf > bleedZone) return d;         // far exterior: identity
 
     float curveBoost = min(
