@@ -192,11 +192,12 @@ kernel vec2 opticalShellWarp(
     float tipDist = max(abs(p.x) - spineHalf, 0.0);
     float tipAtten = 1.0 - smoothstep(0.0, capsuleRadius * 0.8, tipDist);
     float mag = %(ext_mag_strength)s * capsuleRadius * seamRamp * magDecay * tipAtten;
-    vec2 magSrc = d - n * mag;
-    magSrc = clamp(magSrc, vec2(0.0, 0.0), vec2(width, height));
-    // Blend: interior warp → magnified exterior over the bleed zone.
-    float warpFade = smoothstep(0.0, bleedZone, exteriorT);
-    return mix(warped, magSrc, warpFade);
+    // Apply mag to the warped position itself, not as a separate blend
+    // target.  This way the displacement is always visible regardless
+    // of how the interior/exterior blend works.
+    vec2 result = warped - n * mag;
+    result = clamp(result, vec2(0.0, 0.0), vec2(width, height));
+    return result;
 }
 """ % {
         "bleed_frac": _WARP_BLEED_ZONE_FRAC,
