@@ -1621,6 +1621,18 @@ class _ScreenCaptureKitBackdropRenderer:
         except Exception:
             return None
         try:
+            # Use Metal-backed CIContext for GPU-accelerated rendering.
+            # Falls back to generic context if Metal is unavailable.
+            from Foundation import NSBundle
+            metal_bundle = NSBundle.bundleWithPath_("/System/Library/Frameworks/Metal.framework")
+            objc.loadBundleFunctions(metal_bundle, globals(), [("MTLCreateSystemDefaultDevice", b"@")])
+            device = MTLCreateSystemDefaultDevice()
+            if device is not None:
+                self._ci_context = CIContext.contextWithMTLDevice_(device)
+                logger.info("SCK: CIContext backed by Metal device")
+            else:
+                self._ci_context = CIContext.contextWithOptions_(None)
+        except Exception:
             self._ci_context = CIContext.contextWithOptions_(None)
         except Exception:
             logger.debug("Failed to create CIContext for ScreenCaptureKit backdrop", exc_info=True)
