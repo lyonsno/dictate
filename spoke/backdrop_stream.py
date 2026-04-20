@@ -1382,12 +1382,31 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                     data_ready = _cm_lib.CMSampleBufferDataIsReady(raw)
                     fmt_desc = _cm_lib.CMSampleBufferGetFormatDescription(raw)
                     pb = _cm_lib.CMSampleBufferGetImageBuffer(raw)
+                    # Check for IOSurface directly on the sample buffer
+                    ios_ptr = None
+                    if pb:
+                        ios_ptr = _cv_lib.CVPixelBufferGetIOSurface(pb)
+                    # Try getting the IOSurface from the format description
+                    # or via CMSampleBufferGetDataBuffer
+                    _cm_lib.CMSampleBufferGetDataBuffer.argtypes = [ctypes.c_void_p]
+                    _cm_lib.CMSampleBufferGetDataBuffer.restype = ctypes.c_void_p
+                    data_buf = _cm_lib.CMSampleBufferGetDataBuffer(raw)
                     logger.info(
-                        "SCK ci_from_sb[%d]: valid=%s ready=%s fmt=%s pb=%s",
+                        "SCK ci_from_sb[%d]: valid=%s ready=%s fmt=%s pb=%s data_buf=%s",
                         n, is_valid, data_ready,
                         hex(fmt_desc) if fmt_desc else "None",
                         hex(pb) if pb else "NULL",
+                        hex(data_buf) if data_buf else "NULL",
                     )
+                    # If no pixel buffer, try creating CIImage directly
+                    # from the sample buffer's IOSurface attachment
+                    if not pb and hasattr(sample_buffer, "imageBuffer"):
+                        try:
+                            ib = sample_buffer.imageBuffer()
+                            if ib is not None and n <= 5:
+                                logger.info("SCK ci_from_sb[%d]: ObjC imageBuffer=%s", n, ib)
+                        except Exception:
+                            pass
 
                 # Strategy 1: native pyobjc-framework-CoreMedia (correct
                 # type metadata, no bridging issues).
