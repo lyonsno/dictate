@@ -1376,7 +1376,7 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                 _ci_from_sb_diag[0] += 1
                 n = _ci_from_sb_diag[0]
 
-                if n <= 5:
+                if n <= 20:
                     raw = objc.pyobjc_id(sample_buffer)
                     is_valid = _cm_lib.CMSampleBufferIsValid(raw)
                     data_ready = _cm_lib.CMSampleBufferDataIsReady(raw)
@@ -1415,33 +1415,33 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                         pb = _native_GetImageBuffer(sample_buffer)
                         if pb is not None:
                             ci = CIImage.imageWithCVPixelBuffer_(pb)
-                            if n <= 5:
+                            if n <= 20:
                                 logger.info("SCK ci_from_sb[%d]: native pb=%s ci=%s", n, pb, ci is not None)
                             return ci
-                        elif n <= 5:
+                        elif n <= 20:
                             logger.info("SCK ci_from_sb[%d]: native returned None", n)
                     except Exception:
-                        if n <= 5:
+                        if n <= 20:
                             logger.info("SCK ci_from_sb[%d]: native raised", n, exc_info=True)
 
                 # Strategy 2: manual bridge via loadBundleFunctions '@@'
                 if _cm_direct_GetImageBuffer is not None:
                     try:
                         pb = _cm_direct_GetImageBuffer(sample_buffer)
-                        if n <= 5:
+                        if n <= 20:
                             logger.info("SCK ci_from_sb[%d]: direct pb=%s sb_type=%s", n, pb, type(sample_buffer).__name__)
                         if pb is not None:
                             ci = CIImage.imageWithCVPixelBuffer_(pb)
                             if ci is not None:
                                 return ci
                     except Exception:
-                        if n <= 5:
+                        if n <= 20:
                             logger.info("SCK ci_from_sb[%d]: direct raised", n, exc_info=True)
 
                 # Strategy 3: ctypes (least reliable)
                 raw_ptr = objc.pyobjc_id(sample_buffer)
                 pb_ptr = _cm_lib.CMSampleBufferGetImageBuffer(raw_ptr)
-                if n <= 5:
+                if n <= 20:
                     logger.info("SCK ci_from_sb[%d]: ctypes pb=%s", n, hex(pb_ptr) if pb_ptr else "NULL")
                 if not pb_ptr:
                     return None
