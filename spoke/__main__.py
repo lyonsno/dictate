@@ -3259,12 +3259,13 @@ class SpokeAppDelegate(NSObject):
                     turn_embeddings = _np.load(f"{tf_path}.npy")
                     _Path(f"{tf_path}.npy").unlink(missing_ok=True)
 
-                # Cosine similarity (vectors are L2-normalized)
+                # Cosine similarity — full-text embeddings only.
+                # Summary embeddings are stored in the index for future use but
+                # currently ~18% of attractors have degenerate summaries ("---")
+                # that produce identical garbage vectors. Full-text embeddings
+                # are unique and meaningful for all attractors.
                 full_scores = full_emb @ turn_embeddings.T  # (attractors, turns)
-                summary_scores = summary_emb @ turn_embeddings.T
-                best_full = full_scores.max(axis=1)
-                best_summary = summary_scores.max(axis=1)
-                combined = _np.maximum(best_full, best_summary)
+                combined = full_scores.max(axis=1)
 
                 # Top-k above threshold
                 top_k = arguments.get("top_k", 10)

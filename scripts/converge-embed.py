@@ -138,25 +138,19 @@ def query(text: str, top_k: int = 10, threshold: float = 0.3) -> list[dict]:
     # Embed the query
     query_emb = embed_texts([text])[0]  # (dim,)
 
-    # Cosine similarity against both full and summary embeddings
-    # (vectors are already L2-normalized, so dot product = cosine)
+    # Full-text embeddings only (summary embeddings have degenerate entries)
     full_scores = full_emb @ query_emb
-    summary_scores = summary_emb @ query_emb
-
-    # Take max of full and summary scores for each attractor
-    combined_scores = np.maximum(full_scores, summary_scores)
 
     # Top-k above threshold
-    top_indices = np.argsort(combined_scores)[::-1][:top_k]
+    top_indices = np.argsort(full_scores)[::-1][:top_k]
     results = []
     for idx in top_indices:
-        score = float(combined_scores[idx])
+        score = float(full_scores[idx])
         if score < threshold:
             break
         results.append({
             **metadata[idx],
             "score": score,
-            "match_type": "full" if full_scores[idx] > summary_scores[idx] else "summary",
         })
 
     return results
@@ -175,14 +169,10 @@ def query_turns(turns: list[str], top_k: int = 10, threshold: float = 0.3) -> li
         return []
     turn_embeddings = embed_texts(turns)  # (N, dim)
 
-    # Score each turn against all attractors, take max across turns
+    # Full-text embeddings only (summary embeddings have degenerate entries)
     full_scores = full_emb @ turn_embeddings.T  # (attractors, turns)
-    summary_scores = summary_emb @ turn_embeddings.T
-
-    # For each attractor, take the best score across all turns and both embeddings
     best_full = full_scores.max(axis=1)
-    best_summary = summary_scores.max(axis=1)
-    combined = np.maximum(best_full, best_summary)
+    combined = best_full
 
     # Top-k above threshold
     top_indices = np.argsort(combined)[::-1][:top_k]
