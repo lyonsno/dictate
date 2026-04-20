@@ -83,8 +83,6 @@ kernel vec2 opticalShellWarp(
     // so content wraps around the endcaps instead of clipping.
     float bleedZone = capsuleRadius * 0.25;
     if (capsuleSdf > bleedZone) return d;         // far exterior: identity
-    // No deep interior bailout — let radial scaling run all the way
-    // through so content compresses smoothly instead of clipping.
 
     float curveBoost = min(
         0.95,
@@ -93,11 +91,12 @@ kernel vec2 opticalShellWarp(
 
     // Remap field with a floor and monotonic curve.
     float rawField = clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0);
-    float field01 = mix(0.90, 1.0, pow(rawField, 0.35));
+    float field01 = mix(0.35, 1.0, pow(rawField, 0.35));
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = sourceField01 / field01;
 
-    // Radial scaling from center, fading to identity in the bleed zone.
+    // Radial scaling from center — aggressive enough that content
+    // near the midline still gets pushed to the rim and wraps around.
     vec2 warped = c + p * scale;
     if (capsuleSdf > 0.0) {
         float fade = smoothstep(0.0, bleedZone, capsuleSdf);
