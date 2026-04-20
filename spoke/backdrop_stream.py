@@ -2150,6 +2150,22 @@ class _ScreenCaptureKitBackdropRenderer:
             # capture rect dimensions — the image is already overlay-sized.
             # No crop needed.
 
+            # SCK delivers frames in top-down orientation but CIImage uses
+            # bottom-up.  Flip vertically so the warp kernel's Y direction
+            # matches the screen.
+            try:
+                from Quartz import CGAffineTransformMakeScale, CGAffineTransformTranslate
+                flip = CGAffineTransformTranslate(
+                    CGAffineTransformMakeScale(1.0, -1.0),
+                    0.0, -extent.size.height,
+                )
+                flipped = ci_image.imageByApplyingTransform_(flip)
+                if flipped is not None:
+                    ci_image = flipped
+                    extent = ci_image.extent() if hasattr(ci_image, "extent") else extent
+            except Exception:
+                pass
+
             diag = getattr(self, "_consume_diag_n", 0)
             if diag <= 7 and optical_shell_config is not None:
                 logger.info(
