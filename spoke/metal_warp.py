@@ -130,7 +130,8 @@ kernel void opticalShellWarp(
     // ramps to full blur toward center.  1px tap offsets — the warp
     // magnification amplifies the effect naturally.
     float interiorDepth = clamp(-capsuleSdf / capsuleRadius, 0.0f, 1.0f);
-    float blurT = smoothstep(0.10f, 0.35f, interiorDepth);
+    // Later onset (15%), longer ramp — more blur deep inside, less near edge
+    float blurT = smoothstep(0.15f, 0.50f, interiorDepth);
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
     float4 centerColor = inTexture.read(uint2(samplePt));

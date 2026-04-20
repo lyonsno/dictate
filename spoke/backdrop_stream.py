@@ -52,7 +52,7 @@ _OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER = 0.22
 # How far past the capsule boundary (as a fraction of capsuleRadius) the
 # warp bleeds before fading to identity via smoothstep.
 # Larger → more squoot visible outside the pill.
-_WARP_BLEED_ZONE_FRAC = 0.5
+_WARP_BLEED_ZONE_FRAC = 1.0
 
 # Floor of field01 at the deepest interior.  Sets the minimum scale
 # factor.  Lower → more compression at center.  Below ~0.5 the scale
@@ -105,7 +105,7 @@ _WARP_Y_SQUEEZE = 1.5
 # creates a lens/magnification effect around the boundary.  The pull
 # decays exponentially with distance from the capsule surface.
 # Strength is fraction of capsuleRadius; higher = stronger lens.
-_WARP_EXTERIOR_MAG_STRENGTH = 0.3   # subtle — needs tuning pass with debug grid
+_WARP_EXTERIOR_MAG_STRENGTH = 0.6   # visible lens effect around boundary
 _WARP_EXTERIOR_MAG_DECAY = 2.0     # fast falloff to keep it near the boundary
 
 _SHELL_WARP_KERNEL = None
