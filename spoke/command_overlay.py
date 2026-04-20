@@ -893,17 +893,9 @@ class CommandOverlay(NSObject):
 
     def _choose_backdrop_layer_class(self):
         if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
-            # Try CAMetalLayer for zero-copy GPU presentation.
-            try:
-                from spoke.metal_warp import get_metal_warp_pipeline
-                pipeline = get_metal_warp_pipeline()
-                if pipeline is not None:
-                    import objc
-                    CAMetalLayer = objc.lookUpClass("CAMetalLayer")
-                    logger.info("Command overlay: using CAMetalLayer for optical shell")
-                    return CAMetalLayer
-            except Exception:
-                logger.debug("CAMetalLayer unavailable, falling back to CALayer", exc_info=True)
+            # Use plain CALayer — the CIImage path uses setContents_
+            # which CAMetalLayer doesn't support.  Metal drawable
+            # rendering is future work.
             return CALayer
         renderer = getattr(self, "_backdrop_renderer", None)
         blur_radius_points = getattr(self, "_backdrop_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS)
