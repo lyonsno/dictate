@@ -89,6 +89,12 @@ _WARP_CURVEBOOST_RING_CAP = 0.55        # ring term capped here
 # Higher = more violence at x-center relative to tips.
 _WARP_SPINE_PROXIMITY_BOOST = 1.5
 
+# Anisotropic scale ratio: how much harder x compresses relative to y.
+# 1.0 = uniform (isotropic).  Values > 1 make x compress faster, pulling
+# content toward the endcaps while preserving vertical extent so it
+# curves around the pill instead of collapsing to a V on the midline.
+_WARP_X_SQUEEZE = 2.5
+
 _SHELL_WARP_KERNEL = None
 
 def _build_shell_warp_kernel_source() -> str:
@@ -151,7 +157,10 @@ kernel vec2 opticalShellWarp(
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = sourceField01 / field01;
 
-    vec2 warped = c + p * scale;
+    // Anisotropic scale: compress x harder than y so content reaches
+    // the endcaps and curves around instead of collapsing to a V.
+    float scaleX = pow(max(scale, 0.0), %(x_squeeze)s);
+    vec2 warped = c + p * vec2(scaleX, scale);
     if (capsuleSdf > 0.0) {
         float fade = smoothstep(0.0, bleedZone, capsuleSdf);
         return mix(warped, d, fade);
@@ -170,6 +179,7 @@ kernel vec2 opticalShellWarp(
         "cb_ring_div": _WARP_CURVEBOOST_RING_DIVISOR,
         "cb_ring_cap": _WARP_CURVEBOOST_RING_CAP,
         "spine_boost": _WARP_SPINE_PROXIMITY_BOOST,
+        "x_squeeze": _WARP_X_SQUEEZE,
     }
 
 _SHELL_WARP_KERNEL_SOURCE = _build_shell_warp_kernel_source()
