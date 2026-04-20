@@ -1092,7 +1092,30 @@ class _MetalBlurPipeline:
             bridge=bridge,
         )
 
+    _shell_diag_count = 0
+
     def optical_shell_sample_buffer(
+        self,
+        sample_buffer,
+        *,
+        shell_config,
+        cleanup_blur_radius_points: float,
+        bridge,
+    ):
+        try:
+            return self._optical_shell_sample_buffer_inner(
+                sample_buffer,
+                shell_config=shell_config,
+                cleanup_blur_radius_points=cleanup_blur_radius_points,
+                bridge=bridge,
+            )
+        except Exception:
+            _MetalBlurPipeline._shell_diag_count += 1
+            if _MetalBlurPipeline._shell_diag_count <= 3:
+                logger.info("SCK optical_shell_sample_buffer FAILED", exc_info=True)
+            return None
+
+    def _optical_shell_sample_buffer_inner(
         self,
         sample_buffer,
         *,
@@ -1103,6 +1126,7 @@ class _MetalBlurPipeline:
         _sck_timer.begin("total")
         pixel_buffer = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
         if pixel_buffer is None:
+            logger.info("SCK: CMSampleBufferGetImageBuffer returned None")
             return None
         try:
             from Quartz import CIImage, CIFilter
