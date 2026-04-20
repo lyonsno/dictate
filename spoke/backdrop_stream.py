@@ -100,6 +100,13 @@ _WARP_X_SQUEEZE = 2.5
 # of the pill more aggressively.  Keep milder than x-squeeze.
 _WARP_Y_SQUEEZE = 1.5
 
+# Exterior magnification: a gentle inward pull outside the capsule that
+# creates a lens/magnification effect around the boundary.  The pull
+# decays exponentially with distance from the capsule surface.
+# Strength is fraction of capsuleRadius; higher = stronger lens.
+_WARP_EXTERIOR_MAG_STRENGTH = 0.15
+_WARP_EXTERIOR_MAG_DECAY = 3.0  # exponential decay rate (per capsuleRadius)
+
 _SHELL_WARP_KERNEL = None
 
 def _build_shell_warp_kernel_source() -> str:
@@ -108,6 +115,13 @@ float sdCapsule(vec2 p, float spineHalf, float radius) {
     p.x = abs(p.x);
     float spine_dist = max(p.x - spineHalf, 0.0);
     return length(vec2(spine_dist, p.y)) - radius;
+}
+
+vec2 capsuleGradient(vec2 p, float spineHalf) {
+    float clampedX = clamp(p.x, -spineHalf, spineHalf);
+    vec2 toP = p - vec2(clampedX, 0.0);
+    float len = length(toP);
+    return len > 1e-6 ? toP / len : vec2(0.0, 1.0);
 }
 
 float depthRemap(float inside01, float curveBoost) {
@@ -168,8 +182,15 @@ kernel vec2 opticalShellWarp(
     float scaleY = pow(max(scale, 0.0), %(y_squeeze)s);
     vec2 warped = c + p * vec2(scaleX, scaleY);
     if (capsuleSdf > 0.0) {
+        // Exterior: fade interior warp to identity, plus a gentle
+        // inward magnification pull that decays with distance.
         float fade = smoothstep(0.0, bleedZone, capsuleSdf);
-        return mix(warped, d, fade);
+        vec2 n = capsuleGradient(p, spineHalf);
+        float mag = %(ext_mag_strength)s * capsuleRadius
+            * exp(-capsuleSdf / capsuleRadius * %(ext_mag_decay)s);
+        vec2 magSrc = d - n * mag;
+        magSrc = clamp(magSrc, vec2(0.0, 0.0), vec2(width, height));
+        return mix(warped, magSrc, fade);
     }
     return warped;
 }
@@ -187,6 +208,8 @@ kernel vec2 opticalShellWarp(
         "spine_boost": _WARP_SPINE_PROXIMITY_BOOST,
         "x_squeeze": _WARP_X_SQUEEZE,
         "y_squeeze": _WARP_Y_SQUEEZE,
+        "ext_mag_strength": _WARP_EXTERIOR_MAG_STRENGTH,
+        "ext_mag_decay": _WARP_EXTERIOR_MAG_DECAY,
     }
 
 _SHELL_WARP_KERNEL_SOURCE = _build_shell_warp_kernel_source()
