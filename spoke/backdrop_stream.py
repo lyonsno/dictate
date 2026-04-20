@@ -2165,6 +2165,14 @@ class _ScreenCaptureKitBackdropRenderer:
                 crop_y = display_h - (capture_rect.origin.y * scale) - crop_h
                 from Quartz import CGRectMake
                 crop_rect = CGRectMake(crop_x, crop_y, crop_w, crop_h)
+                diag_n = getattr(self, "_consume_diag_n", 0)
+                if diag_n <= 7:
+                    logger.info(
+                        "SCK crop: img=(%s,%s %sx%s) crop=(%s,%s %sx%s)",
+                        extent.origin.x, extent.origin.y,
+                        extent.size.width, extent.size.height,
+                        crop_x, crop_y, crop_w, crop_h,
+                    )
                 ci_image = ci_image.imageByCroppingToRect_(crop_rect)
                 extent = ci_image.extent() if hasattr(ci_image, "extent") else extent
 
