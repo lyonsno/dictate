@@ -1266,9 +1266,13 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
             objc.loadBundleFunctions(
                 coremedia_bundle,
                 _cm_direct_ns,
-                [("CMSampleBufferGetImageBuffer", b"@@")],
+                [
+                    ("CMSampleBufferGetImageBuffer", b"@@"),
+                    ("CMSampleBufferGetSampleAttachmentsArray", b"@@B"),
+                ],
             )
             _cm_direct_GetImageBuffer = _cm_direct_ns.get("CMSampleBufferGetImageBuffer")
+            _cm_direct_GetAttachments = _cm_direct_ns.get("CMSampleBufferGetSampleAttachmentsArray")
 
             _cm_lib = ctypes.CDLL(f"{_COREMEDIA_FRAMEWORK_PATH}/CoreMedia")
             _cm_lib.CMSampleBufferGetImageBuffer.argtypes = [ctypes.c_void_p]
@@ -1319,29 +1323,33 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                 # correspond to the real CMSampleBufferRef pointer.
                 #
                 # Try multiple strategies to get the real pointer:
-                raw_ptr_pyobjc = objc.pyobjc_id(sample_buffer)
+                # Check frame status — SCK delivers status/idle frames
+                # that don't contain image data.
+                frame_status = None
                 try:
-                    raw_ptr_cvoid = sample_buffer.__c_void_p__().value
+                    attachments = _cm_direct_GetAttachments(sample_buffer, False)
+                    if attachments and len(attachments) > 0:
+                        info = attachments[0]
+                        status_key = bridge.get("SCStreamFrameInfoStatus")
+                        if status_key and info:
+                            frame_status = info.get(status_key)
                 except Exception:
-                    raw_ptr_cvoid = None
-                # Strategy: try calling CMSampleBufferGetImageBuffer with
-                # the PyObjC object directly via objc.loadBundleFunctions
-                # signature '@@' — this lets PyObjC handle the bridging.
+                    pass
+
+                raw_ptr = objc.pyobjc_id(sample_buffer)
                 pb_ptr_direct = None
                 try:
                     pb_ptr_direct = _cm_direct_GetImageBuffer(sample_buffer)
                 except Exception:
                     pass
-                raw_ptr = raw_ptr_cvoid if raw_ptr_cvoid else raw_ptr_pyobjc
                 pb_ptr_ctypes = _cm_lib.CMSampleBufferGetImageBuffer(raw_ptr)
                 if n <= 10:
                     logger.info(
-                        "SCK ci_from_sb[%d]: pyobjc_id=%s ctypes_pb=%s direct_pb=%s type=%s",
+                        "SCK ci_from_sb[%d]: status=%s ctypes_pb=%s direct_pb=%s",
                         n,
-                        hex(raw_ptr_pyobjc),
+                        frame_status,
                         hex(pb_ptr_ctypes) if pb_ptr_ctypes else "NULL",
                         pb_ptr_direct,
-                        type(sample_buffer).__name__,
                     )
                 # Prefer the direct PyObjC-bridged result — it's already
                 # a properly bridged ObjC object that CIImage can use.
