@@ -198,6 +198,28 @@ kernel void opticalShellWarp(
 """
 
 
+def _create_metal_buffer(device, data: bytes):
+    """Create a Metal buffer from bytes, working around PyObjC bridging issues."""
+    try:
+        return device.newBufferWithBytes_length_options_(data, len(data), 0)
+    except (ValueError, TypeError):
+        pass
+    # Fallback: use newBufferWithLength then copy
+    try:
+        buf = device.newBufferWithLength_options_(len(data), 0)
+        if buf is None:
+            return None
+        # Copy data into the buffer via ctypes
+        contents_ptr = buf.contents()
+        if contents_ptr is None:
+            return None
+        ctypes.memmove(contents_ptr, data, len(data))
+        return buf
+    except Exception:
+        logger.debug("_create_metal_buffer fallback failed", exc_info=True)
+        return None
+
+
 def _pack_warp_params(width, height, shell_config):
     """Pack WarpParams struct for the Metal compute shader."""
     return struct.pack(
@@ -291,11 +313,8 @@ class MetalWarpPipeline:
             self._output_texture_size = (width, height)
 
         # Params buffer
-        import struct
         params_data = _pack_warp_params(width, height, shell_config)
-        params_buffer = self._device.newBufferWithBytes_length_options_(
-            params_data, len(params_data), 0,
-        )
+        params_buffer = _create_metal_buffer(self._device, params_data)
 
         # Encode and dispatch
         command_buffer = self._command_queue.commandBuffer()
@@ -345,13 +364,14 @@ class MetalWarpPipeline:
         if output_texture is None:
             return False
 
-        # Params
+        # Params — use ctypes to avoid PyObjC bridging issues with
+        # newBufferWithBytes:length:options: argument mapping
         out_w = output_texture.width()
         out_h = output_texture.height()
         params_data = _pack_warp_params(out_w, out_h, shell_config)
-        params_buffer = self._device.newBufferWithBytes_length_options_(
-            params_data, len(params_data), 0,
-        )
+        params_buffer = _create_metal_buffer(self._device, params_data)
+        if params_buffer is None:
+            return False
 
         # Encode
         command_buffer = self._command_queue.commandBuffer()
