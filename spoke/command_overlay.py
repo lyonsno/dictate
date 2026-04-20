@@ -784,11 +784,26 @@ class CommandOverlay(NSObject):
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
         self._install_backdrop_frame_callback()
         self._install_backdrop_sample_buffer_callback()
-        # Pass CAMetalLayer to SCK renderer for zero-copy warp rendering
+        # Pass CAMetalLayer to SCK renderer and start display-link render loop
+        self._metal_display_link_renderer = None
         if getattr(self, "_backdrop_is_metal_layer", False):
             renderer = getattr(self, "_backdrop_renderer", None)
             if renderer is not None and hasattr(renderer, "set_metal_backdrop_layer"):
                 renderer.set_metal_backdrop_layer(self._backdrop_layer)
+            try:
+                from spoke.metal_warp import MetalDisplayLinkRenderer, get_metal_warp_pipeline
+                pipeline = get_metal_warp_pipeline()
+                if pipeline is not None:
+                    dl_renderer = MetalDisplayLinkRenderer(pipeline, self._backdrop_layer)
+                    if dl_renderer.start():
+                        self._metal_display_link_renderer = dl_renderer
+                        if renderer is not None and hasattr(renderer, "set_display_link_renderer"):
+                            renderer.set_display_link_renderer(dl_renderer)
+                        logger.info("Command overlay: display-link Metal renderer active")
+                    else:
+                        logger.info("Command overlay: display-link start failed, falling back to CIWarpKernel")
+            except Exception:
+                logger.debug("Command overlay: MetalDisplayLinkRenderer unavailable", exc_info=True)
 
         # Cancel spring tint layer — sits above fill, masked to the same SDF shape
         self._spring_tint_layer = CALayer.alloc().init()

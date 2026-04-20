@@ -1591,6 +1591,7 @@ class _ScreenCaptureKitBackdropRenderer:
         self._ci_context = None
         self._stream_handler_queue = None
         self._metal_blur_pipeline_instance = None
+        self._display_link_renderer = None
 
     def _fallback_renderer(self):
         if self._fallback is None:
@@ -1635,6 +1636,10 @@ class _ScreenCaptureKitBackdropRenderer:
     def set_metal_backdrop_layer(self, layer) -> None:
         self._metal_backdrop_layer = layer
 
+    def set_display_link_renderer(self, renderer) -> None:
+        """Set the MetalDisplayLinkRenderer that drives drawable presentation."""
+        self._display_link_renderer = renderer
+
     def set_live_optical_shell_config(self, config) -> None:
         if not config or config.get("enabled") is not True:
             self._optical_shell_config = None
@@ -1647,6 +1652,9 @@ class _ScreenCaptureKitBackdropRenderer:
         self._has_live_content = False
 
     def stop_live_stream(self) -> None:
+        dl_renderer = getattr(self, "_display_link_renderer", None)
+        if dl_renderer is not None:
+            dl_renderer.stop()
         stream = self._stream
         self._stream = None
         self._stream_output = None
@@ -2075,21 +2083,18 @@ class _ScreenCaptureKitBackdropRenderer:
         if optical_shell_config is None and self._blur_radius_points <= 0.0 and self.uses_direct_sample_buffers():
             self._publish_live_sample_buffer(sample_buffer)
             return
-        # Try Metal drawable path — renders warp directly to CAMetalLayer,
-        # zero CPU-GPU round-trip.
-        metal_layer = getattr(self, "_metal_backdrop_layer", None)
-        if metal_layer is not None and optical_shell_config is not None:
+        # Display-link-driven Metal path — submit IOSurface to the renderer,
+        # which presents via CVDisplayLink (never blocks the SCK queue).
+        dl_renderer = getattr(self, "_display_link_renderer", None)
+        if dl_renderer is not None and optical_shell_config is not None:
             try:
-                from spoke.metal_warp import get_metal_warp_pipeline
-                pipeline = get_metal_warp_pipeline()
                 pb = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
                 cv_lib = bridge.get("_cv_lib")
-                if pipeline is not None and pb is not None and cv_lib is not None:
+                if pb is not None and cv_lib is not None:
                     raw_pb = objc.pyobjc_id(pb)
                     ios = cv_lib.CVPixelBufferGetIOSurface(raw_pb)
                     if ios:
                         ios_obj = objc.objc_object(c_void_p=ios)
-                        # Update drawable size to match capture
                         cv_lib.CVPixelBufferGetWidth.argtypes = [ctypes.c_void_p]
                         cv_lib.CVPixelBufferGetWidth.restype = ctypes.c_size_t
                         cv_lib.CVPixelBufferGetHeight.argtypes = [ctypes.c_void_p]
@@ -2097,24 +2102,20 @@ class _ScreenCaptureKitBackdropRenderer:
                         w = int(cv_lib.CVPixelBufferGetWidth(raw_pb))
                         h = int(cv_lib.CVPixelBufferGetHeight(raw_pb))
                         if w > 0 and h > 0:
-                            metal_layer.setDrawableSize_((w, h))
-                            drawable = metal_layer.nextDrawable()
-                            if drawable is not None:
-                                scale = self._current_backing_scale()
-                                scaled_cfg = dict(optical_shell_config)
-                                for k in ("content_width_points", "content_height_points",
-                                          "corner_radius_points", "band_width_points",
-                                          "tail_width_points"):
-                                    if k in scaled_cfg:
-                                        scaled_cfg[k] = float(scaled_cfg[k]) * scale
-                                if pipeline.warp_to_drawable(
-                                    ios_obj, drawable,
-                                    width=w, height=h, shell_config=scaled_cfg,
-                                ):
-                                    self._has_live_content = True
-                                    return
+                            # Scale shell config to pixel space
+                            scale = self._current_backing_scale()
+                            scaled_cfg = dict(optical_shell_config)
+                            for k in ("content_width_points", "content_height_points",
+                                      "corner_radius_points", "band_width_points",
+                                      "tail_width_points"):
+                                if k in scaled_cfg:
+                                    scaled_cfg[k] = float(scaled_cfg[k]) * scale
+                            dl_renderer.set_shell_config(scaled_cfg)
+                            dl_renderer.submit_iosurface(ios_obj, width=w, height=h)
+                            self._has_live_content = True
+                            return
             except Exception:
-                logger.debug("Metal drawable warp failed", exc_info=True)
+                logger.debug("Metal display-link submit failed", exc_info=True)
 
         try:
             from Quartz import CIImage, CIFilter

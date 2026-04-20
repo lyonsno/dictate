@@ -5,6 +5,12 @@ SCK delivers frames as IOSurface-backed CVPixelBuffers.  We create
 Metal texture views of those IOSurfaces, run the warp as a compute
 shader, and present the result via CAMetalLayer.
 
+The render loop is driven by CVDisplayLink, not the SCK frame
+callback.  SCK stores the latest IOSurface atomically; the display
+link callback acquires nextDrawable(), dispatches the compute
+shader, and presents.  This prevents buffer pool starvation — the
+SCK handler queue never blocks on drawable availability.
+
 The warp kernel is translated from the CIWarpKernel GLSL source
 in backdrop_stream.py.
 """
@@ -14,6 +20,9 @@ from __future__ import annotations
 import ctypes
 import logging
 import os
+import struct
+import threading
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -381,6 +390,223 @@ class MetalWarpPipeline:
         layer.setContentsScale_(scale)
         layer.setOpaque_(False)
         return layer
+
+
+class MetalDisplayLinkRenderer:
+    """Display-link-driven Metal render loop for optical shell warp.
+
+    Decouples SCK frame ingestion from drawable presentation:
+    - SCK callback calls ``submit_iosurface()`` — atomic swap, never blocks.
+    - CVDisplayLink fires at display refresh rate, acquires ``nextDrawable()``,
+      dispatches the compute shader, presents.
+
+    This eliminates buffer pool starvation: ``nextDrawable()`` is never called
+    from the SCK handler queue.
+    """
+
+    def __init__(self, pipeline: MetalWarpPipeline, metal_layer):
+        self._pipeline = pipeline
+        self._metal_layer = metal_layer
+        self._lock = threading.Lock()
+        self._latest_iosurface = None
+        self._latest_width = 0
+        self._latest_height = 0
+        self._shell_config = None
+        self._running = False
+        self._display_link = None
+        self._frame_count = 0
+        self._last_report_time = 0.0
+        self._interval_frame_count = 0
+        self._presented_count = 0
+
+        # Configure layer for non-blocking presentation
+        if hasattr(metal_layer, "setPresentsWithTransaction_"):
+            metal_layer.setPresentsWithTransaction_(False)
+        # Explicitly request triple buffering (default, but be explicit)
+        if hasattr(metal_layer, "setMaximumDrawableCount_"):
+            metal_layer.setMaximumDrawableCount_(3)
+
+    def submit_iosurface(self, iosurface, *, width: int, height: int) -> None:
+        """Called from SCK handler queue — must never block."""
+        with self._lock:
+            self._latest_iosurface = iosurface
+            self._latest_width = width
+            self._latest_height = height
+
+    def set_shell_config(self, config: dict | None) -> None:
+        with self._lock:
+            self._shell_config = dict(config) if config else None
+
+    def start(self) -> bool:
+        """Start the CVDisplayLink render loop."""
+        if self._running:
+            return True
+        try:
+            self._display_link = _create_display_link(self._on_display_link)
+            if self._display_link is None:
+                return False
+            _start_display_link(self._display_link)
+            self._running = True
+            self._last_report_time = time.monotonic()
+            logger.info("MetalDisplayLinkRenderer: started")
+            return True
+        except Exception:
+            logger.info("MetalDisplayLinkRenderer: failed to start", exc_info=True)
+            return False
+
+    def stop(self) -> None:
+        """Stop the CVDisplayLink render loop."""
+        if not self._running:
+            return
+        self._running = False
+        dl = self._display_link
+        self._display_link = None
+        if dl is not None:
+            try:
+                _stop_display_link(dl)
+            except Exception:
+                logger.debug("MetalDisplayLinkRenderer: failed to stop display link", exc_info=True)
+        with self._lock:
+            self._latest_iosurface = None
+        logger.info("MetalDisplayLinkRenderer: stopped (%d presented)", self._presented_count)
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    def _on_display_link(self) -> None:
+        """Called from the CVDisplayLink thread at display refresh rate."""
+        if not self._running:
+            return
+
+        # Grab latest frame — non-blocking
+        with self._lock:
+            iosurface = self._latest_iosurface
+            w = self._latest_width
+            h = self._latest_height
+            config = self._shell_config
+
+        if iosurface is None or w <= 0 or h <= 0 or config is None:
+            return
+
+        self._frame_count += 1
+        self._interval_frame_count += 1
+
+        # Log FPS every 5 seconds
+        now = time.monotonic()
+        elapsed = now - self._last_report_time
+        if elapsed >= 5.0:
+            fps = self._interval_frame_count / elapsed if elapsed > 0 else 0
+            logger.info(
+                "Metal render: %d ticks in %.1fs (%.1f fps), %d presented",
+                self._interval_frame_count, elapsed, fps, self._presented_count,
+            )
+            self._last_report_time = now
+            self._interval_frame_count = 0
+
+        try:
+            # Update drawable size to match capture dimensions
+            self._metal_layer.setDrawableSize_((w, h))
+
+            # Non-blocking drawable acquisition — if all drawables are busy,
+            # skip this frame.  The next vsync will try again.
+            drawable = self._metal_layer.nextDrawable()
+            if drawable is None:
+                return
+
+            if self._pipeline.warp_to_drawable(
+                iosurface, drawable, width=w, height=h, shell_config=config,
+            ):
+                self._presented_count += 1
+        except Exception:
+            if self._frame_count <= 3:
+                logger.debug("Metal render tick failed", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# CVDisplayLink helpers — ctypes wrappers around CoreVideo C API
+# ---------------------------------------------------------------------------
+
+_cv_lib = None
+
+
+def _get_cv_lib():
+    global _cv_lib
+    if _cv_lib is not None:
+        return _cv_lib
+    _cv_lib = ctypes.cdll.LoadLibrary(
+        "/System/Library/Frameworks/CoreVideo.framework/CoreVideo"
+    )
+    return _cv_lib
+
+
+# CVDisplayLink callback signature:
+#   CVReturn (*)(CVDisplayLinkRef, const CVTimeStamp*, const CVTimeStamp*,
+#                CVOptionFlags, CVOptionFlags*, void*)
+_CVDisplayLinkOutputCallback = ctypes.CFUNCTYPE(
+    ctypes.c_int32,       # CVReturn
+    ctypes.c_void_p,      # CVDisplayLinkRef
+    ctypes.c_void_p,      # inNow
+    ctypes.c_void_p,      # inOutputTime
+    ctypes.c_uint64,      # flagsIn
+    ctypes.POINTER(ctypes.c_uint64),  # flagsOut
+    ctypes.c_void_p,      # displayLinkContext
+)
+
+# Must prevent GC of callback closures while display link is active
+_active_callbacks: dict[int, tuple] = {}
+
+
+def _create_display_link(python_callback) -> ctypes.c_void_p | None:
+    """Create a CVDisplayLink that calls ``python_callback()`` each vsync."""
+    cv = _get_cv_lib()
+
+    dl_ref = ctypes.c_void_p()
+    err = cv.CVDisplayLinkCreateWithActiveCGDisplays(ctypes.byref(dl_ref))
+    if err != 0:
+        logger.warning("CVDisplayLinkCreateWithActiveCGDisplays failed: %d", err)
+        return None
+
+    def _c_callback(_dl, _now, _out_time, _flags_in, _flags_out, _ctx):
+        try:
+            python_callback()
+        except Exception:
+            logger.debug("CVDisplayLink callback exception", exc_info=True)
+        return 0  # kCVReturnSuccess
+
+    c_func = _CVDisplayLinkOutputCallback(_c_callback)
+
+    cv.CVDisplayLinkSetOutputCallback.argtypes = [
+        ctypes.c_void_p, _CVDisplayLinkOutputCallback, ctypes.c_void_p,
+    ]
+    cv.CVDisplayLinkSetOutputCallback.restype = ctypes.c_int32
+    err = cv.CVDisplayLinkSetOutputCallback(dl_ref, c_func, None)
+    if err != 0:
+        logger.warning("CVDisplayLinkSetOutputCallback failed: %d", err)
+        return None
+
+    # Pin the callback and closure to prevent GC
+    _active_callbacks[dl_ref.value] = (c_func, _c_callback)
+
+    return dl_ref
+
+
+def _start_display_link(dl_ref: ctypes.c_void_p) -> None:
+    cv = _get_cv_lib()
+    cv.CVDisplayLinkStart.argtypes = [ctypes.c_void_p]
+    cv.CVDisplayLinkStart.restype = ctypes.c_int32
+    err = cv.CVDisplayLinkStart(dl_ref)
+    if err != 0:
+        raise RuntimeError(f"CVDisplayLinkStart failed: {err}")
+
+
+def _stop_display_link(dl_ref: ctypes.c_void_p) -> None:
+    cv = _get_cv_lib()
+    cv.CVDisplayLinkStop.argtypes = [ctypes.c_void_p]
+    cv.CVDisplayLinkStop.restype = ctypes.c_int32
+    cv.CVDisplayLinkStop(dl_ref)
+    # Release callback reference
+    _active_callbacks.pop(dl_ref.value, None)
 
 
 _metal_warp_pipeline = None
