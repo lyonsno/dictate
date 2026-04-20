@@ -145,42 +145,60 @@ kernel void opticalShellWarp(
     float2 result = warped - n * mag;
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
-    // Depth-dependent bilateral blur: sharp at boundary (0-10%% depth),
-    // ramps to full blur toward center.  1px tap offsets — the warp
-    // magnification amplifies the effect naturally.
+    // Depth-dependent blur in source-pixel space.
+    // 0-10%% depth: no blur (sharp boundary).
+    // 10-30%%: gentle ramp to ~1 source pixel radius.
+    // 30-50%%: aggressive ramp to 8 source pixels.
+    // >50%%: holds at 8 source pixels.
     float interiorDepth = clamp(-capsuleSdf / capsuleRadius, 0.0f, 1.0f);
-    // Later onset (15%), longer ramp — more blur deep inside, less near edge
-    float blurT = smoothstep(0.15f, 0.50f, interiorDepth);
+
+    // Two-phase ramp: gentle then aggressive
+    float blurRadius;  // in source pixels
+    if (interiorDepth < 0.10f) {{
+        blurRadius = 0.0f;
+    }} else if (interiorDepth < 0.30f) {{
+        // 10%% → 30%%: ramp 0 → 1 source pixel
+        blurRadius = smoothstep(0.10f, 0.30f, interiorDepth) * 1.0f;
+    }} else {{
+        // 30%% → 50%%: ramp 1 → 8 source pixels
+        blurRadius = 1.0f + smoothstep(0.30f, 0.50f, interiorDepth) * 7.0f;
+    }}
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
     float4 centerColor = inTexture.read(uint2(samplePt));
 
     float4 finalColor;
-    if (blurT < 0.01f) {{
-        // Sharp — single tap at boundary
+    if (blurRadius < 0.25f) {{
         finalColor = centerColor;
     }} else {{
-        // Bilateral blur: 1px fixed offsets, depth-dependent blend.
-        // Weight by color similarity to preserve edges.
-        float4 acc = centerColor * 2.0f;
-        float totalWeight = 2.0f;
-        float colorSigma2 = 0.04f;  // tighter = more edge-preserving
+        // Variable-radius box blur with bilateral weighting.
+        // Tap radius scales with blurRadius.  For small radii (< 2)
+        // we use a 3×3 kernel; for larger, 5×5.
+        int tapRadius = blurRadius < 2.0f ? 1 : (blurRadius < 5.0f ? 2 : 3);
+        float spatialSigma2 = blurRadius * blurRadius * 0.5f + 0.25f;
+        float colorSigma2 = 0.06f;
 
-        for (int dy = -1; dy <= 1; dy++) {{
-            for (int dx = -1; dx <= 1; dx++) {{
+        float4 acc = centerColor;
+        float totalWeight = 1.0f;
+
+        for (int dy = -tapRadius; dy <= tapRadius; dy++) {{
+            for (int dx = -tapRadius; dx <= tapRadius; dx++) {{
                 if (dx == 0 && dy == 0) continue;
+                float dist2 = float(dx * dx + dy * dy);
+                // Spatial weight: Gaussian falloff over tap radius
+                float sw = exp(-dist2 / (2.0f * spatialSigma2));
                 float2 sp = clamp(samplePt + float2(float(dx), float(dy)),
                                   float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f));
                 float4 s = inTexture.read(uint2(sp));
                 float3 diff = s.rgb - centerColor.rgb;
                 float colorDist = dot(diff, diff);
-                float w = exp(-colorDist / colorSigma2);
+                float cw = exp(-colorDist / colorSigma2);
+                float w = sw * cw;
                 acc += s * w;
                 totalWeight += w;
             }}
         }}
-        float4 blurred = acc / totalWeight;
-        finalColor = mix(centerColor, blurred, blurT);
+        finalColor = acc / totalWeight;
     }}
 
     // Perceptual value clamp: keep luminance in the 15-85%% range.
