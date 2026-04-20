@@ -182,17 +182,18 @@ kernel vec2 opticalShellWarp(
     float scaleY = pow(max(scale, 0.0), %(y_squeeze)s);
     vec2 warped = c + p * vec2(scaleX, scaleY);
     if (capsuleSdf > 0.0) {
-        // Exterior magnification: pull source inward along capsule
-        // normal, creating a lens effect.  Applied to the identity
-        // position (d), not the interior warp.
+        // Exterior magnification, calibrated to the bleed zone edge
+        // (where the warped content actually ends), not the capsule
+        // boundary at sdf=0.
+        float distPastBleed = max(capsuleSdf - bleedZone, 0.0);
         vec2 n = capsuleGradient(p, spineHalf);
         float mag = %(ext_mag_strength)s * capsuleRadius
-            * exp(-capsuleSdf / capsuleRadius * %(ext_mag_decay)s);
+            * exp(-distPastBleed / capsuleRadius * %(ext_mag_decay)s);
         vec2 magSrc = d - n * mag;
         magSrc = clamp(magSrc, vec2(0.0, 0.0), vec2(width, height));
-        // Near the boundary, blend interior warp → magnified exterior.
-        // Further out, the magnification itself decays to identity.
-        float warpFade = smoothstep(0.0, capsuleRadius * 0.3, capsuleSdf);
+        // Inside the bleed zone: interior warp dominates.
+        // Past the bleed zone: magnified exterior fading to identity.
+        float warpFade = smoothstep(0.0, bleedZone, capsuleSdf);
         return mix(warped, magSrc, warpFade);
     }
     return warped;
