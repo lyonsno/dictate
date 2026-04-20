@@ -1308,10 +1308,24 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
                 from Quartz import CIImage
                 _ci_from_sb_diag[0] += 1
                 n = _ci_from_sb_diag[0]
-                raw_ptr = objc.pyobjc_id(sample_buffer)
+                raw_ptr_pyobjc = objc.pyobjc_id(sample_buffer)
+                try:
+                    raw_ptr_cvoid = sample_buffer.__c_void_p__().value
+                except Exception:
+                    raw_ptr_cvoid = None
+                # Try __c_void_p__ first — it gives the actual CF/ObjC
+                # object pointer for toll-free bridged types.
+                raw_ptr = raw_ptr_cvoid if raw_ptr_cvoid else raw_ptr_pyobjc
                 pb_ptr = _cm_lib.CMSampleBufferGetImageBuffer(raw_ptr)
                 if n <= 10:
-                    logger.info("SCK ci_from_sb[%d]: sb_ptr=%s pb_ptr=%s", n, hex(raw_ptr), hex(pb_ptr) if pb_ptr else "NULL")
+                    logger.info(
+                        "SCK ci_from_sb[%d]: pyobjc_id=%s cvoid=%s used=%s pb_ptr=%s",
+                        n,
+                        hex(raw_ptr_pyobjc),
+                        hex(raw_ptr_cvoid) if raw_ptr_cvoid else "None",
+                        hex(raw_ptr),
+                        hex(pb_ptr) if pb_ptr else "NULL",
+                    )
                 if not pb_ptr:
                     return None
                 _cf_lib.CFRetain(pb_ptr)
