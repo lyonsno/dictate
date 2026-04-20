@@ -1725,12 +1725,12 @@ class _ScreenCaptureKitBackdropRenderer:
             )
         if self._sample_buffer_callback is not None:
             if optical_shell_config is not None:
-                shell_sample_buffer = self._optical_shell_sample_buffer(sample_buffer)
-                if shell_sample_buffer is not None:
-                    self._publish_live_sample_buffer(shell_sample_buffer)
-                    return
-                elif diag < 5:
-                    logger.info("SCK consume[%d]: optical_shell_sample_buffer returned None", diag)
+                # Optical shell warp: skip sample-buffer pipeline and fall
+                # through to the CGImage path below.  The ctypes-built
+                # CMSampleBuffers are not reliably displayed by
+                # AVSampleBufferDisplayLayer — the CGImage path works and
+                # the warp cost is negligible with SCK delivery.
+                pass
             elif self._blur_radius_points <= 0.0:
                 self._publish_live_sample_buffer(sample_buffer)
                 return

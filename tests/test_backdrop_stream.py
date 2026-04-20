@@ -190,15 +190,26 @@ def test_consume_sample_buffer_blurred_sample_path_skips_image_conversion(monkey
     renderer._context.assert_not_called()
 
 
-def test_consume_sample_buffer_optical_shell_path_skips_image_conversion(monkeypatch):
+def test_consume_sample_buffer_optical_shell_falls_through_to_cgimage_path(monkeypatch):
+    """When optical shell is active, consume skips the sample-buffer pipeline
+    and falls through to the CGImage path (warp + createCGImage + publish_live_image)."""
     mod = _import_module()
-    monkeypatch.setattr(
-        mod,
-        "_load_screencapturekit_bridge",
-        lambda: {
-            "SCStreamOutputTypeScreen": 7,
-        },
-    )
+
+    fake_quartz = types.ModuleType("Quartz")
+    fake_ci_image = MagicMock()
+    fake_ci_image.extent.return_value = MagicMock(size=MagicMock(width=100, height=50))
+    fake_ci_image.imageByCroppingToRect_ = MagicMock(return_value=fake_ci_image)
+    fake_quartz.CIImage = MagicMock()
+    fake_quartz.CIImage.imageWithCVPixelBuffer_ = MagicMock(return_value=fake_ci_image)
+    fake_quartz.CIFilter = MagicMock()
+    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
+
+    bridge = {
+        "SCStreamOutputTypeScreen": 7,
+        "CMSampleBufferGetImageBuffer": MagicMock(return_value="pixel-buf"),
+    }
+    monkeypatch.setattr(mod, "_load_screencapturekit_bridge", lambda: bridge)
+    monkeypatch.setattr(mod, "_apply_optical_shell_warp_ci_image", MagicMock(return_value=fake_ci_image))
 
     renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
     renderer._blur_radius_points = 0.0
@@ -208,14 +219,19 @@ def test_consume_sample_buffer_optical_shell_path_skips_image_conversion(monkeyp
     renderer._optical_shell_sample_buffer = MagicMock(return_value="shell-sample")
     renderer._publish_live_sample_buffer = MagicMock()
     renderer._publish_live_image = MagicMock()
-    renderer._context = MagicMock()
+    fake_context = MagicMock()
+    fake_context.createCGImage_fromRect_ = MagicMock(return_value="cg-image")
+    renderer._ci_context = fake_context
+    renderer._lock = __import__("threading").Lock()
+    renderer._latest_image = None
 
     renderer._consume_sample_buffer("live-sample", 7)
 
-    renderer._optical_shell_sample_buffer.assert_called_once_with("live-sample")
-    renderer._publish_live_sample_buffer.assert_called_once_with("shell-sample")
-    renderer._publish_live_image.assert_not_called()
-    renderer._context.assert_not_called()
+    # Should NOT go through sample buffer pipeline
+    renderer._optical_shell_sample_buffer.assert_not_called()
+    renderer._publish_live_sample_buffer.assert_not_called()
+    # Should go through CGImage path
+    renderer._publish_live_image.assert_called_once()
 
 
 def test_consume_sample_buffer_blurred_sample_failure_falls_back_to_image_path(monkeypatch):
