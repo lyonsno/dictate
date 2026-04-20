@@ -39,20 +39,62 @@ _METAL_BLUR_DOWNSAMPLE = min(
 )
 _OPTICAL_SHELL_CORNER_RADIUS_INFLATION = 0.95
 _OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER = 0.22
+
+# ---------------------------------------------------------------------------
+# Warp kernel tuning constants
+# ---------------------------------------------------------------------------
+# Each is substituted into the GLSL source at compile time.  Changing a
+# constant here changes the kernel; the app must be relaunched to pick
+# it up.  Constants that appear in more than one expression share a
+# single Python name so they stay in sync.
+
+# How far past the capsule boundary (as a fraction of capsuleRadius) the
+# warp bleeds before fading to identity via smoothstep.
+# Larger → more squoot visible outside the pill.
+_WARP_BLEED_ZONE_FRAC = 2.0
+
+# Floor of field01 at the deepest interior.  Sets the minimum scale
+# factor.  Lower → more compression at center.  Below ~0.5 the scale
+# can invert (sourceField01 / field01 > 1).
+_WARP_CENTER_FLOOR = 0.80
+
+# Exponent applied to rawField before mixing with the center floor.
+# Controls how the field distributes between rim and center.
+# Lower → field drops faster toward center (wider "deep" zone).
+# Higher → field stays near 1.0 longer, drops only near the center.
+_WARP_FIELD_EXPONENT = 0.35
+
+# depthRemap base exponent: how aggressively the center gets evacuated.
+# curveBoost scales this down; _FLOOR is the hard minimum.
+_WARP_REMAP_BASE_EXP_SCALE = 0.98
+_WARP_REMAP_BASE_EXP_FLOOR = 0.02
+
+# depthRemap rim exponent: how aggressive the remap is near the rim.
+# Lower → remap kicks in closer to the boundary, pushing content that's
+# only slightly off the midline harder toward the edge.
+_WARP_REMAP_RIM_EXP = 0.1
+
+# curveBoost derivation from coreMagnification and ringAmplitudePoints.
+# curveBoost = min(CAP, mag_term + ring_term)
+_WARP_CURVEBOOST_CAP = 0.95
+_WARP_CURVEBOOST_MAG_SCALE = 0.35       # (coreMag - 1) * this
+_WARP_CURVEBOOST_RING_DIVISOR = 240.0   # ringAmplitude / this
+_WARP_CURVEBOOST_RING_CAP = 0.55        # ring term capped here
+
 _SHELL_WARP_KERNEL = None
-_SHELL_WARP_KERNEL_SOURCE = """
+
+def _build_shell_warp_kernel_source() -> str:
+    return """
 float sdCapsule(vec2 p, float spineHalf, float radius) {
-    // SDF for a horizontal capsule (pill).  Iso-contours are themselves pills.
     p.x = abs(p.x);
     float spine_dist = max(p.x - spineHalf, 0.0);
     return length(vec2(spine_dist, p.y)) - radius;
 }
 
 float depthRemap(float inside01, float curveBoost) {
-    // Dual-exponent remap: gentle near the rim, violent through the body.
     float x = clamp(inside01, 0.0, 1.0);
-    float baseExp = max(1.0 - curveBoost * 0.98, 0.02);
-    float rimExp = mix(0.70, 1.0, 1.0 - curveBoost);
+    float baseExp = max(1.0 - curveBoost * %(remap_base_scale)s, %(remap_base_floor)s);
+    float rimExp = mix(%(remap_rim_exp)s, 1.0, 1.0 - curveBoost);
     float exponent = mix(baseExp, rimExp, x * x);
     return pow(x, exponent);
 }
@@ -76,27 +118,22 @@ kernel vec2 opticalShellWarp(
     float capsuleRadius = max(halfRect.y, 1.0);
     float spineHalf = max(halfRect.x - capsuleRadius, 0.0);
 
-    // --- capsule SDF (one call) ---
     float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);
 
-    // Exterior bleed zone: let the warp continue past the boundary
-    // so content wraps around the endcaps instead of clipping.
-    float bleedZone = capsuleRadius * 0.5;
-    if (capsuleSdf > bleedZone) return d;         // far exterior: identity
+    float bleedZone = capsuleRadius * %(bleed_frac)s;
+    if (capsuleSdf > bleedZone) return d;
 
     float curveBoost = min(
-        0.95,
-        max(0.0, (coreMagnification - 1.0) * 0.35) + min(ringAmplitudePoints / 240.0, 0.55)
+        %(cb_cap)s,
+        max(0.0, (coreMagnification - 1.0) * %(cb_mag_scale)s)
+            + min(ringAmplitudePoints / %(cb_ring_div)s, %(cb_ring_cap)s)
     );
 
-    // Remap field with a floor and monotonic curve.
     float rawField = clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0);
-    float field01 = mix(0.80, 1.0, pow(rawField, 0.35));
+    float field01 = mix(%(center_floor)s, 1.0, pow(rawField, %(field_exp)s));
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = sourceField01 / field01;
 
-    // Radial scaling from center — aggressive enough that content
-    // near the midline still gets pushed to the rim and wraps around.
     vec2 warped = c + p * scale;
     if (capsuleSdf > 0.0) {
         float fade = smoothstep(0.0, bleedZone, capsuleSdf);
@@ -104,7 +141,20 @@ kernel vec2 opticalShellWarp(
     }
     return warped;
 }
-"""
+""" % {
+        "bleed_frac": _WARP_BLEED_ZONE_FRAC,
+        "center_floor": _WARP_CENTER_FLOOR,
+        "field_exp": _WARP_FIELD_EXPONENT,
+        "remap_base_scale": _WARP_REMAP_BASE_EXP_SCALE,
+        "remap_base_floor": _WARP_REMAP_BASE_EXP_FLOOR,
+        "remap_rim_exp": _WARP_REMAP_RIM_EXP,
+        "cb_cap": _WARP_CURVEBOOST_CAP,
+        "cb_mag_scale": _WARP_CURVEBOOST_MAG_SCALE,
+        "cb_ring_div": _WARP_CURVEBOOST_RING_DIVISOR,
+        "cb_ring_cap": _WARP_CURVEBOOST_RING_CAP,
+    }
+
+_SHELL_WARP_KERNEL_SOURCE = _build_shell_warp_kernel_source()
 
 _BRIDGE_STATE: dict[str, object] | None = None
 _BRIDGE_LOCK = threading.Lock()
