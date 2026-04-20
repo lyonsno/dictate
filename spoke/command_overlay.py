@@ -1950,6 +1950,24 @@ class CommandOverlay(NSObject):
 
         overscan = getattr(self, "_backdrop_capture_overscan_points", _command_backdrop_capture_overscan_points())
         scale = getattr(self, "_ridge_scale", 2.0)
+        mask_width_multiplier = getattr(
+            self,
+            "_backdrop_mask_width_multiplier",
+            _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER,
+        )
+        signature = (
+            round(float(width), 3),
+            round(float(height), 3),
+            round(float(overscan), 3),
+            round(float(scale), 3),
+            round(float(mask_width_multiplier), 6),
+            bool(_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED),
+        )
+        cached_signature = getattr(self, "_backdrop_mask_signature", None)
+        cached_mask = getattr(self, "_backdrop_mask_layer", None)
+        if signature == cached_signature and cached_mask is not None:
+            self._backdrop_layer.setMask_(cached_mask)
+            return
         inner_width = max(width - 2 * overscan, 1.0)
         inner_height = max(height - 2 * overscan, 1.0)
         try:
@@ -1978,11 +1996,7 @@ class CommandOverlay(NSObject):
                     scale,
                     _command_backdrop_mask_falloff_width(scale)
                     * (
-                        getattr(
-                            self,
-                            "_backdrop_mask_width_multiplier",
-                            _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER,
-                        )
+                        mask_width_multiplier
                         / max(_COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER, 1e-6)
                     ),
                 ),
@@ -2000,6 +2014,8 @@ class CommandOverlay(NSObject):
         mask.setFrame_(((0, 0), (width, height)))
         mask.setContents_(mask_image)
         mask.setContentsGravity_("resize")
+        self._backdrop_mask_signature = signature
+        self._backdrop_mask_layer = mask
         self._backdrop_layer.setMask_(mask)
 
     def _install_backdrop_frame_callback(self):

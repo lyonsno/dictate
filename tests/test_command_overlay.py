@@ -1153,6 +1153,62 @@ class TestBackdropRefresh:
         overlay._backdrop_layer.setContents_.assert_not_called()
         overlay._update_backdrop_mask.assert_called_once_with(680.0, 160.0)
 
+    def test_update_backdrop_mask_reuses_cached_mask_when_signature_is_unchanged(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._backdrop_layer = MagicMock()
+        overlay._backdrop_capture_overscan_points = 40.0
+        overlay._ridge_scale = 2.0
+        overlay._backdrop_mask_width_multiplier = 3.0
+        overlay._backdrop_mask_signature = None
+        overlay._backdrop_mask_layer = None
+
+        import spoke.overlay as overlay_mod
+
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", False)
+        monkeypatch.setattr(mod, "_backdrop_mask_alpha", MagicMock(return_value="alpha-field"))
+        monkeypatch.setattr(overlay_mod, "_overlay_rounded_rect_sdf", MagicMock(return_value="sdf-field"))
+        monkeypatch.setattr(
+            overlay_mod,
+            "_fill_field_to_image",
+            MagicMock(return_value=("mask-image", "mask-payload")),
+        )
+
+        overlay._update_backdrop_mask(680.0, 160.0)
+        overlay._update_backdrop_mask(680.0, 160.0)
+
+        overlay_mod._overlay_rounded_rect_sdf.assert_called_once()
+        overlay_mod._fill_field_to_image.assert_called_once()
+
+    def test_update_backdrop_mask_rebuilds_when_mask_signature_changes(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._backdrop_layer = MagicMock()
+        overlay._backdrop_capture_overscan_points = 40.0
+        overlay._ridge_scale = 2.0
+        overlay._backdrop_mask_width_multiplier = 3.0
+        overlay._backdrop_mask_signature = None
+        overlay._backdrop_mask_layer = None
+
+        import spoke.overlay as overlay_mod
+
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", False)
+        monkeypatch.setattr(mod, "_backdrop_mask_alpha", MagicMock(return_value="alpha-field"))
+        monkeypatch.setattr(overlay_mod, "_overlay_rounded_rect_sdf", MagicMock(return_value="sdf-field"))
+        monkeypatch.setattr(
+            overlay_mod,
+            "_fill_field_to_image",
+            MagicMock(return_value=("mask-image", "mask-payload")),
+        )
+
+        overlay._update_backdrop_mask(680.0, 160.0)
+        overlay._backdrop_mask_width_multiplier = 4.0
+        overlay._update_backdrop_mask(680.0, 160.0)
+
+        assert overlay_mod._fill_field_to_image.call_count == 2
+
 
 class TestGeometryCaps:
     def test_update_layout_can_grow_assistant_overlay_near_notch(self, mock_pyobjc, monkeypatch):
