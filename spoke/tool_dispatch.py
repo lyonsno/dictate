@@ -229,6 +229,47 @@ _FIND_FILE_SCHEMA = {
 }
 _RUN_EPISTAXIS_OPS_SCHEMA = epistaxis_tool_schema()
 _QUERY_GMAIL_SCHEMA = gmail_tool_schema()
+_COMPACT_HISTORY_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "compact_history",
+        "description": (
+            "Compact the conversation history to reduce context size. "
+            "mode='drop_tool_results' strips all tool call/result messages "
+            "from the oldest N turns, keeping only user and assistant text. "
+            "mode='summarize' replaces the oldest N turns with a brief "
+            "summary you provide. Use when the context is bloated with "
+            "stale tool results."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["drop_tool_results", "summarize"],
+                    "description": (
+                        "drop_tool_results: strip tool messages from oldest N turns. "
+                        "summarize: replace oldest N turns with a summary."
+                    ),
+                },
+                "n": {
+                    "type": "integer",
+                    "description": (
+                        "Number of oldest turns to compact. 0 means all turns."
+                    ),
+                },
+                "summary": {
+                    "type": "string",
+                    "description": (
+                        "Required when mode='summarize'. A brief summary of "
+                        "the compacted turns to preserve as a single user message."
+                    ),
+                },
+            },
+            "required": ["mode", "n"],
+        },
+    },
+}
 
 
 def get_tool_schemas() -> list[dict]:
@@ -244,6 +285,7 @@ def get_tool_schemas() -> list[dict]:
         _FIND_FILE_SCHEMA,
         _RUN_EPISTAXIS_OPS_SCHEMA,
         _QUERY_GMAIL_SCHEMA,
+        _COMPACT_HISTORY_SCHEMA,
     ]
 
 
