@@ -494,7 +494,16 @@ class _CompositorRendererProxy:
         h = int(cv_lib.CVPixelBufferGetHeight(raw_pb))
 
         if self._diag_n <= 8:
-            logger.info("Compositor frame[%d]: %dx%d IOSurface ptr=%s pb=%s", self._diag_n, w, h, hex(ios), hex(objc.pyobjc_id(pb)))
+            # Log pixel format to verify BGRA delivery
+            pf = 0
+            try:
+                cv_lib.CVPixelBufferGetPixelFormatType.argtypes = [ctypes.c_void_p]
+                cv_lib.CVPixelBufferGetPixelFormatType.restype = ctypes.c_uint32
+                pf = cv_lib.CVPixelBufferGetPixelFormatType(raw_pb)
+            except Exception:
+                pass
+            pf_str = pf.to_bytes(4, 'big').decode('ascii', errors='replace') if pf else '?'
+            logger.info("Compositor frame[%d]: %dx%d IOSurface ptr=%s pb=%s fmt=%s(%d)", self._diag_n, w, h, hex(ios), hex(objc.pyobjc_id(pb)), pf_str, pf)
 
         if w > 0 and h > 0:
             self._compositor.submit_iosurface(ios_obj, width=w, height=h, pixel_buffer=pb)
