@@ -271,15 +271,22 @@ def test_consume_sample_buffer_optical_shell_direct_ciimage_path(monkeypatch):
     renderer._publish_live_sample_buffer.assert_not_called()
 
 
-def test_consume_sample_buffer_optical_shell_sample_buffer_path_skips_image_conversion(monkeypatch):
+def test_consume_sample_buffer_optical_shell_keeps_direct_ciimage_path_for_live_updates(monkeypatch):
     mod = _import_module()
-    monkeypatch.setattr(
-        mod,
-        "_load_screencapturekit_bridge",
-        lambda: {
-            "SCStreamOutputTypeScreen": 7,
-        },
-    )
+    fake_ci_image = MagicMock()
+    fake_ci_image.extent.return_value = MagicMock(size=MagicMock(width=100, height=50))
+    fake_ci_image.imageByClampingToExtent.return_value = fake_ci_image
+    fake_ci_image.imageByCroppingToRect_.return_value = fake_ci_image
+    fake_quartz = types.ModuleType("Quartz")
+    fake_quartz.CIImage = MagicMock()
+    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
+
+    bridge = {
+        "SCStreamOutputTypeScreen": 7,
+        "_CIImage_from_sample_buffer": MagicMock(return_value=fake_ci_image),
+    }
+    monkeypatch.setattr(mod, "_load_screencapturekit_bridge", lambda: bridge)
+    monkeypatch.setattr(mod, "_apply_optical_shell_warp_ci_image", MagicMock(return_value=fake_ci_image))
 
     renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
     renderer._blur_radius_points = 0.2
@@ -289,14 +296,21 @@ def test_consume_sample_buffer_optical_shell_sample_buffer_path_skips_image_conv
     renderer._optical_shell_sample_buffer = MagicMock(return_value="warped-sample")
     renderer._publish_live_sample_buffer = MagicMock()
     renderer._publish_live_image = MagicMock()
-    renderer._context = MagicMock()
+    fake_context = MagicMock()
+    fake_context.createCGImage_fromRect_ = MagicMock(return_value="cg-image")
+    renderer._ci_context = fake_context
+    renderer._lock = __import__("threading").Lock()
+    renderer._latest_image = None
+    renderer._publish_image_count = 0
+    renderer._screen = MagicMock()
+    renderer._screen.backingScaleFactor.return_value = 2.0
 
     renderer._consume_sample_buffer("live-sample", 7)
 
-    renderer._optical_shell_sample_buffer.assert_called_once_with("live-sample")
-    renderer._publish_live_sample_buffer.assert_called_once_with("warped-sample")
-    renderer._publish_live_image.assert_not_called()
-    renderer._context.assert_not_called()
+    renderer._optical_shell_sample_buffer.assert_not_called()
+    bridge["_CIImage_from_sample_buffer"].assert_called_once_with("live-sample")
+    renderer._publish_live_image.assert_called_once()
+    renderer._publish_live_sample_buffer.assert_not_called()
 
 
 def test_capture_blurred_image_clears_stale_cached_frame_before_stream_update(monkeypatch):

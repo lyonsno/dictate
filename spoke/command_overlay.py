@@ -893,20 +893,9 @@ class CommandOverlay(NSObject):
 
     def _choose_backdrop_layer_class(self):
         if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
-            if not _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE:
-                renderer = getattr(self, "_backdrop_renderer", None)
-                blur_radius_points = getattr(self, "_backdrop_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS)
-                if renderer is not None and hasattr(renderer, "supports_sample_buffer_presentation"):
-                    try:
-                        if renderer.supports_sample_buffer_presentation(blur_radius_points):
-                            display_layer_class = _backdrop_display_layer_class()
-                            if display_layer_class is not None:
-                                return display_layer_class
-                    except Exception:
-                        logger.debug(
-                            "Command optical-shell sample-buffer capability check failed",
-                            exc_info=True,
-                        )
+            # Use plain CALayer — the CIImage path uses setContents_
+            # which CAMetalLayer doesn't support.  Metal drawable
+            # rendering is future work.
             return CALayer
         renderer = getattr(self, "_backdrop_renderer", None)
         blur_radius_points = getattr(self, "_backdrop_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS)

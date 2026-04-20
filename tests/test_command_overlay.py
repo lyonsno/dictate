@@ -207,19 +207,17 @@ class TestThinkingTimer:
 
         assert overlay._choose_backdrop_layer_class() is sentinel_layer_class
 
-    def test_choose_backdrop_layer_prefers_display_layer_for_optical_shell_when_supported(
+    def test_choose_backdrop_layer_keeps_calayer_for_optical_shell_even_when_sample_buffers_exist(
         self, mock_pyobjc, monkeypatch
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
-        sentinel_layer_class = MagicMock()
         monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
         monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE", False)
-        monkeypatch.setattr(mod, "_backdrop_display_layer_class", lambda: sentinel_layer_class)
         overlay._backdrop_renderer = MagicMock()
         overlay._backdrop_renderer.supports_sample_buffer_presentation.return_value = True
         overlay._backdrop_blur_radius_points = 5.4
 
-        assert overlay._choose_backdrop_layer_class() is sentinel_layer_class
+        assert overlay._choose_backdrop_layer_class() is mod.CALayer
 
 
 class TestDismissAnimation:
