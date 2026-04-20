@@ -2087,13 +2087,24 @@ class _ScreenCaptureKitBackdropRenderer:
         # which presents via CVDisplayLink (never blocks the SCK queue).
         dl_renderer = getattr(self, "_display_link_renderer", None)
         if dl_renderer is not None and optical_shell_config is not None:
+            dl_diag = getattr(self, "_dl_submit_diag_n", 0)
+            self._dl_submit_diag_n = dl_diag + 1
             try:
                 pb = bridge["CMSampleBufferGetImageBuffer"](sample_buffer)
                 cv_lib = bridge.get("_cv_lib")
-                if pb is not None and cv_lib is not None:
+                if pb is None:
+                    if dl_diag < 5:
+                        logger.info("SCK dl-submit[%d]: CMSampleBufferGetImageBuffer returned None", dl_diag)
+                elif cv_lib is None:
+                    if dl_diag < 5:
+                        logger.info("SCK dl-submit[%d]: cv_lib not available", dl_diag)
+                else:
                     raw_pb = objc.pyobjc_id(pb)
                     ios = cv_lib.CVPixelBufferGetIOSurface(raw_pb)
-                    if ios:
+                    if not ios:
+                        if dl_diag < 5:
+                            logger.info("SCK dl-submit[%d]: CVPixelBufferGetIOSurface returned NULL (pb=%r)", dl_diag, type(pb).__name__)
+                    else:
                         ios_obj = objc.objc_object(c_void_p=ios)
                         cv_lib.CVPixelBufferGetWidth.argtypes = [ctypes.c_void_p]
                         cv_lib.CVPixelBufferGetWidth.restype = ctypes.c_size_t
@@ -2101,6 +2112,8 @@ class _ScreenCaptureKitBackdropRenderer:
                         cv_lib.CVPixelBufferGetHeight.restype = ctypes.c_size_t
                         w = int(cv_lib.CVPixelBufferGetWidth(raw_pb))
                         h = int(cv_lib.CVPixelBufferGetHeight(raw_pb))
+                        if dl_diag < 3:
+                            logger.info("SCK dl-submit[%d]: IOSurface ok, %dx%d", dl_diag, w, h)
                         if w > 0 and h > 0:
                             # Scale shell config to pixel space
                             scale = self._current_backing_scale()
@@ -2115,7 +2128,8 @@ class _ScreenCaptureKitBackdropRenderer:
                             self._has_live_content = True
                             return
             except Exception:
-                logger.debug("Metal display-link submit failed", exc_info=True)
+                if dl_diag < 10:
+                    logger.info("Metal display-link submit failed", exc_info=True)
 
         # CIWarpKernel fallback — used when Metal display-link is unavailable.
         _sck_timer.begin("total")
@@ -2193,7 +2207,10 @@ class _ScreenCaptureKitBackdropRenderer:
                 return
             self._publish_live_image(image)
         except Exception:
-            logger.debug("ScreenCaptureKit sample processing failed", exc_info=True)
+            fb_diag = getattr(self, "_fallback_diag_n", 0)
+            self._fallback_diag_n = fb_diag + 1
+            if fb_diag < 5:
+                logger.info("SCK CIWarpKernel fallback failed", exc_info=True)
         finally:
             _sck_timer.end("total")
             _sck_timer.frame_done()
