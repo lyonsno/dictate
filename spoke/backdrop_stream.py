@@ -104,8 +104,8 @@ _WARP_Y_SQUEEZE = 1.5
 # creates a lens/magnification effect around the boundary.  The pull
 # decays exponentially with distance from the capsule surface.
 # Strength is fraction of capsuleRadius; higher = stronger lens.
-_WARP_EXTERIOR_MAG_STRENGTH = 1.2
-_WARP_EXTERIOR_MAG_DECAY = 1.0
+_WARP_EXTERIOR_MAG_STRENGTH = 0.3   # subtle — needs tuning pass with debug grid
+_WARP_EXTERIOR_MAG_DECAY = 2.0     # fast falloff to keep it near the boundary
 
 _SHELL_WARP_KERNEL = None
 
