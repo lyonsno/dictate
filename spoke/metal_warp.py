@@ -238,6 +238,92 @@ class MetalWarpPipeline:
 
         return self._output_texture
 
+    def warp_to_drawable(self, input_surface, drawable, *, width, height, shell_config):
+        """Run the warp and blit the result to a CAMetalLayer drawable.
+
+        Returns True if the drawable was presented, False on failure.
+        The entire pipeline stays on GPU — no CPU pixel copy.
+        """
+        import objc
+        import struct
+
+        # Input texture from IOSurface
+        tex_desc = objc.lookUpClass("MTLTextureDescriptor").texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
+            80,  # MTLPixelFormatBGRA8Unorm
+            width, height, False,
+        )
+        tex_desc.setUsage_(1)  # read
+
+        input_texture = self._device.newTextureWithDescriptor_iosurface_plane_(
+            tex_desc, input_surface, 0,
+        )
+        if input_texture is None:
+            return False
+
+        # Output is the drawable's texture
+        output_texture = drawable.texture()
+        if output_texture is None:
+            return False
+
+        # Params
+        out_w = output_texture.width()
+        out_h = output_texture.height()
+        params_data = struct.pack(
+            "10f",
+            float(out_w), float(out_h),
+            float(shell_config.get("content_width_points", out_w)),
+            float(shell_config.get("content_height_points", out_h)),
+            float(shell_config.get("corner_radius_points", 16.0)),
+            float(shell_config.get("core_magnification", 1.0)),
+            float(shell_config.get("band_width_points", 12.0)),
+            float(shell_config.get("tail_width_points", 9.0)),
+            float(shell_config.get("ring_amplitude_points", 12.0)),
+            float(shell_config.get("tail_amplitude_points", 4.0)),
+        )
+        params_buffer = self._device.newBufferWithBytes_length_options_(
+            params_data, len(params_data), 0,
+        )
+
+        # Encode
+        command_buffer = self._command_queue.commandBuffer()
+        encoder = command_buffer.computeCommandEncoder()
+        encoder.setComputePipelineState_(self._pipeline)
+        encoder.setTexture_atIndex_(input_texture, 0)
+        encoder.setTexture_atIndex_(output_texture, 1)
+        encoder.setBuffer_offset_atIndex_(params_buffer, 0, 0)
+
+        w = self._pipeline.threadExecutionWidth()
+        h = self._pipeline.maxTotalThreadsPerThreadgroup() // w
+        threadgroup_size = (w, min(h, out_h), 1)
+        grid_size = (out_w, out_h, 1)
+        encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
+        encoder.endEncoding()
+
+        command_buffer.presentDrawable_(drawable)
+        command_buffer.commit()
+        return True
+
+    @property
+    def device(self):
+        return self._device
+
+    def create_metal_layer(self, width, height, scale=2.0):
+        """Create a CAMetalLayer configured for warp output."""
+        import objc
+        objc.loadBundle(
+            "QuartzCore", globals(),
+            bundle_path="/System/Library/Frameworks/QuartzCore.framework",
+        )
+        CAMetalLayer = objc.lookUpClass("CAMetalLayer")
+        layer = CAMetalLayer.alloc().init()
+        layer.setDevice_(self._device)
+        layer.setPixelFormat_(80)  # MTLPixelFormatBGRA8Unorm
+        layer.setFramebufferOnly_(False)
+        layer.setDrawableSize_((width * scale, height * scale))
+        layer.setContentsScale_(scale)
+        layer.setOpaque_(False)
+        return layer
+
 
 _metal_warp_pipeline = None
 

@@ -753,6 +753,21 @@ class CommandOverlay(NSObject):
         self._backdrop_layer_is_sample_buffer_display = (
             backdrop_layer_cls is not CALayer and hasattr(self._backdrop_layer, "enqueueSampleBuffer_")
         )
+        # Configure CAMetalLayer if we got one
+        self._backdrop_is_metal_layer = hasattr(self._backdrop_layer, "setDevice_")
+        if self._backdrop_is_metal_layer:
+            try:
+                from spoke.metal_warp import get_metal_warp_pipeline
+                pipeline = get_metal_warp_pipeline()
+                if pipeline is not None:
+                    self._backdrop_layer.setDevice_(pipeline.device)
+                    self._backdrop_layer.setPixelFormat_(80)  # BGRA8Unorm
+                    self._backdrop_layer.setFramebufferOnly_(False)
+                    self._backdrop_layer.setOpaque_(False)
+                    scale = self._ridge_scale if hasattr(self, "_ridge_scale") else 2.0
+                    self._backdrop_layer.setContentsScale_(scale)
+            except Exception:
+                logger.debug("Failed to configure CAMetalLayer", exc_info=True)
         if hasattr(self._backdrop_layer, "setContentsGravity_"):
             self._backdrop_layer.setContentsGravity_("resize")
         elif hasattr(self._backdrop_layer, "setVideoGravity_"):
@@ -769,6 +784,11 @@ class CommandOverlay(NSObject):
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
         self._install_backdrop_frame_callback()
         self._install_backdrop_sample_buffer_callback()
+        # Pass CAMetalLayer to SCK renderer for zero-copy warp rendering
+        if getattr(self, "_backdrop_is_metal_layer", False):
+            renderer = getattr(self, "_backdrop_renderer", None)
+            if renderer is not None and hasattr(renderer, "set_metal_backdrop_layer"):
+                renderer.set_metal_backdrop_layer(self._backdrop_layer)
 
         # Cancel spring tint layer — sits above fill, masked to the same SDF shape
         self._spring_tint_layer = CALayer.alloc().init()
@@ -873,9 +893,17 @@ class CommandOverlay(NSObject):
 
     def _choose_backdrop_layer_class(self):
         if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
-            # Optical shell routes SCK frames through the CGImage path
-            # (setContents_), which requires a plain CALayer.
-            # AVSampleBufferDisplayLayer ignores setContents_.
+            # Try CAMetalLayer for zero-copy GPU presentation.
+            try:
+                from spoke.metal_warp import get_metal_warp_pipeline
+                pipeline = get_metal_warp_pipeline()
+                if pipeline is not None:
+                    import objc
+                    CAMetalLayer = objc.lookUpClass("CAMetalLayer")
+                    logger.info("Command overlay: using CAMetalLayer for optical shell")
+                    return CAMetalLayer
+            except Exception:
+                logger.debug("CAMetalLayer unavailable, falling back to CALayer", exc_info=True)
             return CALayer
         renderer = getattr(self, "_backdrop_renderer", None)
         blur_radius_points = getattr(self, "_backdrop_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS)
