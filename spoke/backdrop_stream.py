@@ -1853,11 +1853,14 @@ class _ScreenCaptureKitBackdropRenderer:
                     return
                 logger.info("SCK: addStreamOutput succeeded")
 
-                # PyObjC bridgesupport declares the completion block as
-                # taking 0 args.  Use a 0-arg callback; if start fails,
-                # the stream just won't deliver frames and the fallback
-                # path handles it.
-                def started():
+                # With pyobjc-framework-ScreenCaptureKit installed, the
+                # block correctly expects 1 arg (NSError*).  Without it,
+                # bridgesupport says 0 args.  Accept either with *args.
+                def started(*args):
+                    error = args[0] if args else None
+                    if error is not None:
+                        logger.info("SCK: startCapture failed: %r", error)
+                        return
                     logger.info("SCK: startCapture succeeded — stream is live")
                     self._stream_started = True
 
