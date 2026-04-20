@@ -1711,11 +1711,19 @@ class _ScreenCaptureKitBackdropRenderer:
             logger.debug("ScreenCaptureKit frame callback failed", exc_info=True)
 
     _publish_image_count = 0
+    _publish_image_last_report = 0.0
+    _publish_image_interval_count = 0
 
     def _publish_live_image(self, image) -> None:
         self._publish_image_count += 1
-        if self._publish_image_count <= 3:
-            logger.info("SCK: publish_live_image[%d] callback=%s", self._publish_image_count, self._frame_callback is not None)
+        self._publish_image_interval_count += 1
+        now = time.monotonic()
+        elapsed = now - self._publish_image_last_report
+        if elapsed >= 5.0:
+            fps = self._publish_image_interval_count / elapsed if elapsed > 0 else 0
+            logger.info("SCK publish: %d frames in %.1fs (%.1f fps)", self._publish_image_interval_count, elapsed, fps)
+            self._publish_image_last_report = now
+            self._publish_image_interval_count = 0
         with self._lock:
             self._latest_image = image
         self._has_live_content = True
