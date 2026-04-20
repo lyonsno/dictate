@@ -1216,14 +1216,18 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
             objc.loadBundle("ScreenCaptureKit", globals(), bundle_path=_SCK_FRAMEWORK_PATH)
 
             coremedia_bundle = NSBundle.bundleWithPath_(_COREMEDIA_FRAMEWORK_PATH)
+            # Use '@' for CMSampleBuffer and CVPixelBuffer args — PyObjC
+            # wraps these toll-free-bridged CF types as ObjC objects
+            # (__NSCFType).  Raw struct-pointer signatures crash with
+            # "depythonifying 'pointer', got '__NSCFType'".
             objc.loadBundleFunctions(
                 coremedia_bundle,
                 globals(),
                 [
-                    ("CMSampleBufferGetImageBuffer", b"^{__CVBuffer=}^{opaqueCMSampleBuffer=}"),
-                    ("CMSampleBufferGetPresentationTimeStamp", b"{_CMTime=qiIq}^{opaqueCMSampleBuffer}"),
-                    ("CMSampleBufferGetDuration", b"{_CMTime=qiIq}^{opaqueCMSampleBuffer}"),
-                    ("CMSampleBufferGetSampleAttachmentsArray", b"^{__CFArray=}^{opaqueCMSampleBuffer=}B"),
+                    ("CMSampleBufferGetImageBuffer", b"@@"),
+                    ("CMSampleBufferGetPresentationTimeStamp", b"{_CMTime=qiIq}@"),
+                    ("CMSampleBufferGetDuration", b"{_CMTime=qiIq}@"),
+                    ("CMSampleBufferGetSampleAttachmentsArray", b"@@B"),
                 ],
             )
 
@@ -1642,12 +1646,19 @@ class _ScreenCaptureKitBackdropRenderer:
         bridge = _load_screencapturekit_bridge()
         if bridge is None:
             return
-        try:
-            output_type_value = int(output_type)
-        except Exception:
-            output_type_value = output_type
-        if output_type_value != bridge["SCStreamOutputTypeScreen"] or sample_buffer is None:
+        if sample_buffer is None:
             return
+        # output_type arrives as None when PyObjC bridges the NSInteger
+        # SCStreamOutputType as an ObjC object (@) due to selector signature
+        # mismatch.  Treat None as screen output — it's the only type we
+        # subscribe to, and audio output would be a separate stream.
+        if output_type is not None:
+            try:
+                output_type_value = int(output_type)
+            except Exception:
+                output_type_value = output_type
+            if output_type_value != bridge["SCStreamOutputTypeScreen"]:
+                return
         optical_shell_config = getattr(self, "_optical_shell_config", None)
         if self._sample_buffer_callback is not None:
             if optical_shell_config is not None:
