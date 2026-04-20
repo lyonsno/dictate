@@ -2068,7 +2068,15 @@ class _ScreenCaptureKitBackdropRenderer:
             output = ci_image
             # Apply optical shell warp via CIImage when Metal pipeline is unavailable.
             if optical_shell_config is not None:
-                warped = _apply_optical_shell_warp_ci_image(output, extent, optical_shell_config)
+                # Scale config to pixel space — SCK frames are at Retina res.
+                scale = self._current_backing_scale()
+                scaled_cfg = dict(optical_shell_config)
+                for k in ("content_width_points", "content_height_points",
+                          "corner_radius_points", "band_width_points",
+                          "tail_width_points"):
+                    if k in scaled_cfg:
+                        scaled_cfg[k] = float(scaled_cfg[k]) * scale
+                warped = _apply_optical_shell_warp_ci_image(output, extent, scaled_cfg)
                 if warped is not None:
                     output = warped
                     if hasattr(output, "imageByCroppingToRect_"):
