@@ -95,6 +95,11 @@ _WARP_SPINE_PROXIMITY_BOOST = 1.5
 # curves around the pill instead of collapsing to a V on the midline.
 _WARP_X_SQUEEZE = 2.5
 
+# Same idea for y: how much harder y compresses relative to the base scale.
+# 1.0 = same as base scale.  Values > 1 pull content toward top/bottom
+# of the pill more aggressively.  Keep milder than x-squeeze.
+_WARP_Y_SQUEEZE = 1.5
+
 _SHELL_WARP_KERNEL = None
 
 def _build_shell_warp_kernel_source() -> str:
@@ -160,7 +165,8 @@ kernel vec2 opticalShellWarp(
     // Anisotropic scale: compress x harder than y so content reaches
     // the endcaps and curves around instead of collapsing to a V.
     float scaleX = pow(max(scale, 0.0), %(x_squeeze)s);
-    vec2 warped = c + p * vec2(scaleX, scale);
+    float scaleY = pow(max(scale, 0.0), %(y_squeeze)s);
+    vec2 warped = c + p * vec2(scaleX, scaleY);
     if (capsuleSdf > 0.0) {
         float fade = smoothstep(0.0, bleedZone, capsuleSdf);
         return mix(warped, d, fade);
@@ -180,6 +186,7 @@ kernel vec2 opticalShellWarp(
         "cb_ring_cap": _WARP_CURVEBOOST_RING_CAP,
         "spine_boost": _WARP_SPINE_PROXIMITY_BOOST,
         "x_squeeze": _WARP_X_SQUEEZE,
+        "y_squeeze": _WARP_Y_SQUEEZE,
     }
 
 _SHELL_WARP_KERNEL_SOURCE = _build_shell_warp_kernel_source()
