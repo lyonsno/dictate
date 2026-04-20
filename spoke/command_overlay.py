@@ -696,6 +696,7 @@ class CommandOverlay(NSObject):
         self._backdrop_capture_rect = None
         self._backdrop_capture_pixel_size = None
         self._backdrop_timer: NSTimer | None = None
+        self._fullscreen_compositor = None
 
         return self
 
@@ -1121,6 +1122,11 @@ class CommandOverlay(NSObject):
         self._start_thinking_timer(reset=not preserve_thinking_timer)
         self._start_backdrop_refresh_timer()
 
+        # Full-screen compositor: captures entire display, warps capsule region,
+        # presents full frame via Metal.  No seam between warped and unwarped.
+        if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+            self._start_fullscreen_compositor()
+
     def set_brightness(self, brightness: float, immediate: bool = False) -> None:
         """Set screen brightness (0.0 dark – 1.0 bright) for adaptive compositing."""
         self._brightness_target = _clamp01(brightness)
@@ -1171,6 +1177,7 @@ class CommandOverlay(NSObject):
             self._reset_backdrop_layer()
             if self._backdrop_renderer is not None and hasattr(self._backdrop_renderer, "stop_live_stream"):
                 self._backdrop_renderer.stop_live_stream()
+            self._stop_fullscreen_compositor()
             self._window.orderOut_(None)
             self._visible = False
             self._cancel_pulse()
@@ -1465,6 +1472,7 @@ class CommandOverlay(NSObject):
                 self._reset_backdrop_layer()
                 if self._backdrop_renderer is not None and hasattr(self._backdrop_renderer, "stop_live_stream"):
                     self._backdrop_renderer.stop_live_stream()
+                self._stop_fullscreen_compositor()
                 self._window.orderOut_(None)
                 self._cancel_pulse()  # now kill the pulse
             else:
@@ -2064,6 +2072,50 @@ class CommandOverlay(NSObject):
                 logger.debug("Failed to enqueue command backdrop sample buffer", exc_info=True)
 
         renderer.set_sample_buffer_callback(apply_live_sample_buffer)
+
+    def _start_fullscreen_compositor(self):
+        """Start the full-screen compositor for zero-seam optical shell."""
+        self._stop_fullscreen_compositor()
+        try:
+            from spoke.fullscreen_compositor import FullScreenCompositor
+            shell_config = self._current_optical_shell_config()
+            if shell_config is None:
+                return
+            # Add capsule center position in pixel coordinates
+            scale = self._screen.backingScaleFactor() if hasattr(self._screen, "backingScaleFactor") else 2.0
+            screen_frame = self._screen.frame()
+            win_frame = self._window.frame()
+            content_frame = self._content_view.frame()
+            # Capsule center in screen points
+            capsule_cx = win_frame.origin.x + content_frame.origin.x + content_frame.size.width / 2
+            # Cocoa Y is bottom-up; Metal texture Y is top-down
+            capsule_cy_cocoa = win_frame.origin.y + content_frame.origin.y + content_frame.size.height / 2
+            capsule_cy_metal = screen_frame.size.height - capsule_cy_cocoa
+            shell_config["center_x"] = capsule_cx * scale
+            shell_config["center_y"] = capsule_cy_metal * scale
+            # Scale content dimensions to pixel space
+            for k in ("content_width_points", "content_height_points",
+                      "corner_radius_points", "band_width_points",
+                      "tail_width_points"):
+                if k in shell_config:
+                    shell_config[k] = float(shell_config[k]) * scale
+            compositor = FullScreenCompositor(self._screen)
+            if compositor.start(shell_config):
+                self._fullscreen_compositor = compositor
+                logger.info("Command overlay: full-screen compositor started")
+            else:
+                logger.info("Command overlay: full-screen compositor failed to start")
+        except Exception:
+            logger.info("Command overlay: full-screen compositor unavailable", exc_info=True)
+
+    def _stop_fullscreen_compositor(self):
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        self._fullscreen_compositor = None
+        if compositor is not None:
+            try:
+                compositor.stop()
+            except Exception:
+                logger.debug("Failed to stop full-screen compositor", exc_info=True)
 
     def _start_backdrop_refresh_timer(self):
         self._cancel_backdrop_refresh()

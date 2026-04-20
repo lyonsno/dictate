@@ -60,6 +60,8 @@ struct WarpParams {{
     float tailWidth;
     float ringAmplitudePoints;
     float tailAmplitudePoints;
+    float centerX;      // capsule center X in pixels (0 = use width/2)
+    float centerY;      // capsule center Y in pixels (0 = use height/2)
 }};
 
 float sdCapsule(float2 p, float spineHalf, float radius) {{
@@ -92,7 +94,11 @@ kernel void opticalShellWarp(
     if (gid.x >= (uint)params.width || gid.y >= (uint)params.height) return;
 
     float2 d = float2(gid.x, gid.y) + 0.5f;
-    float2 c = float2(params.width * 0.5f, params.height * 0.5f);
+    // Capsule center: explicit position or image center
+    float2 c = float2(
+        params.centerX > 0.0f ? params.centerX : params.width * 0.5f,
+        params.centerY > 0.0f ? params.centerY : params.height * 0.5f
+    );
     float2 p = d - c;
     float2 halfRect = float2(params.rectWidth * 0.5f, params.rectHeight * 0.5f);
     float capsuleRadius = max(halfRect.y, 1.0f);
@@ -192,6 +198,25 @@ kernel void opticalShellWarp(
 """
 
 
+def _pack_warp_params(width, height, shell_config):
+    """Pack WarpParams struct for the Metal compute shader."""
+    return struct.pack(
+        "12f",
+        float(width),
+        float(height),
+        float(shell_config.get("content_width_points", width)),
+        float(shell_config.get("content_height_points", height)),
+        float(shell_config.get("corner_radius_points", 16.0)),
+        float(shell_config.get("core_magnification", 1.0)),
+        float(shell_config.get("band_width_points", 12.0)),
+        float(shell_config.get("tail_width_points", 9.0)),
+        float(shell_config.get("ring_amplitude_points", 12.0)),
+        float(shell_config.get("tail_amplitude_points", 4.0)),
+        float(shell_config.get("center_x", 0.0)),
+        float(shell_config.get("center_y", 0.0)),
+    )
+
+
 class MetalWarpPipeline:
     """GPU-only warp pipeline using Metal compute shaders."""
 
@@ -267,19 +292,7 @@ class MetalWarpPipeline:
 
         # Params buffer
         import struct
-        params_data = struct.pack(
-            "10f",
-            float(width),
-            float(height),
-            float(shell_config.get("content_width_points", width)),
-            float(shell_config.get("content_height_points", height)),
-            float(shell_config.get("corner_radius_points", 16.0)),
-            float(shell_config.get("core_magnification", 1.0)),
-            float(shell_config.get("band_width_points", 12.0)),
-            float(shell_config.get("tail_width_points", 9.0)),
-            float(shell_config.get("ring_amplitude_points", 12.0)),
-            float(shell_config.get("tail_amplitude_points", 4.0)),
-        )
+        params_data = _pack_warp_params(width, height, shell_config)
         params_buffer = self._device.newBufferWithBytes_length_options_(
             params_data, len(params_data), 0,
         )
@@ -335,18 +348,7 @@ class MetalWarpPipeline:
         # Params
         out_w = output_texture.width()
         out_h = output_texture.height()
-        params_data = struct.pack(
-            "10f",
-            float(out_w), float(out_h),
-            float(shell_config.get("content_width_points", out_w)),
-            float(shell_config.get("content_height_points", out_h)),
-            float(shell_config.get("corner_radius_points", 16.0)),
-            float(shell_config.get("core_magnification", 1.0)),
-            float(shell_config.get("band_width_points", 12.0)),
-            float(shell_config.get("tail_width_points", 9.0)),
-            float(shell_config.get("ring_amplitude_points", 12.0)),
-            float(shell_config.get("tail_amplitude_points", 4.0)),
-        )
+        params_data = _pack_warp_params(out_w, out_h, shell_config)
         params_buffer = self._device.newBufferWithBytes_length_options_(
             params_data, len(params_data), 0,
         )
