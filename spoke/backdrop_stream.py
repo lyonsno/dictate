@@ -81,6 +81,14 @@ _WARP_CURVEBOOST_MAG_SCALE = 0.35       # (coreMag - 1) * this
 _WARP_CURVEBOOST_RING_DIVISOR = 240.0   # ringAmplitude / this
 _WARP_CURVEBOOST_RING_CAP = 0.55        # ring term capped here
 
+# Spine proximity boost: pixels near the horizontal center of the capsule
+# body need more aggressive scaling to reach the rim and squoot, because
+# they have more capsule to cross.  This multiplier scales the warp
+# strength based on how far the pixel is from the nearest endcap.
+# 0.0 = no boost (uniform warp everywhere).
+# Higher = more violence at x-center relative to tips.
+_WARP_SPINE_PROXIMITY_BOOST = 1.5
+
 _SHELL_WARP_KERNEL = None
 
 def _build_shell_warp_kernel_source() -> str:
@@ -129,8 +137,17 @@ kernel vec2 opticalShellWarp(
             + min(ringAmplitudePoints / %(cb_ring_div)s, %(cb_ring_cap)s)
     );
 
+    // Spine proximity: how far is this pixel from the nearest endcap?
+    // 0 at the tips, 1 at the horizontal center of the body.
+    float distFromTip = max(spineHalf - abs(p.x), 0.0);
+    float spineProximity = spineHalf > 0.0 ? distFromTip / spineHalf : 0.0;
+
     float rawField = clamp(1.0 + capsuleSdf / capsuleRadius, 0.0, 1.0);
-    float field01 = mix(%(center_floor)s, 1.0, pow(rawField, %(field_exp)s));
+    // Lower the center floor for pixels near x-center so the scale
+    // gets more aggressive where content has further to travel.
+    float localFloor = %(center_floor)s
+        / (1.0 + spineProximity * %(spine_boost)s);
+    float field01 = mix(localFloor, 1.0, pow(rawField, %(field_exp)s));
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = sourceField01 / field01;
 
@@ -152,6 +169,7 @@ kernel vec2 opticalShellWarp(
         "cb_mag_scale": _WARP_CURVEBOOST_MAG_SCALE,
         "cb_ring_div": _WARP_CURVEBOOST_RING_DIVISOR,
         "cb_ring_cap": _WARP_CURVEBOOST_RING_CAP,
+        "spine_boost": _WARP_SPINE_PROXIMITY_BOOST,
     }
 
 _SHELL_WARP_KERNEL_SOURCE = _build_shell_warp_kernel_source()
