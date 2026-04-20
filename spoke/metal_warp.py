@@ -126,9 +126,36 @@ kernel void opticalShellWarp(
     float2 result = warped - n * mag;
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
-    // Bilinear sample from source
-    uint2 src = uint2(clamp(result, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f)));
-    outTexture.write(inTexture.read(src), gid);
+    // Depth-dependent blur: zero at capsule boundary, ramping up
+    // toward interior.  The warp magnification amplifies this — a
+    // 2px blur at the source becomes ~20px at 10x magnification.
+    float interiorDepth = clamp(-capsuleSdf / capsuleRadius, 0.0f, 1.0f);
+    // Ramp: 0 at boundary, starts at 0.25 depth, full at 0.5 depth
+    float blurT = smoothstep(0.0f, 0.5f, interiorDepth);
+    float blurRadius = blurT * 2.0f;  // max 2px source blur
+
+    float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
+
+    if (blurRadius < 0.25f) {{
+        // Sharp — single tap
+        uint2 src = uint2(samplePt);
+        outTexture.write(inTexture.read(src), gid);
+    }} else {{
+        // Multi-tap box blur with depth-dependent radius
+        // 9-tap pattern: center + 8 neighbors at blur radius distance
+        float4 acc = float4(0.0f);
+        float totalWeight = 0.0f;
+        for (int dy = -1; dy <= 1; dy++) {{
+            for (int dx = -1; dx <= 1; dx++) {{
+                float2 offset = float2(float(dx), float(dy)) * blurRadius;
+                float2 sp = clamp(samplePt + offset, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f));
+                float w = (dx == 0 && dy == 0) ? 2.0f : 1.0f;  // center-weighted
+                acc += inTexture.read(uint2(sp)) * w;
+                totalWeight += w;
+            }}
+        }}
+        outTexture.write(acc / totalWeight, gid);
+    }}
 }}
 """
 
