@@ -82,9 +82,9 @@ kernel vec2 opticalShellWarp(
     // Exterior bleed zone: let the warp continue past the boundary
     // so content wraps around the endcaps instead of clipping.
     float bleedZone = capsuleRadius * 0.25;
-    float activeInnerLimit = capsuleRadius * 0.55;
     if (capsuleSdf > bleedZone) return d;         // far exterior: identity
-    if (capsuleSdf < -activeInnerLimit) return c;  // deep interior: center
+    // No deep interior bailout — let radial scaling run all the way
+    // through so content compresses smoothly instead of clipping.
 
     float curveBoost = min(
         0.95,
