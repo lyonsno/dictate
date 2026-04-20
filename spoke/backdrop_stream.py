@@ -989,6 +989,7 @@ class _MetalBlurPipeline:
                 "MetalCompatibility": True,
             }
         )
+        self._cached_gaussian_blur_filter = None
 
     @staticmethod
     def _objc_ptr(value) -> ctypes.c_void_p:
@@ -1082,6 +1083,19 @@ class _MetalBlurPipeline:
             bridge=bridge,
         )
 
+    def _gaussian_blur_filter(self, cifilter):
+        cached = getattr(self, "_cached_gaussian_blur_filter", None)
+        if cached is False:
+            return None
+        if cached is not None:
+            return cached
+        try:
+            blur = cifilter.filterWithName_("CIGaussianBlur")
+        except Exception:
+            blur = None
+        self._cached_gaussian_blur_filter = blur if blur is not None else False
+        return blur
+
     @staticmethod
     def _centered_scale_transform(extent, scale_x: float, scale_y: float):
         from Quartz import (
@@ -1126,7 +1140,7 @@ class _MetalBlurPipeline:
 
         output = working_image
         if working_blur_radius > 0.0:
-            blur = CIFilter.filterWithName_("CIGaussianBlur")
+            blur = self._gaussian_blur_filter(CIFilter)
             if blur is not None:
                 blur.setDefaults()
                 blur.setValue_forKey_(working_image, "inputImage")
@@ -1250,7 +1264,7 @@ class _MetalBlurPipeline:
 
         if cleanup_blur > 0.0:
             _sck_timer.begin("blur")
-            blur = CIFilter.filterWithName_("CIGaussianBlur")
+            blur = self._gaussian_blur_filter(CIFilter)
             if blur is not None:
                 blur.setDefaults()
                 blur.setValue_forKey_(output, "inputImage")
@@ -1592,6 +1606,7 @@ class _ScreenCaptureKitBackdropRenderer:
         self._stream_handler_queue = None
         self._metal_blur_pipeline_instance = None
         self._display_link_renderer = None
+        self._cached_gaussian_blur_filter = None
 
     def _fallback_renderer(self):
         if self._fallback is None:
@@ -1695,6 +1710,19 @@ class _ScreenCaptureKitBackdropRenderer:
             logger.debug("Metal blur pipeline unavailable", exc_info=True)
             self._metal_blur_pipeline_instance = False
         return self._metal_blur_pipeline_instance or None
+
+    def _gaussian_blur_filter(self, cifilter):
+        cached = getattr(self, "_cached_gaussian_blur_filter", None)
+        if cached is False:
+            return None
+        if cached is not None:
+            return cached
+        try:
+            blur = cifilter.filterWithName_("CIGaussianBlur")
+        except Exception:
+            blur = None
+        self._cached_gaussian_blur_filter = blur if blur is not None else False
+        return blur
 
     def _blurred_sample_buffer(self, sample_buffer):
         pipeline = self._metal_blur_pipeline()
@@ -2163,7 +2191,7 @@ class _ScreenCaptureKitBackdropRenderer:
             # Apply optical shell warp via CIImage when Metal pipeline is unavailable.
             if optical_shell_config is not None:
                 _sck_timer.begin("pre_blur")
-                pre_blur = CIFilter.filterWithName_("CIGaussianBlur")
+                pre_blur = self._gaussian_blur_filter(CIFilter)
                 if pre_blur is not None:
                     pre_blur.setDefaults()
                     clamped = output.imageByClampingToExtent() if hasattr(output, "imageByClampingToExtent") else output
@@ -2189,7 +2217,7 @@ class _ScreenCaptureKitBackdropRenderer:
                         output = output.imageByCroppingToRect_(extent)
                 _sck_timer.end("warp")
             elif self._blur_radius_points > 0.0:
-                blur = CIFilter.filterWithName_("CIGaussianBlur")
+                blur = self._gaussian_blur_filter(CIFilter)
                 if blur is not None:
                     blur.setDefaults()
                     blur.setValue_forKey_(ci_image, "inputImage")

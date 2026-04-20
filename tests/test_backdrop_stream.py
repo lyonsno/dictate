@@ -270,6 +270,58 @@ def test_consume_sample_buffer_optical_shell_direct_ciimage_path(monkeypatch):
     renderer._publish_live_sample_buffer.assert_not_called()
 
 
+def test_consume_sample_buffer_optical_shell_reuses_gaussian_blur_filter(monkeypatch):
+    mod = _import_module()
+
+    fake_ci_image = MagicMock()
+    fake_ci_image.extent.return_value = MagicMock(size=MagicMock(width=100, height=50))
+    fake_ci_image.imageByClampingToExtent.return_value = fake_ci_image
+    fake_ci_image.imageByCroppingToRect_.return_value = fake_ci_image
+    blur_filter = MagicMock()
+    blur_filter.valueForKey_.return_value = fake_ci_image
+    fake_quartz = types.ModuleType("Quartz")
+    fake_quartz.CIImage = MagicMock()
+    fake_quartz.CIFilter = types.SimpleNamespace(
+        filterWithName_=MagicMock(return_value=blur_filter)
+    )
+    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
+
+    bridge = {
+        "SCStreamOutputTypeScreen": 7,
+        "CMSampleBufferGetImageBuffer": MagicMock(return_value="pixel-buf"),
+        "_CIImage_from_sample_buffer": MagicMock(return_value=fake_ci_image),
+    }
+    monkeypatch.setattr(mod, "_load_screencapturekit_bridge", lambda: bridge)
+    monkeypatch.setattr(
+        mod,
+        "_apply_optical_shell_warp_ci_image",
+        MagicMock(return_value=fake_ci_image),
+    )
+
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(
+        mod._ScreenCaptureKitBackdropRenderer
+    )
+    renderer._blur_radius_points = 0.2
+    renderer._sample_buffer_callback = None
+    renderer._frame_callback = MagicMock()
+    renderer._optical_shell_config = {"enabled": True}
+    renderer._publish_live_sample_buffer = MagicMock()
+    renderer._publish_live_image = MagicMock()
+    renderer._lock = __import__("threading").Lock()
+    renderer._latest_image = None
+    renderer._publish_image_count = 0
+    renderer._screen = MagicMock()
+    renderer._screen.backingScaleFactor.return_value = 2.0
+    fake_context = MagicMock()
+    fake_context.createCGImage_fromRect_.return_value = "cg-image"
+    renderer._ci_context = fake_context
+
+    renderer._consume_sample_buffer("live-sample-1", 7)
+    renderer._consume_sample_buffer("live-sample-2", 7)
+
+    assert fake_quartz.CIFilter.filterWithName_.call_count == 1
+
+
 def test_capture_blurred_image_clears_stale_cached_frame_before_stream_update(monkeypatch):
     mod = _import_module()
     renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
@@ -491,6 +543,69 @@ def test_metal_blur_pipeline_renders_into_downsampled_pixel_buffer(monkeypatch):
     render_extent = pipeline._context.render_toCVPixelBuffer_bounds_colorSpace_.call_args[0][2]
     assert render_extent.size.width == pytest.approx(510.0)
     assert render_extent.size.height == pytest.approx(120.0)
+
+
+def test_metal_blur_pipeline_reuses_gaussian_blur_filter(monkeypatch):
+    monkeypatch.setenv("SPOKE_BACKDROP_METAL_BLUR_DOWNSAMPLE", "1.0")
+    mod = _import_module()
+
+    fake_quartz = types.ModuleType("Quartz")
+
+    class FakeImage:
+        def __init__(self, width, height):
+            self._extent = _make_rect(0.0, 0.0, width, height)
+
+        def extent(self):
+            return self._extent
+
+        def imageByCroppingToRect_(self, rect):
+            return FakeImage(rect.size.width, rect.size.height)
+
+        @staticmethod
+        def imageWithCVPixelBuffer_(pixel_buffer):
+            return FakeImage(680.0, 160.0)
+
+    blur_filter = MagicMock()
+    blur_filter.valueForKey_.side_effect = lambda key: blur_filter._values["inputImage"]
+
+    def set_value(value, key):
+        blur_filter._values[key] = value
+
+    blur_filter._values = {}
+    blur_filter.setValue_forKey_.side_effect = set_value
+    fake_quartz.CIImage = FakeImage
+    fake_quartz.CIFilter = types.SimpleNamespace(
+        filterWithName_=MagicMock(return_value=blur_filter)
+    )
+    fake_quartz.CGAffineTransformMakeScale = lambda sx, sy: SimpleNamespace(
+        scale_x=sx, scale_y=sy
+    )
+    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
+
+    pipeline = mod._MetalBlurPipeline.__new__(mod._MetalBlurPipeline)
+    pipeline._context = MagicMock()
+    pipeline._create_pixel_buffer = MagicMock(return_value="pixel-buffer-out")
+    pipeline._create_format_description = MagicMock(return_value="format-desc")
+    pipeline._create_sample_buffer = MagicMock(return_value="blurred-sample")
+
+    bridge = {
+        "CMSampleBufferGetImageBuffer": lambda sample_buffer: "pixel-buffer-in",
+        "CMSampleBufferGetPresentationTimeStamp": lambda sample_buffer: (1, 60, 1, 0),
+        "CMSampleBufferGetDuration": lambda sample_buffer: (1, 60, 1, 0),
+    }
+
+    pipeline.blurred_sample_buffer(
+        "live-sample-1",
+        blur_radius_points=5.4,
+        bridge=bridge,
+    )
+    pipeline.blurred_sample_buffer(
+        "live-sample-2",
+        blur_radius_points=5.4,
+        bridge=bridge,
+    )
+
+    assert fake_quartz.CIFilter.filterWithName_.call_count == 1
 
 
 def test_optical_shell_pipeline_uses_warp_kernel(monkeypatch):
