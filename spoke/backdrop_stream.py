@@ -2157,6 +2157,23 @@ class _ScreenCaptureKitBackdropRenderer:
             output = ci_image
             # Apply optical shell warp via CIImage when Metal pipeline is unavailable.
             if optical_shell_config is not None:
+                # Pre-warp blur: uniform 0.5px on the source.  The warp's
+                # interior magnification makes this depth-dependent
+                # automatically — 0.5px at the rim (1x mag) stays 0.5px,
+                # 0.5px at the center (10x mag) becomes 5px.  The seam
+                # boundary has ~1x magnification so blur is invisible there.
+                pre_blur = CIFilter.filterWithName_("CIGaussianBlur")
+                if pre_blur is not None:
+                    pre_blur.setDefaults()
+                    pre_blur.setValue_forKey_(
+                        output.imageByClampingToExtent() if hasattr(output, "imageByClampingToExtent") else output,
+                        "inputImage",
+                    )
+                    pre_blur.setValue_forKey_(0.5, "inputRadius")
+                    blurred = pre_blur.valueForKey_("outputImage")
+                    if blurred is not None:
+                        output = blurred.imageByCroppingToRect_(extent) if hasattr(blurred, "imageByCroppingToRect_") else blurred
+
                 # Scale config to pixel space — SCK frames are at Retina res.
                 scale = self._current_backing_scale()
                 scaled_cfg = dict(optical_shell_config)
