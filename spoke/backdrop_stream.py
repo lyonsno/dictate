@@ -816,10 +816,14 @@ def _configure_stream_geometry(config, *, content_rect, capture_rect, point_pixe
         config.setContentScale_(scale)
     if hasattr(config, "setMinimumFrameInterval_"):
         config.setMinimumFrameInterval_(_FRAME_INTERVAL_60_FPS)
-    if hasattr(config, "setSourceRect_"):
-        config.setSourceRect_(_cgrect(local_rect))
-    if hasattr(config, "setDestinationRect_"):
-        config.setDestinationRect_(_cgrect(_make_rect(0.0, 0.0, capture_rect.size.width, capture_rect.size.height)))
+    # Don't set sourceRect/destinationRect — let SCK capture the full
+    # display and crop to the overlay region in the CIImage path.
+    # Setting sourceRect with the wrong coordinate space causes content
+    # to be placed in the top-left corner with black padding.
+    #if hasattr(config, "setSourceRect_"):
+    #    config.setSourceRect_(_cgrect(local_rect))
+    #if hasattr(config, "setDestinationRect_"):
+    #    config.setDestinationRect_(_cgrect(_make_rect(0.0, 0.0, capture_rect.size.width, capture_rect.size.height)))
 
 
 def make_backdrop_renderer(screen, fallback_factory):
@@ -2065,6 +2069,25 @@ class _ScreenCaptureKitBackdropRenderer:
             extent = ci_image.extent() if hasattr(ci_image, "extent") else None
             if extent is None:
                 return
+
+            # If the CIImage is full-display (no sourceRect), crop to the
+            # overlay's capture region.
+            capture_rect = getattr(self, "_capture_rect_for_crop", None)
+            if capture_rect is not None and optical_shell_config is not None:
+                scale = self._current_backing_scale()
+                # Convert capture rect (points, Quartz top-left origin) to
+                # CIImage coordinates (pixels, bottom-left origin).
+                display_h = extent.size.height
+                crop_x = capture_rect.origin.x * scale
+                crop_w = capture_rect.size.width * scale
+                crop_h = capture_rect.size.height * scale
+                # Quartz Y is top-down, CIImage Y is bottom-up
+                crop_y = display_h - (capture_rect.origin.y * scale) - crop_h
+                from Quartz import CGRectMake
+                crop_rect = CGRectMake(crop_x, crop_y, crop_w, crop_h)
+                ci_image = ci_image.imageByCroppingToRect_(crop_rect)
+                extent = ci_image.extent() if hasattr(ci_image, "extent") else extent
+
             diag = getattr(self, "_consume_diag_n", 0)
             if diag <= 7 and optical_shell_config is not None:
                 logger.info(
@@ -2111,6 +2134,7 @@ class _ScreenCaptureKitBackdropRenderer:
 
     def capture_blurred_image(self, *, window_number: int, capture_rect, blur_radius_points: float):
         self._blur_radius_points = max(blur_radius_points, 0.0)
+        self._capture_rect_for_crop = capture_rect
         optical_shell_config = getattr(self, "_optical_shell_config", None)
         if optical_shell_config is not None and optical_shell_config.get("debug_visualize"):
             extent = _make_rect(0.0, 0.0, capture_rect.size.width, capture_rect.size.height)
