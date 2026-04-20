@@ -1362,11 +1362,32 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
 
             _ci_from_sb_diag = [0]
 
+            # Load CMSampleBufferGetFormatDescription for diagnostics
+            _cm_lib.CMSampleBufferGetFormatDescription.argtypes = [ctypes.c_void_p]
+            _cm_lib.CMSampleBufferGetFormatDescription.restype = ctypes.c_void_p
+            _cm_lib.CMSampleBufferIsValid.argtypes = [ctypes.c_void_p]
+            _cm_lib.CMSampleBufferIsValid.restype = ctypes.c_bool
+            _cm_lib.CMSampleBufferDataIsReady.argtypes = [ctypes.c_void_p]
+            _cm_lib.CMSampleBufferDataIsReady.restype = ctypes.c_bool
+
             def _CIImage_from_sample_buffer(sample_buffer):
                 """Extract a CIImage from a CMSampleBuffer."""
                 from Quartz import CIImage
                 _ci_from_sb_diag[0] += 1
                 n = _ci_from_sb_diag[0]
+
+                if n <= 5:
+                    raw = objc.pyobjc_id(sample_buffer)
+                    is_valid = _cm_lib.CMSampleBufferIsValid(raw)
+                    data_ready = _cm_lib.CMSampleBufferDataIsReady(raw)
+                    fmt_desc = _cm_lib.CMSampleBufferGetFormatDescription(raw)
+                    pb = _cm_lib.CMSampleBufferGetImageBuffer(raw)
+                    logger.info(
+                        "SCK ci_from_sb[%d]: valid=%s ready=%s fmt=%s pb=%s",
+                        n, is_valid, data_ready,
+                        hex(fmt_desc) if fmt_desc else "None",
+                        hex(pb) if pb else "NULL",
+                    )
 
                 # Strategy 1: native pyobjc-framework-CoreMedia (correct
                 # type metadata, no bridging issues).
