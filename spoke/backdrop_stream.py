@@ -2034,10 +2034,14 @@ class _ScreenCaptureKitBackdropRenderer:
             )
         if self._sample_buffer_callback is not None:
             if optical_shell_config is not None:
+                warped_sample_buffer = self._optical_shell_sample_buffer(sample_buffer)
+                if warped_sample_buffer is not None:
+                    self._publish_live_sample_buffer(warped_sample_buffer)
+                    return
                 # Direct CIImage path: extract image from SCK sample buffer,
                 # apply warp, render to CGImage, publish.  Bypasses the Metal
-                # sample-buffer pipeline entirely — simpler and avoids the
-                # stale-IOSurface caching issue.
+                # sample-buffer path only when the sample-buffer pipeline is
+                # unavailable or fails.
                 ci_from_sb = bridge.get("_CIImage_from_sample_buffer")
                 if ci_from_sb is not None:
                     try:
