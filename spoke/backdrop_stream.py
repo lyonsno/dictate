@@ -1734,12 +1734,29 @@ class _ScreenCaptureKitBackdropRenderer:
             )
         if self._sample_buffer_callback is not None:
             if optical_shell_config is not None:
-                # Optical shell warp: skip sample-buffer pipeline and fall
-                # through to the CGImage path below.  The ctypes-built
-                # CMSampleBuffers are not reliably displayed by
-                # AVSampleBufferDisplayLayer — the CGImage path works and
-                # the warp cost is negligible with SCK delivery.
-                pass
+                shell_sample_buffer = self._optical_shell_sample_buffer(sample_buffer)
+                if shell_sample_buffer is not None:
+                    # Extract CGImage from the rendered sample buffer for
+                    # display via setContents_ on a plain CALayer.
+                    try:
+                        pb = bridge["CMSampleBufferGetImageBuffer"](shell_sample_buffer)
+                        if pb is not None:
+                            from Quartz import CIImage
+                            ci = CIImage.imageWithCVPixelBuffer_(pb)
+                            if ci is not None:
+                                ext = ci.extent()
+                                ctx = self._context()
+                                if ctx is not None:
+                                    cg = ctx.createCGImage_fromRect_(ci, ext)
+                                    if cg is not None:
+                                        self._publish_live_image(cg)
+                                        return
+                    except Exception:
+                        logger.debug("SCK: shell sample buffer CGImage extraction failed", exc_info=True)
+                    # Fallback: publish sample buffer directly (works if layer
+                    # is AVSampleBufferDisplayLayer).
+                    self._publish_live_sample_buffer(shell_sample_buffer)
+                    return
             elif self._blur_radius_points <= 0.0:
                 self._publish_live_sample_buffer(sample_buffer)
                 return
