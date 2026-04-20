@@ -145,23 +145,20 @@ kernel void opticalShellWarp(
     float2 result = warped - n * mag;
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
-    // Depth-dependent blur in source-pixel space.
-    // 0-10%% depth: no blur (sharp boundary).
-    // 10-30%%: gentle ramp to ~1 source pixel radius.
-    // 30-50%%: aggressive ramp to 8 source pixels.
-    // >50%%: holds at 8 source pixels.
+    // Depth-dependent blur.  Radius is in source pixels but taps are
+    // spread wide enough to cover the magnified screen area.
+    // 0-10%% depth: no blur.
+    // 10-30%%: ramp to 1 source pixel.
+    // 30-50%%+: ramp to large radius.
     float interiorDepth = clamp(-capsuleSdf / capsuleRadius, 0.0f, 1.0f);
 
-    // Two-phase ramp: gentle then aggressive
-    float blurRadius;  // in source pixels
+    float blurRadius;
     if (interiorDepth < 0.10f) {{
         blurRadius = 0.0f;
     }} else if (interiorDepth < 0.30f) {{
-        // 10%% → 30%%: ramp 0 → 1 source pixel
         blurRadius = smoothstep(0.10f, 0.30f, interiorDepth) * 1.0f;
     }} else {{
-        // 30%% → 50%%: ramp 1 → 8 source pixels
-        blurRadius = 1.0f + smoothstep(0.30f, 0.50f, interiorDepth) * 7.0f;
+        blurRadius = 1.0f + smoothstep(0.30f, 0.50f, interiorDepth) * 15.0f;
     }}
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
@@ -171,34 +168,30 @@ kernel void opticalShellWarp(
     if (blurRadius < 0.25f) {{
         finalColor = centerColor;
     }} else {{
-        // Variable-radius box blur with bilateral weighting.
-        // Tap radius scales with blurRadius.  For small radii (< 2)
-        // we use a 3×3 kernel; for larger, 5×5.
-        int tapRadius = blurRadius < 2.0f ? 1 : (blurRadius < 5.0f ? 2 : 3);
-        float spatialSigma2 = blurRadius * blurRadius * 0.5f + 0.25f;
-        float colorSigma2 = 0.06f;
-
+        // Fixed 4-tap cross pattern with radius-scaled offsets.
+        // Cheap (4 reads) but effective because the warp magnification
+        // means even small source offsets cover large screen areas.
+        float r = max(blurRadius, 0.5f);
         float4 acc = centerColor;
-        float totalWeight = 1.0f;
-
-        for (int dy = -tapRadius; dy <= tapRadius; dy++) {{
-            for (int dx = -tapRadius; dx <= tapRadius; dx++) {{
-                if (dx == 0 && dy == 0) continue;
-                float dist2 = float(dx * dx + dy * dy);
-                // Spatial weight: Gaussian falloff over tap radius
-                float sw = exp(-dist2 / (2.0f * spatialSigma2));
-                float2 sp = clamp(samplePt + float2(float(dx), float(dy)),
-                                  float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f));
-                float4 s = inTexture.read(uint2(sp));
-                float3 diff = s.rgb - centerColor.rgb;
-                float colorDist = dot(diff, diff);
-                float cw = exp(-colorDist / colorSigma2);
-                float w = sw * cw;
-                acc += s * w;
-                totalWeight += w;
-            }}
+        float2 dx = float2(r, 0.0f);
+        float2 dy = float2(0.0f, r);
+        acc += inTexture.read(uint2(clamp(samplePt + dx, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f))));
+        acc += inTexture.read(uint2(clamp(samplePt - dx, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f))));
+        acc += inTexture.read(uint2(clamp(samplePt + dy, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f))));
+        acc += inTexture.read(uint2(clamp(samplePt - dy, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f))));
+        // Diagonal taps for deeper blur
+        if (blurRadius > 3.0f) {{
+            float r2 = r * 0.707f;  // diagonal at same distance
+            float2 dd1 = float2(r2, r2);
+            float2 dd2 = float2(r2, -r2);
+            acc += inTexture.read(uint2(clamp(samplePt + dd1, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f))));
+            acc += inTexture.read(uint2(clamp(samplePt - dd1, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f))));
+            acc += inTexture.read(uint2(clamp(samplePt + dd2, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f))));
+            acc += inTexture.read(uint2(clamp(samplePt - dd2, float2(0.0f), float2(params.width - 1.0f, params.height - 1.0f))));
+            finalColor = acc / 9.0f;
+        }} else {{
+            finalColor = acc / 5.0f;
         }}
-        finalColor = acc / totalWeight;
     }}
 
     // Perceptual value clamp: keep luminance in the 15-85%% range.
