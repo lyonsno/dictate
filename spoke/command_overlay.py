@@ -851,7 +851,10 @@ class CommandOverlay(NSObject):
         self._update_backdrop_capture_geometry()
 
     def _choose_backdrop_layer_class(self):
-        if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE:
+        if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+            # Optical shell routes SCK frames through the CGImage path
+            # (setContents_), which requires a plain CALayer.
+            # AVSampleBufferDisplayLayer ignores setContents_.
             return CALayer
         renderer = getattr(self, "_backdrop_renderer", None)
         blur_radius_points = getattr(self, "_backdrop_blur_radius_points", _COMMAND_BACKDROP_BLUR_RADIUS)
