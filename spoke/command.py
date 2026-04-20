@@ -341,7 +341,7 @@ class CommandClient:
                 "top_p": 0.95,
                 "top_k": 20,
                 "repetition_penalty": 1.0,
-                "presence_penalty": 1.0,
+                "presence_penalty": 1.5,
             }
             if self._enable_thinking and self._is_openrouter:
                 body["reasoning"] = {"enabled": True}
