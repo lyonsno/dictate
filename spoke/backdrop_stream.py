@@ -1433,9 +1433,6 @@ def _load_screencapturekit_bridge() -> dict[str, object] | None:
         return _BRIDGE_STATE
 
 
-# Build the SCK stream output delegate with the correct protocol
-# conformance so PyObjC uses the right type encoding for the sample
-# buffer parameter (^{opaqueCMSampleBuffer=}, not @).
 _ScreenCaptureKitStreamOutput = None
 
 def _build_stream_output_class():
@@ -1458,71 +1455,54 @@ def _build_stream_output_class():
     except Exception:
         pass
 
-    # Try to get the SCStreamOutput protocol for correct type metadata.
-    # With protocol conformance, the sample buffer arrives as a proper
-    # CMSampleBufferRef (^{opaqueCMSampleBuffer=}) instead of a generic
-    # ObjC proxy (@), and output_type arrives as NSInteger (q) instead
-    # of an ObjC object (@).
-    sck_protocol = None
+    # Register an informal protocol with the correct method signature.
+    # This tells PyObjC the parameter types without importing the full
+    # pyobjc-framework-ScreenCaptureKit (which pollutes global type
+    # metadata and breaks other code paths).
+    #
+    # The correct signature: v@:@^{opaqueCMSampleBuffer=}q
+    # - @ = SCStream (ObjC object)
+    # - ^{opaqueCMSampleBuffer=} = CMSampleBufferRef (C struct pointer)
+    # - q = NSInteger (SCStreamOutputType)
     try:
-        import ScreenCaptureKit as _sck_mod  # noqa: F401 — registers protocol
-        sck_protocol = objc.protocolNamed("SCStreamOutput")
-        logger.info("SCK: SCStreamOutput protocol found — using typed delegate")
+        objc.informal_protocol(
+            "SCStreamOutput",
+            [
+                objc.selector(
+                    None,
+                    selector=b"stream:didOutputSampleBuffer:ofType:",
+                    signature=b"v@:@^{opaqueCMSampleBuffer=}q",
+                    isRequired=False,
+                ),
+            ],
+        )
     except Exception:
-        logger.info("SCK: SCStreamOutput protocol not available — using untyped delegate")
+        logger.debug("Failed to register SCStreamOutput informal protocol", exc_info=True)
 
-    if sck_protocol is not None:
-        class _TypedStreamOutput(NSObject, protocols=[sck_protocol]):
-            def initWithRenderer_(self, renderer):
-                self = objc.super(_TypedStreamOutput, self).init()
-                if self is None:
-                    return None
-                self._renderer = renderer
-                self._frame_count = 0
-                return self
+    class _StreamOutput(NSObject):
+        def initWithRenderer_(self, renderer):
+            self = objc.super(_StreamOutput, self).init()
+            if self is None:
+                return None
+            self._renderer = renderer
+            self._frame_count = 0
+            return self
 
-            def stream_didOutputSampleBuffer_ofType_(self, stream, sample_buffer, output_type):
-                if self._frame_count == 0:
-                    logger.info("SCK: first sample buffer received (output_type=%r, sb_type=%s)", output_type, type(sample_buffer).__name__)
-                self._frame_count += 1
-                pool = objc.autorelease_pool()
-                pool.__enter__()
-                try:
-                    self._renderer._consume_sample_buffer(sample_buffer, output_type)
-                finally:
-                    pool.__exit__(None, None, None)
+        def stream_didOutputSampleBuffer_ofType_(self, stream, sample_buffer, output_type):
+            if self._frame_count == 0:
+                logger.info(
+                    "SCK: first sample buffer (output_type=%r, sb_type=%s)",
+                    output_type, type(sample_buffer).__name__,
+                )
+            self._frame_count += 1
+            pool = objc.autorelease_pool()
+            pool.__enter__()
+            try:
+                self._renderer._consume_sample_buffer(sample_buffer, output_type)
+            finally:
+                pool.__exit__(None, None, None)
 
-        _ScreenCaptureKitStreamOutput = _TypedStreamOutput
-    else:
-        class _UntypedStreamOutput(NSObject):
-            def initWithRenderer_(self, renderer):
-                self = objc.super(_UntypedStreamOutput, self).init()
-                if self is None:
-                    return None
-                self._renderer = renderer
-                self._frame_count = 0
-                return self
-
-            def stream_didOutputSampleBuffer_ofType_(self, stream, sample_buffer, output_type):
-                if self._frame_count == 0:
-                    logger.info("SCK: first sample buffer received (output_type=%r)", output_type)
-                self._frame_count += 1
-                pool = objc.autorelease_pool()
-                pool.__enter__()
-                try:
-                    self._renderer._consume_sample_buffer(sample_buffer, output_type)
-                finally:
-                    pool.__exit__(None, None, None)
-
-        if hasattr(objc, "selector"):
-            _UntypedStreamOutput.stream_didOutputSampleBuffer_ofType_ = objc.selector(
-                _UntypedStreamOutput.stream_didOutputSampleBuffer_ofType_,
-                selector=b"stream:didOutputSampleBuffer:ofType:",
-                signature=b"v@:@@@",
-            )
-        _ScreenCaptureKitStreamOutput = _UntypedStreamOutput
-
-# Deferred to first use — importing ScreenCaptureKit at module level
+    _ScreenCaptureKitStreamOutput = _StreamOutput
 # interferes with test mocking.
 
 
