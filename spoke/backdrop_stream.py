@@ -11,6 +11,8 @@ import time
 import warnings
 from types import SimpleNamespace
 
+from . import optical_shell_warp_tuning as _warp_tuning
+
 try:
     import objc
     from Foundation import NSObject
@@ -52,35 +54,35 @@ _OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER = 0.22
 # How far past the capsule boundary (as a fraction of capsuleRadius) the
 # warp bleeds before fading to identity via smoothstep.
 # Larger → more squoot visible outside the pill.
-_WARP_BLEED_ZONE_FRAC = 0.8
+_WARP_BLEED_ZONE_FRAC = _warp_tuning.WARP_BLEED_ZONE_FRAC
 
 # Floor of field01 at the deepest interior.  Sets the minimum scale
 # factor.  Lower → more compression at center.  Below ~0.5 the scale
 # can invert (sourceField01 / field01 > 1).
-_WARP_CENTER_FLOOR = 0.80
+_WARP_CENTER_FLOOR = _warp_tuning.WARP_CENTER_FLOOR
 
 # Exponent applied to rawField before mixing with the center floor.
 # Controls how the field distributes between rim and center.
 # Lower → field drops faster toward center (wider "deep" zone).
 # Higher → field stays near 1.0 longer, drops only near the center.
-_WARP_FIELD_EXPONENT = 0.35
+_WARP_FIELD_EXPONENT = _warp_tuning.WARP_FIELD_EXPONENT
 
 # depthRemap base exponent: how aggressively the center gets evacuated.
 # curveBoost scales this down; _FLOOR is the hard minimum.
-_WARP_REMAP_BASE_EXP_SCALE = 0.98
-_WARP_REMAP_BASE_EXP_FLOOR = 0.02
+_WARP_REMAP_BASE_EXP_SCALE = _warp_tuning.WARP_REMAP_BASE_EXP_SCALE
+_WARP_REMAP_BASE_EXP_FLOOR = _warp_tuning.WARP_REMAP_BASE_EXP_FLOOR
 
 # depthRemap rim exponent: how aggressive the remap is near the rim.
 # Lower → remap kicks in closer to the boundary, pushing content that's
 # only slightly off the midline harder toward the edge.
-_WARP_REMAP_RIM_EXP = 0.1
+_WARP_REMAP_RIM_EXP = _warp_tuning.WARP_REMAP_RIM_EXP
 
 # curveBoost derivation from coreMagnification and ringAmplitudePoints.
 # curveBoost = min(CAP, mag_term + ring_term)
-_WARP_CURVEBOOST_CAP = 0.95
-_WARP_CURVEBOOST_MAG_SCALE = 0.35       # (coreMag - 1) * this
-_WARP_CURVEBOOST_RING_DIVISOR = 240.0   # ringAmplitude / this
-_WARP_CURVEBOOST_RING_CAP = 0.55        # ring term capped here
+_WARP_CURVEBOOST_CAP = _warp_tuning.WARP_CURVEBOOST_CAP
+_WARP_CURVEBOOST_MAG_SCALE = _warp_tuning.WARP_CURVEBOOST_MAG_SCALE  # (coreMag - 1) * this
+_WARP_CURVEBOOST_RING_DIVISOR = _warp_tuning.WARP_CURVEBOOST_RING_DIVISOR  # ringAmplitude / this
+_WARP_CURVEBOOST_RING_CAP = _warp_tuning.WARP_CURVEBOOST_RING_CAP  # ring term capped here
 
 # Spine proximity boost: pixels near the horizontal center of the capsule
 # body need more aggressive scaling to reach the rim and squoot, because
@@ -88,25 +90,25 @@ _WARP_CURVEBOOST_RING_CAP = 0.55        # ring term capped here
 # strength based on how far the pixel is from the nearest endcap.
 # 0.0 = no boost (uniform warp everywhere).
 # Higher = more violence at x-center relative to tips.
-_WARP_SPINE_PROXIMITY_BOOST = 1.5
+_WARP_SPINE_PROXIMITY_BOOST = _warp_tuning.WARP_SPINE_PROXIMITY_BOOST
 
 # Anisotropic scale ratio: how much harder x compresses relative to y.
 # 1.0 = uniform (isotropic).  Values > 1 make x compress faster, pulling
 # content toward the endcaps while preserving vertical extent so it
 # curves around the pill instead of collapsing to a V on the midline.
-_WARP_X_SQUEEZE = 2.5
+_WARP_X_SQUEEZE = _warp_tuning.WARP_X_SQUEEZE
 
 # Same idea for y: how much harder y compresses relative to the base scale.
 # 1.0 = same as base scale.  Values > 1 pull content toward top/bottom
 # of the pill more aggressively.  Keep milder than x-squeeze.
-_WARP_Y_SQUEEZE = 1.5
+_WARP_Y_SQUEEZE = _warp_tuning.WARP_Y_SQUEEZE
 
 # Exterior magnification: a gentle inward pull outside the capsule that
 # creates a lens/magnification effect around the boundary.  The pull
 # decays exponentially with distance from the capsule surface.
 # Strength is fraction of capsuleRadius; higher = stronger lens.
-_WARP_EXTERIOR_MAG_STRENGTH = 0.6   # visible lens effect around boundary
-_WARP_EXTERIOR_MAG_DECAY = 2.0     # fast falloff to keep it near the boundary
+_WARP_EXTERIOR_MAG_STRENGTH = _warp_tuning.WARP_EXTERIOR_MAG_STRENGTH  # visible lens effect around boundary
+_WARP_EXTERIOR_MAG_DECAY = _warp_tuning.WARP_EXTERIOR_MAG_DECAY  # fast falloff to keep it near the boundary
 
 _SHELL_WARP_KERNEL = None
 
