@@ -211,11 +211,11 @@ _EDIT_FILE_SCHEMA = {
         "parameters": {
             "type": "object",
             "properties": {
-                "file_path": {"type": "string", "description": "Absolute or relative file path"},
+                "file": {"type": "string", "description": "Absolute or relative file path"},
                 "old_string": {"type": "string", "description": "Exact text to replace; must match exactly one location"},
                 "new_string": {"type": "string", "description": "Replacement text to write in place of old_string"},
             },
-            "required": ["file_path", "old_string", "new_string"],
+            "required": ["file", "old_string", "new_string"],
         },
     },
 }
@@ -874,12 +874,12 @@ def _execute_write_file(arguments: dict) -> dict[str, Any]:
 
 
 def _execute_edit_file(arguments: dict) -> dict[str, Any]:
-    raw_path = arguments.get("file_path")
+    raw_path = arguments.get("file")
     old_string = arguments.get("old_string")
     new_string = arguments.get("new_string")
 
     if not raw_path or not isinstance(raw_path, str):
-        return {"status": "error", "failure_reason": "malformed_request", "error": "file_path is required"}
+        return {"status": "error", "failure_reason": "malformed_request", "error": "file is required"}
     if not isinstance(old_string, str) or old_string == "":
         return {"status": "error", "failure_reason": "malformed_request", "error": "old_string is required"}
     if not isinstance(new_string, str):

@@ -150,7 +150,7 @@ class TestToolSchemas:
 
         schema = next(s for s in schemas if s["function"]["name"] == "edit_file")
         params = schema["function"]["parameters"]
-        assert "file_path" in params.get("properties", {})
+        assert "file" in params.get("properties", {})
         assert "old_string" in params.get("properties", {})
         assert "new_string" in params.get("properties", {})
 
@@ -705,7 +705,7 @@ class TestExecuteTool:
                 result = mod.execute_tool(
                     name="edit_file",
                     arguments={
-                        "file_path": target,
+                        "file": target,
                         "old_string": "beta",
                         "new_string": "gamma",
                     },
@@ -952,7 +952,7 @@ class TestExecuteToolIntegration:
 
         result = mod.execute_tool(
             "edit_file",
-            {"file_path": str(f), "old_string": "beta", "new_string": "delta"},
+            {"file": str(f), "old_string": "beta", "new_string": "delta"},
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "success"
@@ -967,7 +967,7 @@ class TestExecuteToolIntegration:
 
         result = mod.execute_tool(
             "edit_file",
-            {"file_path": str(f), "old_string": "delta", "new_string": "epsilon"},
+            {"file": str(f), "old_string": "delta", "new_string": "epsilon"},
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "error"
@@ -983,7 +983,7 @@ class TestExecuteToolIntegration:
 
         result = mod.execute_tool(
             "edit_file",
-            {"file_path": str(f), "old_string": "beta", "new_string": "delta"},
+            {"file": str(f), "old_string": "beta", "new_string": "delta"},
         )
         parsed = json.loads(result)
         assert parsed.get("status") == "error"
@@ -1000,7 +1000,7 @@ class TestExecuteToolIntegration:
         result = mod.execute_tool(
             "edit_file",
             {
-                "file_path": str(f),
+                "file": str(f),
                 "old_string": "beta",
                 "new_string": "delta\n// existing code",
             },
