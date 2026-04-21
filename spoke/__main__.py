@@ -3151,6 +3151,7 @@ class SpokeAppDelegate(NSObject):
                 last_response=last_response,
                 tts_client=tts_client,
                 tray_writer=self._add_assistant_content_to_tray,
+                **kwargs,
             )
         return _executor
 

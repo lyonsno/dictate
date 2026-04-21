@@ -3666,6 +3666,24 @@ class TestCommandCallbacks:
         parsed = json.loads(result)
         assert parsed["status"] == "added"
 
+    def test_tool_executor_forwards_tool_output_mode(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = []
+        d._ensure_tts_client = MagicMock(return_value=None)
+
+        with patch.object(main_module, "execute_tool", return_value='{"ok": true}') as exec_tool:
+            executor = d._make_tool_executor()
+            result = executor(
+                "capture_context",
+                {"scope": "active_window"},
+                tool_output_mode="multimodal",
+            )
+
+        assert result == '{"ok": true}'
+        exec_tool.assert_called_once()
+        assert exec_tool.call_args.kwargs["tool_output_mode"] == "multimodal"
+
     def test_tool_executor_does_not_mark_tool_tts_usage_on_launch_failure(
         self, main_module, monkeypatch
     ):

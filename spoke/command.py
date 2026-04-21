@@ -8,6 +8,7 @@ conversational context.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 import json
 import logging
 import os
@@ -112,29 +113,68 @@ _SYSTEM_PROMPT = (
     "- attractors/ — atomic units of work: stimulus, source, satisfaction condition\n"
     "- system/epistaxis.md — global system state\n"
     "- sylloge/ — compressed thread→artifact summaries\n"
-    "- reviews/anaphorai/ — review artifacts\n"
+    "- autopoiesis/ — self-generated concept genesis and traces\n"
+    "- auxesis/ — growth/capability emergence traces\n"
+    "- machines/ — per-machine context\n"
+    "- reviews/ — review artifacts\n"
     "- metadosis/ — shared mutable artifacts between lanes\n"
     "When the user references epistaxis state, use file tools or run_epistaxis_ops.\n\n"
-    "Tools:\n"
-    "- capture_context: captures the frontmost window, returns OCR text blocks with refs.\n"
-    "- read_aloud: speaks text via TTS. Ref formats: block refs from capture_context, "
-    "'clipboard:current', 'selection:frontmost', 'last_response:current', "
-    "'literal:<exact text to speak>'. Only call when the user asks you to say or read "
-    "something aloud.\n"
-    "- add_to_tray: saves text for later insertion or sending.\n"
-    "- run_epistaxis_ops: bounded Epistaxis state operations in a dedicated worktree.\n"
-    "- search_web: read-only public web search via Brave Search (up to 10 results).\n"
-    "- query_gmail: read-only Gmail search (same syntax as Gmail search bar, up to 10 results).\n\n"
-    "- run_terminal_command: bounded local terminal command runner. Pass argv as a list "
-    "of tokens, not raw shell text. Do not use shell syntax like pipes, redirects, "
-    "chaining, or shell interpolation. The tool may allow, deny, or require approval "
-    "depending on the command family.\n\n"
-    "The user speaks via voice dictation. Expect transcription artifacts, informal "
-    "language, and half-finished sentences. Read through them to the intent.\n\n"
-    "Named commands:\n"
-    "- WALLACE: capture_context, then read_aloud with literal: a paragraph riffing on "
-    "what you see in the style of David Foster Wallace — digressive, self-aware, "
-    "hyper-detailed. Execute via tool calls, not text output."
+    "You have tools to resolve exact text and act on it:\n"
+    "- capture_context: captures the frontmost window and returns OCR text "
+    "blocks with refs. On vision-capable backends it can also attach a "
+    "downscaled screenshot for direct visual inspection. Use when the user "
+    'refers to something visible on screen (e.g. "read that", "what does this say", "read the tab title").\n'
+    "- read_aloud: resolves a source ref to exact text and speaks it via TTS. "
+    "Pass block refs from capture_context directly (e.g., 'scene-abc:block-1'). "
+    "Other ref formats: 'clipboard:current', 'selection:frontmost', "
+    "'last_response:current', 'literal:text to speak'. Use 'literal:' when the "
+    "user asks you to say an arbitrary phrase, sentence, or other text that is "
+    "not being read from the screen, selection, clipboard, or prior response.\n"
+    "- add_to_tray: places exact text into the tray for later insertion or "
+    "sending. Use this to save content the user may want to paste or send later.\n\n"
+    "You also have run_epistaxis_ops: a bounded local operator for private "
+    "Epistaxis review-ticket and pointer work in a dedicated Epistaxis "
+    "worktree. Use it only for narrow Epistaxis state operations, never for "
+    "arbitrary shell or general coding work.\n\n"
+    "You also have search_web: a bounded read-only public web search via "
+    "Brave Search for lightweight fact lookup (up to 10 results).\n\n"
+    "You also have query_gmail: a bounded read-only Gmail query tool. Pass "
+    "a Gmail search query string (same syntax as the Gmail search bar) and "
+    "get back sender, subject, date, and snippet for up to 10 matches. Use "
+    "it when the user asks about their email. Keep queries specific to limit "
+    "results — combine filters like 'is:starred newer_than:3d' or "
+    "'from:alice subject:invoice'.\n\n"
+    "You also have run_terminal_command: a bounded local terminal command "
+    "runner. Pass argv as a list of tokens, not raw shell text. Do not use "
+    "shell syntax like pipes, redirects, chaining, glob expansion, env-var "
+    "assignment, or shell interpolation. The tool may allow, deny, or "
+    "require approval depending on the command family.\n\n"
+    "Output mode: by default your response is displayed as text on screen — "
+    "do NOT call read_aloud unless the user explicitly asks you to say, read, "
+    "or speak something. For generated text, lists, code, structured content, "
+    "or anything the user would want to read, copy, or reference later, just "
+    "respond in plain text.\n\n"
+    "When read_aloud IS appropriate (user said 'read this', 'say that', etc.): "
+    "prefer refs over regenerated text. If reading something visible, call "
+    "capture_context first, then read_aloud with a block ref. For selected text "
+    "or the clipboard, use read_aloud directly with selection:frontmost or "
+    "clipboard:current. For arbitrary phrases the user asks you to say, use "
+    "read_aloud with literal:<exact text to speak>. Do not pretend read_aloud "
+    "is limited to visible text. Use add_to_tray when the user "
+    "wants content kept for later use rather than spoken immediately.\n\n"
+    "Named commands (MUST be executed via tool calls, NEVER as plain text):\n"
+    "- WALLACE: This is a COMMAND, not a name. The user is NOT named Wallace. "
+    "You MUST execute this as two sequential tool calls — plain text output is "
+    "WRONG for this command:\n"
+    "  Step 1: Call capture_context (scope: active_window)\n"
+    "  Step 2: Call read_aloud with source_ref 'literal:<your text>' where "
+    "<your text> is a paragraph or two you compose riffing on whatever "
+    "capture_context returned, written in the style of David Foster Wallace — "
+    "digressive, self-aware, hyper-detailed, with nested qualifications and "
+    "footnote-energy asides. Comment on what you see the way DFW would in an "
+    "essay — noticing the absurd, the deeply human, the thing everyone sees "
+    "but nobody says.\n"
+    "  IMPORTANT: Do NOT respond with text. You MUST call the tools."
 )
 
 
@@ -250,12 +290,54 @@ class CommandClient:
         messages.append({"role": "user", "content": utterance})
         return messages
 
+    def _supports_multimodal_tool_content(self) -> bool:
+        """Whether the current backend is likely to accept image tool content."""
+        model = self._model.lower()
+        base_url = self._base_url.lower()
+        return (
+            "googleapis.com" in base_url
+            or "gemini" in model
+            or "gpt-4.1" in model
+            or "gpt-4o" in model
+        )
+
+    def _normalize_tool_result(self, tool_result: Any) -> tuple[Any, str]:
+        """Return (message_content, log_preview_text) for a tool result."""
+        if isinstance(tool_result, dict) and "content" in tool_result:
+            content = tool_result["content"]
+            log_text = tool_result.get("log_text")
+            if not isinstance(log_text, str):
+                if isinstance(content, str):
+                    log_text = content
+                else:
+                    log_text = json.dumps(content)
+            return content, log_text
+        if isinstance(tool_result, str):
+            return tool_result, tool_result
+        serialized = json.dumps(tool_result)
+        return serialized, serialized
+
+    def _tool_executor_supports_output_mode(
+        self,
+        tool_executor: Callable[..., Any],
+    ) -> bool:
+        """Whether tool_executor accepts the tool_output_mode kwarg."""
+        try:
+            signature = inspect.signature(tool_executor)
+        except (TypeError, ValueError):
+            return True
+        return any(
+            param.kind is inspect.Parameter.VAR_KEYWORD
+            or param.name == "tool_output_mode"
+            for param in signature.parameters.values()
+        )
+
     def stream_command(
         self,
         utterance: str,
         *,
         tools: list[dict] | None = None,
-        tool_executor: Callable[..., str] | None = None,
+        tool_executor: Callable[..., Any] | None = None,
     ) -> Generator[str, None, str]:
         """Compatibility wrapper yielding only assistant content deltas.
 
@@ -286,7 +368,7 @@ class CommandClient:
         utterance: str,
         *,
         tools: list[dict] | None = None,
-        tool_executor: Callable[..., str] | None = None,
+        tool_executor: Callable[..., Any] | None = None,
         cancel_check: Callable[[], bool] | None = None,
     ) -> Generator[CommandStreamEvent, None, str]:
         """Send a command utterance and yield semantic stream events.
@@ -604,16 +686,29 @@ class CommandClient:
                         fn_args = {}
 
                     logger.info("Executing tool %s with args: %s", fn_name, str(fn_args)[:200])
-                    tool_result = tool_executor(name=fn_name, arguments=fn_args)
+                    tool_kwargs: dict[str, Any] = {
+                        "name": fn_name,
+                        "arguments": fn_args,
+                    }
+                    if self._tool_executor_supports_output_mode(tool_executor):
+                        tool_kwargs["tool_output_mode"] = (
+                            "multimodal"
+                            if self._supports_multimodal_tool_content()
+                            else "text"
+                        )
+                    tool_result = tool_executor(
+                        **tool_kwargs,
+                    )
+                    tool_content, tool_preview = self._normalize_tool_result(tool_result)
                     logger.info(
                         "Tool %s result: %d chars (preview: %s)",
-                        fn_name, len(tool_result), tool_result[:200],
+                        fn_name, len(tool_preview), tool_preview[:200],
                     )
 
                     messages.append({
                         "role": "tool",
                         "tool_call_id": call["id"],
-                        "content": tool_result,
+                        "content": tool_content,
                     })
 
                 logger.info(
