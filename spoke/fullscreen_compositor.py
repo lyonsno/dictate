@@ -59,6 +59,11 @@ class FullScreenCompositor:
         self._interval_presented = 0
         self._last_drawable_size = (0, 0)
 
+        # Brightness sampling from the captured IOSurface
+        self._sampled_brightness = 0.5
+        self._brightness_sample_frame = 0
+        _BRIGHTNESS_SAMPLE_INTERVAL_FRAMES = 15  # every ~250ms at 60fps
+
     def start(self, shell_config: dict) -> bool:
         """Create the full-screen window and start capture + render loop."""
         if self._running:
@@ -104,6 +109,72 @@ class FullScreenCompositor:
         with self._lock:
             if self._shell_config is not None:
                 self._shell_config[key] = value
+
+    @property
+    def sampled_brightness(self) -> float:
+        """Average brightness of the capsule region from the latest IOSurface."""
+        return self._sampled_brightness
+
+    def _sample_iosurface_brightness(self, iosurface, w, h, config):
+        """Sample average luminance of the capsule interior from the IOSurface.
+
+        Reads a sparse grid of pixels from the raw capture (pre-warp)
+        inside the capsule bounding box.  Cheap: ~50 pixel reads from
+        an already-mapped IOSurface, no GPU readback.
+        """
+        try:
+            import objc
+            IOSurface = objc.lookUpClass("IOSurface")
+
+            cx = config.get("center_x", w * 0.5)
+            cy = config.get("center_y", h * 0.5)
+            rw = config.get("content_width_points", w) * 0.5
+            rh = config.get("content_height_points", h) * 0.5
+
+            # Bounding box of capsule interior
+            x0 = max(int(cx - rw), 0)
+            x1 = min(int(cx + rw), w)
+            y0 = max(int(cy - rh), 0)
+            y1 = min(int(cy + rh), h)
+            bw = x1 - x0
+            bh = y1 - y0
+            if bw <= 0 or bh <= 0:
+                return
+
+            # Lock the IOSurface for CPU read
+            iosurface.lockWithOptions_seed_(1, None)  # kIOSurfaceLockReadOnly
+            try:
+                base_addr = iosurface.baseAddress()
+                if base_addr is None or base_addr == 0:
+                    return
+                bpr = iosurface.bytesPerRow()
+                bpp = iosurface.bytesPerElement()
+                if bpp < 4 or bpr <= 0:
+                    return
+
+                import ctypes
+                total = 0.0
+                count = 0
+                # Sparse grid: ~7x7 = 49 samples
+                step_x = max(bw // 7, 1)
+                step_y = max(bh // 7, 1)
+                for sy in range(y0, y1, step_y):
+                    row_ptr = base_addr + sy * bpr
+                    for sx in range(x0, x1, step_x):
+                        px_ptr = row_ptr + sx * bpp
+                        # BGRA pixel order (IOSurface default)
+                        b = ctypes.c_uint8.from_address(px_ptr).value
+                        g = ctypes.c_uint8.from_address(px_ptr + 1).value
+                        r = ctypes.c_uint8.from_address(px_ptr + 2).value
+                        lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
+                        total += lum
+                        count += 1
+                if count > 0:
+                    self._sampled_brightness = total / count
+            finally:
+                iosurface.unlockWithOptions_(1)
+        except Exception:
+            pass  # non-critical — keep previous brightness
 
     @property
     def is_running(self) -> bool:
@@ -437,6 +508,11 @@ class FullScreenCompositor:
             ):
                 self._presented_count += 1
                 self._interval_presented += 1
+
+                # Sample brightness from the raw IOSurface every N frames
+                if self._frame_count - self._brightness_sample_frame >= 15:
+                    self._brightness_sample_frame = self._frame_count
+                    self._sample_iosurface_brightness(iosurface, w, h, warp_config)
             elif self._frame_count <= 5:
                 logger.info("Compositor tick[%d]: warp_to_drawable returned False", self._frame_count)
         except Exception:

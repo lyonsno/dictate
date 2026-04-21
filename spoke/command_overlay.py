@@ -1533,6 +1533,12 @@ class CommandOverlay(NSObject):
             return
         dt = 1.0 / _PULSE_HZ
 
+        # When compositor is active, read brightness directly from the
+        # IOSurface capsule-region sample — much more accurate than the
+        # glow's 4-patch screen average, and free (already captured).
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is not None:
+            self._brightness_target = compositor.sampled_brightness
         target = getattr(self, "_brightness_target", 0.0)
         current = getattr(self, "_brightness", 0.0)
         if abs(target - current) > 0.001:
