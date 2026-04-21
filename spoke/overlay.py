@@ -1715,7 +1715,7 @@ class TranscriptionOverlay(NSObject):
 
             # Boost mask: opaque where text is (inverse of fill mask)
             boost_layer = getattr(self, "_boost_layer", None)
-            if boost_layer is not None and not boost_layer.isHidden():
+            if boost_layer is not None:
                 boost_ctx = CGBitmapContextCreate(
                     None, fw, fh, 8, fw * 4,
                     cs, kCGImageAlphaPremultipliedLast,
