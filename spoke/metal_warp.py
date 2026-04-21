@@ -137,18 +137,28 @@ kernel void opticalShellWarp(
 
     float2 result = warped;
     if (capsuleSdf > 0.0f) {{
-        // Exterior: blend from identity (far) toward the interior's
-        // anisotropic warp field (at boundary).  This makes exterior
-        // content start stretching in the same direction as the interior
-        // squeeze — a preview of the interior flow leaking out.
+        // Exterior: preview the interior's anisotropic stretch.
+        // Compute the warp scale at the capsule boundary (sdf=0)
+        // and blend toward it from identity as we approach.
+        float rimRawField = clamp(1.0f, 0.0f, 1.0f);  // sdf=0 → rawField=1.0
+        // Use a small negative offset to sample just inside the boundary
+        // where the warp actually has teeth
+        float probeDepth = 0.15f;  // 15%% inside the boundary
+        float probeRaw = clamp(1.0f - probeDepth, 0.0f, 1.0f);
+        float probeField = mix(localFloor, 1.0f, pow(probeRaw, {_WARP_FIELD_EXPONENT}f));
+        float probeSource = 1.0f - depthRemap(1.0f - probeField, curveBoost);
+        float probeScale = probeSource / probeField;
+        float probeSX = pow(max(probeScale, 0.0f), {_WARP_X_SQUEEZE}f);
+        float probeSY = pow(max(probeScale, 0.0f), {_WARP_Y_SQUEEZE}f);
+
         float exteriorT = capsuleSdf;
-        float t = 1.0f - smoothstep(0.0f, 50.0f, exteriorT);
-        // Quadratic onset — subtle far out, accelerating near boundary
+        float t = 1.0f - smoothstep(0.0f, 60.0f, exteriorT);
         t = t * t;
-        // Interior warp at this position (what it would be if inside)
-        float2 interiorResult = c + p * float2(scaleX, scaleY);
-        // Blend from identity (d) toward interior warp — 70% at boundary
-        result = mix(d, interiorResult, t * 0.7f);
+
+        // Where the warp would put this pixel if it used the boundary scale
+        float2 boundaryWarped = c + p * float2(probeSX, probeSY);
+        // Blend from identity toward boundary warp
+        result = mix(d, boundaryWarped, t * 0.5f);
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
