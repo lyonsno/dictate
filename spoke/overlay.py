@@ -556,6 +556,7 @@ def _preview_optical_shell_config(
     tail_refraction = 0.75
     return {
         "enabled": True,
+        "overlay_kind": "preview",
         "content_width_points": width_points,
         "content_height_points": height_points,
         "corner_radius_points": _OVERLAY_HEIGHT / 4.0,

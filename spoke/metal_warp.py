@@ -46,6 +46,18 @@ _WARP_EXTERIOR_MAG_DECAY = 2.0
 _TEMPORAL_BLEND_FACTOR = 0.25  # EMA blend: 25% new frame, 75% accumulator
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value not in {"0", "false", "False", "no", "off"}
+
+
+_ASSISTANT_OVERLAP_DEBUG_WITNESS_ENABLED = _env_bool(
+    "SPOKE_ASSISTANT_OVERLAP_DEBUG_WITNESS", False
+)
+
+
 def _metal_shader_source() -> str:
     return f"""
 #include <metal_stdlib>
@@ -68,6 +80,14 @@ struct WarpParams {{
     float gridOffsetY;  // dispatch grid origin Y
     float temporalBlend; // EMA blend factor (0 = keep previous, 1 = fully new)
     float minBrightness; // floor for interior pixel luminance (0 = no floor)
+    float witnessOutlineWidth;
+    float witnessMix;
+    float witnessTintR;
+    float witnessTintG;
+    float witnessTintB;
+    float witnessPad0;
+    float witnessPad1;
+    float witnessPad2;
 }};
 
 float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
@@ -184,6 +204,21 @@ kernel void opticalShellWarp(
         warpedColor = inTexture.sample(mipSampler, normPt, level(mipLod));
     }}
 
+    if (params.witnessMix > 0.0f) {{
+        float innerEdge = 1.0f - smoothstep(0.0f, params.witnessOutlineWidth, abs(capsuleSdf));
+        float outerHalo = 0.0f;
+        if (capsuleSdf >= 0.0f) {{
+            outerHalo = 1.0f - smoothstep(
+                params.witnessOutlineWidth,
+                max(params.witnessOutlineWidth * 2.8f, params.witnessOutlineWidth + 1.0f),
+                capsuleSdf
+            );
+        }}
+        float witnessWeight = clamp(max(innerEdge, outerHalo * 0.7f) * params.witnessMix, 0.0f, 1.0f);
+        float4 witnessColor = float4(params.witnessTintR, params.witnessTintG, params.witnessTintB, warpedColor.a);
+        warpedColor = mix(warpedColor, witnessColor, witnessWeight);
+    }}
+
     // Temporal accumulation: EMA blend tied to blur depth.
     // High mip LOD (deep interior) = heavy temporal smoothing.
     // Low/zero mip LOD (near boundary) = almost no temporal.
@@ -229,7 +264,7 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-_WARP_PARAMS_SIZE = struct.calcsize("16f")
+_WARP_PARAMS_SIZE = struct.calcsize("24f")
 
 
 def _normalize_shell_configs(shell_config) -> list[dict]:
@@ -245,10 +280,30 @@ def _requires_sequential_shell_composition(shell_configs: list[dict]) -> bool:
     return len(shell_configs) > 1
 
 
-def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offset_y=0.0):
+def _assistant_overlap_debug_witness(shell_config: dict, *, overlap_active: bool) -> tuple[float, float, float, float, float]:
+    if not overlap_active or not _ASSISTANT_OVERLAP_DEBUG_WITNESS_ENABLED:
+        return (0.0, 0.0, 0.0, 0.0, 0.0)
+    if shell_config.get("overlay_kind") != "assistant":
+        return (0.0, 0.0, 0.0, 0.0, 0.0)
+    # Bright orange-red ring that extends beyond the fill boundary.
+    return (18.0, 0.92, 1.0, 0.22, 0.08)
+
+
+def _pack_warp_params(
+    width,
+    height,
+    shell_config,
+    grid_offset_x=0.0,
+    grid_offset_y=0.0,
+    *,
+    overlap_active: bool = False,
+):
     """Pack WarpParams struct for the Metal compute shader."""
+    witness_outline_width, witness_mix, witness_r, witness_g, witness_b = (
+        _assistant_overlap_debug_witness(shell_config, overlap_active=overlap_active)
+    )
     return struct.pack(
-        "16f",
+        "24f",
         float(width),
         float(height),
         float(shell_config.get("content_width_points", width)),
@@ -265,6 +320,14 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         float(grid_offset_y),
         float(shell_config.get("temporal_blend", _TEMPORAL_BLEND_FACTOR)),
         float(shell_config.get("min_brightness", 0.0)),
+        float(witness_outline_width),
+        float(witness_mix),
+        float(witness_r),
+        float(witness_g),
+        float(witness_b),
+        0.0,
+        0.0,
+        0.0,
     )
 
 
@@ -363,7 +426,7 @@ class MetalWarpPipeline:
         self._ensure_accum_textures(width, height)
         shell_config_copy = dict(shell_config)
         shell_config_copy["temporal_blend"] = 1.0
-        params_data = _pack_warp_params(width, height, shell_config_copy)
+        params_data = _pack_warp_params(width, height, shell_config_copy, overlap_active=False)
         params_buffer = _create_metal_buffer(self._device, params_data)
 
         # Encode and dispatch
@@ -467,6 +530,7 @@ class MetalWarpPipeline:
         out_h,
         config,
         gen_before,
+        overlap_active,
     ) -> bool:
         cx = config.get("center_x", out_w * 0.5)
         cy = config.get("center_y", out_h * 0.5)
@@ -492,6 +556,7 @@ class MetalWarpPipeline:
             out_w, out_h, warp_config,
             grid_offset_x=float(box_x0),
             grid_offset_y=float(box_y0),
+            overlap_active=overlap_active,
         )
         if self._params_buffer is not None:
             contents_ptr = self._params_buffer.contents()
@@ -592,7 +657,8 @@ class MetalWarpPipeline:
         accum_read = self._accum_textures[self._accum_index]
         accum_write = self._accum_textures[1 - self._accum_index]
         any_dispatch = False
-        if _requires_sequential_shell_composition(shell_configs):
+        overlap_active = _requires_sequential_shell_composition(shell_configs)
+        if overlap_active:
             self._ensure_staging_textures(out_w, out_h)
             stage_a, stage_b = self._staging_textures
             if stage_a is None or stage_b is None:
@@ -615,6 +681,7 @@ class MetalWarpPipeline:
                     out_h=out_h,
                     config=config,
                     gen_before=gen_before,
+                    overlap_active=True,
                 ):
                     continue
                 any_dispatch = True
@@ -631,6 +698,7 @@ class MetalWarpPipeline:
                 out_h=out_h,
                 config=shell_configs[0],
                 gen_before=gen_before,
+                overlap_active=False,
             )
 
         if any_dispatch and self._accum_generation == gen_before:

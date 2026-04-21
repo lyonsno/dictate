@@ -23,3 +23,20 @@ class TestMetalWarpCompositionPlanning:
                 {"content_width_points": 600.0, "content_height_points": 180.0},
             ]
         ) is True
+
+    def test_assistant_overlap_debug_witness_only_arms_for_overlap_assistant_shell(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_ASSISTANT_OVERLAP_DEBUG_WITNESS", "1")
+        sys.modules.pop("spoke.metal_warp", None)
+        mod = importlib.import_module("spoke.metal_warp")
+
+        assert mod._assistant_overlap_debug_witness(
+            {"overlay_kind": "assistant"}, overlap_active=True
+        ) == (18.0, 0.92, 1.0, 0.22, 0.08)
+        assert mod._assistant_overlap_debug_witness(
+            {"overlay_kind": "assistant"}, overlap_active=False
+        ) == (0.0, 0.0, 0.0, 0.0, 0.0)
+        assert mod._assistant_overlap_debug_witness(
+            {"overlay_kind": "preview"}, overlap_active=True
+        ) == (0.0, 0.0, 0.0, 0.0, 0.0)

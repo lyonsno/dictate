@@ -356,6 +356,7 @@ def _command_optical_shell_config(
     height_points += capsule_r
     return {
         "enabled": True,
+        "overlay_kind": "assistant",
         "content_width_points": width_points,
         "content_height_points": height_points,
         "corner_radius_points": _OVERLAY_HEIGHT / 4.0,
