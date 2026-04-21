@@ -63,17 +63,29 @@ local, sidecar, or Gemini cloud TTS surfaces:
 ```sh
 uv run python -m spoke.wakeword_samples \
   --backend local \
-  --text tessera \
-  --voice casual_female \
+  --text-file assets/wakewords/operation_mouthfeel_commands.txt \
+  --voice-file assets/wakewords/kokoro_american_8.txt \
   --max-tokens 32 \
-  --voice neutral_male \
-  --output-dir /tmp/tessera-samples
+  --output-dir /tmp/mouthfeel-samples
 ```
 
-Add `--text-file phrases.txt` for one phrase per line, switch to
-`--backend cloud` to use Gemini cloud TTS, or provide `--sidecar-url` for a
-remote OpenAI-compatible speech sidecar. For short wakewords, `--max-tokens`
-is useful when you want to keep the render from wandering into trailing filler.
+Add `--text-file phrases.txt` or `--voice-file voices.txt` for one item per
+line, switch to `--backend cloud` to use Gemini cloud TTS, or provide
+`--sidecar-url` for a remote OpenAI-compatible speech sidecar. For short
+wakewords, `--max-tokens` is useful when you want to keep the render from
+wandering into trailing filler.
+
+To carve a generated batch into per-keyword upload packs for Picovoice
+Console:
+
+```sh
+uv run python -m spoke.wakeword_training \
+  --batch-dir /tmp/mouthfeel-samples \
+  --output-dir /tmp/mouthfeel-training
+```
+
+That writes one directory per keyword, with copied WAVs, a manifest, and a
+ready-to-upload `*-samples.zip` archive for each keyword.
 
 The full gesture surface lives in
 [`docs/keyboard-grammar.md`](docs/keyboard-grammar.md).
