@@ -314,14 +314,12 @@ class ToolCallAccumulator:
 def _execute_capture_context(
     arguments: dict,
     scene_cache: SceneCaptureCache | None = None,
-    *,
-    skip_ocr: bool | None = None,
 ) -> Any:
     """Execute capture_context and return the SceneCapture."""
     from spoke.scene_capture import capture_context
 
     scope = arguments.get("scope", "active_window")
-    return capture_context(scope=scope, cache=scene_cache, skip_ocr=skip_ocr)
+    return capture_context(scope=scope, cache=scene_cache)
 
 
 def _capture_context_result_dict(
@@ -363,17 +361,13 @@ def _capture_context_result_dict(
     return result
 
 
-def _capture_context_multimodal_result(
-    capture: Any,
-    *,
-    include_image: bool = True,
-) -> dict[str, Any]:
+def _capture_context_multimodal_result(capture: Any) -> dict[str, Any]:
     summary = _capture_context_result_dict(capture, include_image=False)
     parts: list[dict[str, Any]] = [
         {"type": "text", "text": json.dumps(summary)}
     ]
     model_image_path = getattr(capture, "model_image_path", None)
-    if include_image and model_image_path:
+    if model_image_path:
         try:
             with open(model_image_path, "rb") as fh:
                 encoded = base64.b64encode(fh.read()).decode("ascii")
@@ -394,12 +388,6 @@ def _capture_context_multimodal_result(
                 model_image_path,
                 exc_info=True,
             )
-    logger.info(
-        "capture_context: multimodal payload scene_ref=%s image_attached=%s image_path=%r",
-        summary.get("scene_ref"),
-        len(parts) > 1,
-        model_image_path,
-    )
     return {
         "content": parts,
         "log_text": json.dumps(summary),
@@ -802,39 +790,12 @@ def execute_tool(
     Returns a JSON-encoded result for the model to consume.
     """
     if name == "capture_context":
-        requested_include_image = arguments.get("include_image")
-        wants_image = (
-            tool_output_mode == "multimodal"
-            if requested_include_image is None
-            else bool(requested_include_image)
-        )
-        include_image = wants_image and tool_output_mode == "multimodal"
-        skip_ocr = include_image and (
-            os.environ.get("SPOKE_SKIP_OCR", "").lower() in ("1", "true", "yes")
-        )
-        capture = _execute_capture_context(
-            arguments,
-            scene_cache=scene_cache,
-            skip_ocr=skip_ocr,
-        )
+        capture = _execute_capture_context(arguments, scene_cache=scene_cache)
         if capture is None:
             return json.dumps({"error": "Capture failed"})
-        logger.info(
-            "capture_context: tool_output_mode=%s requested_include_image=%r wants_image=%s include_image=%s skip_ocr=%s scene_ref=%s app=%r title=%r",
-            tool_output_mode,
-            requested_include_image,
-            wants_image,
-            include_image,
-            skip_ocr,
-            getattr(capture, "scene_ref", None),
-            getattr(capture, "app_name", None),
-            getattr(capture, "window_title", None),
-        )
-        if tool_output_mode == "multimodal":
-            return _capture_context_multimodal_result(
-                capture,
-                include_image=include_image,
-            )
+        include_image = tool_output_mode == "multimodal"
+        if include_image:
+            return _capture_context_multimodal_result(capture)
         return json.dumps(
             _capture_context_result_dict(capture, include_image=include_image)
         )
