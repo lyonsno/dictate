@@ -255,6 +255,62 @@ class TestTerminalOperator:
         assert "requires approval" in result["reason"]
         mock_run.assert_not_called()
 
+    def test_execute_requires_approval_for_rg_e_outside_root(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["rg", "-e", "needle", "/etc/passwd"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
+    def test_execute_requires_approval_for_rg_files_outside_root(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["rg", "--files", "/etc"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
+    def test_execute_requires_approval_for_rg_pre_helper(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["rg", "--pre", "python3", "needle", "."],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
+    def test_execute_requires_approval_for_ps_eww(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["ps", "eww", "123"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
     def test_execute_raises_bounded_error_for_spawn_failure(self, tmp_path):
         from spoke.terminal_operator import TerminalOperator, TerminalOperatorError
 

@@ -57,12 +57,12 @@ _ALLOW_PREFIXES = (
     ("cat",),
     ("head",),
     ("tail",),
-    ("ps",),
 )
 _APPROVAL_PREFIXES = (
     ("git",),
     ("find",),
     ("sed",),
+    ("ps",),
     ("pytest",),
     ("uv",),
     ("python",),
@@ -252,6 +252,10 @@ class TerminalOperator:
         if git_flag_reason:
             return "approval_required", git_flag_reason
 
+        rg_flag_reason = self._rg_flag_approval_reason(normalized_argv)
+        if rg_flag_reason:
+            return "approval_required", rg_flag_reason
+
         path_scope_reason = self._path_scope_reason(normalized_argv, cwd=cwd)
         if path_scope_reason:
             return "approval_required", path_scope_reason
@@ -306,6 +310,19 @@ class TerminalOperator:
         return None
 
     @staticmethod
+    def _rg_flag_approval_reason(argv: list[str]) -> str | None:
+        if not argv or argv[0] != "rg":
+            return None
+        for index, token in enumerate(argv[1:], start=1):
+            if token == "--pre":
+                target = argv[index + 1] if index + 1 < len(argv) else "<missing>"
+                return f"command requires approval: rg --pre {target}"
+            if token == "--pre-glob":
+                target = argv[index + 1] if index + 1 < len(argv) else "<missing>"
+                return f"command requires approval: rg --pre-glob {target}"
+        return None
+
+    @staticmethod
     def _path_scope_reason(argv: list[str], *, cwd: str) -> str | None:
         if not argv or argv[0] not in _PATH_SCOPED_ALLOW_COMMANDS:
             return None
@@ -327,19 +344,27 @@ class TerminalOperator:
             return [token for token in argv[1:] if TerminalOperator._is_path_operand(token)]
         if command == "rg":
             path_tokens: list[str] = []
-            pattern_consumed = False
+            expects_positional_pattern = True
+            pattern_supplied_by_flag = False
             skip_next = False
             for token in argv[1:]:
                 if skip_next:
                     skip_next = False
                     continue
-                if token in {"-e", "--regexp", "-f", "--file", "-g", "--glob", "--pre", "--pre-glob"}:
+                if token in {"-e", "--regexp", "-f", "--file"}:
+                    pattern_supplied_by_flag = True
                     skip_next = True
+                    continue
+                if token in {"-g", "--glob", "--pre", "--pre-glob"}:
+                    skip_next = True
+                    continue
+                if token in {"--files", "--type-list"}:
+                    expects_positional_pattern = False
                     continue
                 if token.startswith("-"):
                     continue
-                if not pattern_consumed:
-                    pattern_consumed = True
+                if expects_positional_pattern and not pattern_supplied_by_flag:
+                    pattern_supplied_by_flag = True
                     continue
                 path_tokens.append(token)
             return path_tokens
