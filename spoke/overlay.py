@@ -1189,7 +1189,9 @@ class TranscriptionOverlay(NSObject):
             _bt = _clamp01((t - 0.45) * 6.0 + 0.5)
             _bt = _bt * _bt * (3.0 - 2.0 * _bt)
             boost_opacity = _lerp(0.0, 0.5, _bt)
-            if boost_opacity > 0.01:
+            # Only show boost if it has a mask (avoid solid white flash)
+            has_mask = getattr(self, "_boost_mask_layer", None) is not None
+            if boost_opacity > 0.01 and has_mask:
                 boost_layer.setHidden_(False)
                 boost_layer.setOpacity_(boost_opacity)
             else:

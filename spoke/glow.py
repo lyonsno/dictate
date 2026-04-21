@@ -115,17 +115,14 @@ _CORNER_FINISH_RADIUS_BOTTOM_DEFAULT = 10.0
 _GLOW_MULTIPLIER = float(os.environ.get("SPOKE_GLOW_MULTIPLIER", "21.4"))
 _GLOW_TEST_RMS = os.environ.get("SPOKE_GLOW_TEST_RMS")
 _DIM_SCREEN = os.environ.get("SPOKE_DIM_SCREEN", "1") == "1"
-_DIM_OPACITY_DARK = 0.42  # dim on dark backgrounds
-_DIM_OPACITY_LIGHT = 0.636  # pumped 50%
+_DIM_OPACITY_DARK = 0.10  # subtle dim on dark backgrounds
+_DIM_OPACITY_LIGHT = 0.20  # max 20% on light backgrounds
 
 def _dim_target_for_brightness(brightness: float) -> float:
-    # Spike to 0.80 at mid-gray
-    if brightness <= 0.5:
-        t = brightness / 0.5
-        return _DIM_OPACITY_DARK + t * (0.80 - _DIM_OPACITY_DARK)
-    else:
-        t = (brightness - 0.5) / 0.5
-        return 0.80 + t * (_DIM_OPACITY_LIGHT - 0.80)
+    # Linear ramp: light backgrounds get a bit more dim for contrast,
+    # dark backgrounds barely dim at all.
+    t = min(max(brightness, 0.0), 1.0)
+    return _DIM_OPACITY_DARK + t * (_DIM_OPACITY_LIGHT - _DIM_OPACITY_DARK)
 
 # Amplitude smoothing: rise fast, decay slow
 _RISE_FACTOR = 0.99  # 3x faster (was 0.90)
