@@ -314,6 +314,11 @@ class TerminalOperator:
         if not argv or argv[0] != "rg":
             return None
         for index, token in enumerate(argv[1:], start=1):
+            if token in {"-f", "--file"}:
+                target = argv[index + 1] if index + 1 < len(argv) else "<missing>"
+                return f"command requires approval: rg {token} {target}"
+            if token.startswith(("-f=", "--file=")):
+                return f"command requires approval: rg {token}"
             if token == "--pre":
                 target = argv[index + 1] if index + 1 < len(argv) else "<missing>"
                 return f"command requires approval: rg --pre {target}"
@@ -341,15 +346,25 @@ class TerminalOperator:
     def _iter_path_operands(argv: list[str]) -> list[str]:
         command = argv[0]
         if command in {"cat", "head", "tail", "ls"}:
-            return [token for token in argv[1:] if TerminalOperator._is_path_operand(token)]
+            return TerminalOperator._path_operands_after_options(argv[1:])
         if command == "rg":
             path_tokens: list[str] = []
             expects_positional_pattern = True
             pattern_supplied_by_flag = False
             skip_next = False
+            options_terminated = False
             for token in argv[1:]:
                 if skip_next:
                     skip_next = False
+                    continue
+                if options_terminated:
+                    if expects_positional_pattern and not pattern_supplied_by_flag:
+                        pattern_supplied_by_flag = True
+                        continue
+                    path_tokens.append(token)
+                    continue
+                if token == "--":
+                    options_terminated = True
                     continue
                 if token in {"-e", "--regexp", "-f", "--file"}:
                     pattern_supplied_by_flag = True
@@ -357,6 +372,11 @@ class TerminalOperator:
                     continue
                 if token in {"-g", "--glob", "--pre", "--pre-glob"}:
                     skip_next = True
+                    continue
+                if token.startswith(("-e=", "--regexp=", "-f=", "--file=")):
+                    pattern_supplied_by_flag = True
+                    continue
+                if token.startswith(("-g=", "--glob=", "--pre=", "--pre-glob=")):
                     continue
                 if token in {"--files", "--type-list"}:
                     expects_positional_pattern = False
@@ -375,6 +395,22 @@ class TerminalOperator:
         if not token or token == "-":
             return False
         return not token.startswith("-")
+
+    @staticmethod
+    def _path_operands_after_options(tokens: list[str]) -> list[str]:
+        operands: list[str] = []
+        options_terminated = False
+        for token in tokens:
+            if options_terminated:
+                if token != "-":
+                    operands.append(token)
+                continue
+            if token == "--":
+                options_terminated = True
+                continue
+            if TerminalOperator._is_path_operand(token):
+                operands.append(token)
+        return operands
 
     @staticmethod
     def _starts_with(argv: list[str], prefix: tuple[str, ...]) -> bool:

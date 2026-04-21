@@ -297,6 +297,20 @@ class TestTerminalOperator:
         assert "requires approval" in result["reason"]
         mock_run.assert_not_called()
 
+    def test_execute_requires_approval_for_rg_file_equals_outside_root(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["rg", "--file=/etc/passwd", "."],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
     def test_execute_requires_approval_for_ps_eww(self, tmp_path):
         from spoke.terminal_operator import TerminalOperator
 
@@ -374,6 +388,23 @@ class TestTerminalOperator:
         with patch("subprocess.run") as mock_run:
             result = TerminalOperator().execute_command(
                 ["cat", "secret_link"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
+    def test_execute_requires_approval_for_bare_name_symlink_after_option_terminator(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        link_path = tmp_path / "-secret_link"
+        link_path.symlink_to(Path("/etc/hosts"))
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["cat", "--", "-secret_link"],
                 cwd=str(tmp_path),
             )
 
