@@ -1,0 +1,130 @@
+"""Tests for shared fullscreen compositor ownership across overlays."""
+
+import importlib
+import sys
+from types import SimpleNamespace
+
+
+def _make_rect(x, y, width, height):
+    return SimpleNamespace(
+        origin=SimpleNamespace(x=x, y=y),
+        size=SimpleNamespace(width=width, height=height),
+    )
+
+
+class _FakeHostCompositor:
+    instances = []
+
+    def __init__(self, screen):
+        self.screen = screen
+        self.started_with = []
+        self.updated_with = []
+        self.stop_calls = 0
+        _FakeHostCompositor.instances.append(self)
+
+    def start(self, shell_config):
+        self.started_with.append(shell_config)
+        return True
+
+    def update_shell_configs(self, shell_configs):
+        self.updated_with.append(shell_configs)
+
+    def reset_temporal_state(self):
+        return None
+
+    def stop(self):
+        self.stop_calls += 1
+
+    def sample_brightness_for_config(self, config):
+        return 0.5
+
+
+class _FakeWindow:
+    def __init__(self, number, x=0.0, y=0.0, width=640.0, height=120.0):
+        self._number = number
+        self._frame = _make_rect(x, y, width, height)
+
+    def windowNumber(self):
+        return self._number
+
+    def frame(self):
+        return self._frame
+
+
+class _FakeContentView:
+    def __init__(self, width=640.0, height=120.0):
+        self._frame = _make_rect(0.0, 0.0, width, height)
+
+    def frame(self):
+        return self._frame
+
+
+class _FakeScreen:
+    def __init__(self, width=1920.0, height=1080.0, scale=2.0):
+        self._frame = _make_rect(0.0, 0.0, width, height)
+        self._scale = scale
+
+    def frame(self):
+        return self._frame
+
+    def backingScaleFactor(self):
+        return self._scale
+
+
+class TestSharedFullscreenCompositor:
+    def test_same_screen_overlays_share_one_fullscreen_host(self, mock_pyobjc, monkeypatch):
+        sys.modules.pop("spoke.fullscreen_compositor", None)
+        mod = importlib.import_module("spoke.fullscreen_compositor")
+        monkeypatch.setattr(mod, "FullScreenCompositor", _FakeHostCompositor)
+        monkeypatch.setattr(mod, "_shared_overlay_hosts", {}, raising=False)
+        _FakeHostCompositor.instances.clear()
+
+        screen = _FakeScreen()
+        session_a = mod.start_overlay_compositor(
+            screen=screen,
+            window=_FakeWindow(11),
+            content_view=_FakeContentView(640.0, 120.0),
+            shell_config={"content_width_points": 640.0, "content_height_points": 120.0},
+        )
+        session_b = mod.start_overlay_compositor(
+            screen=screen,
+            window=_FakeWindow(12, y=180.0),
+            content_view=_FakeContentView(640.0, 96.0),
+            shell_config={"content_width_points": 640.0, "content_height_points": 96.0},
+        )
+
+        assert session_a is not None
+        assert session_b is not None
+        assert len(_FakeHostCompositor.instances) == 1
+        host = _FakeHostCompositor.instances[0]
+        assert len(host.started_with) == 1
+        assert host.updated_with, "second overlay should update the shared host, not create a new compositor"
+        assert len(host.updated_with[-1]) == 2
+
+    def test_shared_host_only_stops_after_last_overlay_releases(self, mock_pyobjc, monkeypatch):
+        sys.modules.pop("spoke.fullscreen_compositor", None)
+        mod = importlib.import_module("spoke.fullscreen_compositor")
+        monkeypatch.setattr(mod, "FullScreenCompositor", _FakeHostCompositor)
+        monkeypatch.setattr(mod, "_shared_overlay_hosts", {}, raising=False)
+        _FakeHostCompositor.instances.clear()
+
+        screen = _FakeScreen()
+        session_a = mod.start_overlay_compositor(
+            screen=screen,
+            window=_FakeWindow(21),
+            content_view=_FakeContentView(640.0, 120.0),
+            shell_config={"content_width_points": 640.0, "content_height_points": 120.0},
+        )
+        session_b = mod.start_overlay_compositor(
+            screen=screen,
+            window=_FakeWindow(22, y=180.0),
+            content_view=_FakeContentView(640.0, 96.0),
+            shell_config={"content_width_points": 640.0, "content_height_points": 96.0},
+        )
+        host = _FakeHostCompositor.instances[0]
+
+        session_a.stop()
+        assert host.stop_calls == 0, "shared host must survive while another overlay still owns it"
+
+        session_b.stop()
+        assert host.stop_calls == 1

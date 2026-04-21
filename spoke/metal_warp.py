@@ -194,13 +194,13 @@ kernel void opticalShellWarp(
         // mipLod 6 (deep interior, max blur) → weight = params.temporalBlend.
         float mipFrac = clamp(mipLod / 6.0f, 0.0f, 1.0f);
         float temporalWeight = mix(1.0f, params.temporalBlend, mipFrac);
-        float4 prev = accumIn.read(gid);
+        float4 prev = accumIn.read(pixel);
         float4 blended = mix(prev, warpedColor, temporalWeight);
-        accumOut.write(blended, gid);
+        accumOut.write(blended, pixel);
         outTexture.write(blended, pixel);
     }} else {{
         // Exterior: no temporal smoothing — fully responsive.
-        accumOut.write(warpedColor, gid);
+        accumOut.write(warpedColor, pixel);
         outTexture.write(warpedColor, pixel);
     }}
 }}
@@ -230,6 +230,14 @@ def _create_metal_buffer(device, data: bytes):
 
 
 _WARP_PARAMS_SIZE = struct.calcsize("16f")
+
+
+def _normalize_shell_configs(shell_config) -> list[dict]:
+    if not shell_config:
+        return []
+    if isinstance(shell_config, dict):
+        return [dict(shell_config)]
+    return [dict(config) for config in shell_config if config]
 
 
 def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offset_y=0.0):
@@ -412,6 +420,9 @@ class MetalWarpPipeline:
         The entire pipeline stays on GPU — no CPU pixel copy.
         """
         import objc
+        shell_configs = _normalize_shell_configs(shell_config)
+        if not shell_configs:
+            return False
 
         # Input texture from IOSurface (single-level, no mipmaps)
         tex_desc = objc.lookUpClass("MTLTextureDescriptor").texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
@@ -476,35 +487,36 @@ class MetalWarpPipeline:
             blit.generateMipmapsForTexture_(self._mip_texture)
         blit.endEncoding()
 
-        # Pass 2: compute warp over capsule bounding box only
-        cx = shell_config.get("center_x", out_w * 0.5)
-        cy = shell_config.get("center_y", out_h * 0.5)
-        rect_w = shell_config.get("content_width_points", out_w)
-        rect_h = shell_config.get("content_height_points", out_h)
-        capsule_r = max(rect_h * 0.5, 1.0)
-        bleed = capsule_r * _WARP_BLEED_ZONE_FRAC
-        box_x0 = max(int(cx - rect_w * 0.5 - bleed), 0)
-        box_y0 = max(int(cy - rect_h * 0.5 - bleed), 0)
-        box_x1 = min(int(cx + rect_w * 0.5 + bleed) + 1, out_w)
-        box_y1 = min(int(cy + rect_h * 0.5 + bleed) + 1, out_h)
-        box_w = box_x1 - box_x0
-        box_h = box_y1 - box_y0
+        # Pass 2: compute each warp region over its own capsule bounding box.
+        # Temporal accumulation uses full-screen textures so multiple overlay
+        # regions can coexist in one compositor window.
+        self._ensure_accum_textures(out_w, out_h)
+        gen_before = self._accum_generation
+        accum_read = self._accum_textures[self._accum_index]
+        accum_write = self._accum_textures[1 - self._accum_index]
+        any_dispatch = False
 
-        if box_w > 0 and box_h > 0:
-            # Accum textures are bounding-box-sized to minimize VRAM.
-            self._ensure_accum_textures(box_w, box_h)
-            gen_before = self._accum_generation
-            accum_read = self._accum_textures[self._accum_index]
-            accum_write = self._accum_textures[1 - self._accum_index]
+        for config in shell_configs:
+            cx = config.get("center_x", out_w * 0.5)
+            cy = config.get("center_y", out_h * 0.5)
+            rect_w = config.get("content_width_points", out_w)
+            rect_h = config.get("content_height_points", out_h)
+            capsule_r = max(rect_h * 0.5, 1.0)
+            bleed = capsule_r * _WARP_BLEED_ZONE_FRAC
+            box_x0 = max(int(cx - rect_w * 0.5 - bleed), 0)
+            box_y0 = max(int(cy - rect_h * 0.5 - bleed), 0)
+            box_x1 = min(int(cx + rect_w * 0.5 + bleed) + 1, out_w)
+            box_y1 = min(int(cy + rect_h * 0.5 + bleed) + 1, out_h)
+            box_w = box_x1 - box_x0
+            box_h = box_y1 - box_y0
+            if box_w <= 0 or box_h <= 0:
+                continue
 
-            # First frame after accum resize: fully replace to avoid
-            # blending with uninitialized texture data.
-            warp_config = shell_config
+            warp_config = config
             if gen_before != getattr(self, "_accum_last_used_gen", -1):
-                warp_config = dict(shell_config)
+                warp_config = dict(config)
                 warp_config["temporal_blend"] = 1.0
 
-            # Update reusable params buffer via memmove (no alloc per frame)
             params_data = _pack_warp_params(
                 out_w, out_h, warp_config,
                 grid_offset_x=float(box_x0),
@@ -539,12 +551,11 @@ class MetalWarpPipeline:
             grid_size = (box_w, box_h, 1)
             encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
             encoder.endEncoding()
+            any_dispatch = True
 
-            # Flip accumulation buffer — only if generation hasn't changed
-            # (a resize between dispatch and here would invalidate the flip).
-            if self._accum_generation == gen_before:
-                self._accum_index = 1 - self._accum_index
-                self._accum_last_used_gen = gen_before
+        if any_dispatch and self._accum_generation == gen_before:
+            self._accum_index = 1 - self._accum_index
+            self._accum_last_used_gen = gen_before
 
         command_buffer.presentDrawable_(drawable)
         command_buffer.commit()
