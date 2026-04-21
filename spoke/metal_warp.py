@@ -152,31 +152,23 @@ kernel void opticalShellWarp(
         float probeSY = pow(max(probeScale, 0.0f), {_WARP_Y_SQUEEZE}f);
 
         float exteriorT = capsuleSdf;
-        float t = 1.0f - smoothstep(0.0f, 60.0f, exteriorT);
+        float t = 1.0f - smoothstep(0.0f, 35.0f, exteriorT);
         t = t * t;
 
         // Where the warp would put this pixel if it used the boundary scale
         float2 boundaryWarped = c + p * float2(probeSX, probeSY);
-        // Blend from identity toward boundary warp
-        result = mix(d, boundaryWarped, t * 0.5f);
+        // Blend from identity toward boundary warp — 35%% at boundary
+        result = mix(d, boundaryWarped, t * 0.35f);
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
-    // Depth-dependent blur.  Radius is in source pixels but taps are
-    // spread wide enough to cover the magnified screen area.
-    // 0-10%% depth: no blur.
-    // 10-30%%: ramp to 1 source pixel.
-    // 30-50%%+: ramp to large radius.
+    // Depth-dependent blur.  Single smooth ramp:
+    // 0-15%%: no blur (sharp rim detail).
+    // 15-25%%: eased ramp to full radius (~40 source pixels).
+    // >25%%: holds at full radius.
     float interiorDepth = clamp(-capsuleSdf / capsuleRadius, 0.0f, 1.0f);
-
-    float blurRadius;
-    if (interiorDepth < 0.10f) {{
-        blurRadius = 0.0f;
-    }} else if (interiorDepth < 0.30f) {{
-        blurRadius = smoothstep(0.10f, 0.30f, interiorDepth) * 1.0f;
-    }} else {{
-        blurRadius = 1.0f + smoothstep(0.30f, 0.50f, interiorDepth) * 15.0f;
-    }}
+    float blurT = smoothstep(0.15f, 0.25f, interiorDepth);
+    float blurRadius = blurT * 40.0f;
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
     float4 centerColor = inTexture.read(uint2(samplePt));
@@ -185,9 +177,8 @@ kernel void opticalShellWarp(
     if (blurRadius < 0.25f) {{
         finalColor = centerColor;
     }} else {{
-        // Gaussian-weighted disk blur.  16 taps in concentric rings
-        // at 3 radii (0.4r, 0.7r, 1.0r) plus center.  Enough
-        // overlap to read as smooth, not ghosted.
+        // 24-tap Gaussian disk: 4 rings × 6 taps each.
+        // Smooth coverage, no visible ghosting.
         float r = max(blurRadius, 0.5f);
         float sigma2 = r * r * 0.5f;
         float2 lim = float2(params.width - 1.0f, params.height - 1.0f);
@@ -195,37 +186,40 @@ kernel void opticalShellWarp(
         float4 acc = centerColor;
         float tw = 1.0f;
 
-        // 16-tap Poisson-ish disk: 3 rings × {4, 6, 6} taps
-        // Ring 1: r×0.35, 4 taps (cross)
-        float r1 = r * 0.35f;
-        float2 o1[4] = {{ float2(r1,0), float2(-r1,0), float2(0,r1), float2(0,-r1) }};
-        for (int i = 0; i < 4; i++) {{
-            float w = exp(-dot(o1[i],o1[i]) / (2.0f * sigma2));
-            acc += inTexture.read(uint2(clamp(samplePt + o1[i], float2(0), lim))) * w;
+        // Ring 1: r×0.25, 6 taps (hex)
+        float r1 = r * 0.25f;
+        for (int i = 0; i < 6; i++) {{
+            float a = float(i) * 1.0472f;  // 60° apart
+            float2 o = float2(cos(a), sin(a)) * r1;
+            float w = exp(-dot(o,o) / (2.0f * sigma2));
+            acc += inTexture.read(uint2(clamp(samplePt + o, float2(0), lim))) * w;
             tw += w;
         }}
-        // Ring 2: r×0.65, 6 taps (hex)
-        float r2 = r * 0.65f;
-        float2 o2[6] = {{
-            float2(r2, 0), float2(-r2, 0),
-            float2(r2*0.5f, r2*0.866f), float2(-r2*0.5f, r2*0.866f),
-            float2(r2*0.5f, -r2*0.866f), float2(-r2*0.5f, -r2*0.866f)
-        }};
+        // Ring 2: r×0.50, 6 taps (hex, rotated 30°)
+        float r2 = r * 0.50f;
         for (int i = 0; i < 6; i++) {{
-            float w = exp(-dot(o2[i],o2[i]) / (2.0f * sigma2));
-            acc += inTexture.read(uint2(clamp(samplePt + o2[i], float2(0), lim))) * w;
+            float a = float(i) * 1.0472f + 0.5236f;  // 30° offset
+            float2 o = float2(cos(a), sin(a)) * r2;
+            float w = exp(-dot(o,o) / (2.0f * sigma2));
+            acc += inTexture.read(uint2(clamp(samplePt + o, float2(0), lim))) * w;
             tw += w;
         }}
-        // Ring 3: r×1.0, 6 taps (hex, rotated 30°)
-        float r3 = r;
-        float2 o3[6] = {{
-            float2(r3*0.866f, r3*0.5f), float2(-r3*0.866f, r3*0.5f),
-            float2(r3*0.866f, -r3*0.5f), float2(-r3*0.866f, -r3*0.5f),
-            float2(0, r3), float2(0, -r3)
-        }};
+        // Ring 3: r×0.75, 6 taps (hex)
+        float r3 = r * 0.75f;
         for (int i = 0; i < 6; i++) {{
-            float w = exp(-dot(o3[i],o3[i]) / (2.0f * sigma2));
-            acc += inTexture.read(uint2(clamp(samplePt + o3[i], float2(0), lim))) * w;
+            float a = float(i) * 1.0472f;
+            float2 o = float2(cos(a), sin(a)) * r3;
+            float w = exp(-dot(o,o) / (2.0f * sigma2));
+            acc += inTexture.read(uint2(clamp(samplePt + o, float2(0), lim))) * w;
+            tw += w;
+        }}
+        // Ring 4: r×1.0, 6 taps (hex, rotated 30°)
+        float r4 = r;
+        for (int i = 0; i < 6; i++) {{
+            float a = float(i) * 1.0472f + 0.5236f;
+            float2 o = float2(cos(a), sin(a)) * r4;
+            float w = exp(-dot(o,o) / (2.0f * sigma2));
+            acc += inTexture.read(uint2(clamp(samplePt + o, float2(0), lim))) * w;
             tw += w;
         }}
         finalColor = acc / tw;
