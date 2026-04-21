@@ -801,8 +801,20 @@ class CommandOverlay(NSObject):
         self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
         self._fill_layer.setContentsGravity_("resize")
 
+        # Boost layer — white, sits below the fill.  When punch-through
+        # is active on dark backgrounds, this layer brightens the warped
+        # content visible through the text-shaped holes in the fill mask.
+        # Uses the inverse of the punch-through mask (opaque where text is).
+        self._boost_layer = CALayer.alloc().init()
+        self._boost_layer.setFrame_(((0, 0), (win_w, win_h)))
+        from Quartz import CGColorCreateSRGB
+        self._boost_layer.setBackgroundColor_(CGColorCreateSRGB(1.0, 1.0, 1.0, 1.0))
+        self._boost_layer.setOpacity_(0.0)
+        self._boost_layer.setHidden_(True)
+
         self._apply_ridge_masks(w, h)
         wrapper.layer().insertSublayer_below_(self._backdrop_layer, self._fill_layer)
+        wrapper.layer().insertSublayer_below_(self._boost_layer, self._fill_layer)
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
         self._install_backdrop_frame_callback()
         self._install_backdrop_sample_buffer_callback()
@@ -1821,6 +1833,7 @@ class CommandOverlay(NSObject):
             if abs(new_opacity - getattr(self, '_last_fill_opacity', -1.0)) > 0.005:
                 self._fill_layer.setOpacity_(new_opacity)
                 self._last_fill_opacity = new_opacity
+        # Boost layer reserved for future per-text brightness lift.
         # Update text punch-through mask (if active)
         if getattr(self, "_text_punchthrough", False):
             self._update_punchthrough_mask()
@@ -2068,7 +2081,13 @@ class CommandOverlay(NSObject):
             if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _has_compositor:
                 _b_rounded = round(_b * 50) / 50  # 0.02 steps
                 if getattr(self, '_sdf_appearance_b', -1.0) != _b_rounded:
-                    _ifloor = _lerp(0.55, 0.97, _clamp01(_b))
+                    # Interior floor: on light backgrounds the dark fill
+                    # needs to be fully opaque so punch-through text has
+                    # strong contrast.  On dark backgrounds a softer floor
+                    # lets the frosted quality show.  The value here IS
+                    # the alpha written into the image — layer opacity
+                    # multiplies on top of it.
+                    _ifloor = _lerp(0.60, 0.985, _clamp01(_b))
                     # Rescale raw interior curve to [_ifloor, 1.0] + edge ridge
                     interior = (_ifloor + (1.0 - _ifloor) * self._sdf_raw_interior)
                     interior = np.clip(
@@ -2364,6 +2383,12 @@ class CommandOverlay(NSObject):
         else:
             fill.setMask_(None)
             self._punchthrough_mask_layer = None
+            boost = getattr(self, "_boost_layer", None)
+            if boost is not None:
+                boost.setHidden_(True)
+                boost.setOpacity_(0.0)
+                boost.setMask_(None)
+                self._boost_mask_layer = None
             if content is not None:
                 content.setHidden_(False)
 
@@ -2468,7 +2493,7 @@ class CommandOverlay(NSObject):
             if mask_image is None:
                 return
 
-            # Update or create mask layer
+            # Update or create mask layer for fill (inverted: holes where text is)
             mask_layer = getattr(self, "_punchthrough_mask_layer", None)
             if mask_layer is None:
                 mask_layer = CALayer.alloc().init()
@@ -2478,6 +2503,7 @@ class CommandOverlay(NSObject):
             mask_layer.setContents_(mask_image)
             if fill.mask() is not mask_layer:
                 fill.setMask_(mask_layer)
+
         except Exception:
             logger.debug("Failed to update punch-through mask", exc_info=True)
 

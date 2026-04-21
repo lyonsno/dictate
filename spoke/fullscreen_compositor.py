@@ -99,6 +99,12 @@ class FullScreenCompositor:
         with self._lock:
             self._shell_config = dict(config) if config else None
 
+    def update_shell_config_key(self, key: str, value) -> None:
+        """Update a single key in the shell config without replacing."""
+        with self._lock:
+            if self._shell_config is not None:
+                self._shell_config[key] = value
+
     @property
     def is_running(self) -> bool:
         return self._running
