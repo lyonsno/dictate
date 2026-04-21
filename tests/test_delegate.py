@@ -2874,6 +2874,21 @@ class TestWarmupContract:
 
         d._handsfree.enable.assert_called_once_with()
 
+    def test_warmup_success_schedules_handsfree_retry_when_still_inactive(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        d._handsfree.is_active = False
+        d._mic_ready = True
+        d._schedule_handsfree_auto_enable_retry = MagicMock()
+        monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "test-key")
+        monkeypatch.setenv("SPOKE_HANDSFREE_DEFAULT_ON", "1")
+
+        d.clientWarmupSucceeded_(None)
+
+        d._schedule_handsfree_auto_enable_retry.assert_called_once_with()
+
     def test_mic_granted_auto_enables_handsfree_when_requested_and_models_ready(
         self, main_module, monkeypatch
     ):
@@ -2888,6 +2903,22 @@ class TestWarmupContract:
         d.micPermissionGranted_(None)
 
         d._handsfree.enable.assert_called_once_with()
+
+    def test_mic_granted_schedules_handsfree_retry_when_still_inactive(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        d._handsfree.is_active = False
+        d._models_ready = True
+        d._mic_ready = False
+        d._schedule_handsfree_auto_enable_retry = MagicMock()
+        monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "test-key")
+        monkeypatch.setenv("SPOKE_HANDSFREE_DEFAULT_ON", "1")
+
+        d.micPermissionGranted_(None)
+
+        d._schedule_handsfree_auto_enable_retry.assert_called_once_with()
 
 class TestRuntimePhaseLogging:
     """Test runtime phase snapshot behavior under repeated writes."""

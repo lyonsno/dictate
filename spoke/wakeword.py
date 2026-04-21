@@ -163,10 +163,7 @@ class WakeWordListener:
     def _start_openwakeword_engine(self, model_paths: list[str]) -> None:
         from openwakeword.model import Model
 
-        kwargs = {}
-        if any(path.lower().endswith(".onnx") for path in model_paths):
-            kwargs["inference_framework"] = "onnx"
-        self._engine = Model(wakeword_models=model_paths, **kwargs)
+        self._engine = Model(wakeword_model_paths=model_paths)
         self._oww_keyword_labels = [self._label_for_model_path(path) for path in model_paths]
         self._oww_armed_labels = {label: True for label in self._oww_keyword_labels}
 
