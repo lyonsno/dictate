@@ -935,6 +935,47 @@ def _normalize_match_text(text: str, *, normalize_trailing_whitespace: bool = Tr
     return normalized
 
 
+def _normalize_text_for_comparison(
+    text: str,
+    *,
+    normalize_line_endings: bool,
+    normalize_trailing_whitespace: bool,
+    normalize_missing_final_newline: bool,
+) -> str:
+    parts: list[str] = []
+    for line in _split_lines_with_offsets(text):
+        body = line["body"].rstrip(" \t") if normalize_trailing_whitespace else line["body"]
+        parts.append(body)
+        if line["has_line_ending"]:
+            parts.append("\n" if normalize_line_endings else line["line_ending"])
+    if text and not text.endswith(("\n", "\r")) and normalize_missing_final_newline:
+        parts.append("\n")
+    return "".join(parts)
+
+
+def _normalization_was_needed(
+    *,
+    left: str,
+    right: str,
+    normalize_line_endings: bool,
+    normalize_trailing_whitespace: bool,
+    normalize_missing_final_newline: bool,
+) -> bool:
+    if left == right:
+        return False
+    return _normalize_text_for_comparison(
+        left,
+        normalize_line_endings=normalize_line_endings,
+        normalize_trailing_whitespace=normalize_trailing_whitespace,
+        normalize_missing_final_newline=normalize_missing_final_newline,
+    ) == _normalize_text_for_comparison(
+        right,
+        normalize_line_endings=normalize_line_endings,
+        normalize_trailing_whitespace=normalize_trailing_whitespace,
+        normalize_missing_final_newline=normalize_missing_final_newline,
+    )
+
+
 def _apply_newline_style(text: str, newline_style: str) -> str:
     return text.replace("\n", newline_style)
 
@@ -988,33 +1029,82 @@ def _edited_range_from_diff(old_text: str, new_text: str) -> dict[str, int]:
     return {"start_line": start_line, "end_line": end_line}
 
 
-def _uses_line_ending_normalization(*texts: str) -> bool:
-    return any("\r" in text for text in texts)
-
-
-def _uses_trailing_whitespace_normalization(*texts: str) -> bool:
-    for text in texts:
-        for line in text.splitlines():
-            if line.rstrip(" \t") != line:
-                return True
-    return False
-
-
 def _normalization_applied(
     *,
-    raw_content: str,
+    matched_text: str,
     old_string: str,
+    replacement_text: str,
     new_string: str,
     normalize_trailing_whitespace: bool,
     indentation_used: bool,
     final_newline_used: bool,
 ) -> list[str]:
     applied: list[str] = []
-    if _uses_line_ending_normalization(raw_content, old_string, new_string):
+    line_endings_used = _normalization_was_needed(
+        left=matched_text,
+        right=old_string,
+        normalize_line_endings=True,
+        normalize_trailing_whitespace=normalize_trailing_whitespace,
+        normalize_missing_final_newline=False,
+    ) and not _normalization_was_needed(
+        left=matched_text,
+        right=old_string,
+        normalize_line_endings=False,
+        normalize_trailing_whitespace=normalize_trailing_whitespace,
+        normalize_missing_final_newline=False,
+    )
+    line_endings_used = line_endings_used or (
+        _normalization_was_needed(
+            left=replacement_text,
+            right=new_string,
+            normalize_line_endings=True,
+            normalize_trailing_whitespace=normalize_trailing_whitespace,
+            normalize_missing_final_newline=False,
+        )
+        and not _normalization_was_needed(
+            left=replacement_text,
+            right=new_string,
+            normalize_line_endings=False,
+            normalize_trailing_whitespace=normalize_trailing_whitespace,
+            normalize_missing_final_newline=False,
+        )
+    )
+    if line_endings_used:
         applied.append("line_endings")
-    if normalize_trailing_whitespace and _uses_trailing_whitespace_normalization(
-        raw_content, old_string, new_string
-    ):
+    trailing_used = normalize_trailing_whitespace and (
+        _normalization_was_needed(
+            left=matched_text,
+            right=old_string,
+            normalize_line_endings=True,
+            normalize_trailing_whitespace=True,
+            normalize_missing_final_newline=False,
+        )
+        and not _normalization_was_needed(
+            left=matched_text,
+            right=old_string,
+            normalize_line_endings=True,
+            normalize_trailing_whitespace=False,
+            normalize_missing_final_newline=False,
+        )
+    )
+    trailing_used = trailing_used or (
+        normalize_trailing_whitespace
+        and _normalization_was_needed(
+            left=replacement_text,
+            right=new_string,
+            normalize_line_endings=True,
+            normalize_trailing_whitespace=True,
+            normalize_missing_final_newline=False,
+        )
+        and not _normalization_was_needed(
+            left=replacement_text,
+            right=new_string,
+            normalize_line_endings=True,
+            normalize_trailing_whitespace=False,
+            normalize_missing_final_newline=False,
+        )
+    )
+    if trailing_used:
         applied.append("trailing_whitespace")
     if indentation_used:
         applied.append("indentation")
@@ -1381,8 +1471,9 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
                 or (match["raw_end"] == len(raw_content) and not raw_content.endswith(("\n", "\r")))
             )
             applied = _normalization_applied(
-                raw_content=raw_content,
+                matched_text=raw_content[match["raw_start"] : match["raw_end"]],
                 old_string=old_string,
+                replacement_text=replacement,
                 new_string=new_string,
                 normalize_trailing_whitespace=normalize_trailing_whitespace,
                 indentation_used=True,
@@ -1444,8 +1535,9 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
             or (raw_end == len(raw_content) and not raw_content.endswith(("\n", "\r")))
         )
         applied = _normalization_applied(
-            raw_content=raw_content,
+            matched_text=raw_content[raw_start:raw_end],
             old_string=old_string,
+            replacement_text=replacement,
             new_string=new_string,
             normalize_trailing_whitespace=normalize_trailing_whitespace,
             indentation_used=False,
