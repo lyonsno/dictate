@@ -43,6 +43,8 @@ _WARP_Y_SQUEEZE = 1.5
 _WARP_EXTERIOR_MAG_STRENGTH = 0.3
 _WARP_EXTERIOR_MAG_DECAY = 2.0
 
+_TEMPORAL_BLEND_FACTOR = 0.25  # EMA blend: 25% new frame, 75% accumulator
+
 
 def _metal_shader_source() -> str:
     return f"""
@@ -64,25 +66,13 @@ struct WarpParams {{
     float centerY;      // capsule center Y in pixels (0 = use height/2)
     float gridOffsetX;  // dispatch grid origin X (for bounding-box dispatch)
     float gridOffsetY;  // dispatch grid origin Y
+    float temporalBlend; // EMA blend factor (0 = keep previous, 1 = fully new)
 }};
 
 float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
-    // Distance to a rounded rectangle whose skeleton is a rectangle
-    // (spineHalfX × spineHalfY), inflated by radius.  When spineHalfY=0
-    // this is a horizontal capsule.  Iso-contours are smaller stadiums
-    // at every depth — no medial-axis degeneration.
     float dx = max(abs(p.x) - spineHalfX, 0.0f);
     float dy = max(abs(p.y) - spineHalfY, 0.0f);
     return length(float2(dx, dy)) - radius;
-}}
-
-float2 stadiumGradient(float2 p, float spineHalfX, float spineHalfY) {{
-    // Gradient of sdStadium: direction from nearest skeleton point to p.
-    float clampedX = clamp(p.x, -spineHalfX, spineHalfX);
-    float clampedY = clamp(p.y, -spineHalfY, spineHalfY);
-    float2 toP = p - float2(clampedX, clampedY);
-    float len = length(toP);
-    return len > 1e-6f ? toP / len : float2(0.0f, 1.0f);
 }}
 
 float depthRemap(float inside01, float curveBoost) {{
@@ -109,6 +99,8 @@ constexpr sampler mipSampler(
 kernel void opticalShellWarp(
     texture2d<float, access::sample> inTexture [[texture(0)]],
     texture2d<float, access::write> outTexture [[texture(1)]],
+    texture2d<float, access::read> accumIn [[texture(2)]],
+    texture2d<float, access::write> accumOut [[texture(3)]],
     constant WarpParams& params [[buffer(0)]],
     uint2 gid [[thread_position_in_grid]]
 ) {{
@@ -117,16 +109,12 @@ kernel void opticalShellWarp(
     if (pixel.x >= (uint)params.width || pixel.y >= (uint)params.height) return;
 
     float2 d = float2(pixel.x, pixel.y) + 0.5f;
-    // Capsule center: explicit position or image center
     float2 c = float2(
         params.centerX > 0.0f ? params.centerX : params.width * 0.5f,
         params.centerY > 0.0f ? params.centerY : params.height * 0.5f
     );
     float2 p = d - c;
     float2 halfRect = float2(params.rectWidth * 0.5f, params.rectHeight * 0.5f);
-    // cornerRadius carries the endcap radius (initial overlay half-height).
-    // When the overlay grows taller, the extra height becomes straight sides
-    // (spineHalfY > 0) while the semicircular caps stay the same size.
     float capsuleRadius = params.cornerRadius > 0.0f
         ? min(params.cornerRadius, halfRect.y)
         : min(halfRect.y, halfRect.x * 0.35f);
@@ -138,6 +126,7 @@ kernel void opticalShellWarp(
 
     float bleedZone = capsuleRadius * {_WARP_BLEED_ZONE_FRAC}f;
     if (capsuleSdf > bleedZone) {{
+        // Outside warp zone: pass through, no temporal blend
         outTexture.write(inTexture.sample(bilinearSampler, d), pixel);
         return;
     }}
@@ -163,48 +152,51 @@ kernel void opticalShellWarp(
 
     float2 result = warped;
     if (capsuleSdf > 0.0f) {{
-        // Exterior: preview the interior's anisotropic stretch.
-        // Compute the warp scale at the capsule boundary (sdf=0)
-        // and blend toward it from identity as we approach.
-        float rimRawField = clamp(1.0f, 0.0f, 1.0f);  // sdf=0 → rawField=1.0
-        // Use a small negative offset to sample just inside the boundary
-        // where the warp actually has teeth
-        float probeDepth = 0.15f;  // 15%% inside the boundary
-        float probeRaw = clamp(1.0f - probeDepth, 0.0f, 1.0f);
+        // Exterior: blend toward boundary warp scale
+        float probeRaw = clamp(1.0f - 0.15f, 0.0f, 1.0f);
         float probeField = mix(localFloor, 1.0f, pow(probeRaw, {_WARP_FIELD_EXPONENT}f));
         float probeSource = 1.0f - depthRemap(1.0f - probeField, curveBoost);
         float probeScale = probeSource / probeField;
         float probeSX = pow(max(probeScale, 0.0f), {_WARP_X_SQUEEZE}f);
         float probeSY = pow(max(probeScale, 0.0f), {_WARP_Y_SQUEEZE}f);
 
-        float exteriorT = capsuleSdf;
-        float t = 1.0f - smoothstep(0.0f, 40.0f, exteriorT);
+        float t = 1.0f - smoothstep(0.0f, 40.0f, capsuleSdf);
         t = t * t;
-
-        // Where the warp would put this pixel if it used the boundary scale
         float2 boundaryWarped = c + p * float2(probeSX, probeSY);
-        // Blend from identity toward boundary warp — 50%% at boundary
         result = mix(d, boundaryWarped, t * 0.50f);
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
-    // Depth-dependent blur via mipmap LOD.  All mip transitions
-    // happen in a narrow ~30px band at the rim, then hold at max
-    // LOD for the entire interior.
+    // Depth-dependent blur via mipmap LOD
     float pixelsInside = max(-capsuleSdf, 0.0f);
     float mipLod = clamp(pixelsInside / 30.0f, 0.0f, 1.0f) * 6.0f;
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
-    float4 finalColor;
+    float4 warpedColor;
     if (mipLod < 0.1f) {{
-        finalColor = inTexture.sample(bilinearSampler, samplePt);
+        warpedColor = inTexture.sample(bilinearSampler, samplePt);
     }} else {{
-        // Normalized coords for mip-level sampling
         float2 normPt = samplePt / float2(params.width, params.height);
-        finalColor = inTexture.sample(mipSampler, normPt, level(mipLod));
+        warpedColor = inTexture.sample(mipSampler, normPt, level(mipLod));
     }}
 
-    outTexture.write(finalColor, pixel);
+    // Temporal accumulation: EMA blend with previous frame.
+    // Accum textures are bounding-box-sized — indexed by gid, not pixel.
+    // Interior gets full temporal smoothing; exterior warp zone blends
+    // less to stay responsive.
+    float temporalWeight = params.temporalBlend;
+    if (capsuleSdf <= 0.0f) {{
+        float4 prev = accumIn.read(gid);
+        float4 blended = mix(prev, warpedColor, temporalWeight);
+        accumOut.write(blended, gid);
+        outTexture.write(blended, pixel);
+    }} else {{
+        float4 prev = accumIn.read(gid);
+        float exteriorBlend = mix(temporalWeight, 1.0f, smoothstep(0.0f, bleedZone, capsuleSdf));
+        float4 blended = mix(prev, warpedColor, exteriorBlend);
+        accumOut.write(blended, gid);
+        outTexture.write(blended, pixel);
+    }}
 }}
 """
 
@@ -231,10 +223,13 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
+_WARP_PARAMS_SIZE = struct.calcsize("15f")
+
+
 def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offset_y=0.0):
     """Pack WarpParams struct for the Metal compute shader."""
     return struct.pack(
-        "14f",
+        "15f",
         float(width),
         float(height),
         float(shell_config.get("content_width_points", width)),
@@ -249,6 +244,7 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         float(shell_config.get("center_y", 0.0)),
         float(grid_offset_x),
         float(grid_offset_y),
+        float(shell_config.get("temporal_blend", _TEMPORAL_BLEND_FACTOR)),
     )
 
 
@@ -297,12 +293,26 @@ class MetalWarpPipeline:
             raise RuntimeError(f"Metal compute pipeline creation failed: {error}")
 
         self._pipeline = pipeline
-        self._params_buffer = None
         self._output_texture = None
         self._output_texture_size = None
         self._mip_texture = None
         self._mip_texture_size = None
-        logger.info("Metal warp pipeline created (threadgroup=%d)", pipeline.maxTotalThreadsPerThreadgroup())
+        self._accum_textures = [None, None]  # ping-pong accumulation buffers
+        self._accum_texture_size = None
+        self._accum_index = 0
+        self._accum_generation = 0  # incremented on resize for atomicity
+
+        # Cache threadgroup dimensions — these are hardware constants
+        self._thread_exec_width = pipeline.threadExecutionWidth()
+        self._max_tg_height = pipeline.maxTotalThreadsPerThreadgroup() // self._thread_exec_width
+
+        # Pre-allocate reusable params buffer (avoids alloc per frame)
+        self._params_buffer = self._device.newBufferWithLength_options_(
+            _WARP_PARAMS_SIZE, 0,  # MTLResourceStorageModeShared
+        )
+
+        logger.info("Metal warp pipeline created (threadgroup=%dx%d)",
+                     self._thread_exec_width, self._max_tg_height)
 
     def warp_iosurface(self, input_surface, *, width, height, shell_config):
         """Run the warp on an IOSurface and return a new IOSurface with the result."""
@@ -327,8 +337,11 @@ class MetalWarpPipeline:
             self._output_texture = self._device.newTextureWithDescriptor_(tex_desc)
             self._output_texture_size = (width, height)
 
-        # Params buffer
-        params_data = _pack_warp_params(width, height, shell_config)
+        # Use separate accum textures with temporal_blend=1.0 (full replace)
+        self._ensure_accum_textures(width, height)
+        shell_config_copy = dict(shell_config)
+        shell_config_copy["temporal_blend"] = 1.0
+        params_data = _pack_warp_params(width, height, shell_config_copy)
         params_buffer = _create_metal_buffer(self._device, params_data)
 
         # Encode and dispatch
@@ -337,12 +350,11 @@ class MetalWarpPipeline:
         encoder.setComputePipelineState_(self._pipeline)
         encoder.setTexture_atIndex_(input_texture, 0)
         encoder.setTexture_atIndex_(self._output_texture, 1)
+        encoder.setTexture_atIndex_(self._accum_textures[0], 2)
+        encoder.setTexture_atIndex_(self._accum_textures[1], 3)
         encoder.setBuffer_offset_atIndex_(params_buffer, 0, 0)
 
-        # Threadgroup size
-        w = self._pipeline.threadExecutionWidth()
-        h = self._pipeline.maxTotalThreadsPerThreadgroup() // w
-        threadgroup_size = (w, min(h, height), 1)
+        threadgroup_size = (self._thread_exec_width, min(self._max_tg_height, height), 1)
         grid_size = (width, height, 1)
         encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
         encoder.endEncoding()
@@ -352,6 +364,32 @@ class MetalWarpPipeline:
 
         return self._output_texture
 
+    def _ensure_accum_textures(self, width, height):
+        """Create or resize ping-pong accumulation textures for temporal AA.
+
+        Uses a generation counter for atomicity — callers snapshot the
+        generation before dispatching and check it hasn't changed before
+        flipping the index.  This prevents a resize between dispatch and
+        flip from corrupting the ping-pong state.
+        """
+        if self._accum_texture_size == (width, height):
+            return
+        import objc
+        desc = objc.lookUpClass("MTLTextureDescriptor").texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
+            80, width, height, False,
+        )
+        desc.setUsage_(1 | 2)  # read | write
+        self._accum_textures = [
+            self._device.newTextureWithDescriptor_(desc),
+            self._device.newTextureWithDescriptor_(desc),
+        ]
+        self._accum_texture_size = (width, height)
+        self._accum_index = 0
+        self._accum_generation += 1
+        if self._accum_textures[0] is None or self._accum_textures[1] is None:
+            logger.warning("Failed to create accumulation textures %dx%d", width, height)
+            self._accum_textures = [None, None]
+
     def warp_to_drawable(self, input_surface, drawable, *, width, height, shell_config):
         """Run the warp and blit the result to a CAMetalLayer drawable.
 
@@ -359,7 +397,6 @@ class MetalWarpPipeline:
         The entire pipeline stays on GPU — no CPU pixel copy.
         """
         import objc
-        import struct
 
         # Input texture from IOSurface (single-level, no mipmaps)
         tex_desc = objc.lookUpClass("MTLTextureDescriptor").texture2DDescriptorWithPixelFormat_width_height_mipmapped_(
@@ -406,21 +443,16 @@ class MetalWarpPipeline:
 
         # Pass 1: blit input → output + mip level 0, generate mipmaps.
         blit = command_buffer.blitCommandEncoder()
-        # Input and output are both single-level — simple copy works.
         blit.copyFromTexture_toTexture_(input_texture, output_texture)
         if self._mip_texture is not None:
-            # Mip texture has multiple levels; use region-based copy to
-            # target only level 0.  copyFromTexture:toTexture: crashes
-            # when mip level counts differ.
-            origin = (0, 0, 0)  # MTLOrigin
-            size = (in_w, in_h, 1)  # MTLSize
+            origin = (0, 0, 0)
+            size = (in_w, in_h, 1)
             try:
                 blit.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin_(
                     input_texture, 0, 0, origin, size,
                     self._mip_texture, 0, 0, origin,
                 )
             except Exception:
-                # Fallback: try simple copy (may work if Metal is lenient)
                 try:
                     blit.copyFromTexture_toTexture_(input_texture, self._mip_texture)
                 except Exception:
@@ -435,7 +467,6 @@ class MetalWarpPipeline:
         rect_h = shell_config.get("content_height_points", out_h)
         capsule_r = max(rect_h * 0.5, 1.0)
         bleed = capsule_r * _WARP_BLEED_ZONE_FRAC
-        # Bounding box of capsule + bleed
         box_x0 = max(int(cx - rect_w * 0.5 - bleed), 0)
         box_y0 = max(int(cy - rect_h * 0.5 - bleed), 0)
         box_x1 = min(int(cx + rect_w * 0.5 + bleed) + 1, out_w)
@@ -444,14 +475,35 @@ class MetalWarpPipeline:
         box_h = box_y1 - box_y0
 
         if box_w > 0 and box_h > 0:
-            # Pack params with grid offset so the shader maps gid back
-            # to screen coordinates
+            # Accum textures are bounding-box-sized to minimize VRAM.
+            self._ensure_accum_textures(box_w, box_h)
+            gen_before = self._accum_generation
+            accum_read = self._accum_textures[self._accum_index]
+            accum_write = self._accum_textures[1 - self._accum_index]
+
+            # First frame after accum resize: fully replace to avoid
+            # blending with uninitialized texture data.
+            warp_config = shell_config
+            if gen_before != getattr(self, "_accum_last_used_gen", -1):
+                warp_config = dict(shell_config)
+                warp_config["temporal_blend"] = 1.0
+
+            # Update reusable params buffer via memmove (no alloc per frame)
             params_data = _pack_warp_params(
-                out_w, out_h, shell_config,
+                out_w, out_h, warp_config,
                 grid_offset_x=float(box_x0),
                 grid_offset_y=float(box_y0),
             )
-            params_buffer = _create_metal_buffer(self._device, params_data)
+            if self._params_buffer is not None:
+                contents_ptr = self._params_buffer.contents()
+                if contents_ptr is not None:
+                    ctypes.memmove(contents_ptr, params_data, len(params_data))
+                    params_buffer = self._params_buffer
+                else:
+                    params_buffer = _create_metal_buffer(self._device, params_data)
+            else:
+                params_buffer = _create_metal_buffer(self._device, params_data)
+
             if params_buffer is None:
                 command_buffer.presentDrawable_(drawable)
                 command_buffer.commit()
@@ -462,14 +514,21 @@ class MetalWarpPipeline:
             warp_input = self._mip_texture if self._mip_texture is not None else input_texture
             encoder.setTexture_atIndex_(warp_input, 0)
             encoder.setTexture_atIndex_(output_texture, 1)
+            if accum_read is not None and accum_write is not None:
+                encoder.setTexture_atIndex_(accum_read, 2)
+                encoder.setTexture_atIndex_(accum_write, 3)
             encoder.setBuffer_offset_atIndex_(params_buffer, 0, 0)
 
-            w = self._pipeline.threadExecutionWidth()
-            h_tg = self._pipeline.maxTotalThreadsPerThreadgroup() // w
-            threadgroup_size = (w, min(h_tg, box_h), 1)
+            threadgroup_size = (self._thread_exec_width, min(self._max_tg_height, box_h), 1)
             grid_size = (box_w, box_h, 1)
             encoder.dispatchThreads_threadsPerThreadgroup_(grid_size, threadgroup_size)
             encoder.endEncoding()
+
+            # Flip accumulation buffer — only if generation hasn't changed
+            # (a resize between dispatch and here would invalidate the flip).
+            if self._accum_generation == gen_before:
+                self._accum_index = 1 - self._accum_index
+                self._accum_last_used_gen = gen_before
 
         command_buffer.presentDrawable_(drawable)
         command_buffer.commit()
@@ -523,6 +582,7 @@ class MetalDisplayLinkRenderer:
         self._last_report_time = 0.0
         self._interval_frame_count = 0
         self._presented_count = 0
+        self._last_drawable_size = (0, 0)
 
         # Configure layer for non-blocking presentation
         if hasattr(metal_layer, "setPresentsWithTransaction_"):
@@ -610,8 +670,10 @@ class MetalDisplayLinkRenderer:
             self._interval_frame_count = 0
 
         try:
-            # Update drawable size to match capture dimensions
-            self._metal_layer.setDrawableSize_((w, h))
+            # Update drawable size only when dimensions change
+            if self._last_drawable_size != (w, h):
+                self._metal_layer.setDrawableSize_((w, h))
+                self._last_drawable_size = (w, h)
 
             # Non-blocking drawable acquisition — if all drawables are busy,
             # skip this frame.  The next vsync will try again.

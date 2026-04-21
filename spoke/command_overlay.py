@@ -65,7 +65,7 @@ _COMMAND_OVERLAY_WINDOW_LEVEL = _OVERLAY_WINDOW_LEVEL + 1
 _OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 300.0)
 _OVERLAY_TOP_MARGIN = _env("SPOKE_COMMAND_OVERLAY_TOP_MARGIN", 140.0)
 _OVERLAY_CORNER_RADIUS = _env("SPOKE_COMMAND_OVERLAY_CORNER_RADIUS", 16.0)
-_FONT_SIZE = 13.0
+_FONT_SIZE = 15.5
 _FADE_IN_S = 0.7
 _ENTRANCE_POP_SCALE = 1.015  # ~1mm overshoot on a 600px overlay
 _ENTRANCE_POP_S = 0.15
@@ -99,6 +99,8 @@ _PULSE_PHASE_OFFSET_USER = 0.3  # user starts 30% ahead in phase
 _PULSE_HZ = 30.0  # timer frequency for pulse animation
 
 _OUTER_FEATHER = 220.0  # match preview overlay — room for the stretched-exp tails
+_OPTICAL_SHELL_FEATHER = 140.0  # ~2 inches — the glow tail is faint but the eye catches
+                                # any hard clip, so the window needs room for the full decay
 _INNER_GLOW_DEPTH = 30.0
 _OUTER_GLOW_PEAK_TARGET = 0.35
 _BRIGHTNESS_CHASE = 0.08
@@ -243,6 +245,21 @@ def _background_color_for_brightness(brightness: float) -> tuple[float, float, f
     from .overlay import _BG_COLOR_DARK as _PREVIEW_BG_COLOR_DARK, _BG_COLOR_LIGHT as _PREVIEW_BG_COLOR_LIGHT
 
     return _lerp_color(_PREVIEW_BG_COLOR_DARK, _PREVIEW_BG_COLOR_LIGHT, _clamp01(brightness))
+
+
+# Compositor graphic mode: fill matches background tone so text
+# punch-through reveals the contrasting warped content underneath.
+# Dark on dark, light on light — the overlay is a surface, not a glow.
+_COMPOSITOR_FILL_DARK = (0.50, 0.51, 0.54)   # light fill on dark backgrounds — faint, translucent
+_COMPOSITOR_FILL_LIGHT = (0.04, 0.04, 0.05)   # dark fill on light backgrounds — vivid, near-black
+
+
+def _compositor_fill_color_for_brightness(brightness: float) -> tuple[float, float, float]:
+    # Smoothstep: commits near the extremes, transitions cleanly
+    # through the middle.  Light fill on dark, dark fill on light.
+    t = _clamp01(brightness)
+    t = t * t * (3.0 - 2.0 * t)  # smoothstep
+    return _lerp_color(_COMPOSITOR_FILL_DARK, _COMPOSITOR_FILL_LIGHT, t)
 
 
 def _user_text_color_for_brightness(brightness: float) -> tuple[float, float, float]:
@@ -705,7 +722,7 @@ class CommandOverlay(NSObject):
         screen_frame = self._screen.frame()
         sw = screen_frame.size.width
 
-        f = 0.0 if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
+        f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
         x = (sw - _OVERLAY_WIDTH) / 2 - f
         y = _OVERLAY_BOTTOM_MARGIN - f
         win_w = _OVERLAY_WIDTH + 2 * f
@@ -1066,7 +1083,7 @@ class CommandOverlay(NSObject):
         # Reset geometry
         screen_frame = self._screen.frame()
         sw = screen_frame.size.width
-        f = 0.0 if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
+        f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
         x = (sw - _OVERLAY_WIDTH) / 2 - f
         self._window.setFrame_display_animate_(
             NSMakeRect(x, _OVERLAY_BOTTOM_MARGIN - f,
@@ -1539,10 +1556,17 @@ class CommandOverlay(NSObject):
         else:
             alpha_a = pulse_alpha_a
 
+        # When text punch-through is active, force full text alpha
+        # so the destinationOut compositing cleanly erases the fill.
+        if getattr(self, "_text_punchthrough", False):
+            alpha_a = 1.0
+
         # User: raw sine → single smoothstep (same aggressiveness as before)
         raw_u = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase_user))
         pulse_u = raw_u * raw_u * (3.0 - 2.0 * raw_u)
         utt_alpha = 0.73 + 0.24 * pulse_u
+        if getattr(self, "_text_punchthrough", False):
+            utt_alpha = 1.0
 
         # Full spectrum hue rotation with velocity undulation
         # The speed varies sinusoidally so it dwells in some colors and
@@ -1653,12 +1677,15 @@ class CommandOverlay(NSObject):
             total_len = ts.length() if hasattr(ts, 'length') else 0
             if total_len > 0 and self._utterance_text:
                 utt_len = min(len(self._utterance_text), total_len)
-                # User text: fixed dark gray.
+                # User text: fixed dark gray (or white for punch-through).
                 try:
-                    user_base = _user_text_color_for_brightness(t)
-                    ur = user_base[0]
-                    ug = user_base[1]
-                    ub = user_base[2]
+                    if getattr(self, "_text_punchthrough", False):
+                        ur, ug, ub = 1.0, 1.0, 1.0
+                    else:
+                        user_base = _user_text_color_for_brightness(t)
+                        ur = user_base[0]
+                        ug = user_base[1]
+                        ub = user_base[2]
                     ts.addAttribute_value_range_(
                         _FG_pulse,
                         NSColor.colorWithSRGBRed_green_blue_alpha_(ur, ug, ub, utt_alpha),
@@ -1678,6 +1705,7 @@ class CommandOverlay(NSObject):
                 # sacrificing readability.
                 resp_start = utt_len + 2
                 resp_len = total_len - resp_start
+                _punchthrough = getattr(self, "_text_punchthrough", False)
                 if resp_start < total_len and resp_len > 0:
                     from AppKit import (
                         NSShadowAttributeName as _SH_pulse,
@@ -1686,48 +1714,59 @@ class CommandOverlay(NSObject):
                         NSFont,
                     )
                     light_font = NSFont.systemFontOfSize_weight_(
-                        _FONT_SIZE, -0.4  # light weight
+                        _FONT_SIZE, -0.2  # medium-light weight — thicker punch-through
                     )
                     try:
-                        for ci in range(resp_len):
-                            # 0.0 at edges, 1.0 at center
-                            frac = ci / max(resp_len - 1, 1)
-                            center_weight = 1.0 - abs(frac * 2.0 - 1.0)
-                            # Bright color (for shadow/glow layer)
-                            cr = _lerp(response_r, alt_r, center_weight)
-                            cg = _lerp(response_g, alt_g, center_weight)
-                            cb = _lerp(response_b, alt_b, center_weight)
-                            # Dark anchor: same hue, value crushed
-                            dr = cr * 0.22
-                            dg = cg * 0.22
-                            db = cb * 0.22
-                            # Foreground = dark anchor
+                        if _punchthrough:
+                            # Punch-through mode: uniform white at full alpha
+                            # for clean destinationOut erasure.
                             ts.addAttribute_value_range_(
                                 _FG_pulse,
                                 NSColor.colorWithSRGBRed_green_blue_alpha_(
-                                    dr, dg, db, 1.0
+                                    1.0, 1.0, 1.0, 1.0
                                 ),
-                                (resp_start + ci, 1),
+                                (resp_start, resp_len),
                             )
-                            # Light font weight for the anchor
-                            ts.addAttribute_value_range_(
-                                _FN_pulse, light_font,
-                                (resp_start + ci, 1),
-                            )
-                            # Shadow = bright glow, blur driven by luminance
-                            lum = 0.299 * cr + 0.587 * cg + 0.114 * cb
-                            blur_radius = 2.0 + lum * 5.0
-                            shadow = NSShadow.alloc().init()
-                            shadow.setShadowColor_(
-                                NSColor.colorWithSRGBRed_green_blue_alpha_(
-                                    cr, cg, cb, 0.7 + 0.3 * lum
+                        else:
+                            for ci in range(resp_len):
+                                # 0.0 at edges, 1.0 at center
+                                frac = ci / max(resp_len - 1, 1)
+                                center_weight = 1.0 - abs(frac * 2.0 - 1.0)
+                                # Bright color (for shadow/glow layer)
+                                cr = _lerp(response_r, alt_r, center_weight)
+                                cg = _lerp(response_g, alt_g, center_weight)
+                                cb = _lerp(response_b, alt_b, center_weight)
+                                # Dark anchor: same hue, value crushed
+                                dr = cr * 0.22
+                                dg = cg * 0.22
+                                db = cb * 0.22
+                                # Foreground = dark anchor
+                                ts.addAttribute_value_range_(
+                                    _FG_pulse,
+                                    NSColor.colorWithSRGBRed_green_blue_alpha_(
+                                        dr, dg, db, 1.0
+                                    ),
+                                    (resp_start + ci, 1),
                                 )
-                            )
-                            shadow.setShadowOffset_((0, 0))
-                            shadow.setShadowBlurRadius_(blur_radius)
-                            ts.addAttribute_value_range_(
-                                _SH_pulse, shadow, (resp_start + ci, 1),
-                            )
+                                # Light font weight for the anchor
+                                ts.addAttribute_value_range_(
+                                    _FN_pulse, light_font,
+                                    (resp_start + ci, 1),
+                                )
+                                # Shadow = bright glow, blur driven by luminance
+                                lum = 0.299 * cr + 0.587 * cg + 0.114 * cb
+                                blur_radius = 5.0 + lum * 14.0
+                                shadow = NSShadow.alloc().init()
+                                shadow.setShadowColor_(
+                                    NSColor.colorWithSRGBRed_green_blue_alpha_(
+                                        cr, cg, cb, 0.7 + 0.3 * lum
+                                    )
+                                )
+                                shadow.setShadowOffset_((0, 0))
+                                shadow.setShadowBlurRadius_(blur_radius)
+                                ts.addAttribute_value_range_(
+                                    _SH_pulse, shadow, (resp_start + ci, 1),
+                                )
                     except Exception:
                         pass
             elif total_len > 0:
@@ -1758,13 +1797,23 @@ class CommandOverlay(NSObject):
                     _COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_LIGHT,
                     t,
                 )
-                if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL or getattr(self, "_fullscreen_compositor", None) is not None:
+                if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL:
                     fill_min = 0.0
                     fill_max = 0.0
+                elif getattr(self, "_fullscreen_compositor", None) is not None:
+                    # Graphic mode: dark-on-dark, light-on-light.
+                    # High opacity so text punch-through carves
+                    # visible contrast.  Sinusoid killed for tuning.
+                    fill_drive = 0.5
+                    fill_min = _lerp(0.72, 0.94, t)
+                    fill_max = _lerp(0.82, 0.98, t)
             else:
                 fill_min = _lerp(0.30, 0.84, t)
                 fill_max = _lerp(0.92, 0.99, t)
-            self._fill_layer.setOpacity_(min(_lerp(fill_min, fill_max, fill_drive), 0.99))
+            new_opacity = min(_lerp(fill_min, fill_max, fill_drive), 0.99)
+            if abs(new_opacity - getattr(self, '_last_fill_opacity', -1.0)) > 0.005:
+                self._fill_layer.setOpacity_(new_opacity)
+                self._last_fill_opacity = new_opacity
         # Cancel spring: warm amber tint over the overlay shape.
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
             if spring > 0.01:
@@ -1939,7 +1988,7 @@ class CommandOverlay(NSObject):
             _overlay_rounded_rect_sdf, _ridge_alpha, _interior_fill_alpha,
             _fill_field_to_image, _BG_COLOR_DARK,
         )
-        f = 0.0 if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
+        f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
         scale = getattr(self, '_ridge_scale', 2.0)
         total_w = width + 2 * f
         total_h = height + 2 * f
@@ -1947,7 +1996,12 @@ class CommandOverlay(NSObject):
         try:
             from .overlay import _glow_fill_alpha
 
-            cache_key = (width, height, scale, _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED)
+            _has_compositor = getattr(self, "_fullscreen_compositor", None) is not None
+            # Include rounded brightness in cache key only when compositor
+            # is active — the interior floor adapts to brightness in that
+            # mode.  Rounded to 0.05 steps to avoid thrashing.
+            _b_key = round(getattr(self, '_brightness', 0.0) * 20) / 20 if _has_compositor else None
+            cache_key = (width, height, scale, _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED, _has_compositor, _b_key)
             cached = getattr(self, '_sdf_cache_key', None)
             if cached == cache_key:
                 fill_alpha = self._cached_fill_alpha
@@ -1957,25 +2011,62 @@ class CommandOverlay(NSObject):
                     pw, ph = max(int(total_w), 1), max(int(total_h), 1)
                     xs = np.arange(pw, dtype=np.float32)[None, :] + 0.5 - pw * 0.5
                     ys = np.arange(ph, dtype=np.float32)[:, None] + 0.5 - ph * 0.5
-                    capsule_radius = max(height * 0.5, 1.0)
-                    spine_half = max(width * 0.5 - capsule_radius, 0.0)
-                    spine_dist = np.maximum(np.abs(xs) - spine_half, 0.0)
-                    sdf = (np.hypot(spine_dist, ys) - capsule_radius).astype(np.float32)
+                    # Match the Metal shader's capsule geometry exactly:
+                    # cornerRadius = _OVERLAY_HEIGHT / 4, clamped to halfRect.y
+                    half_w = width * 0.5
+                    half_h = height * 0.5
+                    corner_r = _OVERLAY_HEIGHT / 4.0
+                    capsule_radius = max(min(corner_r, half_h), 1.0)
+                    spine_half_x = max(half_w - capsule_radius, 0.0)
+                    spine_half_y = max(half_h - capsule_radius, 0.0)
+                    spine_dist_x = np.maximum(np.abs(xs) - spine_half_x, 0.0)
+                    spine_dist_y = np.maximum(np.abs(ys) - spine_half_y, 0.0)
+                    sdf = (np.hypot(spine_dist_x, spine_dist_y) - capsule_radius).astype(np.float32)
                 else:
                     sdf = _overlay_rounded_rect_sdf(
                         total_w, total_h, width, height,
                         _OVERLAY_CORNER_RADIUS, scale,
                     )
                 if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
-                    fill_alpha = _interior_fill_alpha(sdf, edge_softness=1.5 * scale)
+                    import numpy as np
+                    # Glow fill: interior floor adapts to brightness.
+                    # On light backgrounds the fill needs higher alpha
+                    # (less transparent trough) so the dark fill reads
+                    # as a strong surface, not a milky wash.
+                    _b = getattr(self, '_brightness', 0.0)
+                    _ifloor = _lerp(0.55, 0.72, _clamp01(_b))
+                    interior = _glow_fill_alpha(sdf, width=2.0 * scale,
+                                                interior_floor=_ifloor)
+                    # Edge ridge: bright hairline at the boundary.
+                    # Narrow Gaussian (σ ≈ 3px at 2x), strong amplitude.
+                    inside_d = np.maximum(-sdf, 0.0)
+                    edge_ridge = np.exp(-((inside_d / (1.5 * scale)) ** 2.0))
+                    interior = np.clip(
+                        interior + edge_ridge * 0.50,
+                        0.0, 1.0,
+                    ).astype(np.float32)
+
+                    # Exterior glow: cut to ~1/4 of previous levels.
+                    # Faint atmospheric haze, not a visible halo.
+                    feather_px = _OPTICAL_SHELL_FEATHER * scale
+                    ext_d = np.maximum(sdf, 0.0)
+                    exterior = np.exp(-((ext_d / (feather_px / 2.0)) ** 2.5)).astype(np.float32)
+                    ext_t = np.clip(ext_d / feather_px, 0.0, 1.0)
+                    ext_opacity = 0.10 * np.exp(-((ext_t / 0.12) ** 1.5)) + 0.008
+                    fill_alpha = np.where(sdf <= 0.0, interior, exterior * ext_opacity)
                 else:
                     fill_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
                 self._sdf_cache_key = cache_key
                 self._cached_fill_alpha = fill_alpha
 
-            bg_r, bg_g, bg_b = _background_color_for_brightness(
-                getattr(self, '_brightness', 0.0)
-            )
+            if getattr(self, "_fullscreen_compositor", None) is not None:
+                bg_r, bg_g, bg_b = _compositor_fill_color_for_brightness(
+                    getattr(self, '_brightness', 0.0)
+                )
+            else:
+                bg_r, bg_g, bg_b = _background_color_for_brightness(
+                    getattr(self, '_brightness', 0.0)
+                )
             fill_image, self._fill_payload = _fill_field_to_image(
                 fill_alpha,
                 int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
@@ -1987,9 +2078,13 @@ class CommandOverlay(NSObject):
             self._fill_layer.setContents_(fill_image)
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
             if hasattr(self._fill_layer, "setCompositingFilter_"):
-                self._fill_layer.setCompositingFilter_(
-                    _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
-                )
+                if getattr(self, "_fullscreen_compositor", None) is not None:
+                    # Graphic mode: normal alpha blending (no additive glow)
+                    self._fill_layer.setCompositingFilter_(None)
+                else:
+                    self._fill_layer.setCompositingFilter_(
+                        _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
+                    )
         # Keep the spring tint layer's mask in sync with the fill shape
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
             self._spring_tint_layer.setFrame_(((0, 0), (total_w, total_h)))
@@ -2064,10 +2159,15 @@ class CommandOverlay(NSObject):
                 pw, ph = max(int(width), 1), max(int(height), 1)
                 xs = np.arange(pw, dtype=np.float32)[None, :] + 0.5 - pw * 0.5
                 ys = np.arange(ph, dtype=np.float32)[:, None] + 0.5 - ph * 0.5
-                capsule_radius = max(inner_height * 0.5, 1.0)
-                spine_half = max(inner_width * 0.5 - capsule_radius, 0.0)
-                spine_dist = np.maximum(np.abs(xs) - spine_half, 0.0)
-                sdf = (np.hypot(spine_dist, ys) - capsule_radius).astype(np.float32)
+                inner_half_w = inner_width * 0.5
+                inner_half_h = inner_height * 0.5
+                corner_r = _OVERLAY_HEIGHT / 4.0
+                capsule_radius = max(min(corner_r, inner_half_h), 1.0)
+                spine_half_x = max(inner_half_w - capsule_radius, 0.0)
+                spine_half_y = max(inner_half_h - capsule_radius, 0.0)
+                spine_dist_x = np.maximum(np.abs(xs) - spine_half_x, 0.0)
+                spine_dist_y = np.maximum(np.abs(ys) - spine_half_y, 0.0)
+                sdf = (np.hypot(spine_dist_x, spine_dist_y) - capsule_radius).astype(np.float32)
             else:
                 sdf = _overlay_rounded_rect_sdf(
                     width,
@@ -2196,15 +2296,58 @@ class CommandOverlay(NSObject):
                 # The stale content in this layer would show on top of live output.
                 if self._backdrop_layer is not None:
                     self._backdrop_layer.setHidden_(True)
+                # Stop the old per-overlay Metal display link renderer —
+                # it shares the same MetalWarpPipeline singleton and
+                # would race with the compositor's display link on
+                # shared mutable state (accum textures, params buffer).
+                old_dl = getattr(self, "_metal_display_link_renderer", None)
+                if old_dl is not None:
+                    try:
+                        old_dl.stop()
+                    except Exception:
+                        pass
+                    self._metal_display_link_renderer = None
+                self._enable_text_punchthrough(True)
+                # Force fill image rebuild with compositor-specific
+                # colors and alpha profile (invalidate SDF + brightness
+                # caches so _apply_surface_theme triggers a full rebuild).
+                self._sdf_cache_key = None
+                self._fill_image_brightness = -1.0
+                self._apply_surface_theme()
                 logger.info("Command overlay: full-screen compositor started")
             else:
                 logger.info("Command overlay: full-screen compositor failed to start")
         except Exception:
             logger.info("Command overlay: full-screen compositor unavailable", exc_info=True)
 
+    def _enable_text_punchthrough(self, enabled: bool) -> None:
+        """Toggle text punch-through mode.
+
+        When enabled, the content view's layer uses ``destinationOut``
+        compositing so that drawn text erases the fill layer below it
+        in the wrapper, creating negative-space letterforms that reveal
+        the warped backdrop from the compositor window underneath.
+        """
+        content = getattr(self, "_content_view", None)
+        if content is None:
+            return
+        layer = content.layer() if hasattr(content, "layer") else None
+        if layer is None or not hasattr(layer, "setCompositingFilter_"):
+            return
+        if enabled:
+            # Use xor blend: erases destination where source has alpha,
+            # preserves destination where source is transparent.
+            # Text glyphs (alpha 1.0) punch holes in the fill layer.
+            layer.setCompositingFilter_("xor")
+            self._text_punchthrough = True
+        else:
+            layer.setCompositingFilter_(None)
+            self._text_punchthrough = False
+
     def _stop_fullscreen_compositor(self):
         compositor = getattr(self, "_fullscreen_compositor", None)
         self._fullscreen_compositor = None
+        self._enable_text_punchthrough(False)
         # Unhide the old backdrop layer in case the old path resumes
         backdrop = getattr(self, "_backdrop_layer", None)
         if backdrop is not None:
@@ -2313,7 +2456,7 @@ class CommandOverlay(NSObject):
             max_height = _max_overlay_height(self._screen.frame().size.height)
             new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), max_height)
 
-            f = 0.0 if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
+            f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
             win_frame = self._window.frame()
             new_win_h = new_height + 2 * f
             if abs(win_frame.size.height - new_win_h) > 4:
@@ -2365,11 +2508,17 @@ class CommandOverlay(NSObject):
         if hasattr(self, "_fill_layer") and self._fill_layer is not None and hasattr(
             self._fill_layer, "setCompositingFilter_"
         ):
-            self._fill_layer.setCompositingFilter_(
-                _fill_compositing_filter_for_brightness(self._brightness)
+            if getattr(self, "_fullscreen_compositor", None) is not None:
+                self._fill_layer.setCompositingFilter_(None)
+            else:
+                self._fill_layer.setCompositingFilter_(
+                    _fill_compositing_filter_for_brightness(self._brightness)
             )
         last_t = getattr(self, "_fill_image_brightness", -1.0)
-        if abs(self._brightness - last_t) > 0.03:
+        # Tighter threshold when compositor is active — the graphic
+        # fill color tracks brightness more visibly than the glow.
+        threshold = 0.01 if getattr(self, "_fullscreen_compositor", None) is not None else 0.03
+        if abs(self._brightness - last_t) > threshold:
             self._fill_image_brightness = self._brightness
             content_frame = self._content_view.frame()
             self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)

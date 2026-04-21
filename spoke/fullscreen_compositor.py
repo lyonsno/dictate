@@ -57,6 +57,7 @@ class FullScreenCompositor:
         self._last_report_time = 0.0
         self._interval_frame_count = 0
         self._interval_presented = 0
+        self._last_drawable_size = (0, 0)
 
     def start(self, shell_config: dict) -> bool:
         """Create the full-screen window and start capture + render loop."""
@@ -380,7 +381,7 @@ class FullScreenCompositor:
             h = self._latest_height
             config = self._shell_config
 
-        if iosurface is None or w <= 0 or h <= 0:
+        if iosurface is None or w <= 0 or h <= 0 or config is None:
             return
 
         self._frame_count += 1
@@ -404,13 +405,19 @@ class FullScreenCompositor:
             return
 
         try:
-            self._metal_layer.setDrawableSize_((w, h))
+            # Validate config before acquiring a drawable — an empty or
+            # missing config would default to a full-screen warp that
+            # flashes the entire display.
+            warp_config = dict(config)
+            if "content_width_points" not in warp_config or "center_x" not in warp_config:
+                return
+
+            if self._last_drawable_size != (w, h):
+                self._metal_layer.setDrawableSize_((w, h))
+                self._last_drawable_size = (w, h)
             drawable = self._metal_layer.nextDrawable()
             if drawable is None:
                 return
-
-            # Build config for full-screen: capsule at overlay position
-            warp_config = dict(config) if config else {}
 
             if self._pipeline.warp_to_drawable(
                 iosurface, drawable, width=w, height=h, shell_config=warp_config,
