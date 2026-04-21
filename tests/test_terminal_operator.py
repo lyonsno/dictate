@@ -1,3 +1,4 @@
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -19,13 +20,17 @@ class TestTerminalOperator:
         assert "argv" in schema["function"]["parameters"]["required"]
         assert "Pass each token as a separate argv entry" in schema["function"]["description"]
 
-    def test_execute_runs_allowlisted_command(self, tmp_path):
-        from spoke.terminal_operator import TerminalOperator
+    def test_execute_runs_allowlisted_command_with_bounded_exec_env(self, tmp_path):
+        from spoke import terminal_operator as terminal_operator
 
-        def fake_run(cmd, capture_output, cwd, text, timeout):
-            assert cmd == ["git", "status", "--short"]
+        def fake_run(cmd, capture_output, cwd, text, timeout, env):
+            assert cmd == ["/usr/bin/git", "status", "--short"]
             assert cwd == str(tmp_path)
             assert timeout == 12
+            assert env["PATH"] == terminal_operator._EXECUTABLE_SEARCH_PATH
+            assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+            assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+            assert env["GIT_PAGER"] == "cat"
             return subprocess.CompletedProcess(
                 args=cmd,
                 returncode=0,
@@ -33,8 +38,16 @@ class TestTerminalOperator:
                 stderr="",
             )
 
-        with patch("subprocess.run", side_effect=fake_run):
-            result = TerminalOperator().execute_command(
+        with (
+            patch.dict(
+                os.environ,
+                {"PATH": "/tmp/shadow-bin", "GIT_CONFIG_GLOBAL": "/tmp/evil-gitconfig"},
+                clear=False,
+            ),
+            patch("shutil.which", return_value="/usr/bin/git"),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            result = terminal_operator.TerminalOperator().execute_command(
                 ["git", "status", "--short"],
                 cwd=str(tmp_path),
                 timeout_seconds=12,
@@ -331,6 +344,20 @@ class TestTerminalOperator:
         with patch("subprocess.run") as mock_run:
             result = TerminalOperator().execute_command(
                 ["rg", "--file=/etc/passwd", "."],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
+    def test_execute_requires_approval_for_rg_ignore_file(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["rg", "--ignore-file", "/etc/passwd", "needle", "."],
                 cwd=str(tmp_path),
             )
 

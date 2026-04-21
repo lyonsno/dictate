@@ -8,6 +8,8 @@ without invoking a shell.
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -17,6 +19,7 @@ _DEFAULT_CWD = Path.home() / "dev"
 _MAX_TIMEOUT_SECONDS = 30
 _DEFAULT_TIMEOUT_SECONDS = 10
 _DEFAULT_MAX_OUTPUT_CHARS = 4000
+_EXECUTABLE_SEARCH_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
 _SHELL_CONTROL_TOKENS = frozenset({"|", "||", "&&", ";", "<", ">", ">>", "&", "2>", "2>>"})
 _ALLOWED_CWD_ROOTS = (
     _DEFAULT_CWD,
@@ -81,6 +84,24 @@ _APPROVAL_PREFIXES = (
     ("osascript",),
 )
 _PATH_SCOPED_ALLOW_COMMANDS = frozenset({"cat", "head", "tail", "ls", "rg"})
+_BASE_EXECUTION_ENV = {
+    "PATH": _EXECUTABLE_SEARCH_PATH,
+    "LANG": "C",
+    "LC_ALL": "C",
+    "TERM": "dumb",
+}
+_EXECUTION_ENV_OVERRIDES = {
+    "git": {
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_PAGER": "cat",
+        "PAGER": "cat",
+    },
+    "rg": {
+        "RIPGREP_CONFIG_PATH": os.devnull,
+    },
+}
 
 
 class TerminalOperatorError(RuntimeError):
@@ -165,12 +186,18 @@ class TerminalOperator:
         if decision != "allow":
             return result
 
+        normalized_argv = self._normalized_argv(argv)
+        executable_name = normalized_argv[0]
+        resolved_executable = self._resolve_executable(executable_name)
+        execution_argv = list(argv)
+        execution_argv[0] = resolved_executable
         result["executed"] = True
         try:
             proc = subprocess.run(
-                argv,
+                execution_argv,
                 capture_output=True,
                 cwd=normalized_cwd,
+                env=self._execution_env(executable_name),
                 text=True,
                 timeout=normalized_timeout,
             )
@@ -233,6 +260,19 @@ class TerminalOperator:
                 f"timeout_seconds must be between 1 and {_MAX_TIMEOUT_SECONDS}"
             )
         return timeout
+
+    def _resolve_executable(self, executable_name: str) -> str:
+        resolved = shutil.which(executable_name, path=_EXECUTABLE_SEARCH_PATH)
+        if not resolved:
+            raise TerminalOperatorError(
+                f"allowed executable not found on bounded PATH: {executable_name}"
+            )
+        return resolved
+
+    def _execution_env(self, executable_name: str) -> dict[str, str]:
+        env = dict(_BASE_EXECUTION_ENV)
+        env.update(_EXECUTION_ENV_OVERRIDES.get(executable_name, {}))
+        return env
 
     def _classify(self, argv: Any, *, cwd: str) -> tuple[str, str | None]:
         if not isinstance(argv, list) or not argv:
@@ -321,6 +361,11 @@ class TerminalOperator:
                 return f"command requires approval: rg {token} {target}"
             if token.startswith(("-f=", "--file=")):
                 return f"command requires approval: rg {token}"
+            if token == "--ignore-file":
+                target = argv[index + 1] if index + 1 < len(argv) else "<missing>"
+                return f"command requires approval: rg --ignore-file {target}"
+            if token.startswith("--ignore-file="):
+                return f"command requires approval: rg {token}"
             if token == "--pre":
                 target = argv[index + 1] if index + 1 < len(argv) else "<missing>"
                 return f"command requires approval: rg --pre {target}"
@@ -376,13 +421,13 @@ class TerminalOperator:
                     pattern_supplied_by_flag = True
                     skip_next = True
                     continue
-                if token in {"-g", "--glob", "--pre", "--pre-glob"}:
+                if token in {"-g", "--glob", "--pre", "--pre-glob", "--ignore-file"}:
                     skip_next = True
                     continue
                 if token.startswith(("-e=", "--regexp=", "-f=", "--file=")):
                     pattern_supplied_by_flag = True
                     continue
-                if token.startswith(("-g=", "--glob=", "--pre=", "--pre-glob=")):
+                if token.startswith(("-g=", "--glob=", "--pre=", "--pre-glob=", "--ignore-file=")):
                     continue
                 if token in {"--files", "--type-list"}:
                     expects_positional_pattern = False
