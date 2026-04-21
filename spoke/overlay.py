@@ -926,7 +926,7 @@ class TranscriptionOverlay(NSObject):
             return
         self._cancel_tray_capture_flash()
         self._visible = False
-        self._stop_fullscreen_compositor()
+        self._stop_fullscreen_compositor(restore_geometry=False)
         self._cancel_backdrop_refresh()
         self._cancel_typewriter()
         self._start_fade_out(duration=fade_duration)
@@ -941,7 +941,7 @@ class TranscriptionOverlay(NSObject):
         if self._window is None:
             return
         self._visible = False
-        self._stop_fullscreen_compositor()
+        self._stop_fullscreen_compositor(restore_geometry=False)
         self._cancel_tray_capture_flash()
         self._cancel_backdrop_refresh()
         self._cancel_fade()
@@ -1631,7 +1631,7 @@ class TranscriptionOverlay(NSObject):
         except Exception:
             logger.info("Preview overlay: full-screen compositor unavailable", exc_info=True)
 
-    def _stop_fullscreen_compositor(self):
+    def _stop_fullscreen_compositor(self, *, restore_geometry: bool = True):
         """Stop the full-screen compositor and restore normal backdrop path."""
         compositor = getattr(self, "_fullscreen_compositor", None)
         self._fullscreen_compositor = None
@@ -1649,7 +1649,7 @@ class TranscriptionOverlay(NSObject):
             except Exception:
                 logger.debug("Failed to stop preview full-screen compositor", exc_info=True)
         content = getattr(self, "_content_view", None)
-        if content is not None and hasattr(content, "frame"):
+        if restore_geometry and content is not None and hasattr(content, "frame"):
             try:
                 self._apply_overlay_window_geometry(float(content.frame().size.height), _OUTER_FEATHER)
             except Exception:

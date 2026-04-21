@@ -683,3 +683,39 @@ def test_update_layout_uses_optical_shell_feather_when_fullscreen_compositor_act
         overlay_module._OVERLAY_WIDTH + 2 * f
     )
     assert overlay._window.frame().size.height == pytest.approx(expected_height + 2 * f)
+
+
+def test_hide_preserves_compositor_geometry_until_fade_finishes(mock_pyobjc, monkeypatch):
+    overlay_module = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    visible_height = overlay_module._OVERLAY_HEIGHT
+    shell_f = overlay_module._OPTICAL_SHELL_FEATHER
+    overlay._window = _FakeWindow()
+    overlay._window._frame = _make_rect(
+        0.0,
+        overlay_module._window_origin_y(visible_height, shell_f),
+        overlay_module._OVERLAY_WIDTH + 2 * shell_f,
+        visible_height + 2 * shell_f,
+    )
+    overlay._content_view = _FakeView(
+        _make_rect(shell_f, shell_f, overlay_module._OVERLAY_WIDTH, visible_height)
+    )
+    overlay._fullscreen_compositor = MagicMock()
+    overlay._backdrop_layer = MagicMock()
+    overlay._cancel_tray_capture_flash = MagicMock()
+    overlay._cancel_backdrop_refresh = MagicMock()
+    overlay._cancel_typewriter = MagicMock()
+    overlay._start_fade_out = MagicMock()
+    overlay._enable_text_punchthrough = MagicMock()
+
+    original_frame = overlay._window.frame()
+
+    overlay.hide()
+
+    current_frame = overlay._window.frame()
+    assert current_frame.origin.x == pytest.approx(original_frame.origin.x)
+    assert current_frame.origin.y == pytest.approx(original_frame.origin.y)
+    assert current_frame.size.width == pytest.approx(original_frame.size.width)
+    assert current_frame.size.height == pytest.approx(original_frame.size.height)
