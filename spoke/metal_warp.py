@@ -390,6 +390,14 @@ class MetalWarpPipeline:
             logger.warning("Failed to create accumulation textures %dx%d", width, height)
             self._accum_textures = [None, None]
 
+    def reset_temporal_state(self):
+        """Force next frame to fully replace the accumulator.
+
+        Call this when the compositor restarts so the first frame doesn't
+        blend with stale content from a previous session.
+        """
+        self._accum_generation += 1
+
     def warp_to_drawable(self, input_surface, drawable, *, width, height, shell_config):
         """Run the warp and blit the result to a CAMetalLayer drawable.
 

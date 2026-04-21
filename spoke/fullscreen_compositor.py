@@ -65,6 +65,10 @@ class FullScreenCompositor:
             return True
         try:
             self._shell_config = dict(shell_config) if shell_config else None
+            # Reset temporal accumulation so the first frame doesn't
+            # blend with stale content from a previous compositor session.
+            if self._pipeline is not None:
+                self._pipeline.reset_temporal_state()
             self._create_fullscreen_window()
             self._start_capture()
             self._start_display_link()

@@ -2360,6 +2360,11 @@ class CommandOverlay(NSObject):
                 compositor.stop()
             except Exception:
                 logger.debug("Failed to stop full-screen compositor", exc_info=True)
+        # Invalidate fill caches so the non-compositor path rebuilds
+        # with its own colors/alpha profile on next render tick.
+        self._sdf_cache_key = None
+        self._fill_image_brightness = -1.0
+        self._apply_surface_theme()
 
     def _start_backdrop_refresh_timer(self):
         self._cancel_backdrop_refresh()
