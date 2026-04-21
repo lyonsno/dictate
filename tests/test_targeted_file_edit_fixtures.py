@@ -14,6 +14,7 @@ FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "targeted_file_edit"
 FIXTURE_SUITES = {
     "uniqueness": FIXTURE_ROOT / "uniqueness",
     "normalization": FIXTURE_ROOT / "normalization",
+    "return_shape": FIXTURE_ROOT / "return_shape",
 }
 REQUIRED_PARAMETERS = {"file", "old_string", "new_string"}
 
@@ -82,6 +83,30 @@ def _load_fixture(fixture_dir: Path) -> tuple[dict, dict, bytes, bytes]:
     return request, expected, source_bytes, expected_bytes
 
 
+def _resolve_expected_value(value, *, target_path: Path):
+    if value == "__TARGET_FILE__":
+        return str(target_path)
+    if isinstance(value, dict):
+        return {
+            key: _resolve_expected_value(item, target_path=target_path)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_resolve_expected_value(item, target_path=target_path) for item in value]
+    return value
+
+
+def _assert_result_subset(actual, expected, *, target_path: Path):
+    expected = _resolve_expected_value(expected, target_path=target_path)
+    if isinstance(expected, dict):
+        assert isinstance(actual, dict), f"Expected dict result fragment, got {type(actual)!r}"
+        for key, value in expected.items():
+            assert key in actual, f"Missing expected result key {key!r}."
+            _assert_result_subset(actual[key], value, target_path=target_path)
+        return
+    assert actual == expected
+
+
 class TestTargetedFileEditFixtures:
     @pytest.mark.parametrize(("suite_name", "fixture_root"), FIXTURE_SUITES.items())
     def test_fixture_corpus_exists(self, suite_name, fixture_root):
@@ -99,7 +124,7 @@ class TestTargetedFileEditFixtures:
         mod = _import_tools()
         tool_name = _discover_targeted_edit_tool_name(mod.get_tool_schemas())
         request, expected, source_bytes, expected_bytes = _load_fixture(fixture_dir)
-        assert expected["outcome"] == "success"
+        assert expected["outcome"] in {"success", "failure"}
 
         target_path = tmp_path / request["file"]
         target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -116,11 +141,21 @@ class TestTargetedFileEditFixtures:
             )
         )
 
-        if "failure_reason" in result:
-            assert result["failure_reason"] is None
-        if "error" in result and result["error"] is not None:
+        if "result" in expected:
+            _assert_result_subset(result, expected["result"], target_path=target_path)
+
+        if expected["outcome"] == "success":
+            if "failure_reason" in result:
+                assert result["failure_reason"] is None
+            if "error" in result and result["error"] is not None:
+                pytest.fail(
+                    f"Targeted edit fixture {fixture_dir.name} returned error: {result['error']}"
+                )
+        elif expected["outcome"] == "failure":
+            assert result.get("status") == "error"
+        else:
             pytest.fail(
-                f"Targeted edit fixture {fixture_dir.name} returned error: {result['error']}"
+                f"Unknown fixture outcome {expected['outcome']!r} in {fixture_dir.name}."
             )
         assert target_path.read_bytes() == expected_bytes, (
             f"{suite_name} fixture {fixture_dir.name} wrote unexpected bytes."
