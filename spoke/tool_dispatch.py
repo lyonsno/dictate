@@ -979,6 +979,7 @@ def execute_tool(
     tray_writer: Callable[[str], Any] | None = None,
     tool_output_mode: str = "text",
     subagent_manager: Any | None = None,
+    history_compactor: Callable[[dict], str] | None = None,
 ) -> Any:
     """Execute a tool by name and return the result as a JSON string.
 
@@ -1077,6 +1078,10 @@ def execute_tool(
                 subagent_manager=subagent_manager,
             )
         )
+    elif name == "compact_history":
+        if history_compactor is None:
+            return json.dumps({"error": "History compactor unavailable"})
+        return history_compactor(arguments)
 
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})

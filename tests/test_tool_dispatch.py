@@ -971,6 +971,24 @@ class TestExecuteToolIntegration:
         assert fetched["state"] == "completed"
         assert cancelled["state"] == "cancelling"
 
+    def test_execute_compact_history_routes_to_callback(self):
+        mod = _import_tools()
+        history_compactor = MagicMock(
+            return_value=json.dumps({"status": "ok", "mode": "guided"})
+        )
+
+        result = json.loads(
+            mod.execute_tool(
+                "compact_history",
+                {"mode": "guided", "n": 0},
+                history_compactor=history_compactor,
+            )
+        )
+
+        history_compactor.assert_called_once_with({"mode": "guided", "n": 0})
+        assert result["status"] == "ok"
+        assert result["mode"] == "guided"
+
 
     def test_execute_read_file_edge_cases(self, tmp_path):
         mod = _import_tools()

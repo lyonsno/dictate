@@ -3181,6 +3181,7 @@ class SpokeAppDelegate(NSObject):
                 tts_client=tts_client,
                 tray_writer=self._add_assistant_content_to_tray,
                 subagent_manager=getattr(self, "_subagent_manager", None),
+                history_compactor=_compact_history,
                 **kwargs,
             )
         return _executor
