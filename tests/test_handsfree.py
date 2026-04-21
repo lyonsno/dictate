@@ -36,6 +36,33 @@ class TestHandsFreeControllerWakeWords:
         assert created["model_paths"] == ["/tmp/listen.tflite", "/tmp/sleep.tflite"]
         assert controller.state == HandsFreeState.LISTENING
 
+    def test_enable_passes_optional_tessera_model_to_wakeword_listener(self, monkeypatch):
+        created = {}
+
+        class FakeWakeWordListener:
+            def __init__(self, **kwargs):
+                created.update(kwargs)
+
+            def start(self):
+                return None
+
+        monkeypatch.setenv("SPOKE_WAKEWORD_BACKEND", "openwakeword")
+        monkeypatch.setenv("SPOKE_WAKEWORD_LISTEN_MODEL", "/tmp/listen.tflite")
+        monkeypatch.setenv("SPOKE_WAKEWORD_SLEEP_MODEL", "/tmp/sleep.tflite")
+        monkeypatch.setenv("SPOKE_WAKEWORD_TESSERA_MODEL", "/tmp/tessera.onnx")
+        monkeypatch.setenv("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY", "")
+        monkeypatch.setattr("spoke.wakeword.WakeWordListener", FakeWakeWordListener)
+
+        controller = HandsFreeController(delegate=MagicMock())
+
+        controller.enable()
+
+        assert created["model_paths"] == [
+            "/tmp/listen.tflite",
+            "/tmp/sleep.tflite",
+            "/tmp/tessera.onnx",
+        ]
+
     def test_sleep_wake_word_keeps_listener_active_while_listening(self):
         controller = HandsFreeController(delegate=MagicMock())
         controller._state = HandsFreeState.LISTENING
@@ -179,3 +206,30 @@ class TestHandsFreeControllerWakeWords:
             {"text": "the terminator word is weird", "dest": "cursor"},
             False,
         )
+
+    def test_tessera_wake_word_dispatches_command_and_suppresses_matching_segment(
+        self, monkeypatch
+    ):
+        class ImmediateThread:
+            def __init__(self, target=None, args=(), kwargs=None, **_ignored):
+                self._target = target
+                self._args = args
+                self._kwargs = kwargs or {}
+
+            def start(self):
+                if self._target is not None:
+                    self._target(*self._args, **self._kwargs)
+
+        delegate = MagicMock()
+        delegate._client = MagicMock(transcribe=MagicMock(return_value="tessera"))
+        controller = HandsFreeController(delegate=delegate)
+        controller._state = HandsFreeState.DICTATING
+        monkeypatch.setattr("spoke.handsfree.threading.Thread", ImmediateThread)
+
+        controller.handle_wake_word("tessera")
+        controller._on_segment(b"fake-audio")
+
+        delegate.handsFreeInject_.assert_called_once_with(
+            {"text": "tessera", "dest": "cursor"}
+        )
+        delegate.performSelectorOnMainThread_withObject_waitUntilDone_.assert_not_called()

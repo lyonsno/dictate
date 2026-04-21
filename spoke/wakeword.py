@@ -30,7 +30,8 @@ class WakeWordListener:
         Paths to custom .ppn files. Takes precedence over *keywords*.
     model_paths : list[str] | None
         Paths to custom openWakeWord model files. Used when ``backend`` is
-        ``openwakeword``.
+        ``openwakeword`` and may also be provided alongside Porcupine keywords
+        to add auxiliary command-model detection on the same audio stream.
     on_wake : callable
         Called with the detected keyword name. Invoked from the audio
         processing thread — callers should marshal to the main thread.
@@ -57,8 +58,10 @@ class WakeWordListener:
         self._running = False
         self._porcupine_lock = threading.Lock()
         self._keyword_labels = list(self._keywords)
+        self._oww_keyword_labels: list[str] = []
         self._trigger_threshold = 0.5
         self._armed_labels: dict[str, bool] = {}
+        self._oww_armed_labels: dict[str, bool] = {}
 
     def start(self) -> None:
         """Start the wake word listener."""
@@ -69,16 +72,14 @@ class WakeWordListener:
         import sounddevice as sd
 
         if self._backend == "openwakeword":
-            from openwakeword.model import Model
-
             if not self._model_paths:
                 raise RuntimeError(
                     "openWakeWord backend requested but no model_paths were provided"
                 )
 
-            self._engine = Model(wakeword_models=self._model_paths)
-            self._keyword_labels = [self._label_for_model_path(path) for path in self._model_paths]
-            self._armed_labels = {label: True for label in self._keyword_labels}
+            self._start_openwakeword_engine(self._model_paths)
+            self._keyword_labels = list(self._oww_keyword_labels)
+            self._armed_labels = dict(self._oww_armed_labels)
             frame_length = 1280
             sample_rate = 16000
             logger.info(
@@ -112,6 +113,9 @@ class WakeWordListener:
                 frame_length,
                 sample_rate,
             )
+            if self._model_paths:
+                self._start_openwakeword_engine(self._model_paths)
+                logger.info("Auxiliary openWakeWord models enabled: %s", self._model_paths)
 
         self._stream = sd.InputStream(
             samplerate=sample_rate,
@@ -141,31 +145,45 @@ class WakeWordListener:
 
     def _process_frame(self, pcm: np.ndarray) -> str | None:
         if self._backend == "openwakeword":
-            model = self._engine
-            if model is None:
-                return None
-            predictions = model.predict(pcm)
-            detected: str | None = None
-            for label in self._keyword_labels:
-                score = float(predictions.get(label, 0.0))
-                armed = self._armed_labels.get(label, True)
-                if score >= self._trigger_threshold and armed and detected is None:
-                    detected = label
-                    self._armed_labels[label] = False
-                elif score < self._trigger_threshold:
-                    self._armed_labels[label] = True
-            return detected
+            return self._process_openwakeword_frame(pcm)
 
+        detected = None
         with self._porcupine_lock:
             if not self._running:
                 return None
             porcupine = self._porcupine
-            if porcupine is None:
-                return None
-            result = porcupine.process(pcm)
-        if result >= 0:
-            return self._keyword_labels[result]
-        return None
+            if porcupine is not None:
+                result = porcupine.process(pcm)
+                if result >= 0:
+                    detected = self._keyword_labels[result]
+        if detected is not None:
+            return detected
+        return self._process_openwakeword_frame(pcm)
+
+    def _start_openwakeword_engine(self, model_paths: list[str]) -> None:
+        from openwakeword.model import Model
+
+        self._engine = Model(wakeword_models=model_paths)
+        self._oww_keyword_labels = [self._label_for_model_path(path) for path in model_paths]
+        self._oww_armed_labels = {label: True for label in self._oww_keyword_labels}
+
+    def _process_openwakeword_frame(self, pcm: np.ndarray) -> str | None:
+        model = self._engine
+        if model is None:
+            return None
+        predictions = model.predict(pcm)
+        detected: str | None = None
+        labels = self._oww_keyword_labels or self._keyword_labels
+        armed_labels = self._oww_armed_labels if self._oww_keyword_labels else self._armed_labels
+        for label in labels:
+            score = float(predictions.get(label, 0.0))
+            armed = armed_labels.get(label, True)
+            if score >= self._trigger_threshold and armed and detected is None:
+                detected = label
+                armed_labels[label] = False
+            elif score < self._trigger_threshold:
+                armed_labels[label] = True
+        return detected
 
     def _label_for_model_path(self, path: str) -> str:
         stem = path.rsplit("/", 1)[-1]

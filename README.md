@@ -235,6 +235,7 @@ set of env vars is still useful. For normal use, prefer the menus.
 | `SPOKE_WAKEWORD_SLEEP` | `terminator` | Wake word that returns hands-free mode to dormant. |
 | `SPOKE_WAKEWORD_LISTEN_MODEL` | unset | Path to the `openWakeWord` model for the listen role. |
 | `SPOKE_WAKEWORD_SLEEP_MODEL` | unset | Path to the `openWakeWord` model for the sleep role. |
+| `SPOKE_WAKEWORD_TESSERA_MODEL` | unset | Optional local `openWakeWord` model for the `tessera` Return command. When it fires, the command path wins and the matching Whisper segment is suppressed. |
 
 If you need deeper backend or smoke-surface plumbing than that, you are in
 developer territory. Use
