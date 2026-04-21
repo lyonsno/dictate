@@ -1553,9 +1553,15 @@ class CommandOverlay(NSObject):
                 compositor.refresh_brightness()
             self._brightness_sample_tick = _b_tick + 1
             self._brightness_target = compositor.sampled_brightness
-        desired_punchthrough = compositor is not None and shared_overlay_count == 1
+        desired_punchthrough = compositor is not None
         if desired_punchthrough != getattr(self, "_text_punchthrough", False):
             self._enable_text_punchthrough(desired_punchthrough)
+        content = getattr(self, "_content_view", None)
+        if content is not None and hasattr(content, "setHidden_") and desired_punchthrough:
+            # Solo assistant shell uses pure punch-through; during overlap keep
+            # the real content visible as well so the assistant surface stays
+            # materially present while the text holes still reveal the warp.
+            content.setHidden_(shared_overlay_count == 1)
         target = getattr(self, "_brightness_target", 0.0)
         current = getattr(self, "_brightness", 0.0)
         if abs(target - current) > 0.001:
