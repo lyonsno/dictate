@@ -1863,6 +1863,21 @@ class TranscriptionOverlay(NSObject):
                 )
                 self._scroll_view.setFrame_(NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16))
                 self._reset_overlay_chrome_geometry(new_height)
+                # Update compositor capsule to match new overlay size
+                compositor = getattr(self, "_fullscreen_compositor", None)
+                if compositor is not None:
+                    scale = self._screen.backingScaleFactor() if hasattr(self._screen, "backingScaleFactor") else 2.0
+                    screen_h = self._screen.frame().size.height
+                    content_frame = self._content_view.frame()
+                    new_win_frame = self._window.frame()
+                    cx = new_win_frame.origin.x + content_frame.origin.x + content_frame.size.width / 2
+                    cy_cocoa = new_win_frame.origin.y + content_frame.origin.y + content_frame.size.height / 2
+                    cy_metal = screen_h - cy_cocoa
+                    capsule_r = _OVERLAY_HEIGHT / 4.0
+                    compositor.update_shell_config_key("content_width_points", (_OVERLAY_WIDTH + capsule_r) * scale)
+                    compositor.update_shell_config_key("content_height_points", (new_height + capsule_r) * scale)
+                    compositor.update_shell_config_key("center_x", cx * scale)
+                    compositor.update_shell_config_key("center_y", cy_metal * scale)
 
             self._reset_text_geometry(max(new_height - 16, text_height))
             end = self._text_view.string().length() if hasattr(self._text_view.string(), 'length') else len(self._typewriter_displayed)

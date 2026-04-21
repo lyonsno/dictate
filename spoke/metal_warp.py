@@ -186,16 +186,6 @@ kernel void opticalShellWarp(
     // Low/zero mip LOD (near boundary) = almost no temporal.
     // Exterior = no temporal at all (pass through).
     if (capsuleSdf <= 0.0f) {{
-        // Brightness floor: guarantee minimum luminance inside the
-        // capsule so text punch-through holes stay legible against
-        // a dark fill.  Lerp toward white until V >= minBrightness.
-        if (params.minBrightness > 0.001f) {{
-            float lum = 0.299f * warpedColor.r + 0.587f * warpedColor.g + 0.114f * warpedColor.b;
-            if (lum < params.minBrightness) {{
-                float lift = (params.minBrightness - lum) / (1.0f - lum + 1e-6f);
-                warpedColor = mix(warpedColor, float4(1.0f, 1.0f, 1.0f, 1.0f), lift);
-            }}
-        }}
         // Interior: temporal weight scales with mip LOD (blur depth).
         // mipLod 0 (rim, no blur) → weight 1.0 (no temporal).
         // mipLod 6 (deep interior, max blur) → weight = params.temporalBlend.
