@@ -1397,6 +1397,16 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
             edited_range=None,
             error="new_string is required",
         )
+    if old_string == new_string:
+        return _edit_result(
+            status="error",
+            file_path=raw_path,
+            match_count=0,
+            failure_reason="malformed_request",
+            normalization_applied=[],
+            edited_range=None,
+            error="old_string and new_string must differ",
+        )
     if _contains_lazy_edit_placeholder(new_string):
         return _edit_result(
             status="error",
@@ -1419,6 +1429,17 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
             normalization_applied=[],
             edited_range=None,
             error=access_error,
+        )
+
+    if os.path.exists(file_path) and not os.path.isfile(file_path):
+        return _edit_result(
+            status="error",
+            file_path=file_path,
+            match_count=0,
+            failure_reason="malformed_request",
+            normalization_applied=[],
+            edited_range=None,
+            error="file is not a regular file",
         )
 
     if not os.path.isfile(file_path):
