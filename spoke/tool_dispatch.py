@@ -388,6 +388,12 @@ def _capture_context_multimodal_result(capture: Any) -> dict[str, Any]:
                 model_image_path,
                 exc_info=True,
             )
+    logger.info(
+        "capture_context: multimodal payload scene_ref=%s image_attached=%s image_path=%r",
+        summary.get("scene_ref"),
+        len(parts) > 1,
+        model_image_path,
+    )
     return {
         "content": parts,
         "log_text": json.dumps(summary),
@@ -794,6 +800,14 @@ def execute_tool(
         if capture is None:
             return json.dumps({"error": "Capture failed"})
         include_image = tool_output_mode == "multimodal"
+        logger.info(
+            "capture_context: tool_output_mode=%s scene_ref=%s include_image=%s app=%r title=%r",
+            tool_output_mode,
+            getattr(capture, "scene_ref", None),
+            include_image,
+            getattr(capture, "app_name", None),
+            getattr(capture, "window_title", None),
+        )
         if include_image:
             return _capture_context_multimodal_result(capture)
         return json.dumps(
