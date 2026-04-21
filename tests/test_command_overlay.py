@@ -400,7 +400,7 @@ class TestShowFinishHide:
         assert mod._OVERLAY_CORNER_RADIUS == pytest.approx(32.0)
         assert config["content_width_points"] == pytest.approx(1200.0)
         assert config["content_height_points"] == pytest.approx(160.0)
-        assert config["corner_radius_points"] == pytest.approx(80.0)  # _OVERLAY_HEIGHT / 2
+        assert config["corner_radius_points"] == pytest.approx(40.0)  # _OVERLAY_HEIGHT / 4
 
     def test_apply_backdrop_pulse_style_uses_current_content_height_for_optical_shell(
         self, mock_pyobjc, monkeypatch

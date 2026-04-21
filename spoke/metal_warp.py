@@ -178,13 +178,13 @@ kernel void opticalShellWarp(
         float probeSY = pow(max(probeScale, 0.0f), {_WARP_Y_SQUEEZE}f);
 
         float exteriorT = capsuleSdf;
-        float t = 1.0f - smoothstep(0.0f, 20.0f, exteriorT);
+        float t = 1.0f - smoothstep(0.0f, 40.0f, exteriorT);
         t = t * t;
 
         // Where the warp would put this pixel if it used the boundary scale
         float2 boundaryWarped = c + p * float2(probeSX, probeSY);
-        // Blend from identity toward boundary warp — 35%% at boundary
-        result = mix(d, boundaryWarped, t * 0.35f);
+        // Blend from identity toward boundary warp — 50%% at boundary
+        result = mix(d, boundaryWarped, t * 0.50f);
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
