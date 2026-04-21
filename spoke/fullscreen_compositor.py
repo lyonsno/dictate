@@ -112,67 +112,90 @@ class FullScreenCompositor:
 
     @property
     def sampled_brightness(self) -> float:
-        """Average brightness of the capsule region from the latest IOSurface."""
+        """Average brightness of the capsule region."""
         return self._sampled_brightness
 
-    def _sample_iosurface_brightness(self, iosurface, w, h, config):
-        """Sample average luminance of the capsule interior from the IOSurface.
+    def refresh_brightness(self) -> None:
+        """Re-sample capsule region brightness.  Call from main thread."""
+        with self._lock:
+            config = self._shell_config
+            w = self._latest_width
+            h = self._latest_height
+        if config is None or w <= 0 or h <= 0:
+            return
+        self._sample_iosurface_brightness(None, w, h, config)
 
-        Reads a sparse grid of pixels from the raw capture (pre-warp)
-        inside the capsule bounding box.  Cheap: ~50 pixel reads from
-        an already-mapped IOSurface, no GPU readback.
+    def _sample_iosurface_brightness(self, iosurface, w, h, config):
+        """Sample average luminance of the capsule region.
+
+        Uses CGWindowListCreateImage on a small rect centered on the
+        capsule, excluding the compositor's own window.  This captures
+        the raw desktop content behind the overlay — the same content
+        the warp is transforming.
         """
         try:
-            import objc
-            IOSurface = objc.lookUpClass("IOSurface")
+            from Quartz import (
+                CGWindowListCreateImage,
+                kCGWindowListOptionOnScreenBelowWindow,
+                CGImageGetWidth, CGImageGetHeight,
+                CGImageGetDataProvider, CGDataProviderCopyData,
+            )
 
-            cx = config.get("center_x", w * 0.5)
-            cy = config.get("center_y", h * 0.5)
-            rw = config.get("content_width_points", w) * 0.5
-            rh = config.get("content_height_points", h) * 0.5
+            # Capsule center in points (config has pixel coords, convert back)
+            scale = self._screen.backingScaleFactor() if hasattr(self._screen, 'backingScaleFactor') else 2.0
+            cx_pts = config.get("center_x", w * 0.5) / scale
+            cy_pts = config.get("center_y", h * 0.5) / scale
+            rw_pts = config.get("content_width_points", w) / scale * 0.5
+            rh_pts = config.get("content_height_points", h) / scale * 0.5
 
-            # Bounding box of capsule interior
-            x0 = max(int(cx - rw), 0)
-            x1 = min(int(cx + rw), w)
-            y0 = max(int(cy - rh), 0)
-            y1 = min(int(cy + rh), h)
-            bw = x1 - x0
-            bh = y1 - y0
-            if bw <= 0 or bh <= 0:
+            # Screen origin (Quartz coords: top-left origin)
+            screen_frame = self._screen.frame()
+            sox = screen_frame.origin.x
+            soy = screen_frame.origin.y
+            sh = screen_frame.size.height
+
+            # Convert Cocoa Y (bottom-up) to Quartz Y (top-down)
+            # cy_pts is already in Metal coords (top-down from _start_fullscreen_compositor)
+            capture_x = sox + cx_pts - rw_pts
+            capture_y = soy + cy_pts - rh_pts
+            capture_w = rw_pts * 2
+            capture_h = rh_pts * 2
+
+            if capture_w <= 0 or capture_h <= 0:
                 return
 
-            # Lock the IOSurface for CPU read
-            iosurface.lockWithOptions_seed_(1, None)  # kIOSurfaceLockReadOnly
-            try:
-                base_addr = iosurface.baseAddress()
-                if base_addr is None or base_addr == 0:
-                    return
-                bpr = iosurface.bytesPerRow()
-                bpp = iosurface.bytesPerElement()
-                if bpp < 4 or bpr <= 0:
-                    return
+            # Capture below the compositor window (excludes spoke overlay + compositor)
+            wid = int(self._window.windowNumber()) if self._window is not None else 0
+            rect = ((capture_x, capture_y), (capture_w, capture_h))
+            image = CGWindowListCreateImage(
+                rect,
+                kCGWindowListOptionOnScreenBelowWindow,
+                wid,
+                0,
+            )
+            if image is None:
+                return
 
-                import ctypes
-                total = 0.0
-                count = 0
-                # Sparse grid: ~7x7 = 49 samples
-                step_x = max(bw // 7, 1)
-                step_y = max(bh // 7, 1)
-                for sy in range(y0, y1, step_y):
-                    row_ptr = base_addr + sy * bpr
-                    for sx in range(x0, x1, step_x):
-                        px_ptr = row_ptr + sx * bpp
-                        # BGRA pixel order (IOSurface default)
-                        b = ctypes.c_uint8.from_address(px_ptr).value
-                        g = ctypes.c_uint8.from_address(px_ptr + 1).value
-                        r = ctypes.c_uint8.from_address(px_ptr + 2).value
+            iw = CGImageGetWidth(image)
+            ih = CGImageGetHeight(image)
+            data = CGDataProviderCopyData(CGImageGetDataProvider(image))
+            if data is None or len(data) == 0 or iw * ih == 0:
+                return
+
+            bpp = len(data) // (iw * ih)
+            total = 0.0
+            count = 0
+            step = max(5, 1)
+            for sy in range(0, ih, step):
+                for sx in range(0, iw, step):
+                    offset = (sy * iw + sx) * bpp
+                    if offset + 3 <= len(data):
+                        r, g, b = data[offset], data[offset + 1], data[offset + 2]
                         lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0
                         total += lum
                         count += 1
-                if count > 0:
-                    self._sampled_brightness = total / count
-            finally:
-                iosurface.unlockWithOptions_(1)
+            if count > 0:
+                self._sampled_brightness = total / count
         except Exception:
             pass  # non-critical — keep previous brightness
 
@@ -509,10 +532,6 @@ class FullScreenCompositor:
                 self._presented_count += 1
                 self._interval_presented += 1
 
-                # Sample brightness from the raw IOSurface every N frames
-                if self._frame_count - self._brightness_sample_frame >= 15:
-                    self._brightness_sample_frame = self._frame_count
-                    self._sample_iosurface_brightness(iosurface, w, h, warp_config)
             elif self._frame_count <= 5:
                 logger.info("Compositor tick[%d]: warp_to_drawable returned False", self._frame_count)
         except Exception:
