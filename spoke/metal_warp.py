@@ -127,8 +127,9 @@ kernel void opticalShellWarp(
 
     float bleedZone = capsuleRadius * {_WARP_BLEED_ZONE_FRAC}f;
     if (capsuleSdf > bleedZone) {{
-        // Outside warp zone: pass through, no temporal blend
-        outTexture.write(inTexture.sample(bilinearSampler, d), pixel);
+        // Outside warp zone: transparent so other compositor windows
+        // and desktop content show through.
+        outTexture.write(float4(0.0f, 0.0f, 0.0f, 0.0f), pixel);
         return;
     }}
 
@@ -456,9 +457,11 @@ class MetalWarpPipeline:
 
         command_buffer = self._command_queue.commandBuffer()
 
-        # Pass 1: blit input → output + mip level 0, generate mipmaps.
+        # Pass 1: blit input → mip level 0, generate mipmaps.
+        # Do NOT blit input → output — the output (drawable) should be
+        # transparent outside the warp bounding box so multiple compositor
+        # windows can overlap without obscuring each other.
         blit = command_buffer.blitCommandEncoder()
-        blit.copyFromTexture_toTexture_(input_texture, output_texture)
         if self._mip_texture is not None:
             origin = (0, 0, 0)
             size = (in_w, in_h, 1)
