@@ -248,6 +248,62 @@ class TestDownsampleSize:
         assert result == (640, 360)
 
 
+class TestPickTargetWindow:
+    def test_prefers_ax_focused_pid_over_workspace_pid(self):
+        mod = _import_module()
+        windows = [
+            {
+                "kCGWindowOwnerPID": 101,
+                "kCGWindowOwnerName": "WezTerm",
+                "kCGWindowName": "terminal",
+                "kCGWindowBounds": {"Width": 1200, "Height": 800},
+            },
+            {
+                "kCGWindowOwnerPID": 202,
+                "kCGWindowOwnerName": "Safari",
+                "kCGWindowName": "GitHub - Avatar",
+                "kCGWindowBounds": {"Width": 1400, "Height": 900},
+            },
+        ]
+
+        picked = mod._pick_target_window(
+            windows,
+            preferred_pid=202,
+            preferred_title="GitHub - Avatar",
+            fallback_pid=101,
+            my_pid=999,
+        )
+
+        assert picked is windows[1]
+
+    def test_prefers_title_match_within_ax_pid_candidates(self):
+        mod = _import_module()
+        windows = [
+            {
+                "kCGWindowOwnerPID": 202,
+                "kCGWindowOwnerName": "Safari",
+                "kCGWindowName": "Other Tab",
+                "kCGWindowBounds": {"Width": 1400, "Height": 900},
+            },
+            {
+                "kCGWindowOwnerPID": 202,
+                "kCGWindowOwnerName": "Safari",
+                "kCGWindowName": "GitHub - Avatar",
+                "kCGWindowBounds": {"Width": 1400, "Height": 900},
+            },
+        ]
+
+        picked = mod._pick_target_window(
+            windows,
+            preferred_pid=202,
+            preferred_title="GitHub - Avatar",
+            fallback_pid=None,
+            my_pid=999,
+        )
+
+        assert picked is windows[1]
+
+
 class TestCaptureContext:
     def test_capture_context_saves_model_image_artifact(self, tmp_path):
         mod = _import_module()
