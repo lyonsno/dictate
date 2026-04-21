@@ -54,15 +54,15 @@ _ALLOW_PREFIXES = (
     ("ls",),
     ("pwd",),
     ("date",),
-    ("find",),
     ("cat",),
     ("head",),
     ("tail",),
-    ("sed", "-n"),
     ("ps",),
 )
 _APPROVAL_PREFIXES = (
     ("git",),
+    ("find",),
+    ("sed",),
     ("pytest",),
     ("uv",),
     ("python",),
@@ -187,6 +187,10 @@ class TerminalOperator:
                 }
             )
             return result
+        except OSError as exc:
+            raise TerminalOperatorError(
+                f"failed to start command: {exc}"
+            ) from exc
 
         stdout, stdout_truncated = self._truncate(proc.stdout)
         stderr, stderr_truncated = self._truncate(proc.stderr)
@@ -240,14 +244,18 @@ class TerminalOperator:
             return "deny", "command denied: shell syntax tokens are not supported; pass plain argv only"
         if any("\n" in token or "\x00" in token for token in argv):
             return "deny", "command denied: argv tokens must not contain newlines or NUL bytes"
+        normalized_argv = self._normalized_argv(argv)
+        git_output_flag_reason = self._git_output_flag_reason(normalized_argv)
+        if git_output_flag_reason:
+            return "approval_required", git_output_flag_reason
 
-        if self._matches_any_prefix(argv, _DENY_PREFIXES):
-            return "deny", f"command denied by terminal policy: {' '.join(argv[:3])}"
-        if self._matches_any_prefix(argv, _ALLOW_PREFIXES):
+        if self._matches_any_prefix(normalized_argv, _DENY_PREFIXES):
+            return "deny", f"command denied by terminal policy: {' '.join(normalized_argv[:3])}"
+        if self._matches_any_prefix(normalized_argv, _ALLOW_PREFIXES):
             return "allow", None
-        if self._matches_any_prefix(argv, _APPROVAL_PREFIXES):
-            return "approval_required", f"command requires approval: {' '.join(argv[:3])}"
-        return "approval_required", f"command requires approval: {' '.join(argv[:3])}"
+        if self._matches_any_prefix(normalized_argv, _APPROVAL_PREFIXES):
+            return "approval_required", f"command requires approval: {' '.join(normalized_argv[:3])}"
+        return "approval_required", f"command requires approval: {' '.join(normalized_argv[:3])}"
 
     def _truncate(self, text: Any) -> tuple[str, bool]:
         if not isinstance(text, str):
@@ -261,6 +269,24 @@ class TerminalOperator:
     @staticmethod
     def _matches_any_prefix(argv: list[str], prefixes: tuple[tuple[str, ...], ...]) -> bool:
         return any(TerminalOperator._starts_with(argv, prefix) for prefix in prefixes)
+
+    @staticmethod
+    def _normalized_argv(argv: list[str]) -> list[str]:
+        normalized = list(argv)
+        normalized[0] = Path(normalized[0]).name
+        return normalized
+
+    @staticmethod
+    def _git_output_flag_reason(argv: list[str]) -> str | None:
+        if len(argv) < 2 or argv[0] != "git" or argv[1] not in {"diff", "show"}:
+            return None
+        for index, token in enumerate(argv[2:], start=2):
+            if token == "--output":
+                target = argv[index + 1] if index + 1 < len(argv) else "<missing>"
+                return f"command requires approval: git {argv[1]} --output {target}"
+            if token.startswith("--output="):
+                return f"command requires approval: git {argv[1]} {token}"
+        return None
 
     @staticmethod
     def _starts_with(argv: list[str], prefix: tuple[str, ...]) -> bool:

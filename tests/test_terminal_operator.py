@@ -61,12 +61,54 @@ class TestTerminalOperator:
         assert "requires approval" in result["reason"]
         mock_run.assert_not_called()
 
+    def test_execute_requires_approval_for_find_delete(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["find", ".", "-delete"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
+    def test_execute_requires_approval_for_sed_family(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["sed", "-n", "w", "/tmp/out", "file.txt"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
     def test_execute_blocks_denied_command(self, tmp_path):
         from spoke.terminal_operator import TerminalOperator
 
         with patch("subprocess.run") as mock_run:
             result = TerminalOperator().execute_command(
                 ["rm", "-rf", "/tmp/nope"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "deny"
+        assert result["executed"] is False
+        assert "denied" in result["reason"]
+        mock_run.assert_not_called()
+
+    def test_execute_blocks_denied_command_by_absolute_path(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["/bin/rm", "-rf", "/tmp/nope"],
                 cwd=str(tmp_path),
             )
 
@@ -128,6 +170,30 @@ class TestTerminalOperator:
         assert result["timed_out"] is True
         assert result["exit_code"] is None
 
+    def test_execute_requires_approval_for_git_diff_output_flag(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["git", "diff", "--output=/tmp/out.patch"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
+    def test_execute_raises_bounded_error_for_spawn_failure(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator, TerminalOperatorError
+
+        with patch("subprocess.run", side_effect=FileNotFoundError("rg not found")):
+            with pytest.raises(TerminalOperatorError, match="failed to start command"):
+                TerminalOperator().execute_command(
+                    ["rg", "needle"],
+                    cwd=str(tmp_path),
+                )
+
     def test_execute_rejects_non_string_argv_entries(self, tmp_path):
         from spoke.terminal_operator import TerminalOperator
 
@@ -139,3 +205,32 @@ class TestTerminalOperator:
         assert result["decision"] == "deny"
         assert result["executed"] is False
         assert "strings" in result["reason"]
+
+    def test_execute_rejects_cwd_outside_allowed_roots(self):
+        from spoke.terminal_operator import TerminalOperator, TerminalOperatorError
+
+        with pytest.raises(TerminalOperatorError, match="outside allowed local roots"):
+            TerminalOperator().execute_command(
+                ["git", "status"],
+                cwd="/etc",
+            )
+
+    def test_execute_rejects_non_integer_timeout(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator, TerminalOperatorError
+
+        with pytest.raises(TerminalOperatorError, match="must be an integer"):
+            TerminalOperator().execute_command(
+                ["git", "status"],
+                cwd=str(tmp_path),
+                timeout_seconds="abc",
+            )
+
+    def test_execute_rejects_out_of_range_timeout(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator, TerminalOperatorError
+
+        with pytest.raises(TerminalOperatorError, match="between 1 and 30"):
+            TerminalOperator().execute_command(
+                ["git", "status"],
+                cwd=str(tmp_path),
+                timeout_seconds=99,
+            )
