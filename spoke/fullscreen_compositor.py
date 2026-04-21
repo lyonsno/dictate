@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 class FullScreenCompositor:
     """Full-display capture → Metal warp → full-screen presentation."""
 
+    # Class-level registry of all active compositor window IDs.
+    # Each compositor excludes all registered windows from its capture
+    # to prevent feedback loops when multiple compositors run concurrently.
+    _active_compositor_windows: set[int] = set()
+
     def __init__(self, screen):
         self._screen = screen
         self._lock = threading.Lock()
@@ -270,6 +275,12 @@ class FullScreenCompositor:
         content.layer().addSublayer_(self._metal_layer)
         self._window.setContentView_(content)
         self._window.orderFrontRegardless()
+        # Register in class-level set so other compositors exclude us
+        try:
+            wid = int(self._window.windowNumber())
+            FullScreenCompositor._active_compositor_windows.add(wid)
+        except Exception:
+            pass
 
         logger.info(
             "FullScreenCompositor: window %dx%d (%.0fx%.0f px, scale=%.1f)",
@@ -278,6 +289,11 @@ class FullScreenCompositor:
 
     def _destroy_fullscreen_window(self):
         if self._window is not None:
+            try:
+                wid = int(self._window.windowNumber())
+                FullScreenCompositor._active_compositor_windows.discard(wid)
+            except Exception:
+                pass
             try:
                 self._window.orderOut_(None)
             except Exception:
@@ -424,8 +440,10 @@ class FullScreenCompositor:
         self._extra_excluded_ids = set(int(x) for x in window_ids)
 
     def _excluded_windows(self, content):
-        """Exclude our full-screen compositor window + any extra windows from capture."""
+        """Exclude all compositor windows + extra windows from capture."""
         exclude_ids = set(getattr(self, "_extra_excluded_ids", set()))
+        # Exclude all active compositor windows (prevents feedback loops)
+        exclude_ids.update(FullScreenCompositor._active_compositor_windows)
         if self._window is not None:
             try:
                 exclude_ids.add(int(self._window.windowNumber()))
