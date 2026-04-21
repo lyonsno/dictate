@@ -27,7 +27,7 @@ import time
 logger = logging.getLogger(__name__)
 
 # Tuning constants — must stay in sync with backdrop_stream.py
-_WARP_BLEED_ZONE_FRAC = 0.5
+_WARP_BLEED_ZONE_FRAC = 0.8
 _WARP_CENTER_FLOOR = 0.80
 _WARP_FIELD_EXPONENT = 0.35
 _WARP_REMAP_BASE_EXP_SCALE = 0.98
@@ -147,8 +147,8 @@ kernel void opticalShellWarp(
         t = t * t;
         // Interior warp at this position (what it would be if inside)
         float2 interiorResult = c + p * float2(scaleX, scaleY);
-        // Blend from identity (d) toward interior warp
-        result = mix(d, interiorResult, t * 0.4f);
+        // Blend from identity (d) toward interior warp — 70% at boundary
+        result = mix(d, interiorResult, t * 0.7f);
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
