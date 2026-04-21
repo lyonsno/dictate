@@ -188,17 +188,14 @@ kernel void opticalShellWarp(
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
-    // Depth-dependent blur via mipmap LOD.  The input texture has
-    // hardware-generated mipmaps; sampling at a higher LOD reads a
-    // pre-averaged version.  One texture read, no ghosting, smooth
-    // result.  LOD 0 = full res, LOD 8 ≈ 256× downsample.
+    // Depth-dependent blur via mipmap LOD.  Wide linear ramp from
+    // sharp at the boundary to fully washed deep in the interior.
+    // No floor, no step — just a smooth continuous gradient.
     float interiorDepth = clamp(-capsuleSdf / capsuleRadius, 0.0f, 1.0f);
-    float blurT = smoothstep(0.0f, 0.35f, interiorDepth);
-    // Minimum blur at rim so compressed content is always softened
-    float blurFloor = interiorDepth > 0.0f ? 0.1f : 0.0f;
-    blurT = max(blurT, blurFloor);
-    // Map to mip LOD: 0 = sharp, 8 = fully washed
-    float mipLod = blurT * 8.0f;
+    // Map to mip LOD: 0 = sharp, 7 = fully washed.
+    // Linear ramp — smoothstep adds unnecessary inflection points
+    // that can read as steps with mip LOD.
+    float mipLod = interiorDepth * 7.0f;
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
     float4 finalColor;
