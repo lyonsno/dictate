@@ -144,7 +144,7 @@ from .focus_check import has_focused_text_input, focused_text_contains
 from .handsfree import HandsFreeController, HandsFreeState, match_voice_command
 from .scene_capture import SceneCaptureCache
 from .subagents import SubagentManager, run_search_subagent_query
-from .tool_dispatch import execute_tool, get_tool_schemas
+from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas, get_tool_schemas
 from .glow import GlowOverlay
 from .inject import inject_text, inject_text_raw, save_pasteboard, restore_pasteboard, set_pasteboard_only
 from .input_tap import SpacebarHoldDetector
@@ -958,11 +958,29 @@ class SpokeAppDelegate(NSObject):
                 api_key=cloud_api_key or None,
                 model=self._command_model_id,
             )
+            search_subagent_tools = get_search_subagent_tool_schemas()
+            allowed_search_tool_names = {
+                tool["function"]["name"] for tool in search_subagent_tools
+            }
+
+            def _execute_search_subagent_tool(
+                name: str,
+                arguments: dict[str, Any],
+                **_: Any,
+            ) -> str:
+                if name not in allowed_search_tool_names:
+                    return json.dumps(
+                        {"error": f"Tool not allowed for search subagent: {name}"}
+                    )
+                return execute_tool(name=name, arguments=arguments)
+
             self._subagent_manager = SubagentManager(
                 search_runner=lambda prompt, cancel_check: run_search_subagent_query(
                     prompt,
                     base_url=command_url,
                     model=self._command_model_id,
+                    tools=search_subagent_tools,
+                    tool_executor=_execute_search_subagent_tool,
                     api_key=cloud_api_key or None,
                     cancel_check=cancel_check,
                 )

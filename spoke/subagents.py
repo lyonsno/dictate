@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .command import CommandClient
-from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas
 
 _SEARCH_SUBAGENT_SYSTEM_PROMPT = """\
 You are a background search subagent for the spoke operator.
@@ -36,19 +35,13 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _search_tool_executor(name: str, arguments: dict[str, Any], **kwargs: Any) -> str:
-    """Execute only the bounded read-only tool subset for search subagents."""
-    allowed = {"list_directory", "read_file", "search_file", "find_file"}
-    if name not in allowed:
-        return json.dumps({"error": f"Tool not allowed for search subagent: {name}"})
-    return execute_tool(name=name, arguments=arguments)
-
-
 def run_search_subagent_query(
     query: str,
     *,
     base_url: str,
     model: str,
+    tools: list[dict[str, Any]],
+    tool_executor: Callable[..., str],
     api_key: str | None = None,
     command_client_factory: Callable[..., CommandClient] = CommandClient,
     cancel_check: Callable[[], bool] | None = None,
@@ -66,8 +59,8 @@ def run_search_subagent_query(
     final_response = ""
     for event in client.stream_command_events(
         query,
-        tools=get_search_subagent_tool_schemas(),
-        tool_executor=_search_tool_executor,
+        tools=tools,
+        tool_executor=tool_executor,
         cancel_check=cancel_check,
     ):
         if event.kind == "assistant_delta" and event.text:
