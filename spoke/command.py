@@ -138,6 +138,18 @@ _SYSTEM_PROMPT = (
     "arbitrary shell or general coding work.\n\n"
     "You also have search_web: a bounded read-only public web search via "
     "Brave Search for lightweight fact lookup (up to 10 results).\n\n"
+    "You also have launch_subagent, list_subagents, get_subagent_result, and "
+    "cancel_subagent for operator-owned background jobs. Current support is "
+    "kind='search' for bounded local file/code search. Subagents are "
+    "asynchronous. After launch, do not spin on get_subagent_result in a "
+    "tight loop. If a job is queued or running, continue the main conversation "
+    "and check again later only when useful or when the user asks.\n\n"
+    "You also have compact_history to reduce context size. Modes: "
+    "drop_tool_results (strip tool call/result messages from the oldest N "
+    "turns while keeping user and assistant text), summarize (replace the "
+    "oldest N turns with your summary), and guided (return attractor-aware "
+    "retention flags for the oldest N turns, then follow up with summarize "
+    "using those flags as a safety net).\n\n"
     "You also have query_gmail: a bounded read-only Gmail query tool. Pass "
     "a Gmail search query string (same syntax as the Gmail search bar) and "
     "get back sender, subject, date, and snippet for up to 10 matches. Use "
@@ -195,6 +207,7 @@ class CommandClient:
         api_key: str | None = None,
         max_history: int | None = None,
         history_path: Path | None | object = _SENTINEL,
+        system_prompt: str | None = None,
     ):
         raw_url = (base_url or _DEFAULT_COMMAND_URL).rstrip("/")
         # Cloud OpenAI-compat endpoints (e.g. Gemini) include the version
@@ -225,6 +238,7 @@ class CommandClient:
         # Thinking: enabled by default, disable with SPOKE_COMMAND_THINKING=0
         self._enable_thinking = os.environ.get("SPOKE_COMMAND_THINKING", "1") != "0"
         # Ring buffer: list of (user_utterance, assistant_response) pairs
+        self._system_prompt = system_prompt or _SYSTEM_PROMPT
         self._history_path = _HISTORY_PATH if history_path is self._SENTINEL else history_path
         self._history: list[tuple[str, str]] = self._load_history()
 
@@ -278,7 +292,7 @@ class CommandClient:
         The history is ordered oldest-first so the stable prefix stays
         KV-cache-friendly — new pairs are appended at the end.
         """
-        messages: list[dict] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+        messages: list[dict] = [{"role": "system", "content": self._system_prompt}]
         for user_text, assistant_text in self._history:
             messages.append({"role": "user", "content": user_text})
             messages.append({"role": "assistant", "content": assistant_text})
