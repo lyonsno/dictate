@@ -496,6 +496,37 @@ def _downsample_image(cg_image, scale: float = _DEFAULT_SCALE):
 # ── Image capture ────────────────────────────────────────────────
 
 
+def _resolve_target_window_identity(
+    target_window: dict,
+    *,
+    workspace_pid: int | None,
+    workspace_app_name: str | None,
+    workspace_bundle_id: str | None,
+) -> tuple[str | None, str | None]:
+    """Return app identity that matches the chosen target window."""
+    target_pid = target_window.get("kCGWindowOwnerPID")
+    target_owner_name = target_window.get("kCGWindowOwnerName")
+
+    if target_pid is None or target_pid == workspace_pid:
+        return target_owner_name or workspace_app_name, workspace_bundle_id
+
+    app_name = target_owner_name or workspace_app_name
+    bundle_id = None
+    try:
+        from AppKit import NSRunningApplication
+
+        target_app = NSRunningApplication.runningApplicationWithProcessIdentifier_(
+            target_pid
+        )
+        if target_app is not None:
+            app_name = target_app.localizedName() or app_name
+            bundle_id = target_app.bundleIdentifier() or bundle_id
+    except Exception:
+        logger.debug("Target-window app lookup failed", exc_info=True)
+
+    return app_name, bundle_id
+
+
 def _capture_active_window():
     """Capture the frontmost app's active window as a CGImage.
 
@@ -578,9 +609,13 @@ def _capture_active_window():
         window_id = target_window.get("kCGWindowNumber", 0)
         if not window_title:
             window_title = target_window.get("kCGWindowName")
-        if app_name is None:
-            app_name = target_window.get("kCGWindowOwnerName") or app_name
         target_pid = target_window.get("kCGWindowOwnerPID")
+        app_name, bundle_id = _resolve_target_window_identity(
+            target_window,
+            workspace_pid=workspace_pid,
+            workspace_app_name=app_name,
+            workspace_bundle_id=bundle_id,
+        )
         target_layer = target_window.get("kCGWindowLayer")
         bounds = target_window.get("kCGWindowBounds") or {}
 

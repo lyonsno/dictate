@@ -24,6 +24,11 @@ from spoke.epistaxis_operator import (
     EpistaxisOperatorError,
     tool_schema as epistaxis_tool_schema,
 )
+from spoke.brave_search_operator import (
+    BraveSearchOperator,
+    BraveSearchOperatorError,
+    tool_schema as brave_search_tool_schema,
+)
 from spoke.gmail_operator import (
     GmailOperator,
     GmailOperatorError,
@@ -237,6 +242,7 @@ _FIND_FILE_SCHEMA = {
     }
 }
 _RUN_EPISTAXIS_OPS_SCHEMA = epistaxis_tool_schema()
+_SEARCH_WEB_SCHEMA = brave_search_tool_schema()
 _QUERY_GMAIL_SCHEMA = gmail_tool_schema()
 
 
@@ -252,6 +258,7 @@ def get_tool_schemas() -> list[dict]:
         _SEARCH_FILE_SCHEMA,
         _FIND_FILE_SCHEMA,
         _RUN_EPISTAXIS_OPS_SCHEMA,
+        _SEARCH_WEB_SCHEMA,
         _QUERY_GMAIL_SCHEMA,
     ]
 
@@ -772,6 +779,20 @@ def _execute_epistaxis_ops(arguments: dict) -> str:
         return json.dumps({"error": str(exc)})
 
 
+def _execute_search_web(arguments: dict) -> str:
+    """Execute the bounded Brave Search web-search surface and return JSON."""
+    query = arguments.get("query", "")
+    max_results = arguments.get("max_results", 5)
+    try:
+        normalized_max_results = int(max_results)
+        operator = BraveSearchOperator()
+        return json.dumps(
+            operator.execute_search(query, max_results=normalized_max_results)
+        )
+    except (TypeError, ValueError, BraveSearchOperatorError) as exc:
+        return json.dumps({"error": str(exc)})
+
+
 def _execute_query_gmail(arguments: dict) -> str:
     """Execute the bounded Gmail query surface and return JSON."""
     query = arguments.get("query", "")
@@ -868,6 +889,9 @@ def execute_tool(
         return json.dumps(_execute_find_file(arguments))
     elif name == "run_epistaxis_ops":
         return _execute_epistaxis_ops(arguments)
+
+    elif name == "search_web":
+        return _execute_search_web(arguments)
 
     elif name == "query_gmail":
         return _execute_query_gmail(arguments)

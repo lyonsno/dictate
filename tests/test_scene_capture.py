@@ -12,6 +12,7 @@ from __future__ import annotations
 import importlib
 import sys
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -370,6 +371,68 @@ class TestCaptureContext:
         assert capture.ocr_text == ""
         assert capture.ocr_blocks == []
         run_ocr.assert_not_called()
+
+    def test_capture_active_window_uses_target_window_identity_when_workspace_frontmost_is_stale(self):
+        mod = _import_module()
+        captured_image = object()
+
+        workspace_app = MagicMock()
+        workspace_app.processIdentifier.return_value = 101
+        workspace_app.localizedName.return_value = "WezTerm"
+        workspace_app.bundleIdentifier.return_value = "com.github.wez.wezterm"
+        workspace = MagicMock()
+        workspace.frontmostApplication.return_value = workspace_app
+
+        target_app = MagicMock()
+        target_app.localizedName.return_value = "Safari"
+        target_app.bundleIdentifier.return_value = "com.apple.Safari"
+
+        fake_appkit = SimpleNamespace(
+            NSWorkspace=SimpleNamespace(sharedWorkspace=lambda: workspace),
+            NSRunningApplication=SimpleNamespace(
+                runningApplicationWithProcessIdentifier_=(
+                    lambda pid: target_app if pid == 202 else None
+                )
+            ),
+        )
+        fake_quartz = SimpleNamespace(
+            CGRectNull=object(),
+            CGWindowListCopyWindowInfo=lambda *args: [
+                {
+                    "kCGWindowOwnerPID": 101,
+                    "kCGWindowOwnerName": "WezTerm",
+                    "kCGWindowName": "terminal",
+                    "kCGWindowBounds": {"Width": 1200, "Height": 800},
+                },
+                {
+                    "kCGWindowNumber": 77,
+                    "kCGWindowOwnerPID": 202,
+                    "kCGWindowOwnerName": "Safari",
+                    "kCGWindowName": "GitHub - Avatar",
+                    "kCGWindowBounds": {"Width": 1400, "Height": 900},
+                },
+            ],
+            CGWindowListCreateImage=lambda *args: captured_image,
+            kCGWindowImageBoundsIgnoreFraming=1,
+            kCGWindowListExcludeDesktopElements=2,
+            kCGWindowListOptionIncludingWindow=4,
+            kCGWindowListOptionOnScreenOnly=8,
+        )
+
+        with (
+            patch.dict(sys.modules, {"AppKit": fake_appkit, "Quartz": fake_quartz}),
+            patch.object(
+                mod,
+                "_get_focused_window_hint",
+                return_value=(202, "GitHub - Avatar"),
+            ),
+        ):
+            image, app_name, bundle_id, window_title = mod._capture_active_window()
+
+        assert image is captured_image
+        assert app_name == "Safari"
+        assert bundle_id == "com.apple.Safari"
+        assert window_title == "GitHub - Avatar"
 
 
 # ── Artifact cache ───────────────────────────────────────────────
