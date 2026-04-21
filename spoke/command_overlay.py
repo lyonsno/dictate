@@ -1843,7 +1843,23 @@ class CommandOverlay(NSObject):
             if abs(new_opacity - getattr(self, '_last_fill_opacity', -1.0)) > 0.005:
                 self._fill_layer.setOpacity_(new_opacity)
                 self._last_fill_opacity = new_opacity
-        # Boost layer reserved for future per-text brightness lift.
+        # Boost layer: on dark backgrounds (light fill), brighten the
+        # warped content behind text holes so the cut-out text reads
+        # bright.  The boost layer is white, masked to text glyphs only.
+        boost_layer = getattr(self, "_boost_layer", None)
+        if boost_layer is not None and getattr(self, "_text_punchthrough", False):
+            _bt = _clamp01((t - 0.45) * 6.0 + 0.5)
+            _bt = _bt * _bt * (3.0 - 2.0 * _bt)
+            # Dark bg → boost; light bg → no boost
+            boost_opacity = _lerp(0.5, 0.0, _bt)
+            if boost_opacity > 0.01:
+                boost_layer.setHidden_(False)
+                boost_layer.setOpacity_(boost_opacity)
+            else:
+                boost_layer.setHidden_(True)
+                boost_layer.setOpacity_(0.0)
+        elif boost_layer is not None:
+            boost_layer.setHidden_(True)
         # Update text punch-through mask (if active)
         if getattr(self, "_text_punchthrough", False):
             self._update_punchthrough_mask()
@@ -2097,7 +2113,7 @@ class CommandOverlay(NSObject):
                     # lets the frosted quality show.  The value here IS
                     # the alpha written into the image — layer opacity
                     # multiplies on top of it.
-                    _ifloor = _lerp(0.60, 0.985, _clamp01(_b))
+                    _ifloor = _lerp(0.60, 0.85, _clamp01(_b))
                     # Rescale raw interior curve to [_ifloor, 1.0] + edge ridge
                     interior = (_ifloor + (1.0 - _ifloor) * self._sdf_raw_interior)
                     interior = np.clip(
@@ -2513,6 +2529,38 @@ class CommandOverlay(NSObject):
             mask_layer.setContents_(mask_image)
             if fill.mask() is not mask_layer:
                 fill.setMask_(mask_layer)
+
+            # Boost mask: opaque where text is (inverse of fill mask).
+            # Only generate when boost layer is visible.
+            boost_layer = getattr(self, "_boost_layer", None)
+            if boost_layer is not None and not boost_layer.isHidden():
+                boost_ctx = CGBitmapContextCreate(
+                    None, fw, fh, 8, fw * 4,
+                    cs, kCGImageAlphaPremultipliedLast,
+                )
+                if boost_ctx is not None:
+                    # Clear background (transparent) — only glyphs will have alpha
+                    boost_nsctx = NSGraphicsContext.graphicsContextWithCGContext_flipped_(boost_ctx, True)
+                    NSGraphicsContext.saveGraphicsState()
+                    NSGraphicsContext.setCurrentContext_(boost_nsctx)
+                    CGContextSaveGState(boost_ctx)
+                    CGContextTranslateCTM(boost_ctx, 0, fh)
+                    CGContextScaleCTM(boost_ctx, 1.0, -1.0)
+                    ts.drawInRect_(NSMakeRect(text_x, text_y, text_w, text_h))
+                    CGContextRestoreGState(boost_ctx)
+                    NSGraphicsContext.restoreGraphicsState()
+
+                    boost_mask_image = CGBitmapContextCreateImage(boost_ctx)
+                    if boost_mask_image is not None:
+                        boost_mask = getattr(self, "_boost_mask_layer", None)
+                        if boost_mask is None:
+                            boost_mask = CALayer.alloc().init()
+                            boost_mask.setContentsGravity_("resize")
+                            self._boost_mask_layer = boost_mask
+                        boost_mask.setFrame_(((0, 0), (fw, fh)))
+                        boost_mask.setContents_(boost_mask_image)
+                        if boost_layer.mask() is not boost_mask:
+                            boost_layer.setMask_(boost_mask)
 
         except Exception:
             logger.debug("Failed to update punch-through mask", exc_info=True)
