@@ -404,11 +404,18 @@ class MetalWarpPipeline:
 
         command_buffer = self._command_queue.commandBuffer()
 
-        # Pass 1: blit input → output + mip, generate mipmaps
+        # Pass 1: blit input → output + mip level 0, generate mipmaps.
+        # Must use slice/level-explicit copy for the mip texture because
+        # the simple copyFromTexture:toTexture: tries to copy ALL mip
+        # levels and crashes when source has 1 level but dest has many.
         blit = command_buffer.blitCommandEncoder()
-        blit.copyFromTexture_toTexture_(input_texture, output_texture)
+        blit.copyFromTexture_sourceSlice_sourceLevel_toTexture_destinationSlice_destinationLevel_(
+            input_texture, 0, 0, output_texture, 0, 0,
+        )
         if self._mip_texture is not None:
-            blit.copyFromTexture_toTexture_(input_texture, self._mip_texture)
+            blit.copyFromTexture_sourceSlice_sourceLevel_toTexture_destinationSlice_destinationLevel_(
+                input_texture, 0, 0, self._mip_texture, 0, 0,
+            )
             blit.generateMipmapsForTexture_(self._mip_texture)
         blit.endEncoding()
 
