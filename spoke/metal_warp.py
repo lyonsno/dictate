@@ -111,10 +111,21 @@ kernel void opticalShellWarp(
     );
     float2 p = d - c;
     float2 halfRect = float2(params.rectWidth * 0.5f, params.rectHeight * 0.5f);
-    float capsuleRadius = max(halfRect.y, 1.0f);
+    // Cap the capsule radius so taller overlays stretch vertically
+    // without getting rounder.  cornerRadius carries the desired cap
+    // curvature; fall back to half-width capped at a sane maximum.
+    float maxRadius = params.cornerRadius > 0.0f
+        ? params.cornerRadius
+        : min(halfRect.y, halfRect.x * 0.35f);
+    float capsuleRadius = max(min(halfRect.y, maxRadius), 1.0f);
     float spineHalf = max(halfRect.x - capsuleRadius, 0.0f);
+    // When content is taller than the capsule diameter, pre-scale
+    // p.y so the SDF sees a pill-shaped space.  The warp result
+    // is un-scaled back to screen coords afterward.
+    float yScale = capsuleRadius / max(halfRect.y, 1.0f);
+    float2 pSdf = float2(p.x, p.y * yScale);
 
-    float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);
+    float capsuleSdf = sdCapsule(pSdf, spineHalf, capsuleRadius);
 
     float bleedZone = capsuleRadius * {_WARP_BLEED_ZONE_FRAC}f;
     if (capsuleSdf > bleedZone) {{

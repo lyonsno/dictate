@@ -332,7 +332,7 @@ def _command_optical_shell_config(
         "enabled": True,
         "content_width_points": width_points,
         "content_height_points": height_points,
-        "corner_radius_points": _OVERLAY_CORNER_RADIUS,
+        "corner_radius_points": _OVERLAY_HEIGHT / 2.0,
         "core_magnification": _COMMAND_BACKDROP_OPTICAL_SHELL_CORE_MAGNIFICATION,
         "band_width_points": _cm_to_points(_COMMAND_BACKDROP_OPTICAL_SHELL_BAND_MM / 10.0),
         "tail_width_points": _cm_to_points(_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_MM / 10.0),
