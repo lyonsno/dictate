@@ -1439,6 +1439,7 @@ def test_command_optical_shell_config_inflates_warp_capsule_past_overlay_body(mo
         capsule_r = mod._OVERLAY_HEIGHT / 4.0
         assert cfg["content_width_points"] == pytest.approx(600.0 + capsule_r)
         assert cfg["content_height_points"] == pytest.approx(80.0 + capsule_r)
+        assert cfg["exterior_mix_width_points"] == pytest.approx(20.0)
     finally:
         sys.modules.pop("spoke.command_overlay", None)
 
