@@ -211,6 +211,7 @@ class TestOverlayTiming:
             capsule_r = mod._OVERLAY_HEIGHT / 4.0
             assert cfg["content_width_points"] == pytest.approx(600.0 + 2.0 * capsule_r)
             assert cfg["content_height_points"] == pytest.approx(80.0 + 2.0 * capsule_r)
+            assert cfg["bleed_zone_frac"] == pytest.approx(0.4)
         finally:
             sys.modules.pop("spoke.overlay", None)
 

@@ -66,6 +66,24 @@ def _warp_alias_mip_bias(scale_x: float, scale_y: float) -> float:
     return min(bias, _WARP_ALIAS_MIP_BIAS_MAX)
 
 
+def _shell_bleed_zone_frac(shell_config: dict) -> float:
+    return max(float(shell_config.get("bleed_zone_frac", _WARP_BLEED_ZONE_FRAC)), 0.0)
+
+
+def _warp_dispatch_box(width: float, height: float, shell_config: dict[str, float]) -> tuple[int, int, int, int]:
+    cx = float(shell_config.get("center_x", width * 0.5))
+    cy = float(shell_config.get("center_y", height * 0.5))
+    rect_w = float(shell_config.get("content_width_points", width))
+    rect_h = float(shell_config.get("content_height_points", height))
+    capsule_r = max(rect_h * 0.5, 1.0)
+    bleed = capsule_r * _shell_bleed_zone_frac(shell_config)
+    box_x0 = max(int(cx - rect_w * 0.5 - bleed), 0)
+    box_y0 = max(int(cy - rect_h * 0.5 - bleed), 0)
+    box_x1 = min(int(cx + rect_w * 0.5 + bleed) + 1, int(width))
+    box_y1 = min(int(cy + rect_h * 0.5 + bleed) + 1, int(height))
+    return box_x0, box_y0, box_x1, box_y1
+
+
 def _metal_shader_source() -> str:
     return f"""
 #include <metal_stdlib>
@@ -88,6 +106,7 @@ struct WarpParams {{
     float gridOffsetY;  // dispatch grid origin Y
     float temporalBlend; // EMA blend factor (0 = keep previous, 1 = fully new)
     float minBrightness; // floor for interior pixel luminance (0 = no floor)
+    float bleedZoneFrac; // exterior warp cutoff relative to capsule radius
 }};
 
 float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
@@ -145,7 +164,7 @@ kernel void opticalShellWarp(
 
     float capsuleSdf = sdStadium(p, spineHalfX, spineHalfY, capsuleRadius);
 
-    float bleedZone = capsuleRadius * {_WARP_BLEED_ZONE_FRAC}f;
+    float bleedZone = capsuleRadius * max(params.bleedZoneFrac, 0.0f);
     if (capsuleSdf > bleedZone) {{
         // Outside warp zone: pass through unwarped content.
         outTexture.write(inTexture.sample(bilinearSampler, d), pixel);
@@ -259,13 +278,13 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-_WARP_PARAMS_SIZE = struct.calcsize("16f")
+_WARP_PARAMS_SIZE = struct.calcsize("17f")
 
 
 def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offset_y=0.0):
     """Pack WarpParams struct for the Metal compute shader."""
     return struct.pack(
-        "16f",
+        "17f",
         float(width),
         float(height),
         float(shell_config.get("content_width_points", width)),
@@ -282,6 +301,7 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         float(grid_offset_y),
         float(shell_config.get("temporal_blend", _TEMPORAL_BLEND_FACTOR)),
         float(shell_config.get("min_brightness", 0.0)),
+        _shell_bleed_zone_frac(shell_config),
     )
 
 
@@ -507,16 +527,7 @@ class MetalWarpPipeline:
         blit.endEncoding()
 
         # Pass 2: compute warp over capsule bounding box only
-        cx = shell_config.get("center_x", out_w * 0.5)
-        cy = shell_config.get("center_y", out_h * 0.5)
-        rect_w = shell_config.get("content_width_points", out_w)
-        rect_h = shell_config.get("content_height_points", out_h)
-        capsule_r = max(rect_h * 0.5, 1.0)
-        bleed = capsule_r * _WARP_BLEED_ZONE_FRAC
-        box_x0 = max(int(cx - rect_w * 0.5 - bleed), 0)
-        box_y0 = max(int(cy - rect_h * 0.5 - bleed), 0)
-        box_x1 = min(int(cx + rect_w * 0.5 + bleed) + 1, out_w)
-        box_y1 = min(int(cy + rect_h * 0.5 + bleed) + 1, out_h)
+        box_x0, box_y0, box_x1, box_y1 = _warp_dispatch_box(out_w, out_h, shell_config)
         box_w = box_x1 - box_x0
         box_h = box_y1 - box_y0
 
