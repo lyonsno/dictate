@@ -1,25 +1,11 @@
-"""Contract tests for multi-shell warp composition planning."""
-
-import importlib
-import sys
+from spoke import metal_warp
 
 
-class TestMetalWarpCompositionPlanning:
-    def test_single_shell_config_stays_on_direct_path(self, mock_pyobjc):
-        sys.modules.pop("spoke.metal_warp", None)
-        mod = importlib.import_module("spoke.metal_warp")
+def test_warp_alias_mip_bias_stays_zero_for_near_identity_warp():
+    assert metal_warp._warp_alias_mip_bias(1.0, 1.0) == 0.0
+    assert metal_warp._warp_alias_mip_bias(1.08, 0.96) == 0.0
 
-        assert mod._requires_sequential_shell_composition(
-            [{"content_width_points": 600.0, "content_height_points": 100.0}]
-        ) is False
 
-    def test_multiple_shell_configs_require_composition_chain(self, mock_pyobjc):
-        sys.modules.pop("spoke.metal_warp", None)
-        mod = importlib.import_module("spoke.metal_warp")
-
-        assert mod._requires_sequential_shell_composition(
-            [
-                {"content_width_points": 600.0, "content_height_points": 100.0},
-                {"content_width_points": 600.0, "content_height_points": 180.0},
-            ]
-        ) is True
+def test_warp_alias_mip_bias_rises_for_violent_warp():
+    assert metal_warp._warp_alias_mip_bias(2.6, 1.7) > 0.0
+    assert metal_warp._warp_alias_mip_bias(0.38, 0.52) > 0.0
