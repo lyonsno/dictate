@@ -193,18 +193,21 @@ kernel void opticalShellWarp(
     float blurRadius = blurT * 350.0f;
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
-    float4 centerColor = inTexture.sample(bilinearSampler, samplePt);
 
     float4 finalColor;
     if (blurRadius < 0.25f) {{
-        finalColor = centerColor;
+        // Sharp: sample the warped coordinate directly
+        finalColor = inTexture.sample(bilinearSampler, samplePt);
     }} else {{
-        // 24-tap Gaussian disk: 4 rings × 6 taps each.
-        // Smooth coverage, no visible ghosting.
+        // Blur in INPUT SPACE around the original screen pixel `d`,
+        // not around the warped coordinate.  The warp compresses
+        // source pixels together, so blurring the warped result
+        // just re-samples the same tiny region.  Blurring around
+        // the actual screen position averages the real neighborhood.
         float r = max(blurRadius, 0.5f);
         float sigma2 = r * r * 0.5f;
 
-        float4 acc = centerColor;
+        float4 acc = inTexture.sample(bilinearSampler, d);
         float tw = 1.0f;
 
         // Ring 1: r×0.25, 6 taps (hex)
@@ -213,7 +216,7 @@ kernel void opticalShellWarp(
             float a = float(i) * 1.0472f;  // 60° apart
             float2 o = float2(cos(a), sin(a)) * r1;
             float w = exp(-dot(o,o) / (2.0f * sigma2));
-            acc += inTexture.sample(bilinearSampler, samplePt + o) * w;
+            acc += inTexture.sample(bilinearSampler, d + o) * w;
             tw += w;
         }}
         // Ring 2: r×0.50, 6 taps (hex, rotated 30°)
@@ -222,7 +225,7 @@ kernel void opticalShellWarp(
             float a = float(i) * 1.0472f + 0.5236f;  // 30° offset
             float2 o = float2(cos(a), sin(a)) * r2;
             float w = exp(-dot(o,o) / (2.0f * sigma2));
-            acc += inTexture.sample(bilinearSampler, samplePt + o) * w;
+            acc += inTexture.sample(bilinearSampler, d + o) * w;
             tw += w;
         }}
         // Ring 3: r×0.75, 6 taps (hex)
@@ -231,7 +234,7 @@ kernel void opticalShellWarp(
             float a = float(i) * 1.0472f;
             float2 o = float2(cos(a), sin(a)) * r3;
             float w = exp(-dot(o,o) / (2.0f * sigma2));
-            acc += inTexture.sample(bilinearSampler, samplePt + o) * w;
+            acc += inTexture.sample(bilinearSampler, d + o) * w;
             tw += w;
         }}
         // Ring 4: r×1.0, 6 taps (hex, rotated 30°)
@@ -240,7 +243,7 @@ kernel void opticalShellWarp(
             float a = float(i) * 1.0472f + 0.5236f;
             float2 o = float2(cos(a), sin(a)) * r4;
             float w = exp(-dot(o,o) / (2.0f * sigma2));
-            acc += inTexture.sample(bilinearSampler, samplePt + o) * w;
+            acc += inTexture.sample(bilinearSampler, d + o) * w;
             tw += w;
         }}
         finalColor = acc / tw;
