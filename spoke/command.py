@@ -292,7 +292,6 @@ class CommandClient:
         return (
             "googleapis.com" in base_url
             or "gemini" in model
-            or model.startswith("step-3p5-flash")
             or "gpt-4.1" in model
             or "gpt-4o" in model
         )

@@ -387,8 +387,8 @@ class TestStreamCommand:
             ],
         }
 
-    def test_local_step_vlm_tool_round_sends_multimodal_tool_content(self):
-        """Operation Eyeball's local Step model should get multimodal capture payloads."""
+    def test_local_step_model_remains_text_only_without_capability_signal(self):
+        """Local Step by name alone should not be treated as a multimodal backend."""
         from spoke.command import CommandClient
         from spoke.tool_dispatch import get_tool_schemas
 
@@ -421,16 +421,18 @@ class TestStreamCommand:
 
         def tool_executor(**kwargs):
             tool_calls.append(kwargs)
-            return {
-                "content": [
-                    {"type": "text", "text": '{"scene_ref":"scene-test"}'},
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": "data:image/png;base64,QUJD"},
-                    },
-                ],
-                "log_text": '{"scene_ref":"scene-test","model_image_size":[1707,960]}',
-            }
+            if kwargs["tool_output_mode"] == "multimodal":
+                return {
+                    "content": [
+                        {"type": "text", "text": '{"scene_ref":"scene-test"}'},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,QUJD"},
+                        },
+                    ],
+                    "log_text": '{"scene_ref":"scene-test","model_image_size":[1707,960]}',
+                }
+            return '{"scene_ref":"scene-test"}'
 
         with patch("urllib.request.urlopen", side_effect=fake_urlopen):
             list(
@@ -441,17 +443,11 @@ class TestStreamCommand:
                 )
             )
 
-        assert tool_calls[0]["tool_output_mode"] == "multimodal"
+        assert tool_calls[0]["tool_output_mode"] == "text"
         assert request_bodies[1]["messages"][-1] == {
             "role": "tool",
             "tool_call_id": "call_1",
-            "content": [
-                {"type": "text", "text": '{"scene_ref":"scene-test"}'},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,QUJD"},
-                },
-            ],
+            "content": '{"scene_ref":"scene-test"}',
         }
 
     def test_stream_tool_round_accepts_legacy_tool_executor_signature(self):
