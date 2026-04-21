@@ -117,6 +117,18 @@ class TestCommandClient:
         h.clear()
         assert len(client._history) == 1
 
+    def test_history_property_concatenates_multiple_assistant_messages(self):
+        """Backward-compatible history view should preserve multi-assistant turns."""
+        client = self._make_client()
+        client._history = [[
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "First answer. "},
+            {"role": "tool", "tool_call_id": "call_1", "content": "tool output"},
+            {"role": "assistant", "content": "Second answer."},
+        ]]
+
+        assert client.history == [("q", "First answer. Second answer.")]
+
     def test_clear_history(self):
         """clear_history should empty the ring buffer."""
         client = self._make_client()
@@ -904,6 +916,42 @@ class TestToolCallRendering:
         chain = client._history[0]
         assert chain[0] == {"role": "user", "content": "test"}
 
+    def test_tool_ui_indicators_do_not_pollute_persisted_history(self):
+        """Tool-call UI markers should stay out of persisted assistant history."""
+        from spoke.command import CommandClient
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+            history_path=None,
+        )
+        chunks = [
+            self._content_chunk("Let me check. "),
+            self._tool_call_chunk("capture_context"),
+            {"choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {}}]},
+            self._content_chunk("Done."),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            list(
+                client.stream_command(
+                    "read the screen",
+                    tool_executor=lambda **kwargs: "screen summary",
+                )
+            )
+
+        chain = client._history[0]
+        assistant_messages = [
+            msg["content"]
+            for msg in chain
+            if msg.get("role") == "assistant" and msg.get("content")
+        ]
+        joined = "".join(assistant_messages)
+        assert joined == "Let me check. Done."
+        assert "[calling capture_context" not in joined
+        assert "~" not in joined
+
     def test_tool_call_without_name_is_silent(self):
         """Tool-call deltas that carry only arguments (no name) should not yield text."""
         from spoke.command import CommandClient
@@ -1217,6 +1265,23 @@ class TestCommandThinking:
         for e in content:
             assert "<think>" not in e.text
             assert "deep thought" not in e.text
+
+    def test_think_tags_with_leading_whitespace_still_yield_thinking_delta(self):
+        """Leading whitespace before <think> should not break narrator thinking extraction."""
+        client = self._make_client()
+        chunks = [
+            self._content_chunk("\n\n<think>"),
+            self._content_chunk("deep thought"),
+            self._content_chunk("</think>"),
+            self._content_chunk("visible answer"),
+        ]
+        fake_resp = _make_sse_response(chunks)
+        with patch("urllib.request.urlopen", return_value=fake_resp):
+            events = list(client.stream_command_events("q"))
+        thinking = [e.text for e in events if e.kind == "thinking_delta"]
+        content = [e.text for e in events if e.kind == "assistant_delta"]
+        assert "".join(thinking) == "deep thought"
+        assert "".join(content) == "visible answer"
 
     def test_think_tags_not_stored_in_history(self):
         """<think> content should not appear in the ring buffer history."""

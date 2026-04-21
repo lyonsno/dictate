@@ -364,17 +364,17 @@ class CommandOverlay(NSObject):
         content.addSubview_(self._thinking_label)
 
         # Narrator summary label — below the thinking timer, left-aligned
-        # Up to 3 lines of wrapping text; old summaries accumulate above new ones
+        # Up to 3 lines of wrapping text; only the latest summary is shown.
         from AppKit import NSTextAlignmentLeft, NSLineBreakByWordWrapping
         _NARRATOR_FONT_SIZE = 12.0
         _NARRATOR_LINE_HEIGHT = 15.0
-        _NARRATOR_MAX_LINES = 1
+        _NARRATOR_MAX_LINES = 3
         narrator_h = _NARRATOR_LINE_HEIGHT * _NARRATOR_MAX_LINES
         narrator_x = 14.0
-        # Position below the thinking timer with generous gap.
-        # For long user text that wraps, the narrator label will overlap
-        # but that's acceptable during the brief thinking phase.
-        narrator_y = timer_y - narrator_h - 20
+        # Keep the narrator inside the base 80px surface while still anchoring it
+        # beneath the timer on the right.
+        narrator_gap = 4.0
+        narrator_y = max(1.0, timer_y - narrator_h - narrator_gap)
         narrator_w = _OVERLAY_WIDTH - 28
         self._narrator_label = NSTextField.alloc().initWithFrame_(
             NSMakeRect(narrator_x, narrator_y, narrator_w, narrator_h)

@@ -3464,10 +3464,10 @@ class TestCommandTranscribeWorker:
         assert token_calls[0][0][1]["text"] == "first"
         complete_call = next(c for c in calls if c[0][0] == "commandComplete:")
         assert complete_call[0][1]["response"] == "first"
-        assert d._command_client._history == [[
-            {"role": "user", "content": "do something"},
-            {"role": "assistant", "content": "first"},
-        ]]
+        d._command_client.append_history_pair.assert_called_once_with(
+            "do something",
+            "first",
+        )
 
     def test_streaming_preview_finalize_path(self, main_module, monkeypatch):
         """When client is preview client with active stream, use finish_stream."""

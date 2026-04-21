@@ -295,16 +295,42 @@ class CommandClient:
         pairs: list[tuple[str, str]] = []
         for chain in self._history:
             user_text = ""
-            assistant_text = ""
+            assistant_parts: list[str] = []
             for message in chain:
                 role = message.get("role")
                 content = message.get("content")
                 if role == "user" and isinstance(content, str) and not user_text:
                     user_text = content
                 elif role == "assistant" and isinstance(content, str) and content:
-                    assistant_text = content
-            pairs.append((user_text, assistant_text))
+                    assistant_parts.append(content)
+            pairs.append((user_text, "".join(assistant_parts)))
         return pairs
+
+    def _normalized_history_turn(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Normalize a turn before storing it in durable history."""
+        turn_messages: list[dict[str, Any]] = []
+        for msg in messages:
+            if msg["role"] == "assistant" and msg.get("content"):
+                cleaned = re.sub(
+                    r"<think>.*?</think>", "", msg["content"], flags=re.DOTALL
+                ).strip()
+                msg = {**msg, "content": cleaned or None}
+            turn_messages.append(msg)
+        return turn_messages
+
+    def append_history_turn(self, messages: list[dict[str, Any]]) -> None:
+        """Append one normalized turn to the bounded history ring."""
+        self._history.append(self._normalized_history_turn(messages))
+        if len(self._history) > self._max_history:
+            self._history.pop(0)
+        self._save_history()
+
+    def append_history_pair(self, user_text: str, assistant_text: str) -> None:
+        """Append a minimal user/assistant exchange to history."""
+        self.append_history_turn([
+            {"role": "user", "content": user_text},
+            {"role": "assistant", "content": assistant_text},
+        ])
 
     def list_models(self) -> list[str]:
         """Return model ids exposed by the OMLX OpenAI-compatible endpoint."""
@@ -566,14 +592,17 @@ class CommandClient:
                             if thinking_state == "detect":
                                 # Accumulate until we can tell if it starts with <think>
                                 thinking_tag_buf += text_to_process
-                                if thinking_tag_buf.startswith("<think>"):
+                                candidate = thinking_tag_buf.lstrip()
+                                if candidate.startswith("<think>"):
                                     thinking_state = "thinking"
-                                    text_to_process = thinking_tag_buf[len("<think>"):]
+                                    text_to_process = candidate[len("<think>"):]
                                     thinking_tag_buf = ""
                                     if not text_to_process:
                                         continue
                                     # Fall through to "thinking" handler below
-                                elif len(thinking_tag_buf) < len("<think>") and "<think>".startswith(thinking_tag_buf):
+                                elif not candidate:
+                                    continue
+                                elif len(candidate) < len("<think>") and "<think>".startswith(candidate):
                                     # Could still be <think>, keep buffering
                                     continue
                                 else:
@@ -631,7 +660,6 @@ class CommandClient:
                                 if not tool_name or idx is None or idx in emitted_tool_call_indices:
                                     continue
                                 indicator = f"\n[calling {tool_name}…]\n"
-                                round_content += indicator
                                 visible_response += indicator
                                 yield CommandStreamEvent(
                                     kind="assistant_delta",
@@ -674,7 +702,6 @@ class CommandClient:
                     for i, xc in enumerate(xml_calls):
                         tool_call_acc._calls[i] = xc
                         indicator = f"\n[calling {xc['function']['name']}…]\n"
-                        round_content += indicator
                         visible_response += indicator
                         yield CommandStreamEvent(
                             kind="assistant_delta",
@@ -784,7 +811,7 @@ class CommandClient:
                         info_parts.append(f"~{result_tokens} tokens")
                     if info_parts:
                         info_line = f"  [{' · '.join(info_parts)}]\n"
-                        round_content += info_line
+                        visible_response += info_line
                         yield CommandStreamEvent(
                             kind="assistant_delta",
                             text=info_line,
@@ -810,17 +837,7 @@ class CommandClient:
 
         # Add to ring buffer — only this turn's messages (from the user
         # utterance onward), preserving tool calls and results.
-        # Strip <think>...</think> blocks from assistant messages to save context.
-        turn_messages = []
-        for msg in messages[turn_start_idx:]:
-            if msg["role"] == "assistant" and msg.get("content"):
-                cleaned = re.sub(r"<think>.*?</think>", "", msg["content"], flags=re.DOTALL).strip()
-                msg = {**msg, "content": cleaned or None}
-            turn_messages.append(msg)
-        self._history.append(turn_messages)
-        if len(self._history) > self._max_history:
-            self._history.pop(0)
-        self._save_history()
+        self.append_history_turn(messages[turn_start_idx:])
 
         return full_response
 

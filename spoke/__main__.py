@@ -3126,12 +3126,11 @@ class SpokeAppDelegate(NSObject):
                 # Repair history only when a stale token break interrupts the
                 # streaming loop before the command client can finalize the turn.
                 if stale_break and full_response:
-                    self._command_client._history.append((text, full_response))
-                    max_h = self._command_client._max_history
-                    if len(self._command_client._history) > max_h:
-                        self._command_client._history.pop(0)
-                    self._command_client._save_history()
-                    logger.info("Command history saved: %d turns", len(self._command_client._history))
+                    self._command_client.append_history_pair(text, full_response)
+                    logger.info(
+                        "Command history saved: %d turns",
+                        len(self._command_client._history),
+                    )
 
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
                 "commandComplete:", {"token": token, "response": full_response}, False
@@ -3355,15 +3354,7 @@ class SpokeAppDelegate(NSObject):
             # Repair history only when a stale token break interrupts the
             # streaming loop before the command client can finalize the turn.
             if stale_break and full_response:
-                # Stale break — no full message chain available, store minimal pair
-                self._command_client._history.append([
-                    {"role": "user", "content": utterance},
-                    {"role": "assistant", "content": full_response},
-                ])
-                max_h = self._command_client._max_history
-                if len(self._command_client._history) > max_h:
-                    self._command_client._history.pop(0)
-                self._command_client._save_history()
+                self._command_client.append_history_pair(utterance, full_response)
                 logger.info(
                     "Command history saved after stale token break: %d turns",
                     len(self._command_client._history),

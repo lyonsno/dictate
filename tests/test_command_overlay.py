@@ -264,6 +264,38 @@ class TestWindowLayering:
 
         assert command_mod._COMMAND_OVERLAY_WINDOW_LEVEL == overlay_mod._OVERLAY_WINDOW_LEVEL + 1
 
+    def test_setup_keeps_three_line_narrator_label_within_overlay_bounds(
+        self, mock_pyobjc, monkeypatch
+    ):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+
+        thinking_builder = MagicMock()
+        thinking_label = MagicMock()
+        thinking_builder.initWithFrame_.return_value = thinking_label
+        narrator_builder = MagicMock()
+        narrator_label = MagicMock()
+        narrator_builder.initWithFrame_.return_value = narrator_label
+        text_field_cls = MagicMock()
+        text_field_cls.alloc.side_effect = [thinking_builder, narrator_builder]
+        monkeypatch.setattr(sys.modules["AppKit"], "NSTextField", text_field_cls)
+        monkeypatch.setattr(sys.modules["AppKit"], "NSTextAlignmentRight", 2, raising=False)
+        monkeypatch.setattr(sys.modules["AppKit"], "NSTextAlignmentLeft", 0, raising=False)
+        monkeypatch.setattr(sys.modules["AppKit"], "NSLineBreakByWordWrapping", 0, raising=False)
+
+        overlay = mod.CommandOverlay.alloc().initWithScreen_(None)
+        overlay._screen = MagicMock()
+        overlay._screen.frame.return_value = _make_rect(0.0, 0.0, 1920.0, 1080.0)
+
+        overlay.setup()
+
+        narrator_frame = narrator_builder.initWithFrame_.call_args[0][0]
+        narrator_label.setMaximumNumberOfLines_.assert_called_once_with(3)
+        assert narrator_frame.size.height == pytest.approx(45.0)
+        assert narrator_frame.origin.y >= 0.0
+        assert narrator_frame.origin.y + narrator_frame.size.height <= mod._OVERLAY_HEIGHT
+
     def test_hide_clears_visible_and_streaming(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._visible = True
