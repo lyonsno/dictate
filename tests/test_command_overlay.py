@@ -945,6 +945,35 @@ class TestAdaptiveCompositing:
             "Optical-shell mode should stop burying the backdrop under a near-solid fill body."
         )
 
+    def test_shared_compositor_mode_keeps_command_fill_light_enough_to_show_warp(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._brightness = 1.0
+        overlay._brightness_target = 1.0
+        overlay._fill_image_brightness = 1.0
+        overlay._pulse_phase_asst = 0.0
+        overlay._pulse_phase_user = 0.0
+        overlay._tts_active = False
+        overlay._tts_blend = 0.0
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+        overlay._fullscreen_compositor = SimpleNamespace(
+            active_client_count=2,
+            update_shell_config_key=MagicMock(),
+            refresh_brightness=MagicMock(),
+            sampled_brightness=1.0,
+        )
+
+        overlay._pulseStepInner()
+
+        fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
+        assert fill_opacity <= 0.45, (
+            "Shared-host compositor mode should not bury the assistant warp "
+            "under the command overlay fill when two overlays are active."
+        )
+
     def test_optical_shell_softens_cancel_spring_tint_so_shell_remains_visible(
         self, mock_pyobjc, monkeypatch
     ):

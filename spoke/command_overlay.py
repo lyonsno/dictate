@@ -1966,6 +1966,8 @@ class CommandOverlay(NSObject):
         # the pulse-driven rhythm.
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             fill_drive = _lerp(breath, breath * breath, t)
+            compositor = getattr(self, "_fullscreen_compositor", None)
+            shared_overlay_count = max(int(getattr(compositor, "active_client_count", 1) or 1), 1)
             if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
                 fill_min = _lerp(
                     _COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MIN_DARK,
@@ -1980,7 +1982,7 @@ class CommandOverlay(NSObject):
                 if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL:
                     fill_min = 0.0
                     fill_max = 0.0
-                elif getattr(self, "_fullscreen_compositor", None) is not None:
+                elif compositor is not None and shared_overlay_count == 1:
                     # Graphic mode: dark-on-dark, light-on-light.
                     # Steep sigmoid so mid-tones commit to one side
                     # rather than lingering in a bland middle.
