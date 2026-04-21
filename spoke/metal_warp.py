@@ -111,17 +111,11 @@ def _warp_exterior_edge_mip_bias(
 
 
 def _warp_exterior_mix_weight(capsule_sdf: float, bleed_zone: float) -> float:
-    """Return the exterior warp mix weight.
-
-    Keep the exterior warp materially present across the bleed ring. The
-    previous bleed-zone-relative fade collapsed the mix too quickly and made
-    the surrounding warp all but disappear in smoke. This restores the visibly
-    strong exterior profile from the last good branch state.
-    """
+    """Fade exterior warp smoothly back to identity at the bleed edge."""
     if capsule_sdf <= 0.0 or bleed_zone <= 0.0:
         return 0.0
-    falloff_t = min(max(float(capsule_sdf) / 40.0, 0.0), 1.0)
-    fade = 1.0 - _smoothstep01(falloff_t)
+    edge_t = min(max(float(capsule_sdf) / float(bleed_zone), 0.0), 1.0)
+    fade = 1.0 - _smoothstep01(edge_t)
     return 0.5 * fade * fade
 
 
@@ -241,7 +235,7 @@ kernel void opticalShellWarp(
         float probeSY = pow(max(probeScale, 0.0f), {_WARP_Y_SQUEEZE}f);
 
         float2 boundaryWarped = c + p * float2(probeSX, probeSY);
-        float exteriorMix = 0.5f * pow(1.0f - smoothstep(0.0f, 40.0f, capsuleSdf), 2.0f);
+        float exteriorMix = 0.5f * pow(1.0f - smoothstep(0.0f, max(bleedZone, 1e-4f), capsuleSdf), 2.0f);
         result = mix(d, boundaryWarped, exteriorMix);
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
