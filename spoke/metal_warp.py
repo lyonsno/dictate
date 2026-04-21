@@ -188,12 +188,12 @@ kernel void opticalShellWarp(
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
-    // Depth-dependent blur via mipmap LOD.  sqrt ramp gives gentle
-    // onset near the rim, accelerating toward center.
-    // LOD 0 = full res, LOD 4 = 16× downsample (enough to wash text).
-    // Higher LODs cause visible seams between mip levels.
+    // Depth-dependent blur via mipmap LOD.  Linear ramp across more
+    // mip levels — each level transition is smaller and trilinear
+    // blending hides the steps.
+    // LOD 0 = full res, LOD 6 = 64× downsample.
     float interiorDepth = clamp(-capsuleSdf / capsuleRadius, 0.0f, 1.0f);
-    float mipLod = sqrt(interiorDepth) * 4.0f;
+    float mipLod = interiorDepth * 6.0f;
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
     float4 finalColor;
