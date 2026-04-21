@@ -12,6 +12,7 @@ import colorsys
 import logging
 import math
 import os
+from types import SimpleNamespace
 
 import objc
 from AppKit import (
@@ -32,12 +33,14 @@ from AppKit import (
     NSWindowCollectionBehaviorStationary,
     NSWindowStyleMaskNonactivatingPanel,
 )
-from Foundation import NSMakeRect, NSObject, NSTimer
+from Foundation import NSMakeRect, NSObject, NSRunLoop, NSTimer
 from Quartz import CAGradientLayer, CALayer, CAShapeLayer, CGPathCreateWithRoundedRect, CGAffineTransformIdentity
 
+from .backdrop_stream import make_backdrop_renderer
 from .dedup import ontology_term_spans
 
 logger = logging.getLogger(__name__)
+_BACKDROP_DISPLAY_LAYER_CLASS = None
 
 def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
@@ -85,6 +88,12 @@ _SMOOTH_DECAY = _env("SPOKE_SMOOTH_DECAY", 0.957)
 _DARK_FILL_ADDITIVE_THRESHOLD = 0.15
 _DARK_FILL_ADDITIVE_FILTER = "plusL"
 
+# Full-screen compositor fill colors — steep sigmoid crossfade.
+# Ported from command_overlay.
+_COMPOSITOR_FILL_DARK = (0.50, 0.51, 0.54)   # light fill on dark backgrounds
+_COMPOSITOR_FILL_LIGHT = (0.04, 0.04, 0.05)  # dark fill on light backgrounds
+_OPTICAL_SHELL_FEATHER = 140.0  # narrower feather when compositor is active
+
 # Adaptive compositing endpoints.
 # On dark backgrounds: light/white fill, dark text — the overlay is a
 # bright ghostly bubble that reads as additive glow.
@@ -108,6 +117,21 @@ _OUTER_GLOW_PEAK_TARGET = 0.35
 _WIDE_OUTER_GLOW_SCALE = 0.56
 _OVERLAY_INNER_SATURATION_SCALE = 0.70
 _OVERLAY_OUTER_SATURATION_SCALE = 1.80
+_POINTS_PER_CM = 72.0 / 2.54
+_PREVIEW_BACKDROP_OVERSCAN_CM = _env("SPOKE_PREVIEW_BACKDROP_OVERSCAN_CM", 1.5)
+_PREVIEW_BACKDROP_BLUR_RADIUS = _env("SPOKE_PREVIEW_BACKDROP_BLUR_RADIUS", 9.0)
+_PREVIEW_BACKDROP_MASK_WIDTH_MULTIPLIER = _env(
+    "SPOKE_PREVIEW_BACKDROP_MASK_WIDTH_MULTIPLIER", 3.0
+)
+_PREVIEW_BACKDROP_ACTIVE_BLUR_MIN_MULTIPLIER = _env(
+    "SPOKE_PREVIEW_BACKDROP_ACTIVE_BLUR_MIN_MULTIPLIER", 0.58
+)
+_PREVIEW_BACKDROP_ACTIVE_BLUR_MAX_MULTIPLIER = _env(
+    "SPOKE_PREVIEW_BACKDROP_ACTIVE_BLUR_MAX_MULTIPLIER", 1.18
+)
+_PREVIEW_BACKDROP_REFRESH_S = _env("SPOKE_PREVIEW_BACKDROP_REFRESH_S", 1.0 / 30.0)
+_RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
+_EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
 
 
 # Recovery mode constants
@@ -123,6 +147,26 @@ _RECOVERY_HINT_MARGIN = 8.0  # gap between overlay and hint
 _RECOVERY_HINT_HEIGHT = 20.0
 _TRAY_CAPTURE_FLASH_ONSET_S = 0.10
 _TRAY_CAPTURE_FLASH_FADE_OUT_S = 0.30
+
+
+def _backdrop_display_layer_class():
+    global _BACKDROP_DISPLAY_LAYER_CLASS
+    if _BACKDROP_DISPLAY_LAYER_CLASS is not None:
+        return _BACKDROP_DISPLAY_LAYER_CLASS
+    if not hasattr(objc, "loadBundle") or not hasattr(objc, "lookUpClass"):
+        _BACKDROP_DISPLAY_LAYER_CLASS = False
+        return None
+    try:
+        objc.loadBundle(
+            "AVFoundation",
+            globals(),
+            bundle_path="/System/Library/Frameworks/AVFoundation.framework",
+        )
+        _BACKDROP_DISPLAY_LAYER_CLASS = objc.lookUpClass("AVSampleBufferDisplayLayer")
+    except Exception:
+        logger.debug("AVSampleBufferDisplayLayer unavailable for preview backdrop", exc_info=True)
+        _BACKDROP_DISPLAY_LAYER_CLASS = False
+    return _BACKDROP_DISPLAY_LAYER_CLASS or None
 
 
 def _truncate_preview(text: str | None) -> str:
@@ -153,6 +197,18 @@ def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
     if clamped < _DARK_FILL_ADDITIVE_THRESHOLD:
         return _DARK_FILL_ADDITIVE_FILTER
     return None
+
+
+def _clamp01(value: float) -> float:
+    return min(max(value, 0.0), 1.0)
+
+
+def _compositor_fill_color_for_brightness(brightness: float) -> tuple[float, float, float]:
+    """Steep sigmoid fill color for compositor mode."""
+    t = _clamp01(brightness)
+    t = _clamp01((t - 0.45) * 6.0 + 0.5)
+    t = t * t * (3.0 - 2.0 * t)  # smoothstep
+    return _lerp_color(_COMPOSITOR_FILL_DARK, _COMPOSITOR_FILL_LIGHT, t)
 
 
 def _compress_outer_glow_peak(opacity: float) -> float:
@@ -314,6 +370,146 @@ def _fill_field_to_image(alpha, r: int, g: int, b: int):
     return image, payload
 
 
+def _cm_to_points(cm: float) -> float:
+    return max(cm, 0.0) * _POINTS_PER_CM
+
+
+def _preview_backdrop_capture_overscan_points() -> float:
+    return _cm_to_points(_PREVIEW_BACKDROP_OVERSCAN_CM)
+
+
+def _preview_backdrop_capture_rect(screen_frame, window_frame, content_frame, overscan_points: float):
+    overscan = max(overscan_points, 0.0)
+    x = window_frame.origin.x + content_frame.origin.x - overscan
+    width = content_frame.size.width + 2 * overscan
+    height = content_frame.size.height + 2 * overscan
+    cocoa_y = window_frame.origin.y + content_frame.origin.y - overscan
+    screen_origin_y = getattr(screen_frame.origin, "y", 0.0)
+    screen_height = getattr(screen_frame.size, "height", 0.0)
+    y = screen_origin_y + screen_height - (cocoa_y - screen_origin_y) - height
+    return SimpleNamespace(
+        origin=SimpleNamespace(x=x, y=y),
+        size=SimpleNamespace(width=width, height=height),
+    )
+
+
+def _pin_timer_to_active_run_loop_modes(timer) -> None:
+    if timer is None:
+        return
+    try:
+        run_loop = NSRunLoop.currentRunLoop()
+    except Exception:
+        return
+    for mode in (_RUN_LOOP_COMMON_MODE, _EVENT_TRACKING_RUN_LOOP_MODE):
+        try:
+            run_loop.addTimer_forMode_(timer, mode)
+        except Exception:
+            logger.debug("Failed to add backdrop timer to run loop mode %s", mode, exc_info=True)
+
+
+def _backdrop_mask_alpha(signed_distance, width: float):
+    import numpy as np
+
+    outside = np.exp(-np.sqrt(np.maximum(signed_distance, 0.0) / max(width, 1e-6)))
+    return np.where(signed_distance <= 0.0, 1.0, outside).astype(np.float32)
+
+
+def _preview_backdrop_mask_falloff_width(scale: float) -> float:
+    return max(scale, 1e-6) * max(_PREVIEW_BACKDROP_MASK_WIDTH_MULTIPLIER, 0.0)
+
+
+def _preview_backdrop_rms_style(base_blur_radius_points: float, activity: float) -> float:
+    drive = min(max(activity, 0.0), 1.0)
+    return max(
+        0.0,
+        base_blur_radius_points
+        * _lerp(
+            _PREVIEW_BACKDROP_ACTIVE_BLUR_MIN_MULTIPLIER,
+            _PREVIEW_BACKDROP_ACTIVE_BLUR_MAX_MULTIPLIER,
+            drive,
+        ),
+    )
+
+
+class _QuartzBackdropRenderer:
+    """Best-effort snapshot renderer for overlay backdrop blur prototypes."""
+
+    def __init__(self) -> None:
+        self._ci_context = None
+
+    def _context(self):
+        if self._ci_context is not None:
+            return self._ci_context
+        try:
+            from Quartz import CIContext
+        except Exception:
+            return None
+        try:
+            self._ci_context = CIContext.contextWithOptions_(None)
+        except Exception:
+            logger.debug("Failed to create CIContext for preview backdrop", exc_info=True)
+            self._ci_context = None
+        return self._ci_context
+
+    def capture_blurred_image(self, *, window_number: int, capture_rect, blur_radius_points: float):
+        try:
+            from Quartz import (
+                CGWindowListCreateImage,
+                kCGWindowListOptionOnScreenBelowWindow,
+            )
+        except Exception:
+            return None
+
+        rect = (
+            (capture_rect.origin.x, capture_rect.origin.y),
+            (capture_rect.size.width, capture_rect.size.height),
+        )
+        try:
+            image = CGWindowListCreateImage(
+                rect,
+                kCGWindowListOptionOnScreenBelowWindow,
+                window_number,
+                0,
+            )
+        except Exception:
+            logger.debug("Preview backdrop snapshot capture failed", exc_info=True)
+            return None
+        if image is None or blur_radius_points <= 0.0:
+            return image
+
+        try:
+            from Quartz import CIImage, CIFilter
+        except Exception:
+            return image
+
+        try:
+            context = self._context()
+            if context is None:
+                return image
+            ci_image = CIImage.imageWithCGImage_(image)
+            blur = CIFilter.filterWithName_("CIGaussianBlur")
+            if blur is None:
+                return image
+            blur.setDefaults()
+            blur.setValue_forKey_(ci_image, "inputImage")
+            blur.setValue_forKey_(blur_radius_points, "inputRadius")
+            output = blur.valueForKey_("outputImage")
+            if output is None:
+                return image
+            extent = ci_image.extent() if hasattr(ci_image, "extent") else None
+            if extent is not None and hasattr(output, "imageByCroppingToRect_"):
+                output = output.imageByCroppingToRect_(extent)
+            if extent is None and hasattr(output, "extent"):
+                extent = output.extent()
+            if extent is None or not hasattr(context, "createCGImage_fromRect_"):
+                return image
+            blurred = context.createCGImage_fromRect_(output, extent)
+            return blurred or image
+        except Exception:
+            logger.debug("Preview backdrop blur pass failed; using unblurred snapshot", exc_info=True)
+            return image
+
+
 def _build_ridge_image(field_width: float, field_height: float,
                        rect_width: float, rect_height: float,
                        corner_radius: float, scale: float,
@@ -340,6 +536,38 @@ def _ontology_text_rgb(text_lum: float) -> tuple[float, float, float]:
     if text_lum >= 0.5:
         return _scale_color_saturation((0.91, 0.95, 1.0), 1.4)
     return (0.07, 0.10, 0.19)
+
+
+def _preview_optical_shell_config(
+    content_width_points: float | None = None,
+    content_height_points: float | None = None,
+) -> dict[str, float | bool]:
+    """Return optical shell config dict for the preview overlay compositor."""
+    width_points = _OVERLAY_WIDTH if content_width_points is None else max(float(content_width_points), 1.0)
+    height_points = _OVERLAY_HEIGHT if content_height_points is None else max(float(content_height_points), 1.0)
+    # Inflate the warp capsule by a half-radius so the fill pill sits
+    # entirely inside the warped region (including the exterior bleed).
+    capsule_r = _OVERLAY_HEIGHT / 4.0
+    width_points += capsule_r
+    height_points += capsule_r
+    band_mm = 4.0
+    tail_mm = 3.0
+    ring_refraction = 1.0
+    tail_refraction = 0.75
+    return {
+        "enabled": True,
+        "content_width_points": width_points,
+        "content_height_points": height_points,
+        "corner_radius_points": _OVERLAY_HEIGHT / 4.0,
+        "core_magnification": 1.55,
+        "band_width_points": _cm_to_points(band_mm / 10.0),
+        "tail_width_points": _cm_to_points(tail_mm / 10.0),
+        "ring_amplitude_points": _cm_to_points(band_mm / 10.0) * ring_refraction,
+        "tail_amplitude_points": _cm_to_points(tail_mm / 10.0) * tail_refraction,
+        "debug_visualize": False,
+        "debug_grid_spacing_points": 0.0,
+        "cleanup_blur_radius_points": 0.75,
+    }
 
 
 class TranscriptionOverlay(NSObject):
@@ -373,6 +601,16 @@ class TranscriptionOverlay(NSObject):
         self._brightness_target = 0.0
         self._fill_override_rgb: tuple[float, float, float] | None = None
         self._fill_override_opacity: float | None = None
+        self._backdrop_base_blur_radius_points = _PREVIEW_BACKDROP_BLUR_RADIUS
+        self._backdrop_blur_radius_points = _PREVIEW_BACKDROP_BLUR_RADIUS
+        self._backdrop_renderer = make_backdrop_renderer(
+            self._screen,
+            lambda: _QuartzBackdropRenderer(),
+        )
+        self._backdrop_layer = None
+        self._backdrop_capture_overscan_points = _preview_backdrop_capture_overscan_points()
+        self._backdrop_capture_rect = None
+        self._backdrop_timer: NSTimer | None = None
 
         # Recovery mode state
         self._recovery_mode = False
@@ -446,14 +684,40 @@ class TranscriptionOverlay(NSObject):
         # per-pixel alpha from the SDF smoothstep.  No mask layer needed —
         # the alpha falloff is in the image itself.  The fill color is updated
         # by rebuilding the image in update_text_amplitude.
+        backdrop_layer_cls = self._choose_backdrop_layer_class()
+        self._backdrop_layer = backdrop_layer_cls.alloc().init()
+        self._backdrop_layer_is_sample_buffer_display = (
+            backdrop_layer_cls is not CALayer and hasattr(self._backdrop_layer, "enqueueSampleBuffer_")
+        )
+        if hasattr(self._backdrop_layer, "setContentsGravity_"):
+            self._backdrop_layer.setContentsGravity_("resize")
+        elif hasattr(self._backdrop_layer, "setVideoGravity_"):
+            self._backdrop_layer.setVideoGravity_("resize")
+        self._backdrop_layer.setOpacity_(1.0)
+
         self._fill_layer = CALayer.alloc().init()
         self._fill_layer.setFrame_(((0, 0), (win_w, win_h)))
         self._fill_layer.setContentsGravity_("resize")
 
+        # Boost layer — white, sits between backdrop and fill.  When
+        # punch-through is active on dark backgrounds, brightens the warped
+        # content visible through the text-shaped holes in the fill mask.
+        self._boost_layer = CALayer.alloc().init()
+        self._boost_layer.setFrame_(((0, 0), (win_w, win_h)))
+        from Quartz import CGColorCreateSRGB
+        self._boost_layer.setBackgroundColor_(CGColorCreateSRGB(1.0, 1.0, 1.0, 1.0))
+        self._boost_layer.setOpacity_(0.0)
+        self._boost_layer.setHidden_(True)
+
         # Build initial SDF fill image
         self._apply_ridge_masks(w, h)
 
+        wrapper.layer().insertSublayer_below_(self._backdrop_layer, self._fill_layer)
+        # Boost sits between backdrop and fill
+        wrapper.layer().insertSublayer_above_(self._boost_layer, self._backdrop_layer)
         wrapper.layer().insertSublayer_below_(self._fill_layer, content.layer())
+        self._install_backdrop_frame_callback()
+        self._install_backdrop_sample_buffer_callback()
 
         wrapper.addSubview_(content)
         self._content_view = content
@@ -499,8 +763,39 @@ class TranscriptionOverlay(NSObject):
         self._window.setContentView_(wrapper)
 
         self._window.setAlphaValue_(0.0)
+        self._update_backdrop_capture_geometry()
 
         logger.info("Transcription overlay created")
+
+    def _choose_backdrop_layer_class(self):
+        renderer = getattr(self, "_backdrop_renderer", None)
+        blur_radius_points = getattr(self, "_backdrop_blur_radius_points", _PREVIEW_BACKDROP_BLUR_RADIUS)
+        if renderer is not None and hasattr(renderer, "supports_sample_buffer_presentation"):
+            try:
+                if renderer.supports_sample_buffer_presentation(blur_radius_points):
+                    display_layer_class = _backdrop_display_layer_class()
+                    if display_layer_class is not None:
+                        return display_layer_class
+            except Exception:
+                logger.debug("Preview backdrop renderer sample-buffer capability check failed", exc_info=True)
+        return CALayer
+
+    def _backdrop_layer_uses_sample_buffers(self) -> bool:
+        return bool(getattr(self, "_backdrop_layer_is_sample_buffer_display", False))
+
+    def _reset_backdrop_layer(self) -> None:
+        layer = getattr(self, "_backdrop_layer", None)
+        if layer is None:
+            return
+        if self._backdrop_layer_uses_sample_buffers() and hasattr(layer, "flushAndRemoveImage"):
+            try:
+                layer.flushAndRemoveImage()
+            except Exception:
+                logger.debug("Failed to flush preview backdrop display layer", exc_info=True)
+        if hasattr(layer, "setContents_"):
+            layer.setContents_(None)
+        if hasattr(layer, "setMask_"):
+            layer.setMask_(None)
 
     def show(self) -> None:
         """Fade the overlay in."""
@@ -528,6 +823,7 @@ class TranscriptionOverlay(NSObject):
         self._content_view.layer().setBackgroundColor_(None)
         self._clear_fill_override(opacity=_BG_ALPHA_MIN)
         self._window.setAlphaValue_(0.0)
+        self._reset_backdrop_layer()
 
         # Reset to default size (window includes feather margin)
         screen_frame = self._screen.frame()
@@ -548,6 +844,9 @@ class TranscriptionOverlay(NSObject):
         self._reset_text_geometry(_OVERLAY_HEIGHT - 16, scroll_to_top=True)
 
         self._window.orderFrontRegardless()
+        self._refresh_backdrop_snapshot()
+        self._start_backdrop_refresh_timer()
+        self._start_fullscreen_compositor()
 
         # Fade in using stepped timer
         self._fade_step = 0
@@ -572,6 +871,8 @@ class TranscriptionOverlay(NSObject):
             return
         self._cancel_tray_capture_flash()
         self._visible = False
+        self._stop_fullscreen_compositor()
+        self._cancel_backdrop_refresh()
         self._cancel_typewriter()
         self._start_fade_out(duration=fade_duration)
         logger.info("Overlay hide")
@@ -585,10 +886,15 @@ class TranscriptionOverlay(NSObject):
         if self._window is None:
             return
         self._visible = False
+        self._stop_fullscreen_compositor()
         self._cancel_tray_capture_flash()
+        self._cancel_backdrop_refresh()
         self._cancel_fade()
         self._cancel_typewriter()
         self._window.setAlphaValue_(0.0)
+        self._reset_backdrop_layer()
+        if self._backdrop_renderer is not None and hasattr(self._backdrop_renderer, "stop_live_stream"):
+            self._backdrop_renderer.stop_live_stream()
         self._window.orderOut_(None)
         logger.info("Overlay ordered out")
 
@@ -625,6 +931,9 @@ class TranscriptionOverlay(NSObject):
             self._cancel_fade()
             if self._fade_direction == -1:
                 self._window.setAlphaValue_(0.0)
+                self._reset_backdrop_layer()
+                if self._backdrop_renderer is not None and hasattr(self._backdrop_renderer, "stop_live_stream"):
+                    self._backdrop_renderer.stop_live_stream()
                 self._window.orderOut_(None)
             else:
                 self._window.setAlphaValue_(1.0)
@@ -633,6 +942,11 @@ class TranscriptionOverlay(NSObject):
         if self._fade_timer is not None:
             self._fade_timer.invalidate()
             self._fade_timer = None
+
+    def _cancel_backdrop_refresh(self) -> None:
+        if getattr(self, "_backdrop_timer", None) is not None:
+            self._backdrop_timer.invalidate()
+            self._backdrop_timer = None
 
     def _set_text_view_content(
         self,
@@ -769,6 +1083,17 @@ class TranscriptionOverlay(NSObject):
             ease = 0.95 + 0.04 * min(gap / 0.3, 1.0)  # 0.99 when high, 0.95 near zero
             self._text_amplitude *= ease
 
+        # When compositor is active, sample capsule-region brightness
+        # directly — much more accurate than the glow's 4-patch screen
+        # average.  Refresh every ~500ms (15 pulse ticks).
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is not None:
+            _b_tick = getattr(self, '_brightness_sample_tick', 0)
+            if _b_tick % 15 == 0:
+                compositor.refresh_brightness()
+            self._brightness_sample_tick = _b_tick + 1
+            self._brightness_target = compositor.sampled_brightness
+
         # Chase brightness target over roughly half a second at the live update cadence.
         _BRIGHTNESS_CHASE = 0.08
         target = getattr(self, "_brightness_target", 0.0)
@@ -826,10 +1151,24 @@ class TranscriptionOverlay(NSObject):
         # On dark backgrounds use linear response so soft sounds register.
         # On light backgrounds use squared so the fill leads the glow.
         fill_drive = _lerp(scaled, scaled * scaled, t)
+        self._backdrop_blur_radius_points = _preview_backdrop_rms_style(
+            getattr(self, "_backdrop_base_blur_radius_points", _PREVIEW_BACKDROP_BLUR_RADIUS),
+            fill_drive,
+        )
+        renderer = getattr(self, "_backdrop_renderer", None)
+        if renderer is not None and hasattr(renderer, "set_live_blur_radius_points"):
+            try:
+                renderer.set_live_blur_radius_points(self._backdrop_blur_radius_points)
+            except Exception:
+                logger.debug("Failed to push live preview backdrop blur radius", exc_info=True)
         fill_min = _lerp(0.06, 0.84, t)   # light: 2x rest presence — much more material
         fill_max = _lerp(0.92, 0.99, t)   # saturates near-full on both backgrounds
         fill_opacity = _lerp(fill_min, fill_max, fill_drive)
+        _has_compositor = getattr(self, "_fullscreen_compositor", None) is not None
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+            # When compositor is active, no additive glow — normal alpha blending
+            if _has_compositor and hasattr(self._fill_layer, "setCompositingFilter_"):
+                self._fill_layer.setCompositingFilter_(None)
             self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
             # Rebuild the fill image when brightness changes enough to
             # affect the baked color.
@@ -847,6 +1186,40 @@ class TranscriptionOverlay(NSObject):
                         self._apply_ridge_masks(cf.size.width, cf.size.height)
                     except Exception:
                         pass
+
+        # Brightness floor for punch-through legibility.
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is not None and getattr(self, "_text_punchthrough", False):
+            _bt = _clamp01((t - 0.45) * 6.0 + 0.5)
+            _bt = _bt * _bt * (3.0 - 2.0 * _bt)
+            min_b = _lerp(0.0, 0.5, _bt)
+            last_min_b = getattr(self, '_last_min_brightness', -1.0)
+            if abs(min_b - last_min_b) > 0.01:
+                compositor.update_shell_config_key("min_brightness", min_b)
+                self._last_min_brightness = min_b
+        elif compositor is not None:
+            if getattr(self, '_last_min_brightness', 0.0) > 0.01:
+                compositor.update_shell_config_key("min_brightness", 0.0)
+                self._last_min_brightness = 0.0
+        # Boost layer: white layer masked to text glyphs for extra lift.
+        boost_layer = getattr(self, "_boost_layer", None)
+        if boost_layer is not None and getattr(self, "_text_punchthrough", False):
+            _bt = _clamp01((t - 0.45) * 6.0 + 0.5)
+            _bt = _bt * _bt * (3.0 - 2.0 * _bt)
+            boost_opacity = _lerp(0.0, 0.75, _bt)
+            # Only show boost if it has a mask (avoid solid white flash)
+            has_mask = getattr(self, "_boost_mask_layer", None) is not None
+            if boost_opacity > 0.01 and has_mask:
+                boost_layer.setHidden_(False)
+                boost_layer.setOpacity_(boost_opacity)
+            else:
+                boost_layer.setHidden_(True)
+                boost_layer.setOpacity_(0.0)
+        elif boost_layer is not None:
+            boost_layer.setHidden_(True)
+        # Update text punch-through mask (if active)
+        if getattr(self, "_text_punchthrough", False):
+            self._update_punchthrough_mask()
 
     def update_glow_amplitude(self, opacity: float, cap_factor: float = 1.0) -> None:
         """Update inner and outer glow opacity to match the screen glow.
@@ -911,13 +1284,90 @@ class TranscriptionOverlay(NSObject):
         The SDF is cached by geometry (width, height, scale).  When only
         brightness changes the cache is hit and the expensive numpy
         computation is skipped — only the colored fill image is rebuilt.
+
+        When the full-screen compositor is active, uses the narrower
+        _OPTICAL_SHELL_FEATHER and a two-stage geometry/appearance cache
+        split so brightness-dependent fill alpha is rebuilt cheaply.
         """
+        _has_compositor = getattr(self, "_fullscreen_compositor", None) is not None
+        # Always use _OUTER_FEATHER for the fill layer frame — the window
+        # is sized with _OUTER_FEATHER and the fill layer must match.
+        # _OPTICAL_SHELL_FEATHER is only used for the glow tail decay
+        # computation inside the SDF.
         f = _OUTER_FEATHER
         scale = getattr(self, '_ridge_scale', 2.0)
         total_w = width + 2 * f
         total_h = height + 2 * f
 
         try:
+            import numpy as np
+
+            if _has_compositor:
+                # ── Stage 1: geometry cache (SDF + derived fields) ──
+                geom_key = (width, height, scale, True)
+                if getattr(self, '_sdf_geom_key', None) != geom_key:
+                    pw, ph = max(int(total_w), 1), max(int(total_h), 1)
+                    xs = np.arange(pw, dtype=np.float32)[None, :] + 0.5 - pw * 0.5
+                    ys = np.arange(ph, dtype=np.float32)[:, None] + 0.5 - ph * 0.5
+                    half_w = width * 0.5
+                    half_h = height * 0.5
+                    corner_r = _OVERLAY_HEIGHT / 4.0
+                    capsule_radius = max(min(corner_r, half_h), 1.0)
+                    spine_half_x = max(half_w - capsule_radius, 0.0)
+                    spine_half_y = max(half_h - capsule_radius, 0.0)
+                    spine_dist_x = np.maximum(np.abs(xs) - spine_half_x, 0.0)
+                    spine_dist_y = np.maximum(np.abs(ys) - spine_half_y, 0.0)
+                    sdf = (np.hypot(spine_dist_x, spine_dist_y) - capsule_radius).astype(np.float32)
+
+                    inside_d = np.maximum(-sdf, 0.0)
+                    edge_ridge = np.exp(-((inside_d / (1.5 * scale)) ** 2.0)).astype(np.float32)
+                    raw_interior = np.exp(-np.sqrt(
+                        np.abs(sdf) / max(2.0 * scale, 1e-6)
+                    )).astype(np.float32)
+                    inside_mask = (sdf <= 0.0)
+
+                    feather_px = _OPTICAL_SHELL_FEATHER * scale
+                    ext_d = np.maximum(sdf, 0.0)
+                    sigma = feather_px / 3.0
+                    exterior = np.exp(-0.5 * (ext_d / sigma) ** 2.0).astype(np.float32)
+                    ext_t = np.clip(ext_d / feather_px, 0.0, 1.0)
+                    ext_exterior = (exterior * (0.13 * np.exp(-((ext_t / 0.30) ** 1.5)) + 0.007)).astype(np.float32)
+
+                    self._sdf_raw_interior = raw_interior
+                    self._sdf_edge_ridge = edge_ridge
+                    self._sdf_inside_mask = inside_mask
+                    self._sdf_ext_exterior = ext_exterior
+                    self._sdf_geom_key = geom_key
+                    self._sdf_appearance_b = -1.0
+
+                # ── Stage 2: appearance (brightness-dependent fill alpha) ──
+                _b = getattr(self, '_brightness', 0.0)
+                _b_rounded = round(_b * 50) / 50
+                if getattr(self, '_sdf_appearance_b', -1.0) != _b_rounded:
+                    _ifloor = _lerp(0.60, 0.85, _clamp01(_b))
+                    interior = (_ifloor + (1.0 - _ifloor) * self._sdf_raw_interior)
+                    interior = np.clip(
+                        interior + self._sdf_edge_ridge * 0.50,
+                        0.0, 1.0,
+                    ).astype(np.float32)
+                    fill_alpha = np.where(self._sdf_inside_mask, interior, self._sdf_ext_exterior)
+                    self._cached_fill_alpha = fill_alpha
+                    self._sdf_appearance_b = _b_rounded
+                fill_alpha = self._cached_fill_alpha
+
+                bg_r, bg_g, bg_b = _compositor_fill_color_for_brightness(_b)
+                fill_image, self._fill_payload = _fill_field_to_image(
+                    fill_alpha,
+                    int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
+                )
+                if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+                    self._fill_layer.setContents_(fill_image)
+                    self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
+                    if hasattr(self._fill_layer, "setCompositingFilter_"):
+                        self._fill_layer.setCompositingFilter_(None)
+                return
+
+            # Non-compositor path: original SDF + fill image
             cache_key = (width, height, scale)
             if getattr(self, '_sdf_cache_key', None) != cache_key:
                 sdf = _overlay_rounded_rect_sdf(
@@ -973,10 +1423,396 @@ class TranscriptionOverlay(NSObject):
         except (ImportError, Exception):
             pass
 
+    def _update_backdrop_capture_geometry(self):
+        if self._window is None or self._content_view is None or self._screen is None:
+            return None
+        try:
+            screen_frame = self._screen.frame()
+            win_frame = self._window.frame()
+            content_frame = self._content_view.frame()
+        except Exception:
+            return None
+        capture_rect = _preview_backdrop_capture_rect(
+            screen_frame,
+            win_frame,
+            content_frame,
+            getattr(self, "_backdrop_capture_overscan_points", _preview_backdrop_capture_overscan_points()),
+        )
+        self._backdrop_capture_rect = capture_rect
+        return capture_rect
+
+    def _update_backdrop_mask(self, width: float, height: float):
+        if self._backdrop_layer is None:
+            return
+        try:
+            overscan = getattr(self, "_backdrop_capture_overscan_points", _preview_backdrop_capture_overscan_points())
+            scale = getattr(self, "_ridge_scale", 2.0)
+            inner_width = max(width - 2 * overscan, 1.0)
+            inner_height = max(height - 2 * overscan, 1.0)
+            sdf = _overlay_rounded_rect_sdf(
+                width,
+                height,
+                inner_width,
+                inner_height,
+                _OVERLAY_CORNER_RADIUS,
+                scale,
+            )
+            alpha = _backdrop_mask_alpha(
+                sdf,
+                width=_preview_backdrop_mask_falloff_width(scale),
+            )
+            mask_image, self._backdrop_mask_payload = _fill_field_to_image(
+                alpha, 255, 255, 255
+            )
+        except Exception:
+            return
+        mask = CALayer.alloc().init()
+        mask.setFrame_(((0, 0), (width, height)))
+        mask.setContents_(mask_image)
+        mask.setContentsGravity_("resize")
+        self._backdrop_layer.setMask_(mask)
+
+    def _install_backdrop_sample_buffer_callback(self):
+        renderer = getattr(self, "_backdrop_renderer", None)
+        layer = getattr(self, "_backdrop_layer", None)
+        if (
+            renderer is None
+            or layer is None
+            or not hasattr(renderer, "set_sample_buffer_callback")
+            or not hasattr(layer, "enqueueSampleBuffer_")
+        ):
+            return
+
+        def apply_live_sample_buffer(sample_buffer) -> None:
+            if self._backdrop_layer is None:
+                return
+            try:
+                self._backdrop_layer.enqueueSampleBuffer_(sample_buffer)
+            except Exception:
+                logger.debug("Failed to enqueue preview backdrop sample buffer", exc_info=True)
+
+        renderer.set_sample_buffer_callback(apply_live_sample_buffer)
+
+    def _install_backdrop_frame_callback(self):
+        renderer = getattr(self, "_backdrop_renderer", None)
+        if renderer is None or not hasattr(renderer, "set_frame_callback"):
+            return
+        if self._backdrop_layer_uses_sample_buffers():
+            renderer.set_frame_callback(None)
+            return
+
+        def apply_live_frame(image) -> None:
+            if self._backdrop_layer is None:
+                return
+            self._backdrop_layer.setContents_(image)
+
+        renderer.set_frame_callback(apply_live_frame)
+
+    def _start_fullscreen_compositor(self):
+        """Start the full-screen compositor for zero-seam optical shell."""
+        self._stop_fullscreen_compositor()
+        try:
+            from spoke.fullscreen_compositor import FullScreenCompositor
+            content = getattr(self, "_content_view", None)
+            if content is None or not hasattr(content, "frame"):
+                shell_config = _preview_optical_shell_config()
+            else:
+                try:
+                    frame = content.frame()
+                    shell_config = _preview_optical_shell_config(frame.size.width, frame.size.height)
+                except Exception:
+                    shell_config = _preview_optical_shell_config()
+            scale = self._screen.backingScaleFactor() if hasattr(self._screen, "backingScaleFactor") else 2.0
+            screen_frame = self._screen.frame()
+            win_frame = self._window.frame()
+            content_frame = self._content_view.frame()
+            # Capsule center in screen points
+            capsule_cx = win_frame.origin.x + content_frame.origin.x + content_frame.size.width / 2
+            capsule_cy_cocoa = win_frame.origin.y + content_frame.origin.y + content_frame.size.height / 2
+            capsule_cy_metal = screen_frame.size.height - capsule_cy_cocoa
+            shell_config["center_x"] = capsule_cx * scale
+            shell_config["center_y"] = capsule_cy_metal * scale
+            for k in ("content_width_points", "content_height_points",
+                      "corner_radius_points", "band_width_points",
+                      "tail_width_points"):
+                if k in shell_config:
+                    shell_config[k] = float(shell_config[k]) * scale
+            compositor = FullScreenCompositor(self._screen)
+            try:
+                overlay_wid = int(self._window.windowNumber())
+                compositor.set_excluded_window_ids([overlay_wid])
+            except Exception:
+                pass
+            if compositor.start(shell_config):
+                self._fullscreen_compositor = compositor
+                self._cancel_backdrop_refresh()
+                if self._backdrop_layer is not None:
+                    self._backdrop_layer.setHidden_(True)
+                # Stop old Metal display link renderer if present
+                old_dl = getattr(self, "_metal_display_link_renderer", None)
+                if old_dl is not None:
+                    try:
+                        old_dl.stop()
+                    except Exception:
+                        pass
+                    self._metal_display_link_renderer = None
+                self._enable_text_punchthrough(True)
+                # Invalidate SDF + brightness caches
+                self._sdf_cache_key = None
+                self._sdf_geom_key = None
+                self._sdf_appearance_b = -1.0
+                self._fill_image_brightness = -1.0
+                content = getattr(self, "_content_view", None)
+                if content:
+                    try:
+                        cf = content.frame()
+                        self._apply_ridge_masks(cf.size.width, cf.size.height)
+                    except Exception:
+                        pass
+                logger.info("Preview overlay: full-screen compositor started")
+            else:
+                logger.info("Preview overlay: full-screen compositor failed to start")
+        except Exception:
+            logger.info("Preview overlay: full-screen compositor unavailable", exc_info=True)
+
+    def _stop_fullscreen_compositor(self):
+        """Stop the full-screen compositor and restore normal backdrop path."""
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        self._fullscreen_compositor = None
+        self._enable_text_punchthrough(False)
+        # Unhide the old backdrop layer
+        backdrop = getattr(self, "_backdrop_layer", None)
+        if backdrop is not None:
+            try:
+                backdrop.setHidden_(False)
+            except Exception:
+                pass
+        if compositor is not None:
+            try:
+                compositor.stop()
+            except Exception:
+                logger.debug("Failed to stop preview full-screen compositor", exc_info=True)
+        # Invalidate fill caches so non-compositor path rebuilds
+        self._sdf_cache_key = None
+        self._sdf_geom_key = None
+        self._sdf_appearance_b = -1.0
+        self._fill_image_brightness = -1.0
+
+    def _enable_text_punchthrough(self, enabled: bool) -> None:
+        """Toggle text punch-through mode."""
+        self._text_punchthrough = enabled
+        fill = getattr(self, "_fill_layer", None)
+        content = getattr(self, "_content_view", None)
+        if fill is None:
+            return
+        if enabled:
+            if content is not None and hasattr(content, "setHidden_"):
+                content.setHidden_(True)
+        else:
+            if hasattr(fill, "setMask_"):
+                fill.setMask_(None)
+            self._punchthrough_mask_layer = None
+            boost = getattr(self, "_boost_layer", None)
+            if boost is not None:
+                if hasattr(boost, "setHidden_"):
+                    boost.setHidden_(True)
+                if hasattr(boost, "setOpacity_"):
+                    boost.setOpacity_(0.0)
+                if hasattr(boost, "setMask_"):
+                    boost.setMask_(None)
+                self._boost_mask_layer = None
+            if content is not None and hasattr(content, "setHidden_"):
+                content.setHidden_(False)
+
+    def _update_punchthrough_mask(self) -> None:
+        """Render text into an inverted mask for the fill layer."""
+        fill = getattr(self, "_fill_layer", None)
+        content = getattr(self, "_content_view", None)
+        if fill is None or content is None:
+            return
+        ts = self._text_view.textStorage()
+        if ts is None or (hasattr(ts, 'length') and ts.length() == 0):
+            fill.setMask_(None)
+            return
+        try:
+            from Quartz import (
+                CGBitmapContextCreate,
+                CGBitmapContextCreateImage,
+                CGColorSpaceCreateDeviceRGB,
+                kCGImageAlphaPremultipliedLast,
+                kCGBlendModeDestinationOut,
+                CGRectMake,
+                CGContextSetRGBFillColor,
+                CGContextFillRect,
+                CGContextSetBlendMode,
+                CGContextSaveGState,
+                CGContextRestoreGState,
+                CGContextTranslateCTM,
+                CGContextScaleCTM,
+            )
+            from AppKit import NSGraphicsContext
+            from Foundation import NSMakeRect as _NSMakeRect
+
+            fill_frame = fill.frame()
+            fw = int(fill_frame[1][0])
+            fh = int(fill_frame[1][1])
+            if fw <= 0 or fh <= 0:
+                return
+
+            content_frame = content.frame()
+            cx = content_frame[0][0]
+            cy = content_frame[0][1]
+
+            scroll_origin = self._scroll_view.contentView().bounds().origin
+            text_frame = self._text_view.frame()
+
+            cs = CGColorSpaceCreateDeviceRGB()
+            ctx = CGBitmapContextCreate(
+                None, fw, fh, 8, fw * 4,
+                cs, kCGImageAlphaPremultipliedLast,
+            )
+            if ctx is None:
+                return
+
+            CGContextSetRGBFillColor(ctx, 1.0, 1.0, 1.0, 1.0)
+            CGContextFillRect(ctx, CGRectMake(0, 0, fw, fh))
+
+            nsctx = NSGraphicsContext.graphicsContextWithCGContext_flipped_(ctx, True)
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.setCurrentContext_(nsctx)
+
+            CGContextSaveGState(ctx)
+            CGContextSetBlendMode(ctx, kCGBlendModeDestinationOut)
+
+            CGContextTranslateCTM(ctx, 0, fh)
+            CGContextScaleCTM(ctx, 1.0, -1.0)
+
+            content_h = content_frame[1][1]
+            # Preview overlay scroll insets: 12, 8 (not 24, 16)
+            text_x = cx + 12.0
+            text_y = (fh - cy - content_h) + 8.0 - scroll_origin.y
+
+            text_w = text_frame.size.width
+            text_h = text_frame.size.height
+            ts.drawInRect_(_NSMakeRect(text_x, text_y, text_w, text_h))
+
+            CGContextRestoreGState(ctx)
+            NSGraphicsContext.restoreGraphicsState()
+
+            mask_image = CGBitmapContextCreateImage(ctx)
+            if mask_image is None:
+                return
+
+            mask_layer = getattr(self, "_punchthrough_mask_layer", None)
+            if mask_layer is None:
+                mask_layer = CALayer.alloc().init()
+                mask_layer.setContentsGravity_("resize")
+                self._punchthrough_mask_layer = mask_layer
+            mask_layer.setFrame_(((0, 0), (fw, fh)))
+            mask_layer.setContents_(mask_image)
+            if fill.mask() is not mask_layer:
+                fill.setMask_(mask_layer)
+
+            # Boost mask: opaque where text is (inverse of fill mask)
+            boost_layer = getattr(self, "_boost_layer", None)
+            if boost_layer is not None:
+                boost_ctx = CGBitmapContextCreate(
+                    None, fw, fh, 8, fw * 4,
+                    cs, kCGImageAlphaPremultipliedLast,
+                )
+                if boost_ctx is not None:
+                    boost_nsctx = NSGraphicsContext.graphicsContextWithCGContext_flipped_(boost_ctx, True)
+                    NSGraphicsContext.saveGraphicsState()
+                    NSGraphicsContext.setCurrentContext_(boost_nsctx)
+                    CGContextSaveGState(boost_ctx)
+                    CGContextTranslateCTM(boost_ctx, 0, fh)
+                    CGContextScaleCTM(boost_ctx, 1.0, -1.0)
+                    ts.drawInRect_(_NSMakeRect(text_x, text_y, text_w, text_h))
+                    CGContextRestoreGState(boost_ctx)
+                    NSGraphicsContext.restoreGraphicsState()
+
+                    boost_mask_image = CGBitmapContextCreateImage(boost_ctx)
+                    if boost_mask_image is not None:
+                        boost_mask = getattr(self, "_boost_mask_layer", None)
+                        if boost_mask is None:
+                            boost_mask = CALayer.alloc().init()
+                            boost_mask.setContentsGravity_("resize")
+                            self._boost_mask_layer = boost_mask
+                        boost_mask.setFrame_(((0, 0), (fw, fh)))
+                        boost_mask.setContents_(boost_mask_image)
+                        if boost_layer.mask() is not boost_mask:
+                            boost_layer.setMask_(boost_mask)
+
+        except Exception:
+            logger.debug("Failed to update preview punch-through mask", exc_info=True)
+
+    def _start_backdrop_refresh_timer(self):
+        self._cancel_backdrop_refresh()
+        if self._backdrop_renderer is None or self._backdrop_layer is None:
+            return
+        self._backdrop_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _PREVIEW_BACKDROP_REFRESH_S,
+            self,
+            "backdropRefreshTick:",
+            None,
+            True,
+        )
+        _pin_timer_to_active_run_loop_modes(self._backdrop_timer)
+
+    def backdropRefreshTick_(self, timer) -> None:
+        if not self._visible:
+            self._cancel_backdrop_refresh()
+            return
+        self._refresh_backdrop_snapshot()
+
+    def _refresh_backdrop_snapshot(self):
+        if (
+            self._backdrop_renderer is None
+            or self._backdrop_layer is None
+            or self._window is None
+            or self._content_view is None
+        ):
+            return None
+        capture_rect = self._update_backdrop_capture_geometry()
+        if capture_rect is None:
+            return None
+        try:
+            window_number = self._window.windowNumber()
+        except Exception:
+            return None
+        blur_radius_points = getattr(self, "_backdrop_blur_radius_points", _PREVIEW_BACKDROP_BLUR_RADIUS)
+        image = self._backdrop_renderer.capture_blurred_image(
+            window_number=window_number,
+            capture_rect=capture_rect,
+            blur_radius_points=blur_radius_points,
+        )
+        direct_sample_path = False
+        sample_buffer_query = getattr(self._backdrop_renderer, "uses_direct_sample_buffers", None)
+        if callable(sample_buffer_query):
+            try:
+                direct_sample_path = sample_buffer_query(blur_radius_points) is True
+            except Exception:
+                direct_sample_path = False
+        if image is None and not direct_sample_path:
+            return None
+        overscan = getattr(self, "_backdrop_capture_overscan_points", _preview_backdrop_capture_overscan_points())
+        content_frame = self._content_view.frame()
+        local_x = content_frame.origin.x - overscan
+        local_y = content_frame.origin.y - overscan
+        local_w = capture_rect.size.width
+        local_h = capture_rect.size.height
+        self._backdrop_layer.setFrame_(((local_x, local_y), (local_w, local_h)))
+        if image is not None and hasattr(self._backdrop_layer, "setContents_"):
+            self._backdrop_layer.setContents_(image)
+        self._update_backdrop_mask(local_w, local_h)
+        return image
+
     def _reset_overlay_chrome_geometry(self, visible_height: float) -> None:
         """Keep height-dependent overlay layers in sync with the current overlay size."""
         w = _OVERLAY_WIDTH
         self._apply_ridge_masks(w, visible_height)
+        if self._visible:
+            self._refresh_backdrop_snapshot()
 
     def _set_fill_override(
         self,
@@ -1027,6 +1863,21 @@ class TranscriptionOverlay(NSObject):
                 )
                 self._scroll_view.setFrame_(NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16))
                 self._reset_overlay_chrome_geometry(new_height)
+                # Update compositor capsule to match new overlay size
+                compositor = getattr(self, "_fullscreen_compositor", None)
+                if compositor is not None:
+                    scale = self._screen.backingScaleFactor() if hasattr(self._screen, "backingScaleFactor") else 2.0
+                    screen_h = self._screen.frame().size.height
+                    content_frame = self._content_view.frame()
+                    new_win_frame = self._window.frame()
+                    cx = new_win_frame.origin.x + content_frame.origin.x + content_frame.size.width / 2
+                    cy_cocoa = new_win_frame.origin.y + content_frame.origin.y + content_frame.size.height / 2
+                    cy_metal = screen_h - cy_cocoa
+                    capsule_r = _OVERLAY_HEIGHT / 4.0
+                    compositor.update_shell_config_key("content_width_points", (_OVERLAY_WIDTH + capsule_r) * scale)
+                    compositor.update_shell_config_key("content_height_points", (new_height + capsule_r) * scale)
+                    compositor.update_shell_config_key("center_x", cx * scale)
+                    compositor.update_shell_config_key("center_y", cy_metal * scale)
 
             self._reset_text_geometry(max(new_height - 16, text_height))
             end = self._text_view.string().length() if hasattr(self._text_view.string(), 'length') else len(self._typewriter_displayed)
