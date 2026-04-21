@@ -26,6 +26,12 @@ logger = logging.getLogger(__name__)
 _shared_overlay_hosts = {}
 
 
+def _load_screencapturekit_bridge():
+    from spoke.backdrop_stream import _load_screencapturekit_bridge as _load_bridge
+
+    return _load_bridge()
+
+
 def _scaled_shell_config_for_overlay(*, screen, window, content_view, shell_config: dict | None):
     """Project overlay-local shell config into fullscreen compositor pixel space."""
     if shell_config is None or screen is None or window is None or content_view is None:
@@ -134,6 +140,7 @@ class _SharedOverlayCompositorHost:
         self._registry_key = registry_key
         self._compositor = FullScreenCompositor(screen)
         self._clients: dict[str, dict] = {}
+        self._client_window_ids: dict[str, int] = {}
         self._running = False
 
     @property
@@ -142,9 +149,16 @@ class _SharedOverlayCompositorHost:
 
     def register_client(self, client_id: str, config: dict):
         self._clients[client_id] = dict(config)
+        try:
+            self._client_window_ids[client_id] = int(client_id.rsplit(":", 1)[1])
+        except Exception:
+            self._client_window_ids.pop(client_id, None)
+        self._refresh_excluded_window_ids()
         if not self._running:
             if not self._compositor.start(self._ordered_shell_configs()):
                 self._clients.pop(client_id, None)
+                self._client_window_ids.pop(client_id, None)
+                self._refresh_excluded_window_ids()
                 return None
             self._running = True
         else:
@@ -154,6 +168,8 @@ class _SharedOverlayCompositorHost:
 
     def remove_client(self, client_id: str) -> None:
         self._clients.pop(client_id, None)
+        self._client_window_ids.pop(client_id, None)
+        self._refresh_excluded_window_ids()
         if not self._running:
             return
         if self._clients:
@@ -187,6 +203,9 @@ class _SharedOverlayCompositorHost:
 
     def _ordered_shell_configs(self) -> list[dict]:
         return [dict(config) for config in self._clients.values()]
+
+    def _refresh_excluded_window_ids(self) -> None:
+        self._compositor.set_excluded_window_ids(sorted(self._client_window_ids.values()))
 
 
 class FullScreenCompositor:
@@ -225,6 +244,9 @@ class FullScreenCompositor:
         self._stream = None
         self._stream_output = None
         self._stream_handler_queue = None
+        self._capture_content = None
+        self._capture_display = None
+        self._extra_excluded_ids: set[int] = set()
 
         # Diagnostics
         self._frame_count = 0
@@ -495,26 +517,13 @@ class FullScreenCompositor:
     # ------------------------------------------------------------------
 
     def _start_capture(self):
-        from spoke.backdrop_stream import _load_screencapturekit_bridge, _make_stream_handler_queue
+        from spoke.backdrop_stream import _make_stream_handler_queue
 
         bridge = _load_screencapturekit_bridge()
         if bridge is None:
             raise RuntimeError("ScreenCaptureKit bridge unavailable")
 
-        SCShareableContent = bridge["SCShareableContent"]
-
-        # Synchronous-ish: use a threading event
-        result = {"content": None, "error": None}
-        event = threading.Event()
-
-        def got_content(content, *args):
-            result["content"] = content
-            event.set()
-
-        SCShareableContent.getShareableContentWithCompletionHandler_(got_content)
-        event.wait(timeout=5.0)
-
-        content = result["content"]
+        content = self._fetch_shareable_content(bridge)
         if content is None:
             raise RuntimeError("Failed to get shareable content")
 
@@ -522,6 +531,8 @@ class FullScreenCompositor:
         display = self._match_display(content)
         if display is None:
             raise RuntimeError("No matching display found")
+        self._capture_content = content
+        self._capture_display = display
 
         # Build filter: full display, exclude our compositor window
         SCContentFilter = bridge["SCContentFilter"]
@@ -602,6 +613,8 @@ class FullScreenCompositor:
         stream = self._stream
         self._stream = None
         self._stream_output = None
+        self._capture_content = None
+        self._capture_display = None
         if stream is not None:
             try:
                 stream.stopCaptureWithCompletionHandler_(lambda *args: None)
@@ -627,6 +640,44 @@ class FullScreenCompositor:
     def set_excluded_window_ids(self, window_ids: list[int]) -> None:
         """Additional window IDs to exclude from capture (e.g. the overlay window)."""
         self._extra_excluded_ids = set(int(x) for x in window_ids)
+        self._refresh_live_capture_filter()
+
+    def _fetch_shareable_content(self, bridge):
+        SCShareableContent = bridge["SCShareableContent"]
+
+        result = {"content": None}
+        event = threading.Event()
+
+        def got_content(content, *args):
+            result["content"] = content
+            event.set()
+
+        SCShareableContent.getShareableContentWithCompletionHandler_(got_content)
+        event.wait(timeout=5.0)
+        return result["content"]
+
+    def _refresh_live_capture_filter(self) -> None:
+        stream = self._stream
+        if stream is None:
+            return
+        bridge = _load_screencapturekit_bridge()
+        if bridge is None:
+            return
+        content = self._fetch_shareable_content(bridge)
+        if content is None:
+            return
+        display = self._match_display(content)
+        if display is None:
+            return
+        self._capture_content = content
+        self._capture_display = display
+        excluded = self._excluded_windows(content)
+        SCContentFilter = bridge["SCContentFilter"]
+        content_filter = SCContentFilter.alloc().initWithDisplay_excludingWindows_(display, excluded)
+        try:
+            stream.updateContentFilter_completionHandler_(content_filter, lambda *args: None)
+        except Exception:
+            logger.debug("FullScreenCompositor: updateContentFilter failed", exc_info=True)
 
     def _excluded_windows(self, content):
         """Exclude all compositor windows + extra windows from capture."""

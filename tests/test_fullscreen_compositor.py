@@ -19,6 +19,7 @@ class _FakeHostCompositor:
         self.screen = screen
         self.started_with = []
         self.updated_with = []
+        self.excluded_window_ids = []
         self.stop_calls = 0
         _FakeHostCompositor.instances.append(self)
 
@@ -28,6 +29,9 @@ class _FakeHostCompositor:
 
     def update_shell_configs(self, shell_configs):
         self.updated_with.append(shell_configs)
+
+    def set_excluded_window_ids(self, window_ids):
+        self.excluded_window_ids.append(list(window_ids))
 
     def reset_temporal_state(self):
         return None
@@ -71,6 +75,32 @@ class _FakeScreen:
         return self._scale
 
 
+class _FakeCaptureWindow:
+    def __init__(self, number):
+        self._number = number
+
+    def windowID(self):
+        return self._number
+
+
+class _FakeContentFilterFactory:
+    @classmethod
+    def alloc(cls):
+        return cls()
+
+    def initWithDisplay_excludingWindows_(self, display, excluded_windows):
+        return SimpleNamespace(display=display, excluded_windows=list(excluded_windows))
+
+
+class _FakeStream:
+    def __init__(self):
+        self.updated_filters = []
+
+    def updateContentFilter_completionHandler_(self, content_filter, completion):
+        self.updated_filters.append(content_filter)
+        completion(None)
+
+
 class TestSharedFullscreenCompositor:
     def test_same_screen_overlays_share_one_fullscreen_host(self, mock_pyobjc, monkeypatch):
         sys.modules.pop("spoke.fullscreen_compositor", None)
@@ -100,6 +130,7 @@ class TestSharedFullscreenCompositor:
         assert len(host.started_with) == 1
         assert host.updated_with, "second overlay should update the shared host, not create a new compositor"
         assert len(host.updated_with[-1]) == 2
+        assert host.excluded_window_ids[-1] == [11, 12]
 
     def test_shared_host_only_stops_after_last_overlay_releases(self, mock_pyobjc, monkeypatch):
         sys.modules.pop("spoke.fullscreen_compositor", None)
@@ -125,6 +156,34 @@ class TestSharedFullscreenCompositor:
 
         session_a.stop()
         assert host.stop_calls == 0, "shared host must survive while another overlay still owns it"
+        assert host.excluded_window_ids[-1] == [22]
 
         session_b.stop()
         assert host.stop_calls == 1
+
+    def test_fullscreen_compositor_refreshes_live_capture_filter_when_exclusions_change(self, mock_pyobjc, monkeypatch):
+        sys.modules.pop("spoke.fullscreen_compositor", None)
+        mod = importlib.import_module("spoke.fullscreen_compositor")
+        compositor = object.__new__(mod.FullScreenCompositor)
+        compositor._extra_excluded_ids = set()
+        compositor._window = None
+        compositor._stream = _FakeStream()
+        compositor._capture_content = SimpleNamespace(
+            windows=lambda: [_FakeCaptureWindow(11), _FakeCaptureWindow(12), _FakeCaptureWindow(99)]
+        )
+        compositor._capture_display = object()
+
+        monkeypatch.setattr(
+            mod,
+            "_load_screencapturekit_bridge",
+            lambda: {"SCContentFilter": _FakeContentFilterFactory},
+            raising=False,
+        )
+        monkeypatch.setattr(compositor, "_fetch_shareable_content", lambda bridge: compositor._capture_content)
+        monkeypatch.setattr(compositor, "_match_display", lambda content: compositor._capture_display)
+
+        compositor.set_excluded_window_ids([11, 12])
+
+        assert compositor._stream.updated_filters, "live capture filter should refresh when exclusion IDs change"
+        excluded_ids = sorted(int(window.windowID()) for window in compositor._stream.updated_filters[-1].excluded_windows)
+        assert excluded_ids == [11, 12]
