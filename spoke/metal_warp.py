@@ -190,7 +190,7 @@ kernel void opticalShellWarp(
     float blurT = smoothstep(0.05f, 0.40f, interiorDepth);
     // Square the ramp for an even gentler onset (cubic feel)
     blurT = blurT * blurT;
-    float blurRadius = blurT * 350.0f;
+    float blurRadius = blurT * 1000.0f;
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
 
