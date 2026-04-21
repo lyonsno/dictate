@@ -11,7 +11,10 @@ import pytest
 
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "targeted_file_edit"
-UNIQUENESS_FIXTURE_ROOT = FIXTURE_ROOT / "uniqueness"
+FIXTURE_SUITES = {
+    "uniqueness": FIXTURE_ROOT / "uniqueness",
+    "normalization": FIXTURE_ROOT / "normalization",
+}
 REQUIRED_PARAMETERS = {"file", "old_string", "new_string"}
 
 
@@ -40,54 +43,85 @@ def _discover_targeted_edit_tool_name(schemas: list[dict]) -> str:
     return matches[0]
 
 
-def _load_fixture(fixture_dir: Path) -> tuple[dict, dict, str, str]:
+def _fixture_dirs(fixture_root: Path) -> list[Path]:
+    return sorted(path for path in fixture_root.iterdir() if path.is_dir())
+
+
+def _all_fixture_cases() -> list[tuple[str, Path]]:
+    cases: list[tuple[str, Path]] = []
+    for suite_name, fixture_root in FIXTURE_SUITES.items():
+        for fixture_dir in _fixture_dirs(fixture_root):
+            cases.append((suite_name, fixture_dir))
+    return cases
+
+
+def _fixture_content_path(fixture_dir: Path, stem: str) -> Path:
+    text_path = fixture_dir / f"{stem}.txt"
+    hex_path = fixture_dir / f"{stem}.hex.json"
+    candidates = [path for path in (text_path, hex_path) if path.exists()]
+    assert len(candidates) == 1, (
+        f"Expected exactly one {stem} payload in {fixture_dir}, "
+        f"found {[path.name for path in candidates]!r}."
+    )
+    return candidates[0]
+
+
+def _load_fixture_bytes(fixture_dir: Path, stem: str) -> bytes:
+    payload_path = _fixture_content_path(fixture_dir, stem)
+    if payload_path.suffix == ".txt":
+        return payload_path.read_bytes()
+    payload = json.loads(payload_path.read_text(encoding="utf-8"))
+    return bytes.fromhex(payload["hex"])
+
+
+def _load_fixture(fixture_dir: Path) -> tuple[dict, dict, bytes, bytes]:
     request = json.loads((fixture_dir / "request.json").read_text(encoding="utf-8"))
     expected = json.loads((fixture_dir / "expected.json").read_text(encoding="utf-8"))
-    source_text = (fixture_dir / "source.txt").read_text(encoding="utf-8")
-    expected_text = (fixture_dir / "expected_file.txt").read_text(encoding="utf-8")
-    return request, expected, source_text, expected_text
+    source_bytes = _load_fixture_bytes(fixture_dir, "source")
+    expected_bytes = _load_fixture_bytes(fixture_dir, "expected_file")
+    return request, expected, source_bytes, expected_bytes
 
 
 class TestTargetedFileEditFixtures:
-    def test_uniqueness_fixture_corpus_exists(self):
-        fixture_dirs = sorted(path for path in UNIQUENESS_FIXTURE_ROOT.iterdir() if path.is_dir())
-        assert fixture_dirs, "Expected at least one uniqueness fixture directory."
+    @pytest.mark.parametrize(("suite_name", "fixture_root"), FIXTURE_SUITES.items())
+    def test_fixture_corpus_exists(self, suite_name, fixture_root):
+        fixture_dirs = _fixture_dirs(fixture_root)
+        assert fixture_dirs, f"Expected at least one {suite_name} fixture directory."
         for fixture_dir in fixture_dirs:
             assert (fixture_dir / "README.md").exists()
             assert (fixture_dir / "request.json").exists()
             assert (fixture_dir / "expected.json").exists()
-            assert (fixture_dir / "source.txt").exists()
-            assert (fixture_dir / "expected_file.txt").exists()
+            assert _fixture_content_path(fixture_dir, "source").exists()
+            assert _fixture_content_path(fixture_dir, "expected_file").exists()
 
-    def test_uniqueness_fixtures_run_black_box(self, tmp_path):
+    @pytest.mark.parametrize(("suite_name", "fixture_dir"), _all_fixture_cases())
+    def test_fixtures_run_black_box(self, suite_name, fixture_dir, tmp_path):
         mod = _import_tools()
         tool_name = _discover_targeted_edit_tool_name(mod.get_tool_schemas())
-        fixture_dirs = sorted(path for path in UNIQUENESS_FIXTURE_ROOT.iterdir() if path.is_dir())
+        request, expected, source_bytes, expected_bytes = _load_fixture(fixture_dir)
+        assert expected["outcome"] == "success"
 
-        for fixture_dir in fixture_dirs:
-            request, expected, source_text, expected_text = _load_fixture(fixture_dir)
-            assert expected["outcome"] == "success"
+        target_path = tmp_path / request["file"]
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_bytes(source_bytes)
 
-            target_path = tmp_path / request["file"]
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            target_path.write_text(source_text, encoding="utf-8")
-
-            result = json.loads(
-                mod.execute_tool(
-                    tool_name,
-                    {
-                        "file": str(target_path),
-                        "old_string": request["old_string"],
-                        "new_string": request["new_string"],
-                    },
-                )
+        result = json.loads(
+            mod.execute_tool(
+                tool_name,
+                {
+                    "file": str(target_path),
+                    "old_string": request["old_string"],
+                    "new_string": request["new_string"],
+                },
             )
+        )
 
-            if "failure_reason" in result:
-                assert result["failure_reason"] is None
-            if "error" in result and result["error"] is not None:
-                pytest.fail(
-                    f"Targeted edit fixture {fixture_dir.name} returned error: {result['error']}"
-                )
-            assert target_path.read_text(encoding="utf-8") == expected_text
-
+        if "failure_reason" in result:
+            assert result["failure_reason"] is None
+        if "error" in result and result["error"] is not None:
+            pytest.fail(
+                f"Targeted edit fixture {fixture_dir.name} returned error: {result['error']}"
+            )
+        assert target_path.read_bytes() == expected_bytes, (
+            f"{suite_name} fixture {fixture_dir.name} wrote unexpected bytes."
+        )
