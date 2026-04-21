@@ -457,10 +457,24 @@ class MetalWarpPipeline:
 
         command_buffer = self._command_queue.commandBuffer()
 
-        # Pass 1: blit input → mip level 0, generate mipmaps.
-        # Do NOT blit input → output — the output (drawable) should be
-        # transparent outside the warp bounding box so multiple compositor
-        # windows can overlap without obscuring each other.
+        # Clear the drawable to transparent so the compositor window
+        # is see-through outside the warp bounding box.  This allows
+        # multiple compositor windows to overlap without obscuring
+        # each other.  Uses a render pass with loadAction=clear.
+        try:
+            rpd = objc.lookUpClass("MTLRenderPassDescriptor").renderPassDescriptor()
+            ca = rpd.colorAttachments().objectAtIndexedSubscript_(0)
+            ca.setTexture_(output_texture)
+            ca.setLoadAction_(2)  # MTLLoadActionClear
+            ca.setClearColor_((0.0, 0.0, 0.0, 0.0))  # transparent
+            ca.setStoreAction_(1)  # MTLStoreActionStore
+            clear_enc = command_buffer.renderCommandEncoderWithDescriptor_(rpd)
+            if clear_enc is not None:
+                clear_enc.endEncoding()
+        except Exception:
+            pass  # fallback: drawable may have stale content
+
+        # Blit input → mip level 0, generate mipmaps.
         blit = command_buffer.blitCommandEncoder()
         if self._mip_texture is not None:
             origin = (0, 0, 0)
