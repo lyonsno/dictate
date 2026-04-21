@@ -1033,6 +1033,7 @@ class SpokeAppDelegate(NSObject):
                     api_key=cloud_api_key or None,
                     cancel_check=cancel_check,
                 )
+            )
             # Converge: per-turn attractor carver (same model, OMLX batch parallel)
             self._turn_carver = TurnCarver(
                 base_url=command_url,
