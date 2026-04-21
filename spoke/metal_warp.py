@@ -136,12 +136,13 @@ kernel void opticalShellWarp(
     float2 warped = c + p * float2(scaleX, scaleY);
 
     float exteriorT = max(capsuleSdf, 0.0f);
-    float seamRamp = smoothstep(0.0f, 2.0f, exteriorT);
-    float magDecay = exp(-exteriorT / capsuleRadius * {_WARP_EXTERIOR_MAG_DECAY}f);
+    // Steep falloff: effect is intense at boundary, negligible past ~15px.
+    // smoothstep(15,0) gives 1.0 at boundary, 0.0 at 15px out.
+    float pullStrength = 1.0f - smoothstep(0.0f, 15.0f, exteriorT);
+    // Extra kick right at the boundary (first 3px)
+    float nearBoost = 1.0f + 2.0f * (1.0f - smoothstep(0.0f, 3.0f, exteriorT));
     float2 n = capsuleGradient(p, spineHalf);
-    float tipDist = max(abs(p.x) - spineHalf, 0.0f);
-    float tipAtten = 1.0f - smoothstep(0.0f, capsuleRadius * 0.8f, tipDist);
-    float mag = {_WARP_EXTERIOR_MAG_STRENGTH}f * capsuleRadius * seamRamp * magDecay * tipAtten;
+    float mag = {_WARP_EXTERIOR_MAG_STRENGTH}f * capsuleRadius * pullStrength * nearBoost;
     float2 result = warped + n * mag;
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
