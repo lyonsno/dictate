@@ -1,0 +1,6 @@
+# Candidate Greek-ish transliterations for passive listen/sleep wakewords.
+# These are training options only; runtime selection remains undecided.
+akoue
+paue
+siopa
+archise
