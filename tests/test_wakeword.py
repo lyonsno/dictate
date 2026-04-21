@@ -108,6 +108,30 @@ class TestWakeWordListenerStop:
 
         assert on_wake.call_args_list == [(( "listen",),), (( "listen",),)]
 
+    def test_hybrid_porcupine_and_openwakeword_callback_prefers_openwakeword_command(self):
+        on_wake = MagicMock()
+        porcupine = MagicMock()
+        porcupine.process.return_value = -1
+        engine = MagicMock()
+        engine.predict.return_value = {"tessera": 0.75}
+        listener = WakeWordListener(
+            access_key="test",
+            keywords=["computer"],
+            model_paths=["/tmp/tessera.onnx"],
+            on_wake=on_wake,
+        )
+        listener._porcupine = porcupine
+        listener._engine = engine
+        listener._running = True
+        listener._keyword_labels = ["computer"]
+        listener._oww_keyword_labels = ["tessera"]
+        listener._oww_armed_labels = {"tessera": True}
+        pcm = np.array([[1], [2], [3]], dtype=np.int16)
+
+        listener._audio_callback(pcm, 3, None, None)
+
+        on_wake.assert_called_once_with("tessera")
+
     def test_stop_does_not_delete_porcupine_until_active_callback_finishes(self):
         class BlockingPorcupine:
             def __init__(self) -> None:

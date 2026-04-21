@@ -122,6 +122,9 @@ class HandsFreeController:
         self._sleep_ppn = os.environ.get("SPOKE_WAKEWORD_SLEEP_PPN")
         self._listen_model = os.environ.get("SPOKE_WAKEWORD_LISTEN_MODEL")
         self._sleep_model = os.environ.get("SPOKE_WAKEWORD_SLEEP_MODEL")
+        self._tessera_model = os.environ.get("SPOKE_WAKEWORD_TESSERA_MODEL")
+        self._pending_transcription_override_phrase: str | None = None
+        self._pending_transcription_override_deadline = 0.0
 
         # Callbacks set by the delegate
         self.on_state_change: Callable[[HandsFreeState], None] | None = None
@@ -168,38 +171,55 @@ class HandsFreeController:
                     "or SPOKE_WAKEWORD_SLEEP_MODEL is not set"
                 )
                 return
+            model_paths = [self._listen_model, self._sleep_model]
+            if self._tessera_model:
+                model_paths.append(self._tessera_model)
             self._wakeword = WakeWordListener(
                 access_key="",
                 backend="openwakeword",
-                model_paths=[self._listen_model, self._sleep_model],
+                model_paths=model_paths,
                 on_wake=self._on_wake_word,
             )
             self._keyword_map = {
                 self._listen_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model"): "listen",
                 self._sleep_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model"): "sleep",
             }
+            if self._tessera_model:
+                self._keyword_map[
+                    self._tessera_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model")
+                ] = "tessera"
         elif self._listen_ppn and self._sleep_ppn:
             self._wakeword = WakeWordListener(
                 access_key=self._access_key,
                 backend="porcupine",
                 keyword_paths=[self._listen_ppn, self._sleep_ppn],
+                model_paths=[self._tessera_model] if self._tessera_model else None,
                 on_wake=self._on_wake_word,
             )
             self._keyword_map = {
                 self._listen_ppn: "listen",
                 self._sleep_ppn: "sleep",
             }
+            if self._tessera_model:
+                self._keyword_map[
+                    self._tessera_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model")
+                ] = "tessera"
         else:
             self._wakeword = WakeWordListener(
                 access_key=self._access_key,
                 backend="porcupine",
                 keywords=[self._listen_keyword, self._sleep_keyword],
+                model_paths=[self._tessera_model] if self._tessera_model else None,
                 on_wake=self._on_wake_word,
             )
             self._keyword_map = {
                 self._listen_keyword: "listen",
                 self._sleep_keyword: "sleep",
             }
+            if self._tessera_model:
+                self._keyword_map[
+                    self._tessera_model.rsplit("/", 1)[-1].rsplit(".", 1)[0].removesuffix("_model")
+                ] = "tessera"
 
         try:
             self._wakeword.start()
@@ -249,6 +269,9 @@ class HandsFreeController:
                 self._stop_dictating()
             elif self._state == HandsFreeState.LISTENING:
                 logger.info("Sleep wake word received while already passively listening")
+        elif role == "tessera":
+            self._arm_transcription_override("tessera")
+            self._delegate.handsFreeInject_({"text": "tessera", "dest": "cursor"})
 
     # ── Dictation loop ───────────────────────────────────────
 
@@ -345,13 +368,16 @@ class HandsFreeController:
                 return
 
             if text and text.strip():
-                if _is_repeated_keyword_phrase(text, self._sleep_keyword):
+                normalized = text.strip()
+                if self._consume_pending_transcription_override(normalized):
+                    return
+                if _is_repeated_keyword_phrase(normalized, self._sleep_keyword):
                     self._delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
                         "handleWakeWord:", {"role": "sleep"}, False,
                     )
                     return
 
-                payload = {"text": text.strip(), "dest": dest or "cursor"}
+                payload = {"text": normalized, "dest": dest or "cursor"}
                 self._delegate.performSelectorOnMainThread_withObject_waitUntilDone_(
                     "handsFreeInject:", payload, False,
                 )
@@ -366,6 +392,29 @@ class HandsFreeController:
         Resets to cursor after that segment is dispatched."""
         logger.info("Hands-free: next segment → %s", dest)
         self._next_segment_dest = dest
+
+    def _arm_transcription_override(self, phrase: str, window_s: float = 2.0) -> None:
+        self._pending_transcription_override_phrase = phrase
+        self._pending_transcription_override_deadline = time.monotonic() + window_s
+
+    def _consume_pending_transcription_override(self, text: str) -> bool:
+        phrase = self._pending_transcription_override_phrase
+        if not phrase:
+            return False
+        if time.monotonic() > self._pending_transcription_override_deadline:
+            self._pending_transcription_override_phrase = None
+            self._pending_transcription_override_deadline = 0.0
+            return False
+        if _is_repeated_keyword_phrase(text, phrase):
+            logger.info(
+                "Hands-free: suppressing transcription %r because wakeword %r already fired",
+                text,
+                phrase,
+            )
+            self._pending_transcription_override_phrase = None
+            self._pending_transcription_override_deadline = 0.0
+            return True
+        return False
 
     # ── Manual entry (e.g. long-press spacebar) ──────────────
 
