@@ -267,11 +267,13 @@ class CommandClient:
                 if not isinstance(entry, list) or not entry:
                     continue
                 if isinstance(entry[0], str):
+                    # Old format: ["user text", "assistant text"]
                     chain = [{"role": "user", "content": entry[0]}]
                     if len(entry) > 1 and entry[1]:
                         chain.append({"role": "assistant", "content": entry[1]})
                     converted.append(chain)
                 elif isinstance(entry[0], dict):
+                    # New format: list of message dicts
                     converted.append(entry)
             return converted
         except (FileNotFoundError, json.JSONDecodeError, ValueError):
