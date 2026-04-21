@@ -200,6 +200,26 @@ _WRITE_FILE_SCHEMA = {
     }
 }
 
+_EDIT_FILE_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "edit_file",
+        "description": (
+            "Apply a uniquely matching targeted text edit to an existing file. "
+            "The edit succeeds only when old_string matches exactly one location."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "Absolute or relative file path"},
+                "old_string": {"type": "string", "description": "Exact text to replace; must match exactly one location"},
+                "new_string": {"type": "string", "description": "Replacement text to write in place of old_string"},
+            },
+            "required": ["file_path", "old_string", "new_string"],
+        },
+    },
+}
+
 _SEARCH_FILE_SCHEMA = {
     "type": "function",
     "function": {
@@ -375,6 +395,7 @@ def get_tool_schemas() -> list[dict]:
         _LIST_DIRECTORY_SCHEMA,
         _READ_FILE_SCHEMA,
         _WRITE_FILE_SCHEMA,
+        _EDIT_FILE_SCHEMA,
         _SEARCH_FILE_SCHEMA,
         _FIND_FILE_SCHEMA,
         _RUN_EPISTAXIS_OPS_SCHEMA,
@@ -797,6 +818,37 @@ def _execute_read_file(arguments: dict) -> dict[str, Any]:
     except Exception as e:
         return {"error": str(e)}
 
+def _validate_write_target(file_path: str) -> str | None:
+    abs_path = os.path.abspath(file_path)
+    home_dir = os.path.expanduser("~")
+    for sensitive in [".ssh", ".gnupg", ".aws", "Library/Keychains"]:
+        if abs_path.startswith(os.path.join(home_dir, sensitive)):
+            return f"Write access denied to sensitive directory: {sensitive}"
+
+    if not (
+        abs_path.startswith(home_dir)
+        or abs_path.startswith("/private/tmp")
+        or abs_path.startswith("/tmp")
+        or abs_path.startswith("/var/folders")
+        or abs_path.startswith("/private/var/folders")
+    ):
+        return "Write access denied outside of user home or tmp directories."
+
+    return None
+
+
+def _contains_lazy_edit_placeholder(text: str) -> bool:
+    lowered = text.lower()
+    patterns = (
+        "...",
+        "rest of code",
+        "existing code",
+        "same as above",
+        "same as before",
+    )
+    return any(pattern in lowered for pattern in patterns)
+
+
 def _execute_write_file(arguments: dict) -> dict[str, Any]:
     raw_path = arguments.get("file_path")
     if not raw_path:
@@ -808,22 +860,84 @@ def _execute_write_file(arguments: dict) -> dict[str, Any]:
     if content is None:
         content = ""
     try:
+        access_error = _validate_write_target(file_path)
+        if access_error:
+            return {"error": access_error}
+
         abs_path = os.path.abspath(file_path)
-        home_dir = os.path.expanduser("~")
-        for sensitive in [".ssh", ".gnupg", ".aws", "Library/Keychains"]:
-            if abs_path.startswith(os.path.join(home_dir, sensitive)):
-                return {"error": f"Write access denied to sensitive directory: {sensitive}"}
-
-        # Guard against system roots
-        if not abs_path.startswith(home_dir) and not abs_path.startswith("/private/tmp") and not abs_path.startswith("/tmp") and not abs_path.startswith("/var/folders") and not abs_path.startswith("/private/var/folders"):
-            return {"error": "Write access denied outside of user home or tmp directories."}
-
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(content)
         return {"status": "success", "file_path": file_path}
     except Exception as e:
         return {"error": str(e)}
+
+
+def _execute_edit_file(arguments: dict) -> dict[str, Any]:
+    raw_path = arguments.get("file_path")
+    old_string = arguments.get("old_string")
+    new_string = arguments.get("new_string")
+
+    if not raw_path or not isinstance(raw_path, str):
+        return {"status": "error", "failure_reason": "malformed_request", "error": "file_path is required"}
+    if not isinstance(old_string, str) or old_string == "":
+        return {"status": "error", "failure_reason": "malformed_request", "error": "old_string is required"}
+    if not isinstance(new_string, str):
+        return {"status": "error", "failure_reason": "malformed_request", "error": "new_string is required"}
+    if _contains_lazy_edit_placeholder(new_string):
+        return {
+            "status": "error",
+            "failure_reason": "malformed_request",
+            "error": "new_string contains lazy placeholder text",
+        }
+
+    file_path = _resolve_tool_path(raw_path)
+    access_error = _validate_write_target(file_path)
+    if access_error:
+        return {"status": "error", "failure_reason": "malformed_request", "error": access_error}
+
+    if not os.path.isfile(file_path):
+        return {
+            "status": "error",
+            "failure_reason": "not_found",
+            "file_path": file_path,
+            "match_count": 0,
+        }
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        match_count = content.count(old_string)
+        if match_count == 0:
+            return {
+                "status": "error",
+                "failure_reason": "not_found",
+                "file_path": file_path,
+                "match_count": 0,
+            }
+        if match_count > 1:
+            return {
+                "status": "error",
+                "failure_reason": "not_unique",
+                "file_path": file_path,
+                "match_count": match_count,
+            }
+
+        updated = content.replace(old_string, new_string, 1)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(updated)
+        return {
+            "status": "success",
+            "file_path": file_path,
+            "match_count": 1,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "failure_reason": "malformed_request",
+            "file_path": file_path,
+            "error": str(e),
+        }
 
 def _execute_search_file(arguments: dict) -> dict[str, Any]:
     import subprocess
@@ -1046,6 +1160,8 @@ def execute_tool(
         return json.dumps(_execute_read_file(arguments))
     elif name == "write_file":
         return json.dumps(_execute_write_file(arguments))
+    elif name == "edit_file":
+        return json.dumps(_execute_edit_file(arguments))
     elif name == "search_file":
         return json.dumps(_execute_search_file(arguments))
     elif name == "find_file":

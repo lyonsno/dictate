@@ -142,6 +142,18 @@ class TestToolSchemas:
         assert "file_path" in params.get("properties", {})
         assert "content" in params.get("properties", {})
 
+    def test_edit_file_schema(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        assert "edit_file" in names
+
+        schema = next(s for s in schemas if s["function"]["name"] == "edit_file")
+        params = schema["function"]["parameters"]
+        assert "file_path" in params.get("properties", {})
+        assert "old_string" in params.get("properties", {})
+        assert "new_string" in params.get("properties", {})
+
     def test_search_file_schema(self):
         mod = _import_tools()
         schemas = mod.get_tool_schemas()
@@ -681,6 +693,31 @@ class TestExecuteTool:
         m.assert_called_once_with("/tmp/test.txt", "w", encoding="utf-8")
         m().write.assert_called_once_with("new content")
 
+    def test_execute_edit_file(self):
+        mod = _import_tools()
+        target = "/tmp/test.txt"
+        original = "alpha\nbeta\n"
+        updated = "alpha\ngamma\n"
+        m = unittest.mock.mock_open(read_data=original)
+
+        with patch("builtins.open", m):
+            with patch("os.path.isfile", return_value=True):
+                result = mod.execute_tool(
+                    name="edit_file",
+                    arguments={
+                        "file_path": target,
+                        "old_string": "beta",
+                        "new_string": "gamma",
+                    },
+                )
+
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("match_count") == 1
+        m.assert_any_call(target, "r", encoding="utf-8")
+        m.assert_any_call(target, "w", encoding="utf-8")
+        m().write.assert_called_once_with(updated)
+
     def test_execute_search_file(self):
         mod = _import_tools()
         with patch("subprocess.run") as mock_run:
@@ -907,6 +944,71 @@ class TestExecuteToolIntegration:
         parsed = json.loads(result)
         assert parsed.get("status") == "success"
         assert f.read_text(encoding="utf-8") == "hello there"
+
+    def test_execute_edit_file_real(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit.txt"
+        f.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {"file_path": str(f), "old_string": "beta", "new_string": "delta"},
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("match_count") == 1
+        assert f.read_text(encoding="utf-8") == "alpha\ndelta\ngamma\n"
+
+    def test_execute_edit_file_not_found(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit.txt"
+        original = "alpha\nbeta\ngamma\n"
+        f.write_text(original, encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {"file_path": str(f), "old_string": "delta", "new_string": "epsilon"},
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "error"
+        assert parsed.get("failure_reason") == "not_found"
+        assert parsed.get("match_count") == 0
+        assert f.read_text(encoding="utf-8") == original
+
+    def test_execute_edit_file_not_unique(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit.txt"
+        original = "alpha\nbeta\nbeta\n"
+        f.write_text(original, encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {"file_path": str(f), "old_string": "beta", "new_string": "delta"},
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "error"
+        assert parsed.get("failure_reason") == "not_unique"
+        assert parsed.get("match_count") == 2
+        assert f.read_text(encoding="utf-8") == original
+
+    def test_execute_edit_file_rejects_lazy_elision(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit.txt"
+        original = "alpha\nbeta\ngamma\n"
+        f.write_text(original, encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file_path": str(f),
+                "old_string": "beta",
+                "new_string": "delta\n// existing code",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "error"
+        assert parsed.get("failure_reason") == "malformed_request"
+        assert f.read_text(encoding="utf-8") == original
 
     def test_execute_search_file_real(self, tmp_path):
         mod = _import_tools()
