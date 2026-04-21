@@ -213,6 +213,48 @@ class TestTerminalOperator:
         assert "requires approval" in result["reason"]
         mock_run.assert_not_called()
 
+    def test_execute_requires_approval_for_git_diff_ext_diff(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["git", "diff", "--ext-diff"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
+    def test_execute_requires_approval_for_git_show_textconv(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["git", "show", "--textconv", "HEAD:README.md"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
+    def test_execute_requires_approval_for_git_blame_contents(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["git", "blame", "--contents", "/tmp/outside", "README.md"],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
     def test_execute_raises_bounded_error_for_spawn_failure(self, tmp_path):
         from spoke.terminal_operator import TerminalOperator, TerminalOperatorError
 
@@ -259,6 +301,23 @@ class TestTerminalOperator:
         with patch("subprocess.run") as mock_run:
             result = TerminalOperator().execute_command(
                 ["cat", str(Path.home() / ".ssh" / "id_rsa")],
+                cwd=str(tmp_path),
+            )
+
+        assert result["decision"] == "approval_required"
+        assert result["executed"] is False
+        assert "requires approval" in result["reason"]
+        mock_run.assert_not_called()
+
+    def test_execute_requires_approval_for_bare_name_symlink_operand(self, tmp_path):
+        from spoke.terminal_operator import TerminalOperator
+
+        link_path = tmp_path / "secret_link"
+        link_path.symlink_to(Path("/etc/hosts"))
+
+        with patch("subprocess.run") as mock_run:
+            result = TerminalOperator().execute_command(
+                ["cat", "secret_link"],
                 cwd=str(tmp_path),
             )
 

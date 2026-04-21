@@ -248,9 +248,9 @@ class TerminalOperator:
         if "/" in argv[0]:
             return "deny", "command denied: pass a bare executable name, not an explicit path"
         normalized_argv = self._normalized_argv(argv)
-        git_output_flag_reason = self._git_output_flag_reason(normalized_argv)
-        if git_output_flag_reason:
-            return "approval_required", git_output_flag_reason
+        git_flag_reason = self._git_flag_approval_reason(normalized_argv)
+        if git_flag_reason:
+            return "approval_required", git_flag_reason
 
         path_scope_reason = self._path_scope_reason(normalized_argv, cwd=cwd)
         if path_scope_reason:
@@ -284,17 +284,25 @@ class TerminalOperator:
         return normalized
 
     @staticmethod
-    def _git_output_flag_reason(argv: list[str]) -> str | None:
-        if len(argv) < 2 or argv[0] != "git" or argv[1] not in {"diff", "show"}:
+    def _git_flag_approval_reason(argv: list[str]) -> str | None:
+        if len(argv) < 2 or argv[0] != "git":
             return None
-        if argv[1] == "diff" and "--no-index" in argv[2:]:
+        subcommand = argv[1]
+        if subcommand == "diff" and "--no-index" in argv[2:]:
             return "command requires approval: git diff --no-index"
         for index, token in enumerate(argv[2:], start=2):
+            if token == "--ext-diff":
+                return f"command requires approval: git {subcommand} --ext-diff"
+            if token == "--textconv":
+                return f"command requires approval: git {subcommand} --textconv"
+            if subcommand == "blame" and token == "--contents":
+                target = argv[index + 1] if index + 1 < len(argv) else "<missing>"
+                return f"command requires approval: git blame --contents {target}"
             if token == "--output":
                 target = argv[index + 1] if index + 1 < len(argv) else "<missing>"
-                return f"command requires approval: git {argv[1]} --output {target}"
+                return f"command requires approval: git {subcommand} --output {target}"
             if token.startswith("--output="):
-                return f"command requires approval: git {argv[1]} {token}"
+                return f"command requires approval: git {subcommand} {token}"
         return None
 
     @staticmethod
@@ -302,9 +310,7 @@ class TerminalOperator:
         if not argv or argv[0] not in _PATH_SCOPED_ALLOW_COMMANDS:
             return None
         base = Path(cwd)
-        for token in argv[1:]:
-            if not TerminalOperator._looks_like_path_token(token):
-                continue
+        for token in TerminalOperator._iter_path_operands(argv):
             resolved = Path(token).expanduser()
             if not resolved.is_absolute():
                 resolved = (base / resolved).resolve()
@@ -315,17 +321,35 @@ class TerminalOperator:
         return None
 
     @staticmethod
-    def _looks_like_path_token(token: str) -> bool:
+    def _iter_path_operands(argv: list[str]) -> list[str]:
+        command = argv[0]
+        if command in {"cat", "head", "tail", "ls"}:
+            return [token for token in argv[1:] if TerminalOperator._is_path_operand(token)]
+        if command == "rg":
+            path_tokens: list[str] = []
+            pattern_consumed = False
+            skip_next = False
+            for token in argv[1:]:
+                if skip_next:
+                    skip_next = False
+                    continue
+                if token in {"-e", "--regexp", "-f", "--file", "-g", "--glob", "--pre", "--pre-glob"}:
+                    skip_next = True
+                    continue
+                if token.startswith("-"):
+                    continue
+                if not pattern_consumed:
+                    pattern_consumed = True
+                    continue
+                path_tokens.append(token)
+            return path_tokens
+        return []
+
+    @staticmethod
+    def _is_path_operand(token: str) -> bool:
         if not token or token == "-":
             return False
-        if token.startswith("-"):
-            return False
-        return (
-            token.startswith("/")
-            or token.startswith("~")
-            or token.startswith(".")
-            or "/" in token
-        )
+        return not token.startswith("-")
 
     @staticmethod
     def _starts_with(argv: list[str], prefix: tuple[str, ...]) -> bool:
