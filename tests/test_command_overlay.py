@@ -1444,3 +1444,23 @@ def test_command_optical_shell_config_tracks_overlay_body_size(mock_pyobjc, monk
         assert cfg["content_height_points"] == pytest.approx(80.0)
     finally:
         sys.modules.pop("spoke.command_overlay", None)
+
+
+def test_stadium_signed_distance_field_keeps_body_centered_in_padded_field(mock_pyobjc):
+    sys.modules.pop("spoke.command_overlay", None)
+    mod = importlib.import_module("spoke.command_overlay")
+    try:
+        sdf = mod._stadium_signed_distance_field(
+            880.0,
+            360.0,
+            600.0,
+            80.0,
+            mod._OVERLAY_HEIGHT / 4.0,
+            2.0,
+        )
+        center_row = sdf.shape[0] // 2
+        inside = (sdf[center_row] <= 0.0).nonzero()[0]
+        expected_left = int(round((880.0 - 600.0) * 0.5 * 2.0))
+        assert abs(int(inside[0]) - expected_left) <= 2
+    finally:
+        sys.modules.pop("spoke.command_overlay", None)

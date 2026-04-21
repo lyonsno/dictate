@@ -440,21 +440,23 @@ def _command_backdrop_mask_falloff_width(scale: float) -> float:
 
 
 def _stadium_signed_distance_field(
-    width_points: float,
-    height_points: float,
+    field_width_points: float,
+    field_height_points: float,
+    body_width_points: float,
+    body_height_points: float,
     corner_radius_points: float,
     scale: float,
 ):
-    """Return a stadium SDF sampled at backing-scale resolution."""
+    """Return a centered stadium SDF sampled at backing-scale resolution."""
     import numpy as np
 
     sample_scale = max(float(scale), 1e-6)
-    pw = max(int(round(width_points * sample_scale)), 1)
-    ph = max(int(round(height_points * sample_scale)), 1)
-    xs = (np.arange(pw, dtype=np.float32)[None, :] + 0.5) / sample_scale - width_points * 0.5
-    ys = (np.arange(ph, dtype=np.float32)[:, None] + 0.5) / sample_scale - height_points * 0.5
-    half_w = width_points * 0.5
-    half_h = height_points * 0.5
+    pw = max(int(round(field_width_points * sample_scale)), 1)
+    ph = max(int(round(field_height_points * sample_scale)), 1)
+    xs = (np.arange(pw, dtype=np.float32)[None, :] + 0.5) / sample_scale - field_width_points * 0.5
+    ys = (np.arange(ph, dtype=np.float32)[:, None] + 0.5) / sample_scale - field_height_points * 0.5
+    half_w = body_width_points * 0.5
+    half_h = body_height_points * 0.5
     capsule_radius = max(min(corner_radius_points, half_h), 1.0 / sample_scale)
     spine_half_x = max(half_w - capsule_radius, 0.0)
     spine_half_y = max(half_h - capsule_radius, 0.0)
@@ -2096,6 +2098,8 @@ class CommandOverlay(NSObject):
                     sdf = _stadium_signed_distance_field(
                         total_w,
                         total_h,
+                        width,
+                        height,
                         _OVERLAY_HEIGHT / 4.0,
                         scale,
                     )
