@@ -98,6 +98,17 @@ class TestToolSchemas:
         assert "query" in params.get("properties", {})
         assert "max_results" in params.get("properties", {})
 
+    def test_search_web_schema(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        assert "search_web" in names
+
+        web_schema = next(s for s in schemas if s["function"]["name"] == "search_web")
+        params = web_schema["function"]["parameters"]
+        assert "query" in params.get("properties", {})
+        assert "max_results" in params.get("properties", {})
+
     def test_epistaxis_ops_schema(self):
         mod = _import_tools()
         schemas = mod.get_tool_schemas()
@@ -565,6 +576,38 @@ class TestExecuteTool:
 
         parsed = json.loads(result)
         assert "error" in parsed
+
+    def test_execute_search_web(self):
+        mod = _import_tools()
+        fake_result = {
+            "query": "latest hugging face release",
+            "matched_count": 1,
+            "results": [{"title": "Release", "url": "https://example.com/release"}],
+        }
+        fake_operator = MagicMock()
+        fake_operator.execute_search.return_value = fake_result
+
+        with patch("spoke.tool_dispatch.BraveSearchOperator", return_value=fake_operator):
+            result = mod.execute_tool(
+                name="search_web",
+                arguments={"query": "latest hugging face release", "max_results": 3},
+            )
+
+        assert json.loads(result) == fake_result
+
+    def test_execute_search_web_error(self):
+        mod = _import_tools()
+        with patch(
+            "spoke.tool_dispatch.BraveSearchOperator",
+            side_effect=mod.BraveSearchOperatorError("missing Brave Search API key"),
+        ):
+            result = mod.execute_tool(
+                name="search_web",
+                arguments={"query": "latest hugging face release", "max_results": 3},
+            )
+
+        parsed = json.loads(result)
+        assert parsed["error"] == "missing Brave Search API key"
 
 
 # ── Command client with tools ────────────────────────────────────

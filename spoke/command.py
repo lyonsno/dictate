@@ -123,6 +123,7 @@ _SYSTEM_PROMPT = (
     "something aloud.\n"
     "- add_to_tray: saves text for later insertion or sending.\n"
     "- run_epistaxis_ops: bounded Epistaxis state operations in a dedicated worktree.\n"
+    "- search_web: read-only public web search via Brave Search (up to 10 results).\n"
     "- query_gmail: read-only Gmail search (same syntax as Gmail search bar, up to 10 results).\n\n"
     "The user speaks via voice dictation. Expect transcription artifacts, informal "
     "language, and half-finished sentences. Read through them to the intent.\n\n"
