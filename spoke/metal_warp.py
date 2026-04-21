@@ -199,51 +199,55 @@ kernel void opticalShellWarp(
         // Sharp: sample the warped coordinate directly
         finalColor = inTexture.sample(bilinearSampler, samplePt);
     }} else {{
-        // Blur in INPUT SPACE around the original screen pixel `d`,
-        // not around the warped coordinate.  The warp compresses
-        // source pixels together, so blurring the warped result
-        // just re-samples the same tiny region.  Blurring around
-        // the actual screen position averages the real neighborhood.
+        // Blur centered on the warped sample point, but with offsets
+        // scaled by the inverse of the warp compression so the taps
+        // fan out to cover real source-space distance.  Without this
+        // scaling, all taps land on nearly the same compressed pixel.
         float r = max(blurRadius, 0.5f);
         float sigma2 = r * r * 0.5f;
+        // Inverse warp scale: expand offsets to counteract compression
+        float2 invScale = float2(
+            scaleX > 1e-4f ? 1.0f / scaleX : 1.0f,
+            scaleY > 1e-4f ? 1.0f / scaleY : 1.0f
+        );
 
-        float4 acc = inTexture.sample(bilinearSampler, d);
+        float4 acc = inTexture.sample(bilinearSampler, samplePt);
         float tw = 1.0f;
 
         // Ring 1: r×0.25, 6 taps (hex)
         float r1 = r * 0.25f;
         for (int i = 0; i < 6; i++) {{
             float a = float(i) * 1.0472f;  // 60° apart
-            float2 o = float2(cos(a), sin(a)) * r1;
+            float2 o = float2(cos(a), sin(a)) * r1 * invScale;
             float w = exp(-dot(o,o) / (2.0f * sigma2));
-            acc += inTexture.sample(bilinearSampler, d + o) * w;
+            acc += inTexture.sample(bilinearSampler, samplePt + o) * w;
             tw += w;
         }}
         // Ring 2: r×0.50, 6 taps (hex, rotated 30°)
         float r2 = r * 0.50f;
         for (int i = 0; i < 6; i++) {{
             float a = float(i) * 1.0472f + 0.5236f;  // 30° offset
-            float2 o = float2(cos(a), sin(a)) * r2;
+            float2 o = float2(cos(a), sin(a)) * r2 * invScale;
             float w = exp(-dot(o,o) / (2.0f * sigma2));
-            acc += inTexture.sample(bilinearSampler, d + o) * w;
+            acc += inTexture.sample(bilinearSampler, samplePt + o) * w;
             tw += w;
         }}
         // Ring 3: r×0.75, 6 taps (hex)
         float r3 = r * 0.75f;
         for (int i = 0; i < 6; i++) {{
             float a = float(i) * 1.0472f;
-            float2 o = float2(cos(a), sin(a)) * r3;
+            float2 o = float2(cos(a), sin(a)) * r3 * invScale;
             float w = exp(-dot(o,o) / (2.0f * sigma2));
-            acc += inTexture.sample(bilinearSampler, d + o) * w;
+            acc += inTexture.sample(bilinearSampler, samplePt + o) * w;
             tw += w;
         }}
         // Ring 4: r×1.0, 6 taps (hex, rotated 30°)
         float r4 = r;
         for (int i = 0; i < 6; i++) {{
             float a = float(i) * 1.0472f + 0.5236f;
-            float2 o = float2(cos(a), sin(a)) * r4;
+            float2 o = float2(cos(a), sin(a)) * r4 * invScale;
             float w = exp(-dot(o,o) / (2.0f * sigma2));
-            acc += inTexture.sample(bilinearSampler, d + o) * w;
+            acc += inTexture.sample(bilinearSampler, samplePt + o) * w;
             tw += w;
         }}
         finalColor = acc / tw;
