@@ -524,8 +524,12 @@ def _build_ridge_image(field_width: float, field_height: float,
     return _alpha_field_to_image(alpha)
 
 
-def _window_origin_y(visible_height: float) -> float:
-    base_y = _OVERLAY_BOTTOM_MARGIN - _OUTER_FEATHER
+def _preview_shell_feather(has_compositor: bool) -> float:
+    return _OPTICAL_SHELL_FEATHER if has_compositor else _OUTER_FEATHER
+
+
+def _window_origin_y(visible_height: float, feather: float = _OUTER_FEATHER) -> float:
+    base_y = _OVERLAY_BOTTOM_MARGIN - feather
     if _EXPAND_UPWARD:
         return base_y
     return base_y - (visible_height - _OVERLAY_HEIGHT)
@@ -568,6 +572,32 @@ def _preview_optical_shell_config(
         "debug_grid_spacing_points": 0.0,
         "cleanup_blur_radius_points": 0.75,
     }
+
+
+def _stadium_signed_distance_field(
+    field_width_points: float,
+    field_height_points: float,
+    body_width_points: float,
+    body_height_points: float,
+    corner_radius_points: float,
+    scale: float,
+):
+    """Return a centered stadium SDF sampled at backing-scale resolution."""
+    import numpy as np
+
+    sample_scale = max(float(scale), 1e-6)
+    pw = max(int(round(field_width_points * sample_scale)), 1)
+    ph = max(int(round(field_height_points * sample_scale)), 1)
+    xs = (np.arange(pw, dtype=np.float32)[None, :] + 0.5) / sample_scale - field_width_points * 0.5
+    ys = (np.arange(ph, dtype=np.float32)[:, None] + 0.5) / sample_scale - field_height_points * 0.5
+    half_w = body_width_points * 0.5
+    half_h = body_height_points * 0.5
+    capsule_radius = max(min(corner_radius_points, half_h), 1.0 / sample_scale)
+    spine_half_x = max(half_w - capsule_radius, 0.0)
+    spine_half_y = max(half_h - capsule_radius, 0.0)
+    spine_dist_x = np.maximum(np.abs(xs) - spine_half_x, 0.0)
+    spine_dist_y = np.maximum(np.abs(ys) - spine_half_y, 0.0)
+    return (np.hypot(spine_dist_x, spine_dist_y) - capsule_radius).astype(np.float32)
 
 
 class TranscriptionOverlay(NSObject):
@@ -767,6 +797,29 @@ class TranscriptionOverlay(NSObject):
 
         logger.info("Transcription overlay created")
 
+    def _apply_overlay_window_geometry(self, visible_height: float, feather: float) -> None:
+        """Keep the preview window and visible body aligned to the shell margin."""
+        screen_frame = self._screen.frame()
+        sw = screen_frame.size.width
+        x = (sw - _OVERLAY_WIDTH) / 2 - feather
+        self._window.setFrame_display_animate_(
+            NSMakeRect(
+                x,
+                _window_origin_y(visible_height, feather),
+                _OVERLAY_WIDTH + 2 * feather,
+                visible_height + 2 * feather,
+            ),
+            True,
+            False,
+        )
+        self._content_view.setFrame_(
+            NSMakeRect(feather, feather, _OVERLAY_WIDTH, visible_height)
+        )
+        if getattr(self, "_scroll_view", None) is not None:
+            self._scroll_view.setFrame_(
+                NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, visible_height - 16)
+            )
+
     def _choose_backdrop_layer_class(self):
         renderer = getattr(self, "_backdrop_renderer", None)
         blur_radius_points = getattr(self, "_backdrop_blur_radius_points", _PREVIEW_BACKDROP_BLUR_RADIUS)
@@ -826,20 +879,7 @@ class TranscriptionOverlay(NSObject):
         self._reset_backdrop_layer()
 
         # Reset to default size (window includes feather margin)
-        screen_frame = self._screen.frame()
-        sw = screen_frame.size.width
-        f = _OUTER_FEATHER
-        x = (sw - _OVERLAY_WIDTH) / 2 - f
-        self._window.setFrame_display_animate_(
-            NSMakeRect(x, _window_origin_y(_OVERLAY_HEIGHT),
-                       _OVERLAY_WIDTH + 2 * f, _OVERLAY_HEIGHT + 2 * f),
-            True, False
-        )
-        self._content_view.setFrame_(
-            NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
-        )
-        scroll_frame = NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, _OVERLAY_HEIGHT - 16)
-        self._scroll_view.setFrame_(scroll_frame)
+        self._apply_overlay_window_geometry(_OVERLAY_HEIGHT, _OUTER_FEATHER)
         self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
         self._reset_text_geometry(_OVERLAY_HEIGHT - 16, scroll_to_top=True)
 
@@ -1290,11 +1330,7 @@ class TranscriptionOverlay(NSObject):
         split so brightness-dependent fill alpha is rebuilt cheaply.
         """
         _has_compositor = getattr(self, "_fullscreen_compositor", None) is not None
-        # Always use _OUTER_FEATHER for the fill layer frame — the window
-        # is sized with _OUTER_FEATHER and the fill layer must match.
-        # _OPTICAL_SHELL_FEATHER is only used for the glow tail decay
-        # computation inside the SDF.
-        f = _OUTER_FEATHER
+        f = _preview_shell_feather(_has_compositor)
         scale = getattr(self, '_ridge_scale', 2.0)
         total_w = width + 2 * f
         total_h = height + 2 * f
@@ -1306,18 +1342,14 @@ class TranscriptionOverlay(NSObject):
                 # ── Stage 1: geometry cache (SDF + derived fields) ──
                 geom_key = (width, height, scale, True)
                 if getattr(self, '_sdf_geom_key', None) != geom_key:
-                    pw, ph = max(int(total_w), 1), max(int(total_h), 1)
-                    xs = np.arange(pw, dtype=np.float32)[None, :] + 0.5 - pw * 0.5
-                    ys = np.arange(ph, dtype=np.float32)[:, None] + 0.5 - ph * 0.5
-                    half_w = width * 0.5
-                    half_h = height * 0.5
-                    corner_r = _OVERLAY_HEIGHT / 4.0
-                    capsule_radius = max(min(corner_r, half_h), 1.0)
-                    spine_half_x = max(half_w - capsule_radius, 0.0)
-                    spine_half_y = max(half_h - capsule_radius, 0.0)
-                    spine_dist_x = np.maximum(np.abs(xs) - spine_half_x, 0.0)
-                    spine_dist_y = np.maximum(np.abs(ys) - spine_half_y, 0.0)
-                    sdf = (np.hypot(spine_dist_x, spine_dist_y) - capsule_radius).astype(np.float32)
+                    sdf = _stadium_signed_distance_field(
+                        total_w,
+                        total_h,
+                        width,
+                        height,
+                        _OVERLAY_HEIGHT / 4.0,
+                        scale,
+                    )
 
                     inside_d = np.maximum(-sdf, 0.0)
                     edge_ridge = np.exp(-((inside_d / (1.5 * scale)) ** 2.0)).astype(np.float32)
@@ -1363,6 +1395,8 @@ class TranscriptionOverlay(NSObject):
                 if hasattr(self, '_fill_layer') and self._fill_layer is not None:
                     self._fill_layer.setContents_(fill_image)
                     self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
+                    if hasattr(self._fill_layer, "setContentsScale_"):
+                        self._fill_layer.setContentsScale_(scale)
                     if hasattr(self._fill_layer, "setCompositingFilter_"):
                         self._fill_layer.setCompositingFilter_(None)
                 return
@@ -1514,6 +1548,13 @@ class TranscriptionOverlay(NSObject):
         try:
             from spoke.fullscreen_compositor import FullScreenCompositor
             content = getattr(self, "_content_view", None)
+            visible_height = _OVERLAY_HEIGHT
+            if content is not None and hasattr(content, "frame"):
+                try:
+                    visible_height = float(content.frame().size.height)
+                except Exception:
+                    visible_height = _OVERLAY_HEIGHT
+            self._apply_overlay_window_geometry(visible_height, _OPTICAL_SHELL_FEATHER)
             if content is None or not hasattr(content, "frame"):
                 shell_config = _preview_optical_shell_config()
             else:
@@ -1592,6 +1633,12 @@ class TranscriptionOverlay(NSObject):
                 compositor.stop()
             except Exception:
                 logger.debug("Failed to stop preview full-screen compositor", exc_info=True)
+        content = getattr(self, "_content_view", None)
+        if content is not None and hasattr(content, "frame"):
+            try:
+                self._apply_overlay_window_geometry(float(content.frame().size.height), _OUTER_FEATHER)
+            except Exception:
+                pass
         # Invalidate fill caches so non-compositor path rebuilds
         self._sdf_cache_key = None
         self._sdf_geom_key = None
@@ -1851,17 +1898,12 @@ class TranscriptionOverlay(NSObject):
             max_height = _max_overlay_height(self._screen.frame().size.height)
             new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), max_height)
 
-            f = _OUTER_FEATHER
+            has_compositor = getattr(self, "_fullscreen_compositor", None) is not None
+            f = _preview_shell_feather(has_compositor)
             win_frame = self._window.frame()
             new_win_h = new_height + 2 * f
             if abs(win_frame.size.height - new_win_h) > 4:
-                win_frame.origin.y = _window_origin_y(new_height)
-                win_frame.size.height = new_win_h
-                self._window.setFrame_display_animate_(win_frame, True, False)
-                self._content_view.setFrame_(
-                    NSMakeRect(f, f, _OVERLAY_WIDTH, new_height)
-                )
-                self._scroll_view.setFrame_(NSMakeRect(12, 8, _OVERLAY_WIDTH - 24, new_height - 16))
+                self._apply_overlay_window_geometry(new_height, f)
                 self._reset_overlay_chrome_geometry(new_height)
                 # Update compositor capsule to match new overlay size
                 compositor = getattr(self, "_fullscreen_compositor", None)

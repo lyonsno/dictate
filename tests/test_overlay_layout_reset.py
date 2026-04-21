@@ -340,7 +340,7 @@ def test_show_resets_stale_overlay_chrome_height(mock_pyobjc, monkeypatch):
     overlay.show()
 
     default_height = overlay_module._OVERLAY_HEIGHT
-    expected_window_height = default_height + 2 * overlay_module._OUTER_FEATHER
+    expected_window_height = default_height + 2 * overlay_module._OPTICAL_SHELL_FEATHER
     assert overlay._window.frame().size.height == expected_window_height
     assert overlay._content_view.frame().size.height == default_height
 
@@ -366,9 +366,11 @@ def test_show_positions_preview_much_closer_to_screen_bottom(mock_pyobjc, monkey
 
     overlay.show()
 
-    # Window y = _OVERLAY_BOTTOM_MARGIN - _OUTER_FEATHER
+    # Once the compositor starts, the preview shell tightens to the
+    # narrower optical-shell margin while keeping the visible body at
+    # the intended bottom offset.
     assert overlay._window.frame().origin.y == pytest.approx(
-        overlay_module._OVERLAY_BOTTOM_MARGIN - overlay_module._OUTER_FEATHER
+        overlay_module._OVERLAY_BOTTOM_MARGIN - overlay_module._OPTICAL_SHELL_FEATHER
     )
 
 
@@ -624,4 +626,60 @@ def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, 
     f = overlay_module._OUTER_FEATHER
     expected_height = 220.0
     assert overlay._content_view.frame().size.height == pytest.approx(expected_height)
+    assert overlay._window.frame().size.height == pytest.approx(expected_height + 2 * f)
+
+
+def test_update_layout_uses_optical_shell_feather_when_fullscreen_compositor_active(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay._window = _FakeWindow()
+    overlay._window._frame = _make_rect(
+        0.0,
+        overlay_module._window_origin_y(
+            overlay_module._OVERLAY_HEIGHT,
+            overlay_module._OUTER_FEATHER,
+        ),
+        overlay_module._OVERLAY_WIDTH + 2 * overlay_module._OUTER_FEATHER,
+        overlay_module._OVERLAY_HEIGHT + 2 * overlay_module._OUTER_FEATHER,
+    )
+    overlay._content_view = _FakeView(
+        _make_rect(
+            overlay_module._OUTER_FEATHER,
+            overlay_module._OUTER_FEATHER,
+            overlay_module._OVERLAY_WIDTH,
+            overlay_module._OVERLAY_HEIGHT,
+        )
+    )
+    overlay._text_view = _FakeTextView(
+        _make_rect(0.0, 0.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        "live preview",
+    )
+    overlay._text_view.set_layout_height(260.0)
+    overlay._scroll_view = _FakeScrollView(
+        _make_rect(12.0, 8.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        overlay._text_view,
+        y_offset=0.0,
+    )
+    overlay._visible = False
+    overlay._typewriter_displayed = "live preview"
+    overlay._reset_overlay_chrome_geometry = MagicMock()
+    overlay._fullscreen_compositor = MagicMock()
+
+    overlay._update_layout()
+
+    expected_height = overlay_module._max_overlay_height(overlay._screen.frame().size.height)
+    f = overlay_module._OPTICAL_SHELL_FEATHER
+    assert overlay._content_view.frame().origin.x == pytest.approx(f)
+    assert overlay._content_view.frame().origin.y == pytest.approx(f)
+    assert overlay._content_view.frame().size.height == pytest.approx(expected_height)
+    assert overlay._window.frame().origin.y == pytest.approx(
+        overlay_module._window_origin_y(expected_height, f)
+    )
+    assert overlay._window.frame().size.width == pytest.approx(
+        overlay_module._OVERLAY_WIDTH + 2 * f
+    )
     assert overlay._window.frame().size.height == pytest.approx(expected_height + 2 * f)

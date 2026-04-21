@@ -229,6 +229,36 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_preview_optical_shell_fill_rasters_at_backing_scale(self, mock_pyobjc, monkeypatch):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
+            overlay._fill_layer = MagicMock()
+            overlay._brightness = 0.0
+            overlay._ridge_scale = 2.0
+            overlay._fullscreen_compositor = object()
+
+            captured = {}
+
+            def fake_fill_field_to_image(alpha, r, g, b):
+                captured["shape"] = alpha.shape
+                return "fill-image", b"payload"
+
+            monkeypatch.setattr(mod, "_fill_field_to_image", fake_fill_field_to_image)
+
+            overlay._apply_ridge_masks(600.0, 80.0)
+
+            feather = mod._OPTICAL_SHELL_FEATHER
+            expected_shape = (
+                int((80.0 + 2 * feather) * overlay._ridge_scale),
+                int((600.0 + 2 * feather) * overlay._ridge_scale),
+            )
+            assert captured["shape"] == expected_shape
+            overlay._fill_layer.setContentsScale_.assert_called_once_with(overlay._ridge_scale)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_dark_background_fill_uses_additive_experiment(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
