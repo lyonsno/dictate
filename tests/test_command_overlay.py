@@ -1434,14 +1434,15 @@ class TestSDFCaching:
         assert captured["shape"] == expected_shape
 
 
-def test_command_optical_shell_config_tracks_overlay_body_size(mock_pyobjc, monkeypatch):
+def test_command_optical_shell_config_inflates_warp_capsule_past_overlay_body(mock_pyobjc, monkeypatch):
     monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
     sys.modules.pop("spoke.command_overlay", None)
     mod = importlib.import_module("spoke.command_overlay")
     try:
         cfg = mod._command_optical_shell_config(600.0, 80.0)
-        assert cfg["content_width_points"] == pytest.approx(600.0)
-        assert cfg["content_height_points"] == pytest.approx(80.0)
+        capsule_r = mod._OVERLAY_HEIGHT / 4.0
+        assert cfg["content_width_points"] == pytest.approx(600.0 + capsule_r)
+        assert cfg["content_height_points"] == pytest.approx(80.0 + capsule_r)
     finally:
         sys.modules.pop("spoke.command_overlay", None)
 

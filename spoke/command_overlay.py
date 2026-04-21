@@ -349,6 +349,11 @@ def _command_optical_shell_config(
         if content_height_points is None
         else max(float(content_height_points), 1.0)
     )
+    # The warp shell needs a slightly larger envelope than the visible pill so
+    # the exterior liquid distortion can decay outside the fill boundary.
+    capsule_r = _OVERLAY_HEIGHT / 4.0
+    width_points += capsule_r
+    height_points += capsule_r
     return {
         "enabled": True,
         "content_width_points": width_points,
