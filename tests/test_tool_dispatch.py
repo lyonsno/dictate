@@ -1095,6 +1095,29 @@ class TestExecuteToolIntegration:
         assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
         assert f.read_text(encoding="utf-8") == "alpha\ndelta\ngamma\n"
 
+    def test_execute_edit_file_does_not_report_line_endings_when_exact_match_needs_none(
+        self, tmp_path
+    ):
+        mod = _import_tools()
+        f = tmp_path / "edit-crlf-exact.txt"
+        f.write_bytes(b"alpha\r\nbeta\r\ngamma\r\n")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "beta\r\n",
+                "new_string": "delta\r\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
+        assert f.read_bytes() == b"alpha\r\ndelta\r\ngamma\r\n"
+
     def test_execute_edit_file_normalizes_trailing_whitespace_for_matching(self, tmp_path):
         mod = _import_tools()
         f = tmp_path / "edit-trailing-space.txt"
@@ -1128,7 +1151,7 @@ class TestExecuteToolIntegration:
             {
                 "file": str(f),
                 "old_string": "beta   \n",
-                "new_string": "delta   \n",
+                "new_string": "delta\n",
             },
         )
         parsed = json.loads(result)
@@ -1136,6 +1159,29 @@ class TestExecuteToolIntegration:
         assert parsed.get("applied") is True
         assert parsed.get("match_count") == 1
         assert parsed.get("normalization_applied") == ["trailing_whitespace"]
+        assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
+        assert f.read_text(encoding="utf-8") == "alpha\ndelta\ngamma\n"
+
+    def test_execute_edit_file_does_not_report_trailing_whitespace_when_exact_match_needs_none(
+        self, tmp_path
+    ):
+        mod = _import_tools()
+        f = tmp_path / "edit-trailing-space-exact.txt"
+        f.write_text("alpha\nbeta   \ngamma\n", encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {
+                "file": str(f),
+                "old_string": "beta   \n",
+                "new_string": "delta\n",
+            },
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        assert parsed.get("applied") is True
+        assert parsed.get("match_count") == 1
+        assert parsed.get("normalization_applied") == []
         assert parsed.get("edited_range") == {"start_line": 2, "end_line": 2}
         assert f.read_text(encoding="utf-8") == "alpha\ndelta\ngamma\n"
 
