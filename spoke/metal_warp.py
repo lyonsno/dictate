@@ -135,15 +135,16 @@ kernel void opticalShellWarp(
     float scaleY = pow(max(scale, 0.0f), {_WARP_Y_SQUEEZE}f);
     float2 warped = c + p * float2(scaleX, scaleY);
 
-    float exteriorT = max(capsuleSdf, 0.0f);
-    // Steep falloff: effect is intense at boundary, negligible past ~15px.
-    // smoothstep(15,0) gives 1.0 at boundary, 0.0 at 15px out.
-    float pullStrength = 1.0f - smoothstep(0.0f, 15.0f, exteriorT);
-    // Extra kick right at the boundary (first 3px)
-    float nearBoost = 1.0f + 2.0f * (1.0f - smoothstep(0.0f, 3.0f, exteriorT));
-    float2 n = capsuleGradient(p, spineHalf);
-    float mag = {_WARP_EXTERIOR_MAG_STRENGTH}f * capsuleRadius * pullStrength * nearBoost;
-    float2 result = warped + n * mag;
+    float2 result = warped;
+    if (capsuleSdf > 0.0f) {{
+        // Exterior only: steep falloff, intense at boundary, gone by 15px.
+        float exteriorT = capsuleSdf;
+        float pullStrength = 1.0f - smoothstep(0.0f, 15.0f, exteriorT);
+        float nearBoost = 1.0f + 2.0f * (1.0f - smoothstep(0.0f, 3.0f, exteriorT));
+        float2 n = capsuleGradient(p, spineHalf);
+        float mag = {_WARP_EXTERIOR_MAG_STRENGTH}f * capsuleRadius * pullStrength * nearBoost;
+        result = warped + n * mag;
+    }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
     // Depth-dependent blur.  Radius is in source pixels but taps are
