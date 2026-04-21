@@ -1683,7 +1683,7 @@ class CommandOverlay(NSObject):
                     _COMMAND_BACKDROP_OPTICAL_SHELL_FILL_MAX_LIGHT,
                     t,
                 )
-                if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL:
+                if _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_REVEAL or getattr(self, "_fullscreen_compositor", None) is not None:
                     fill_min = 0.0
                     fill_max = 0.0
             else:
@@ -2255,6 +2255,22 @@ class CommandOverlay(NSObject):
                 shell_config = self._current_optical_shell_config()
                 if shell_config is not None and hasattr(self._backdrop_renderer, "set_live_optical_shell_config"):
                     self._backdrop_renderer.set_live_optical_shell_config(shell_config)
+                compositor = getattr(self, "_fullscreen_compositor", None)
+                if compositor is not None and shell_config is not None:
+                    scale = self._screen.backingScaleFactor() if hasattr(self._screen, "backingScaleFactor") else 2.0
+                    screen_frame = self._screen.frame()
+                    win_frame = self._window.frame()
+                    content_frame = self._content_view.frame()
+                    capsule_cx = win_frame.origin.x + content_frame.origin.x + content_frame.size.width / 2
+                    capsule_cy_cocoa = win_frame.origin.y + content_frame.origin.y + content_frame.size.height / 2
+                    shell_config["center_x"] = capsule_cx * scale
+                    shell_config["center_y"] = (screen_frame.size.height - capsule_cy_cocoa) * scale
+                    for k in ("content_width_points", "content_height_points",
+                              "corner_radius_points", "band_width_points",
+                              "tail_width_points"):
+                        if k in shell_config:
+                            shell_config[k] = float(shell_config[k]) * scale
+                    compositor.update_shell_config(shell_config)
                 if self._visible:
                     self._refresh_backdrop_snapshot()
 

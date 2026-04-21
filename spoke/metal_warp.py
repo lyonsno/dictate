@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 
 # Tuning constants — must stay in sync with backdrop_stream.py
 _WARP_BLEED_ZONE_FRAC = 0.8
-_WARP_CENTER_FLOOR = 0.88
-_WARP_FIELD_EXPONENT = 0.35
+_WARP_CENTER_FLOOR = 0.94
+_WARP_FIELD_EXPONENT = 0.25
 _WARP_REMAP_BASE_EXP_SCALE = 0.98
 _WARP_REMAP_BASE_EXP_FLOOR = 0.02
 _WARP_REMAP_RIM_EXP = 0.1
@@ -87,8 +87,14 @@ float depthRemap(float inside01, float curveBoost) {{
     return pow(x, exponent);
 }}
 
+constexpr sampler bilinearSampler(
+    coord::pixel,
+    address::clamp_to_edge,
+    filter::linear
+);
+
 kernel void opticalShellWarp(
-    texture2d<float, access::read> inTexture [[texture(0)]],
+    texture2d<float, access::sample> inTexture [[texture(0)]],
     texture2d<float, access::write> outTexture [[texture(1)]],
     constant WarpParams& params [[buffer(0)]],
     uint2 gid [[thread_position_in_grid]]
@@ -112,7 +118,7 @@ kernel void opticalShellWarp(
 
     float bleedZone = capsuleRadius * {_WARP_BLEED_ZONE_FRAC}f;
     if (capsuleSdf > bleedZone) {{
-        outTexture.write(inTexture.read(pixel), pixel);
+        outTexture.write(inTexture.sample(bilinearSampler, d), pixel);
         return;
     }}
 
@@ -162,16 +168,18 @@ kernel void opticalShellWarp(
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
-    // Depth-dependent blur.  Single smooth ramp:
-    // 0-15%%: no blur (sharp rim detail).
-    // 15-25%%: eased ramp to full radius (~40 source pixels).
-    // >25%%: holds at full radius.
+    // Depth-dependent blur.  Wide cubic-smoothstep ramp:
+    // 0-8%%: no blur (sharp rim detail preserved).
+    // 8-55%%: long gradual ramp — content softens imperceptibly.
+    // >55%%: holds at full radius (deep interior fully washed).
     float interiorDepth = clamp(-capsuleSdf / capsuleRadius, 0.0f, 1.0f);
-    float blurT = smoothstep(0.15f, 0.25f, interiorDepth);
-    float blurRadius = blurT * 80.0f;
+    float blurT = smoothstep(0.08f, 0.55f, interiorDepth);
+    // Square the ramp for an even gentler onset (cubic feel)
+    blurT = blurT * blurT;
+    float blurRadius = blurT * 280.0f;
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
-    float4 centerColor = inTexture.read(uint2(samplePt));
+    float4 centerColor = inTexture.sample(bilinearSampler, samplePt);
 
     float4 finalColor;
     if (blurRadius < 0.25f) {{
@@ -181,7 +189,6 @@ kernel void opticalShellWarp(
         // Smooth coverage, no visible ghosting.
         float r = max(blurRadius, 0.5f);
         float sigma2 = r * r * 0.5f;
-        float2 lim = float2(params.width - 1.0f, params.height - 1.0f);
 
         float4 acc = centerColor;
         float tw = 1.0f;
@@ -192,7 +199,7 @@ kernel void opticalShellWarp(
             float a = float(i) * 1.0472f;  // 60° apart
             float2 o = float2(cos(a), sin(a)) * r1;
             float w = exp(-dot(o,o) / (2.0f * sigma2));
-            acc += inTexture.read(uint2(clamp(samplePt + o, float2(0), lim))) * w;
+            acc += inTexture.sample(bilinearSampler, samplePt + o) * w;
             tw += w;
         }}
         // Ring 2: r×0.50, 6 taps (hex, rotated 30°)
@@ -201,7 +208,7 @@ kernel void opticalShellWarp(
             float a = float(i) * 1.0472f + 0.5236f;  // 30° offset
             float2 o = float2(cos(a), sin(a)) * r2;
             float w = exp(-dot(o,o) / (2.0f * sigma2));
-            acc += inTexture.read(uint2(clamp(samplePt + o, float2(0), lim))) * w;
+            acc += inTexture.sample(bilinearSampler, samplePt + o) * w;
             tw += w;
         }}
         // Ring 3: r×0.75, 6 taps (hex)
@@ -210,7 +217,7 @@ kernel void opticalShellWarp(
             float a = float(i) * 1.0472f;
             float2 o = float2(cos(a), sin(a)) * r3;
             float w = exp(-dot(o,o) / (2.0f * sigma2));
-            acc += inTexture.read(uint2(clamp(samplePt + o, float2(0), lim))) * w;
+            acc += inTexture.sample(bilinearSampler, samplePt + o) * w;
             tw += w;
         }}
         // Ring 4: r×1.0, 6 taps (hex, rotated 30°)
@@ -219,7 +226,7 @@ kernel void opticalShellWarp(
             float a = float(i) * 1.0472f + 0.5236f;
             float2 o = float2(cos(a), sin(a)) * r4;
             float w = exp(-dot(o,o) / (2.0f * sigma2));
-            acc += inTexture.read(uint2(clamp(samplePt + o, float2(0), lim))) * w;
+            acc += inTexture.sample(bilinearSampler, samplePt + o) * w;
             tw += w;
         }}
         finalColor = acc / tw;
