@@ -27,10 +27,12 @@ logger = logging.getLogger(__name__)
 class FullScreenCompositor:
     """Full-display capture → Metal warp → full-screen presentation."""
 
-    # Class-level registry of all active compositor window IDs.
-    # Each compositor excludes all registered windows from its capture
-    # to prevent feedback loops when multiple compositors run concurrently.
+    # Class-level registry: only one compositor runs at a time.
+    # When a new compositor starts, any existing active compositor is
+    # suspended (capture stopped, window hidden) to prevent feedback
+    # loops and Metal pipeline contention.
     _active_compositor_windows: set[int] = set()
+    _active_compositors: list['FullScreenCompositor'] = []
 
     def __init__(self, screen):
         self._screen = screen
@@ -74,6 +76,10 @@ class FullScreenCompositor:
         if self._running:
             return True
         try:
+            # Suspend any other active compositor — only one runs at a time
+            for other in list(FullScreenCompositor._active_compositors):
+                if other is not self and other._running:
+                    other._suspend()
             self._shell_config = dict(shell_config) if shell_config else None
             # Reset temporal accumulation so the first frame doesn't
             # blend with stale content from a previous compositor session.
@@ -83,6 +89,7 @@ class FullScreenCompositor:
             self._start_capture()
             self._start_display_link()
             self._running = True
+            FullScreenCompositor._active_compositors.append(self)
             logger.info("FullScreenCompositor: started")
             return True
         except Exception:
@@ -99,10 +106,51 @@ class FullScreenCompositor:
         with self._lock:
             self._latest_iosurface = None
             self._latest_pixel_buffer = None
+        try:
+            FullScreenCompositor._active_compositors.remove(self)
+        except ValueError:
+            pass
+        # Resume any suspended compositor that was waiting
+        for other in list(FullScreenCompositor._active_compositors):
+            if other is not self and getattr(other, '_suspended', False):
+                other._resume()
+                break  # only resume one
         logger.info(
             "FullScreenCompositor: stopped (%d presented / %d ticks)",
             self._presented_count, self._frame_count,
         )
+
+    def _suspend(self) -> None:
+        """Pause capture and hide window without full teardown."""
+        if not self._running:
+            return
+        self._running = False
+        self._suspended = True
+        self._stop_display_link()
+        self._stop_capture()
+        if self._window is not None:
+            try:
+                self._window.orderOut_(None)
+            except Exception:
+                pass
+        logger.info("FullScreenCompositor: suspended")
+
+    def _resume(self) -> None:
+        """Resume a suspended compositor."""
+        if not getattr(self, '_suspended', False):
+            return
+        self._suspended = False
+        try:
+            if self._pipeline is not None:
+                self._pipeline.reset_temporal_state()
+            if self._window is not None:
+                self._window.orderFrontRegardless()
+            self._start_capture()
+            self._start_display_link()
+            self._running = True
+            logger.info("FullScreenCompositor: resumed")
+        except Exception:
+            logger.info("FullScreenCompositor: failed to resume", exc_info=True)
 
     def update_shell_config(self, config: dict) -> None:
         """Update the warp parameters (capsule position, size, etc.)."""
