@@ -135,6 +135,29 @@ class TestThinkingTimer:
         assert overlay._thinking_timer is None
         overlay._stop_thinking_timer()  # should not raise
 
+    def test_set_narrator_shimmer_updates_flag_and_reapplies_theme(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._apply_narrator_theme = MagicMock()
+
+        overlay.set_narrator_shimmer(True)
+
+        assert overlay._narrator_shimmer_active is True
+        overlay._apply_narrator_theme.assert_called_once_with()
+
+    def test_set_thinking_collapsed_updates_narrator_and_stops_timer(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._thinking_timer = MagicMock()
+        overlay._hide_narrator = MagicMock()
+        overlay._apply_narrator_theme = MagicMock()
+
+        overlay.set_thinking_collapsed("condensed summary")
+
+        assert overlay._thinking_timer is None
+        overlay._thinking_label.setHidden_.assert_called_with(True)
+        overlay._narrator_label.setStringValue_.assert_called_with("condensed summary")
+        overlay._narrator_label.setHidden_.assert_called_with(False)
+        overlay._apply_narrator_theme.assert_called_once_with()
+
     def test_init_uses_shared_backdrop_renderer_factory(self, mock_pyobjc, monkeypatch):
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")
@@ -1337,3 +1360,63 @@ class TestSDFCaching:
 
         overlay._apply_ridge_masks(600.0, 200.0)
         assert call_count == 2, "SDF was not recomputed after height change"
+
+    def test_optical_shell_fill_rasters_at_backing_scale(self, mock_pyobjc, monkeypatch):
+        """Optical-shell fill images should be generated at Retina resolution."""
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._spring_tint_layer = None
+        overlay._fullscreen_compositor = object()
+        overlay._ridge_scale = 2.0
+
+        import spoke.overlay as ov_mod
+
+        captured = {}
+
+        def fake_fill_field_to_image(alpha, r, g, b):
+            captured["shape"] = alpha.shape
+            return "fill-image", b"payload"
+
+        monkeypatch.setattr(ov_mod, "_fill_field_to_image", fake_fill_field_to_image)
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+
+        feather = mod._OPTICAL_SHELL_FEATHER
+        expected_shape = (
+            int((80.0 + 2 * feather) * overlay._ridge_scale),
+            int((600.0 + 2 * feather) * overlay._ridge_scale),
+        )
+        assert captured["shape"] == expected_shape
+
+
+def test_command_optical_shell_config_inflates_warp_capsule_past_overlay_body(mock_pyobjc, monkeypatch):
+    monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+    sys.modules.pop("spoke.command_overlay", None)
+    mod = importlib.import_module("spoke.command_overlay")
+    try:
+        cfg = mod._command_optical_shell_config(600.0, 80.0)
+        capsule_r = mod._OVERLAY_HEIGHT / 4.0
+        assert cfg["content_width_points"] == pytest.approx(600.0 + capsule_r)
+        assert cfg["content_height_points"] == pytest.approx(80.0 + capsule_r)
+    finally:
+        sys.modules.pop("spoke.command_overlay", None)
+
+
+def test_stadium_signed_distance_field_keeps_body_centered_in_padded_field(mock_pyobjc):
+    sys.modules.pop("spoke.command_overlay", None)
+    mod = importlib.import_module("spoke.command_overlay")
+    try:
+        sdf = mod._stadium_signed_distance_field(
+            880.0,
+            360.0,
+            600.0,
+            80.0,
+            mod._OVERLAY_HEIGHT / 4.0,
+            2.0,
+        )
+        center_row = sdf.shape[0] // 2
+        inside = (sdf[center_row] <= 0.0).nonzero()[0]
+        expected_left = int(round((880.0 - 600.0) * 0.5 * 2.0))
+        assert abs(int(inside[0]) - expected_left) <= 2
+    finally:
+        sys.modules.pop("spoke.command_overlay", None)

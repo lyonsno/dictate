@@ -444,6 +444,32 @@ def _command_backdrop_mask_falloff_width(scale: float) -> float:
     return max(scale, 1e-6) * max(_COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER, 0.0)
 
 
+def _stadium_signed_distance_field(
+    field_width_points: float,
+    field_height_points: float,
+    body_width_points: float,
+    body_height_points: float,
+    corner_radius_points: float,
+    scale: float,
+):
+    """Return a centered stadium SDF sampled at backing-scale resolution."""
+    import numpy as np
+
+    sample_scale = max(float(scale), 1e-6)
+    pw = max(int(round(field_width_points * sample_scale)), 1)
+    ph = max(int(round(field_height_points * sample_scale)), 1)
+    xs = (np.arange(pw, dtype=np.float32)[None, :] + 0.5) / sample_scale - field_width_points * 0.5
+    ys = (np.arange(ph, dtype=np.float32)[:, None] + 0.5) / sample_scale - field_height_points * 0.5
+    half_w = body_width_points * 0.5
+    half_h = body_height_points * 0.5
+    capsule_radius = max(min(corner_radius_points, half_h), 1.0 / sample_scale)
+    spine_half_x = max(half_w - capsule_radius, 0.0)
+    spine_half_y = max(half_h - capsule_radius, 0.0)
+    spine_dist_x = np.maximum(np.abs(xs) - spine_half_x, 0.0)
+    spine_dist_y = np.maximum(np.abs(ys) - spine_half_y, 0.0)
+    return (np.hypot(spine_dist_x, spine_dist_y) - capsule_radius).astype(np.float32)
+
+
 def _boundary_outline_ci_image(extent, shell_config):
     """Faint pill-shaped outline at the sdf=0 boundary of the optical shell."""
     import numpy as np
@@ -704,6 +730,7 @@ class CommandOverlay(NSObject):
         self._thinking_glow_layer = None  # CALayer for the glow behind the number
         self._thinking_inverted = False  # False = glowing number, True = cutout
         self._narrator_label = None  # NSTextField for narrator summary
+        self._narrator_shimmer_active = False
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -2015,13 +2042,24 @@ class CommandOverlay(NSObject):
             self._narrator_label.setHidden_(False)
             self._apply_narrator_theme()
 
+    def set_narrator_shimmer(self, active: bool) -> None:
+        """Toggle the narrator label's higher-contrast shimmer state."""
+        self._narrator_shimmer_active = bool(active)
+        self._apply_narrator_theme()
+
+    def set_thinking_collapsed(self, text: str) -> None:
+        """Replace the live thinking timer with a collapsed narrator summary."""
+        self._stop_thinking_timer()
+        self.set_narrator_summary(text)
+
     def _apply_narrator_theme(self) -> None:
         """Match narrator label color to user utterance style."""
         if self._narrator_label is None or self._narrator_label.isHidden():
             return
         user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
+        alpha = 0.7 if getattr(self, "_narrator_shimmer_active", False) else 0.4
         self._narrator_label.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, alpha)
         )
 
     def _hide_narrator(self) -> None:
@@ -2077,18 +2115,14 @@ class CommandOverlay(NSObject):
             geom_key = (width, height, scale, _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED)
             if getattr(self, '_sdf_geom_key', None) != geom_key:
                 if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
-                    pw, ph = max(int(total_w), 1), max(int(total_h), 1)
-                    xs = np.arange(pw, dtype=np.float32)[None, :] + 0.5 - pw * 0.5
-                    ys = np.arange(ph, dtype=np.float32)[:, None] + 0.5 - ph * 0.5
-                    half_w = width * 0.5
-                    half_h = height * 0.5
-                    corner_r = _OVERLAY_HEIGHT / 4.0
-                    capsule_radius = max(min(corner_r, half_h), 1.0)
-                    spine_half_x = max(half_w - capsule_radius, 0.0)
-                    spine_half_y = max(half_h - capsule_radius, 0.0)
-                    spine_dist_x = np.maximum(np.abs(xs) - spine_half_x, 0.0)
-                    spine_dist_y = np.maximum(np.abs(ys) - spine_half_y, 0.0)
-                    sdf = (np.hypot(spine_dist_x, spine_dist_y) - capsule_radius).astype(np.float32)
+                    sdf = _stadium_signed_distance_field(
+                        total_w,
+                        total_h,
+                        width,
+                        height,
+                        _OVERLAY_HEIGHT / 4.0,
+                        scale,
+                    )
 
                     # Pre-compute geometry-derived fields (brightness-independent)
                     inside_d = np.maximum(-sdf, 0.0)
@@ -2168,6 +2202,8 @@ class CommandOverlay(NSObject):
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setContents_(fill_image)
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
+            if hasattr(self._fill_layer, "setContentsScale_"):
+                self._fill_layer.setContentsScale_(scale)
             if hasattr(self._fill_layer, "setCompositingFilter_"):
                 if getattr(self, "_fullscreen_compositor", None) is not None:
                     # Graphic mode: normal alpha blending (no additive glow)
