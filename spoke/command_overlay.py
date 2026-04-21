@@ -756,6 +756,7 @@ class CommandOverlay(NSObject):
         self._backdrop_capture_pixel_size = None
         self._backdrop_timer: NSTimer | None = None
         self._fullscreen_compositor = None
+        self._force_backdrop_frame_callback = False
 
         return self
 
@@ -876,6 +877,8 @@ class CommandOverlay(NSObject):
                             renderer.set_display_link_renderer(dl_renderer)
                         logger.info("Command overlay: display-link Metal renderer active")
                     else:
+                        self._force_backdrop_frame_callback = True
+                        self._install_backdrop_frame_callback()
                         logger.info("Command overlay: display-link start failed, falling back to CIWarpKernel")
             except Exception:
                 logger.debug("Command overlay: MetalDisplayLinkRenderer unavailable", exc_info=True)
@@ -1153,6 +1156,7 @@ class CommandOverlay(NSObject):
         self._scroll_view.setFrame_(
             NSMakeRect(48, 16, _OVERLAY_WIDTH - 96, _OVERLAY_HEIGHT - 32)
         )
+        self._reset_text_geometry(_OVERLAY_HEIGHT - 16)
         self._apply_ridge_masks(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         self._fill_image_brightness = self._brightness
         self._apply_surface_theme()
@@ -2349,7 +2353,9 @@ class CommandOverlay(NSObject):
         # CAMetalLayer: Metal drawable path handles presentation directly.
         # Frame callback (setContents_) would cause "undefined behavior"
         # warnings on CAMetalLayer.
-        if getattr(self, "_backdrop_is_metal_layer", False):
+        if getattr(self, "_backdrop_is_metal_layer", False) and not getattr(
+            self, "_force_backdrop_frame_callback", False
+        ):
             renderer.set_frame_callback(None)
             return
         # When optical shell is active, SCK frames route through the CGImage
@@ -2467,13 +2473,15 @@ class CommandOverlay(NSObject):
         """
         self._text_punchthrough = enabled
         fill = getattr(self, "_fill_layer", None)
-        content = getattr(self, "_content_view", None)
+        scroll = getattr(self, "_scroll_view", None)
         if fill is None:
             return
         if enabled:
-            # Hide the real text — the mask IS the text now
-            if content is not None:
-                content.setHidden_(True)
+            # Hide only the scroll surface. The punch-through mask renders
+            # the streamed text, while the thinking/narrator labels still
+            # need to remain visible above the compositor.
+            if scroll is not None:
+                scroll.setHidden_(True)
         else:
             fill.setMask_(None)
             self._punchthrough_mask_layer = None
@@ -2483,8 +2491,8 @@ class CommandOverlay(NSObject):
                 boost.setOpacity_(0.0)
                 boost.setMask_(None)
                 self._boost_mask_layer = None
-            if content is not None:
-                content.setHidden_(False)
+            if scroll is not None:
+                scroll.setHidden_(False)
 
     def _update_punchthrough_mask(self) -> None:
         """Render text into an inverted mask for the fill layer.
@@ -2735,6 +2743,19 @@ class CommandOverlay(NSObject):
 
     # ── layout ──────────────────────────────────────────────
 
+    def _reset_text_geometry(self, visible_height: float) -> None:
+        """Keep the document view and text container in sync with the scroll view."""
+        if self._text_view is None or self._scroll_view is None:
+            return
+
+        scroll_frame = self._scroll_view.frame()
+        doc_frame = NSMakeRect(0, 0, scroll_frame.size.width, visible_height)
+        self._text_view.setFrame_(doc_frame)
+
+        container = self._text_view.textContainer()
+        if container is not None and hasattr(container, "setContainerSize_"):
+            container.setContainerSize_((scroll_frame.size.width, 1.0e7))
+
     def _update_layout(self) -> None:
         """Resize window and scroll to bottom after text change."""
         try:
@@ -2791,6 +2812,7 @@ class CommandOverlay(NSObject):
                 if self._visible:
                     self._refresh_backdrop_snapshot()
 
+            self._reset_text_geometry(max(new_height - 16, text_height))
             end = (self._text_view.string().length()
                    if hasattr(self._text_view.string(), 'length')
                    else len(self._response_text))
