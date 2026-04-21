@@ -181,15 +181,16 @@ kernel void opticalShellWarp(
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
-    // Depth-dependent blur.  Wide cubic-smoothstep ramp:
-    // 0-8%%: no blur (sharp rim detail preserved).
-    // 8-55%%: long gradual ramp — content softens imperceptibly.
-    // >55%%: holds at full radius (deep interior fully washed).
+    // Depth-dependent blur.  Starts at the boundary and ramps
+    // smoothly to full wash deep in the interior.
+    // 0-5%%: no blur (sharp rim detail preserved).
+    // 5-40%%: gradual ramp — content softens imperceptibly.
+    // >40%%: holds at full radius (deep interior fully washed).
     float interiorDepth = clamp(-capsuleSdf / capsuleRadius, 0.0f, 1.0f);
-    float blurT = smoothstep(0.08f, 0.55f, interiorDepth);
+    float blurT = smoothstep(0.05f, 0.40f, interiorDepth);
     // Square the ramp for an even gentler onset (cubic feel)
     blurT = blurT * blurT;
-    float blurRadius = blurT * 280.0f;
+    float blurRadius = blurT * 350.0f;
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
     float4 centerColor = inTexture.sample(bilinearSampler, samplePt);
