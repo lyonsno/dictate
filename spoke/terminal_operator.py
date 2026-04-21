@@ -90,6 +90,7 @@ _BASE_EXECUTION_ENV = {
     "LC_ALL": "C",
     "TERM": "dumb",
 }
+_RG_SHORT_VALUE_FLAGS = frozenset({"A", "B", "C", "e", "f", "g", "j", "m", "M", "t", "T"})
 _EXECUTION_ENV_OVERRIDES = {
     "git": {
         "GIT_CONFIG_NOSYSTEM": "1",
@@ -361,7 +362,7 @@ class TerminalOperator:
             if token in {"-f", "--file"}:
                 target = argv[index + 1] if index + 1 < len(argv) else "<missing>"
                 return f"command requires approval: rg {token} {target}"
-            if token.startswith("-f") and token not in {"-f"} and not token.startswith("-f="):
+            if TerminalOperator._rg_attached_short_value(token, "f") is not None:
                 return f"command requires approval: rg {token}"
             if token.startswith(("-f=", "--file=")):
                 return f"command requires approval: rg {token}"
@@ -425,10 +426,10 @@ class TerminalOperator:
                     pattern_supplied_by_flag = True
                     skip_next = True
                     continue
-                if token.startswith("-e") and token not in {"-e"} and not token.startswith("-e="):
+                if TerminalOperator._rg_attached_short_value(token, "e") is not None:
                     pattern_supplied_by_flag = True
                     continue
-                if token.startswith("-f") and token not in {"-f"} and not token.startswith("-f="):
+                if TerminalOperator._rg_attached_short_value(token, "f") is not None:
                     pattern_supplied_by_flag = True
                     continue
                 if token in {"-g", "--glob", "--pre", "--pre-glob", "--ignore-file"}:
@@ -450,6 +451,19 @@ class TerminalOperator:
                 path_tokens.append(token)
             return path_tokens
         return []
+
+    @staticmethod
+    def _rg_attached_short_value(token: str, flag: str) -> str | None:
+        if not token.startswith("-") or token.startswith("--") or len(token) <= 2:
+            return None
+        cluster = token[1:]
+        for index, char in enumerate(cluster):
+            if char == flag:
+                value = cluster[index + 1 :]
+                return value or None
+            if char in _RG_SHORT_VALUE_FLAGS:
+                return None
+        return None
 
     @staticmethod
     def _is_path_operand(token: str) -> bool:
