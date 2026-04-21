@@ -137,17 +137,18 @@ kernel void opticalShellWarp(
 
     float2 result = warped;
     if (capsuleSdf > 0.0f) {{
-        // Exterior pull toward the nearest point on the capsule boundary.
-        // Use the original pixel position (d), not warped — so the
-        // displacement reads as "toward the border" not "toward center."
+        // Exterior: blend from identity (far) toward the interior's
+        // anisotropic warp field (at boundary).  This makes exterior
+        // content start stretching in the same direction as the interior
+        // squeeze — a preview of the interior flow leaking out.
         float exteriorT = capsuleSdf;
-        float pullStrength = 1.0f - smoothstep(0.0f, 50.0f, exteriorT);
-        float2 n = capsuleGradient(p, spineHalf);
-        float mag = 8.0f * pullStrength * pullStrength;
-        // Sample from further out → content visually slides toward boundary.
-        // n points outward from capsule, so + n reads from further away,
-        // making content appear to pull inward toward the nearest border.
-        result = d + n * mag;
+        float t = 1.0f - smoothstep(0.0f, 50.0f, exteriorT);
+        // Quadratic onset — subtle far out, accelerating near boundary
+        t = t * t;
+        // Interior warp at this position (what it would be if inside)
+        float2 interiorResult = c + p * float2(scaleX, scaleY);
+        // Blend from identity (d) toward interior warp
+        result = mix(d, interiorResult, t * 0.4f);
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
