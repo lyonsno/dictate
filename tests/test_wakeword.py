@@ -73,7 +73,7 @@ class TestWakeWordListenerStop:
         listener.start()
 
         fake_module.Model.assert_called_once_with(
-            wakeword_models=["/tmp/listen.tflite", "/tmp/sleep.tflite"]
+            wakeword_model_paths=["/tmp/listen.tflite", "/tmp/sleep.tflite"]
         )
         kwargs = sys.modules["sounddevice"].InputStream.call_args.kwargs
         assert kwargs["samplerate"] == 16000
@@ -81,7 +81,7 @@ class TestWakeWordListenerStop:
         assert callable(kwargs["callback"])
         stream.start.assert_called_once_with()
 
-    def test_openwakeword_start_forces_onnx_inference_for_onnx_models(self, monkeypatch):
+    def test_openwakeword_start_accepts_onnx_model_paths(self, monkeypatch):
         model = MagicMock()
         stream = MagicMock()
         fake_module = types.SimpleNamespace(Model=MagicMock(return_value=model))
@@ -100,8 +100,7 @@ class TestWakeWordListenerStop:
         listener.start()
 
         fake_module.Model.assert_called_once_with(
-            wakeword_models=["/tmp/tessera.onnx"],
-            inference_framework="onnx",
+            wakeword_model_paths=["/tmp/tessera.onnx"],
         )
 
     def test_openwakeword_callback_emits_threshold_crossing_once_until_reset(self):

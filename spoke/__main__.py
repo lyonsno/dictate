@@ -955,6 +955,7 @@ class SpokeAppDelegate(NSObject):
         self._hold_rejected_during_warmup = False
         self._mic_probe_in_flight = False
         self._mic_ready = False  # True once mic probe succeeds at least once
+        self._handsfree_auto_enable_retry_count = 0
 
         # Command pathway — always enabled, but can persist a sidecar URL.
         self._command_backend = None
@@ -1300,6 +1301,7 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None and self._models_ready:
             self._menubar.set_status_text("Ready — hold spacebar")
         self._maybe_auto_enable_handsfree()
+        self._schedule_handsfree_auto_enable_retry()
 
     def micPermissionDenied_(self, _sender) -> None:
         """Main-thread callback after mic probe fails — schedule retry."""
@@ -1403,6 +1405,7 @@ class SpokeAppDelegate(NSObject):
         self._register_loaded_models()
         self._start_heartbeat_timer()
         self._maybe_auto_enable_handsfree()
+        self._schedule_handsfree_auto_enable_retry()
 
         # Keep TTS lazy. Startup-time local TTS warmup can monopolize the same
         # MLX lock transcription uses, which starves preview/final text on
@@ -1425,14 +1428,61 @@ class SpokeAppDelegate(NSObject):
         if not self._handsfree_default_on_requested():
             return
         if not handsfree_env_ready():
+            logger.info("Hands-free default-on requested, but wakeword env is not ready")
             return
         if not getattr(self, "_models_ready", False) or not getattr(self, "_mic_ready", False):
+            logger.info(
+                "Hands-free default-on still waiting for readiness "
+                "(models_ready=%s mic_ready=%s)",
+                getattr(self, "_models_ready", False),
+                getattr(self, "_mic_ready", False),
+            )
+            return
+        hf = getattr(self, "_handsfree", None)
+        if hf is None or hf.is_active:
+            if hf is not None and hf.is_active:
+                self._handsfree_auto_enable_retry_count = 0
+            return
+        logger.info("Auto-enabling hands-free after startup readiness")
+        hf.enable()
+        if hf.is_active:
+            self._handsfree_auto_enable_retry_count = 0
+
+    def _schedule_handsfree_auto_enable_retry(self, delay_s: float = 1.0) -> None:
+        if not self._handsfree_default_on_requested():
+            return
+        if not handsfree_env_ready():
             return
         hf = getattr(self, "_handsfree", None)
         if hf is None or hf.is_active:
             return
-        logger.info("Auto-enabling hands-free after startup readiness")
-        hf.enable()
+        retry_count = getattr(self, "_handsfree_auto_enable_retry_count", 0)
+        if retry_count >= 3:
+            return
+        self._handsfree_auto_enable_retry_count = retry_count + 1
+        logger.info(
+            "Scheduling hands-free auto-enable retry %d in %.1fs",
+            self._handsfree_auto_enable_retry_count,
+            delay_s,
+        )
+        from Foundation import NSTimer
+
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            delay_s, self, "retryAutoEnableHandsfree:", None, False
+        )
+
+    def retryAutoEnableHandsfree_(self, timer) -> None:
+        self._maybe_auto_enable_handsfree()
+        hf = getattr(self, "_handsfree", None)
+        if (
+            self._handsfree_default_on_requested()
+            and handsfree_env_ready()
+            and hf is not None
+            and not hf.is_active
+            and getattr(self, "_models_ready", False)
+            and getattr(self, "_mic_ready", False)
+        ):
+            self._schedule_handsfree_auto_enable_retry()
 
     def _toggle_handsfree(self) -> None:
         """Menu/manual toggle for hands-free mode."""
