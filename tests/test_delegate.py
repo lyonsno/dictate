@@ -4489,6 +4489,37 @@ class TestResultInjection:
 
 
 class TestCommandOverlayToggle:
+    def test_toggle_command_overlay_re_shows_pending_approval_card(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = [("old question", "old answer")]
+        d._command_overlay = MagicMock(_visible=False)
+        d._pending_command_approval_active = True
+        d._pending_command_approval_request = {
+            "kind": "terminal_command",
+            "argv": ["git", "status", "--short"],
+            "cwd": "/tmp/repo",
+            "reason": "command requires approval: git status --short",
+            "message": "Approval needed\n\ngit status --short",
+        }
+        d._detector.approval_active = True
+        d._last_command_utterance = "old question"
+        d._last_command_response = "old answer"
+
+        d._toggle_command_overlay()
+
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.set_tool_active.assert_called_once_with(False)
+        d._command_overlay.set_response_text.assert_called_once_with(
+            "Approval needed\n\ngit status --short"
+        )
+        d._command_overlay.finish.assert_called_once_with()
+        d._command_overlay.set_utterance.assert_not_called()
+        d._command_overlay.append_token.assert_not_called()
+        assert d._detector.command_overlay_active is True
+
     def test_toggle_command_overlay_resumes_in_progress_timer_without_reset(
         self, main_module, monkeypatch
     ):
@@ -4551,6 +4582,44 @@ class TestHoldStartDuringTranscription:
 
         d._command_overlay.hide.assert_not_called()
         assert d._detector.command_overlay_active is True
+
+    def test_plain_dictation_during_pending_approval_keeps_approval_active(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._models_ready = True
+        d._pending_command_approval_active = True
+        d._pending_command_approval_request = {
+            "kind": "terminal_command",
+            "argv": ["git", "status", "--short"],
+            "cwd": "/tmp/repo",
+            "reason": "command requires approval: git status --short",
+            "message": "Approval needed\n\ngit status --short",
+        }
+        d._detector.approval_active = True
+        d._capture.stop.return_value = b"audio"
+        d._record_start_time = main_module.time.monotonic()
+        d._cancel_pending_command_approval = MagicMock()
+
+        class _NoopThread:
+            def __init__(self, *, target=None, args=(), daemon=None):
+                self._target = target
+                self._args = args
+                self.daemon = daemon
+
+            def start(self):
+                return None
+
+        with patch.object(
+            main_module.threading,
+            "Thread",
+            side_effect=lambda *args, **kwargs: _NoopThread(*args, **kwargs),
+        ):
+            d._on_hold_end(shift_held=False, enter_held=False)
+
+        d._cancel_pending_command_approval.assert_not_called()
+        assert d._pending_command_approval_active is True
+        assert d._detector.approval_active is True
 
     def test_plain_space_release_during_active_turn_uses_parallel_insert_lane(
         self, main_module, monkeypatch

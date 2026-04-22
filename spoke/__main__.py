@@ -2278,10 +2278,6 @@ class SpokeAppDelegate(NSObject):
             self._pre_stop_segment_count = 0
         wav_bytes = self._capture.stop()
 
-        if wav_bytes and getattr(self, "_pending_command_approval_active", False):
-            logger.info("New utterance supersedes pending approval")
-            self._cancel_pending_command_approval(dismiss_overlay=False)
-
         # Short shift-hold (under 800ms of recording) = recall into tray
         elapsed = time.monotonic() - self._record_start_time if self._record_start_time else 0
         if shift_held and elapsed < 0.8:
@@ -2350,6 +2346,9 @@ class SpokeAppDelegate(NSObject):
         self._transcribe_start = time.monotonic()
 
         if enter_held and self._command_client is not None:
+            if getattr(self, "_pending_command_approval_active", False):
+                logger.info("New utterance supersedes pending approval")
+                self._cancel_pending_command_approval(dismiss_overlay=False)
             # Command pathway (enter held): transcribe then send to OMLX
             if self._menubar is not None:
                 self._menubar.set_status_text("Transcribing command…")
@@ -3027,6 +3026,23 @@ class SpokeAppDelegate(NSObject):
             logger.info("Double-tap Enter — dismissing command overlay")
             self._command_overlay.cancel_dismiss()
             self._detector.command_overlay_active = False
+        elif (
+            getattr(self, "_pending_command_approval_active", False)
+            and self._command_overlay is not None
+        ):
+            approval_request = self._pending_command_approval_request or {}
+            logger.info("Double-tap Enter — re-showing pending approval")
+            try:
+                self._sync_command_overlay_brightness(immediate=True)
+                self._command_overlay.show()
+                self._command_overlay.set_tool_active(False)
+                self._command_overlay.set_response_text(
+                    approval_request.get("message", "Approval needed")
+                )
+                self._command_overlay.finish()
+                self._detector.command_overlay_active = True
+            except Exception:
+                logger.exception("Re-show pending approval failed")
         elif self._transcribing and self._command_overlay is not None:
             # Generation still in progress — re-show with accumulated text.
             utterance = getattr(self, "_last_command_utterance", "")
