@@ -3398,7 +3398,9 @@ class SpokeAppDelegate(NSObject):
                 tray_writer=self._add_assistant_content_to_tray,
                 subagent_manager=getattr(self, "_subagent_manager", None),
                 history_compactor=_compact_history,
-                session_approval_rules=list(self._terminal_session_approval_rules),
+                session_approval_rules=list(
+                    getattr(self, "_terminal_session_approval_rules", [])
+                ),
                 **kwargs,
             )
         return _executor
@@ -3791,7 +3793,16 @@ class SpokeAppDelegate(NSObject):
         else:
             command_text = "Approved command"
         headline = "Approved for session" if session_scope else "Accepted"
-        return f"{headline}\n\n{command_text}\n\nRunning approved command…"
+        rule_summary = ""
+        if session_scope:
+            rule = self._infer_terminal_session_rule(request)
+            if rule is not None:
+                prefix = rule.get("argv_prefix") or [rule.get("executable", "command")]
+                command_label = " ".join(str(part) for part in prefix if part)
+                cwd_under = str(rule.get("cwd_under", "")).strip()
+                if command_label and cwd_under:
+                    rule_summary = f"\n\nRule: {command_label} under {cwd_under}"
+        return f"{headline}\n\n{command_text}{rule_summary}\n\nRunning approved command…"
 
     def _infer_terminal_session_rule(self, approval_request: dict) -> dict[str, Any] | None:
         argv = approval_request.get("argv")
@@ -3816,9 +3827,13 @@ class SpokeAppDelegate(NSObject):
         if not getattr(self, "_pending_command_approval_active", False):
             return
         approval_request = getattr(self, "_pending_command_approval_request", None) or {}
+        rules = getattr(self, "_terminal_session_approval_rules", None)
+        if rules is None:
+            rules = []
+            self._terminal_session_approval_rules = rules
         rule = self._infer_terminal_session_rule(approval_request)
-        if rule is not None and rule not in self._terminal_session_approval_rules:
-            self._terminal_session_approval_rules.append(rule)
+        if rule is not None and rule not in rules:
+            rules.append(rule)
         self._approve_pending_command(session_scope=True)
 
     def _approve_pending_command(self, *, session_scope: bool = False) -> None:
@@ -3835,6 +3850,7 @@ class SpokeAppDelegate(NSObject):
         self._detector.approval_active = False
         token = self._transcription_token
         overlay = self._command_overlay
+        acknowledgement_dwell_s = 0.35 if session_scope else 0.2
         if overlay is not None:
             try:
                 self._sync_command_overlay_brightness(immediate=True)
@@ -3843,7 +3859,8 @@ class SpokeAppDelegate(NSObject):
                 overlay.set_tool_active(True)
                 overlay.set_response_text(
                     self._format_pending_command_acknowledgement(
-                        approval_request, session_scope=session_scope
+                        approval_request,
+                        session_scope=session_scope,
                     )
                 )
             except Exception:
@@ -3854,6 +3871,10 @@ class SpokeAppDelegate(NSObject):
         def _resume():
             full_response = ""
             try:
+                if overlay is not None:
+                    time.sleep(acknowledgement_dwell_s)
+                if token != self._transcription_token:
+                    return
                 for event in self._command_client.approve_pending_tool_call(
                     tool_executor=self._make_tool_executor(),
                     cancel_check=lambda: token != self._transcription_token,
