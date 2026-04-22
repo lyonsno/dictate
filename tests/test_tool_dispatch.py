@@ -1127,6 +1127,82 @@ class TestExecuteToolIntegration:
         assert "file is not valid UTF-8 text" in parsed.get("error", "")
         assert f.read_bytes() == original
 
+    def test_execute_edit_file_writes_telemetry_entry(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        telemetry_path = tmp_path / "edit-file-telemetry.jsonl"
+        monkeypatch.setattr(mod, "_EDIT_FILE_TELEMETRY_PATH", telemetry_path)
+        f = tmp_path / "edit.txt"
+        f.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {"file": str(f), "old_string": "beta", "new_string": "delta"},
+        )
+
+        parsed = json.loads(result)
+        assert parsed.get("status") == "success"
+        entries = [json.loads(line) for line in telemetry_path.read_text(encoding="utf-8").splitlines()]
+        assert len(entries) == 1
+        timestamp = entries[0].pop("timestamp")
+        assert entries[0] == {
+            "tool": "edit_file",
+            "outcome": "success",
+            "applied": True,
+            "file": str(f),
+            "failure_reason": None,
+            "match_count": 1,
+            "normalization_applied": [],
+            "counters": {
+                "total": 1,
+                "success": 1,
+                "not_found": 0,
+                "not_unique": 0,
+                "malformed_request": 0,
+                "normalization_assisted": 0,
+            },
+        }
+        assert timestamp
+
+    def test_execute_edit_file_telemetry_counters_accumulate(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        telemetry_path = tmp_path / "edit-file-telemetry.jsonl"
+        monkeypatch.setattr(mod, "_EDIT_FILE_TELEMETRY_PATH", telemetry_path)
+        f = tmp_path / "edit.txt"
+        f.write_bytes(b"alpha\r\nbeta\r\n")
+
+        success = mod.execute_tool(
+            "edit_file",
+            {"file": str(f), "old_string": "beta\n", "new_string": "delta\n"},
+        )
+        success_parsed = json.loads(success)
+        assert success_parsed.get("normalization_applied") == ["line_endings"]
+
+        failure = mod.execute_tool(
+            "edit_file",
+            {"file": str(f), "old_string": "missing", "new_string": "delta"},
+        )
+        failure_parsed = json.loads(failure)
+        assert failure_parsed.get("failure_reason") == "not_found"
+
+        entries = [json.loads(line) for line in telemetry_path.read_text(encoding="utf-8").splitlines()]
+        assert len(entries) == 2
+        assert entries[0]["counters"] == {
+            "total": 1,
+            "success": 1,
+            "not_found": 0,
+            "not_unique": 0,
+            "malformed_request": 0,
+            "normalization_assisted": 1,
+        }
+        assert entries[1]["counters"] == {
+            "total": 2,
+            "success": 1,
+            "not_found": 1,
+            "not_unique": 0,
+            "malformed_request": 0,
+            "normalization_assisted": 1,
+        }
+
     def test_execute_edit_file_normalizes_line_endings_for_matching(self, tmp_path):
         mod = _import_tools()
         f = tmp_path / "edit-crlf.txt"

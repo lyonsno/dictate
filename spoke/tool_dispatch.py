@@ -13,6 +13,8 @@ import json
 import logging
 import math
 import os
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 
 # Filesystem tools resolve relative paths against ~/dev so the model
@@ -33,6 +35,16 @@ from spoke.gmail_operator import (
 from spoke.scene_capture import SceneCaptureCache
 
 logger = logging.getLogger(__name__)
+
+_EDIT_FILE_TELEMETRY_PATH = Path.home() / ".config" / "spoke" / "edit-file-telemetry.jsonl"
+_EDIT_FILE_TELEMETRY_COUNTER_KEYS = (
+    "total",
+    "success",
+    "not_found",
+    "not_unique",
+    "malformed_request",
+    "normalization_assisted",
+)
 
 
 def _is_local_omnivoice_cold_tts(tts_client: Any) -> bool:
@@ -1138,6 +1150,60 @@ def _edit_result(
     return result
 
 
+def _latest_edit_file_counters(path: Path) -> dict[str, int]:
+    counters = {key: 0 for key in _EDIT_FILE_TELEMETRY_COUNTER_KEYS}
+    try:
+        if not path.is_file():
+            return counters
+        for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            saved = entry.get("counters")
+            if not isinstance(saved, dict):
+                continue
+            for key in counters:
+                value = saved.get(key)
+                if isinstance(value, int):
+                    counters[key] = value
+            return counters
+    except Exception:
+        logger.debug("Failed to load edit_file telemetry counters", exc_info=True)
+    return counters
+
+
+def _append_edit_file_telemetry(result: dict[str, Any]) -> None:
+    try:
+        counters = _latest_edit_file_counters(_EDIT_FILE_TELEMETRY_PATH)
+        outcome = (
+            "success"
+            if result.get("status") == "success"
+            else result.get("failure_reason") or "error"
+        )
+        counters["total"] += 1
+        if outcome in counters:
+            counters[outcome] += 1
+        normalization_applied = list(result.get("normalization_applied") or [])
+        if normalization_applied:
+            counters["normalization_assisted"] += 1
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "tool": "edit_file",
+            "outcome": outcome,
+            "applied": bool(result.get("applied")),
+            "file": result.get("file", ""),
+            "failure_reason": result.get("failure_reason"),
+            "match_count": result.get("match_count", 0),
+            "normalization_applied": normalization_applied,
+            "counters": counters,
+        }
+        _EDIT_FILE_TELEMETRY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_EDIT_FILE_TELEMETRY_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        logger.debug("Failed to append edit_file telemetry", exc_info=True)
+
+
 def _split_lines_with_offsets(text: str) -> list[dict[str, Any]]:
     lines: list[dict[str, Any]] = []
     raw_pos = 0
@@ -1363,12 +1429,16 @@ def _find_indentation_aware_matches(
 
 
 def _execute_edit_file(arguments: dict) -> dict[str, Any]:
+    def finish(result: dict[str, Any]) -> dict[str, Any]:
+        _append_edit_file_telemetry(result)
+        return result
+
     raw_path = arguments.get("file")
     old_string = arguments.get("old_string")
     new_string = arguments.get("new_string")
 
     if not raw_path or not isinstance(raw_path, str):
-        return _edit_result(
+        return finish(_edit_result(
             status="error",
             file_path="",
             match_count=0,
@@ -1376,9 +1446,9 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
             normalization_applied=[],
             edited_range=None,
             error="file is required",
-        )
+        ))
     if not isinstance(old_string, str) or old_string == "":
-        return _edit_result(
+        return finish(_edit_result(
             status="error",
             file_path=raw_path,
             match_count=0,
@@ -1386,9 +1456,9 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
             normalization_applied=[],
             edited_range=None,
             error="old_string is required",
-        )
+        ))
     if not isinstance(new_string, str):
-        return _edit_result(
+        return finish(_edit_result(
             status="error",
             file_path=raw_path,
             match_count=0,
@@ -1396,9 +1466,9 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
             normalization_applied=[],
             edited_range=None,
             error="new_string is required",
-        )
+        ))
     if old_string == new_string:
-        return _edit_result(
+        return finish(_edit_result(
             status="error",
             file_path=raw_path,
             match_count=0,
@@ -1406,9 +1476,9 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
             normalization_applied=[],
             edited_range=None,
             error="old_string and new_string must differ",
-        )
+        ))
     if _contains_lazy_edit_placeholder(new_string):
-        return _edit_result(
+        return finish(_edit_result(
             status="error",
             file_path=raw_path,
             match_count=0,
@@ -1416,12 +1486,12 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
             normalization_applied=[],
             edited_range=None,
             error="new_string contains lazy placeholder text",
-        )
+        ))
 
     file_path = _resolve_tool_path(raw_path)
     access_error = _validate_write_target(file_path)
     if access_error:
-        return _edit_result(
+        return finish(_edit_result(
             status="error",
             file_path=file_path,
             match_count=0,
@@ -1429,10 +1499,10 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
             normalization_applied=[],
             edited_range=None,
             error=access_error,
-        )
+        ))
 
     if os.path.exists(file_path) and not os.path.isfile(file_path):
-        return _edit_result(
+        return finish(_edit_result(
             status="error",
             file_path=file_path,
             match_count=0,
@@ -1440,17 +1510,17 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
             normalization_applied=[],
             edited_range=None,
             error="file is not a regular file",
-        )
+        ))
 
     if not os.path.isfile(file_path):
-        return _edit_result(
+        return finish(_edit_result(
             status="error",
             file_path=file_path,
             match_count=0,
             failure_reason="not_found",
             normalization_applied=[],
             edited_range=None,
-        )
+        ))
 
     try:
         with open(file_path, "rb") as f:
@@ -1458,7 +1528,7 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
         try:
             raw_content = raw_bytes.decode("utf-8")
         except UnicodeDecodeError:
-            return _edit_result(
+            return finish(_edit_result(
                 status="error",
                 file_path=file_path,
                 match_count=0,
@@ -1466,7 +1536,7 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
                 normalization_applied=[],
                 edited_range=None,
                 error="file is not valid UTF-8 text",
-            )
+            ))
 
         normalize_trailing_whitespace = _should_normalize_trailing_whitespace(file_path)
         newline_style = _preferred_newline_style(raw_content)
@@ -1478,14 +1548,14 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
         if indent_matches:
             match_count = len(indent_matches)
             if match_count > 1:
-                return _edit_result(
+                return finish(_edit_result(
                     status="error",
                     file_path=file_path,
                     match_count=match_count,
                     failure_reason="not_unique",
                     normalization_applied=[],
                     edited_range=None,
-                )
+                ))
 
             match = indent_matches[0]
             replacement = _render_indentation_aware_replacement(
@@ -1514,14 +1584,14 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
             )
             with open(file_path, "w", encoding="utf-8", newline="") as f:
                 f.write(updated)
-            return _edit_result(
+            return finish(_edit_result(
                 status="success",
                 file_path=file_path,
                 match_count=1,
                 failure_reason=None,
                 normalization_applied=applied,
                 edited_range=_edited_range_from_diff(raw_content, updated),
-            )
+            ))
 
         normalized_content, position_map = _normalize_match_text_with_map(
             raw_content,
@@ -1538,23 +1608,23 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
 
         match_count = normalized_content.count(normalized_old)
         if match_count == 0:
-            return _edit_result(
+            return finish(_edit_result(
                 status="error",
                 file_path=file_path,
                 match_count=0,
                 failure_reason="not_found",
                 normalization_applied=[],
                 edited_range=None,
-            )
+            ))
         if match_count > 1:
-            return _edit_result(
+            return finish(_edit_result(
                 status="error",
                 file_path=file_path,
                 match_count=match_count,
                 failure_reason="not_unique",
                 normalization_applied=[],
                 edited_range=None,
-            )
+            ))
 
         match_start = normalized_content.find(normalized_old)
         match_end = match_start + len(normalized_old)
@@ -1578,16 +1648,16 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
         )
         with open(file_path, "w", encoding="utf-8", newline="") as f:
             f.write(updated)
-        return _edit_result(
+        return finish(_edit_result(
             status="success",
             file_path=file_path,
             match_count=1,
             failure_reason=None,
             normalization_applied=applied,
             edited_range=_edited_range_from_diff(raw_content, updated),
-        )
+        ))
     except Exception as e:
-        return _edit_result(
+        return finish(_edit_result(
             status="error",
             file_path=file_path,
             match_count=0,
@@ -1595,7 +1665,7 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
             normalization_applied=[],
             edited_range=None,
             error=str(e),
-        )
+        ))
 
 def _execute_search_file(arguments: dict) -> dict[str, Any]:
     import subprocess
