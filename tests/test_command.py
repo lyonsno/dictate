@@ -1143,9 +1143,14 @@ class TestStreamCommand:
             with patch("urllib.request.urlopen", return_value=fake_resp):
                 list(client.stream_command(f"q{i}"))
         assert len(client._history) == 2
-        # Each chain's last user message is the actual utterance for that turn
-        assert client._history[0][-1] == {"role": "user", "content": "q1"}
-        assert client._history[1][-1] == {"role": "user", "content": "q2"}
+        assert client._history[0] == [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "answer1"},
+        ]
+        assert client._history[1] == [
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "answer2"},
+        ]
 
     def test_stream_sends_auth_header(self):
         """Request should include Authorization header when API key is set."""
