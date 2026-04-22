@@ -3831,6 +3831,9 @@ class SpokeAppDelegate(NSObject):
         overlay = self._command_overlay
         if overlay is not None:
             try:
+                self._sync_command_overlay_brightness(immediate=True)
+                overlay.show(preserve_thinking_timer=True)
+                self._detector.command_overlay_active = True
                 overlay.set_tool_active(True)
                 overlay.set_response_text(
                     self._format_pending_command_acknowledgement(

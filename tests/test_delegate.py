@@ -3980,6 +3980,64 @@ class TestCommandCallbacks:
             if c[0][0] == "commandComplete:"
         )
         assert complete_call[0][1]["response"] == "Done."
+
+    def test_approve_pending_command_re_shows_overlay_before_replay(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock(_visible=False)
+        d._command_client = MagicMock()
+        d._make_tool_executor = MagicMock(return_value=MagicMock())
+        d._pending_command_approval_active = True
+        d._pending_command_approval_request = {
+            "kind": "terminal_command",
+            "argv": ["python3", "-m", "venv", "demo_repo/venv"],
+            "cwd": "/tmp/repo",
+            "reason": "command requires approval: python3 -m venv",
+            "message": "Approval needed\n\npython3 -m venv demo_repo/venv",
+        }
+        d._transcription_token = 1
+        d._sync_command_overlay_brightness = MagicMock()
+
+        d._command_client.approve_pending_tool_call.return_value = iter(
+            [
+                MagicMock(
+                    kind="assistant_delta",
+                    text="\n$ python3 -m venv demo_repo/venv\n[exit 0 · no output]\n",
+                ),
+                MagicMock(kind="assistant_final", text="Done."),
+            ]
+        )
+
+        class _ImmediateThread:
+            def __init__(self, *, target=None, daemon=None):
+                self._target = target
+                self.daemon = daemon
+
+            def start(self):
+                assert self._target is not None
+                self._target()
+
+        with patch.object(
+            main_module.threading,
+            "Thread",
+            side_effect=lambda *args, **kwargs: _ImmediateThread(*args, **kwargs),
+        ):
+            d._approve_pending_command()
+
+        d._sync_command_overlay_brightness.assert_called_once_with(immediate=True)
+        d._command_overlay.show.assert_called_once_with(preserve_thinking_timer=True)
+        assert d._detector.command_overlay_active is True
+        d._command_overlay.set_response_text.assert_any_call(
+            "Accepted\n\npython3 -m venv demo_repo/venv\n\nRunning approved command…"
+        )
+        token_calls = [
+            c
+            for c in d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+            if c[0][0] == "commandToken:"
+        ]
+        assert token_calls[0][0][1]["text"] == "\n$ python3 -m venv demo_repo/venv\n[exit 0 · no output]\n"
+
     def test_tool_executor_routes_add_to_tray_through_delegate_bridge(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._command_client = MagicMock()
