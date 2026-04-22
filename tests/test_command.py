@@ -623,6 +623,73 @@ class TestStreamCommand:
         assert client._pending_tool_approval is not None
         assert client._pending_tool_approval.call["id"] == "call_1"
 
+    def test_stream_pauses_for_terminal_approval_request_from_tool_dispatch_json_result(self):
+        from spoke.command import CommandClient
+        from spoke.tool_dispatch import execute_tool, get_tool_schemas
+
+        tool_round_chunks = [
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "run_terminal_command", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"argv":["python","-m","pytest"],"cwd":"~/dev"}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        final_chunks = [
+            {"choices": [{"index": 0, "delta": {"content": "This should not happen."}}]},
+        ]
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test-model",
+            api_key="key",
+            history_path=None,
+        )
+
+        fake_operator = MagicMock()
+        fake_operator.execute_command.return_value = {
+            "decision": "approval_required",
+            "executed": False,
+            "pending_approval": True,
+            "approval_request": {
+                "kind": "terminal_command",
+                "argv": ["python", "-m", "pytest"],
+                "cwd": "/Users/noahlyons/dev",
+                "reason": "command requires approval: python -m pytest",
+                "message": "Approval needed\n\npython -m pytest",
+            },
+        }
+
+        request_count = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            request_count["n"] += 1
+            if request_count["n"] == 1:
+                return _make_sse_response(tool_round_chunks)
+            if request_count["n"] == 2:
+                return _make_sse_response(final_chunks)
+            raise AssertionError("unexpected extra chat completion request")
+
+        with (
+            patch("spoke.tool_dispatch.TerminalOperator", return_value=fake_operator),
+            patch("urllib.request.urlopen", side_effect=fake_urlopen),
+        ):
+            events = list(
+                client.stream_command_events(
+                    "run the tests",
+                    tools=get_tool_schemas(),
+                    tool_executor=execute_tool,
+                )
+            )
+
+        assert request_count["n"] == 1
+        assert events[-1].kind == "approval_request"
+        assert client.history == []
+        assert client._pending_tool_approval is not None
+        assert client._pending_tool_approval.call["id"] == "call_1"
+
     def test_approve_pending_tool_call_replays_exact_terminal_command_and_finishes_turn(self):
         from spoke.command import CommandClient
 
