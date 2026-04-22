@@ -3908,6 +3908,55 @@ class TestCommandCallbacks:
 
         d._cancel_pending_command_approval.assert_called_once_with()
 
+    def test_approve_pending_command_shows_accepted_running_feedback(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._command_client = MagicMock()
+        d._make_tool_executor = MagicMock(return_value=MagicMock())
+        d._pending_command_approval_active = True
+        d._pending_command_approval_request = {
+            "kind": "terminal_command",
+            "argv": ["git", "status", "--short"],
+            "cwd": "/tmp/repo",
+            "reason": "command requires approval: git status --short",
+            "message": "Approval needed\n\ngit status --short",
+        }
+        d._transcription_token = 1
+
+        d._command_client.approve_pending_tool_call.return_value = iter(
+            [MagicMock(kind="assistant_final", text="Done.")]
+        )
+
+        class _ImmediateThread:
+            def __init__(self, *, target=None, daemon=None):
+                self._target = target
+                self.daemon = daemon
+
+            def start(self):
+                assert self._target is not None
+                self._target()
+
+        with patch.object(
+            main_module.threading,
+            "Thread",
+            side_effect=lambda *args, **kwargs: _ImmediateThread(*args, **kwargs),
+        ):
+            d._approve_pending_command()
+
+        d._command_overlay.set_response_text.assert_any_call(
+            "Accepted\n\ngit status --short\n\nRunning approved command…"
+        )
+        d._command_overlay.set_tool_active.assert_any_call(True)
+        d._menubar.set_status_text.assert_any_call("Running approved command…")
+        complete_call = next(
+            c
+            for c in d.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+            if c[0][0] == "commandComplete:"
+        )
+        assert complete_call[0][1]["response"] == "Done."
+
     def test_tool_executor_routes_add_to_tray_through_delegate_bridge(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._command_client = MagicMock()

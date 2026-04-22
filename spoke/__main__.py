@@ -22,6 +22,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import threading
@@ -3765,6 +3766,22 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text("Approval needed")
 
+    def _format_pending_command_acknowledgement(
+        self,
+        approval_request: dict | None,
+        *,
+        session_scope: bool = False,
+    ) -> str:
+        """Render compact approval feedback for the command overlay."""
+        request = approval_request or {}
+        argv = request.get("argv")
+        if isinstance(argv, list) and argv:
+            command_text = shlex.join(str(part) for part in argv)
+        else:
+            command_text = "Approved command"
+        headline = "Approved for session" if session_scope else "Accepted"
+        return f"{headline}\n\n{command_text}\n\nRunning approved command…"
+
     def _approve_pending_command(self) -> None:
         """Resume a paused command turn after the user approved the pending tool call."""
         if (
@@ -3772,11 +3789,21 @@ class SpokeAppDelegate(NSObject):
             or self._command_client is None
         ):
             return
+        approval_request = self._pending_command_approval_request
         self._transcribing = True
         self._pending_command_approval_active = False
         self._pending_command_approval_request = None
         self._detector.approval_active = False
         token = self._transcription_token
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                overlay.set_tool_active(True)
+                overlay.set_response_text(
+                    self._format_pending_command_acknowledgement(approval_request)
+                )
+            except Exception:
+                logger.exception("Command overlay failed to show approval feedback")
         if self._menubar is not None:
             self._menubar.set_status_text("Running approved command…")
 
