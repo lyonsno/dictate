@@ -686,9 +686,22 @@ class TestStreamCommand:
 
         assert request_count["n"] == 1
         assert events[-1].kind == "approval_request"
+        assert events[-1].approval_request == {
+            "kind": "terminal_command",
+            "argv": ["python", "-m", "pytest"],
+            "cwd": "/Users/noahlyons/dev",
+            "reason": "command requires approval: python -m pytest",
+            "message": "Approval needed\n\npython -m pytest",
+        }
         assert client.history == []
         assert client._pending_tool_approval is not None
         assert client._pending_tool_approval.call["id"] == "call_1"
+        fake_operator.execute_command.assert_called_once_with(
+            ["python", "-m", "pytest"],
+            cwd="~/dev",
+            timeout_seconds=10,
+            approval_granted=False,
+        )
 
     def test_approve_pending_tool_call_replays_exact_terminal_command_and_finishes_turn(self):
         from spoke.command import CommandClient
