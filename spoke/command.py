@@ -580,7 +580,7 @@ class CommandClient:
             )
 
             preview_text = ""
-            tool_mapping = tool_result if isinstance(tool_result, dict) else None
+            tool_mapping = self._tool_result_mapping(tool_result)
             if fn_name == "run_terminal_command":
                 preview_text = _terminal_output_preview(tool_mapping)
             else:
