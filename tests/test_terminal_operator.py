@@ -29,9 +29,13 @@ class TestTerminalOperator:
             assert text is False
             assert timeout == 12
             assert env["PATH"] == terminal_operator._EXECUTABLE_SEARCH_PATH
-            assert env["GIT_CONFIG_GLOBAL"] == os.devnull
-            assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+            assert env["HOME"] == "/tmp/git-home"
+            assert env["XDG_CONFIG_HOME"] == "/tmp/git-xdg"
+            assert "GIT_CONFIG_GLOBAL" not in env
+            assert "GIT_CONFIG_NOSYSTEM" not in env
+            assert "GIT_CONFIG_SYSTEM" not in env
             assert env["GIT_PAGER"] == "cat"
+            assert env["GIT_TERMINAL_PROMPT"] == "0"
             return subprocess.CompletedProcess(
                 args=cmd,
                 returncode=0,
@@ -42,7 +46,12 @@ class TestTerminalOperator:
         with (
             patch.dict(
                 os.environ,
-                {"PATH": "/tmp/shadow-bin", "GIT_CONFIG_GLOBAL": "/tmp/evil-gitconfig"},
+                {
+                    "PATH": "/tmp/shadow-bin",
+                    "HOME": "/tmp/git-home",
+                    "XDG_CONFIG_HOME": "/tmp/git-xdg",
+                    "GIT_CONFIG_GLOBAL": "/tmp/evil-gitconfig",
+                },
                 clear=False,
             ),
             patch("shutil.which", return_value="/usr/bin/git"),

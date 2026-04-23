@@ -91,13 +91,20 @@ _BASE_EXECUTION_ENV = {
     "LC_ALL": "C",
     "TERM": "dumb",
 }
+_GIT_ENV_PASSTHROUGH = (
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "XDG_CONFIG_HOME",
+    "GH_CONFIG_DIR",
+    "SSH_AUTH_SOCK",
+)
 _RG_SHORT_VALUE_FLAGS = frozenset({"A", "B", "C", "e", "f", "g", "j", "m", "M", "t", "T"})
 _EXECUTION_ENV_OVERRIDES = {
     "git": {
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_CONFIG_SYSTEM": os.devnull,
         "GIT_PAGER": "cat",
+        "GIT_TERMINAL_PROMPT": "0",
         "PAGER": "cat",
     },
     "rg": {
@@ -318,6 +325,11 @@ class TerminalOperator:
 
     def _execution_env(self, executable_name: str) -> dict[str, str]:
         env = dict(_BASE_EXECUTION_ENV)
+        if executable_name == "git":
+            for key in _GIT_ENV_PASSTHROUGH:
+                value = os.environ.get(key)
+                if value:
+                    env[key] = value
         env.update(_EXECUTION_ENV_OVERRIDES.get(executable_name, {}))
         return env
 
