@@ -80,6 +80,34 @@ def _make_overlay(mock_pyobjc):
     return overlay, mod
 
 
+class _FakeAttributedString:
+    def __init__(self, text):
+        self.text = text
+
+    def addAttribute_value_range_(self, *_args):
+        return None
+
+    def appendAttributedString_(self, other):
+        self.text += other.text
+
+
+def _install_fake_attributed_string(monkeypatch):
+    class _Builder:
+        def initWithString_(self, text):
+            return _FakeAttributedString(text)
+
+    class _Alloc:
+        def alloc(self):
+            return _Builder()
+
+    monkeypatch.setattr(
+        sys.modules["AppKit"],
+        "NSMutableAttributedString",
+        _Alloc(),
+        raising=False,
+    )
+
+
 class _FakeLayoutManager:
     def __init__(self, height):
         self.height = height
@@ -375,6 +403,52 @@ class TestWindowLayering:
             f"set_response_text called _update_layout {len(layout_calls)} time(s); "
             "expected exactly 1 — intermediate calls shrink the window causing flicker"
         )
+
+    def test_set_response_text_uses_extra_gap_between_utterance_and_collapsed_thinking(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._utterance_text = "User prompt"
+        overlay._collapsed_text = "Thought for 2s"
+        overlay.append_token = MagicMock()
+        _install_fake_attributed_string(monkeypatch)
+
+        overlay.set_response_text("Done.")
+
+        combined = (
+            overlay._text_view.textStorage()
+            .setAttributedString_.call_args[0][0]
+            .text
+        )
+        assert "User prompt\n\nThought for 2s" in combined
+        assert "User prompt\nThought for 2s" not in combined
+
+    def test_append_token_uses_tighter_gap_after_collapsed_thinking(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._utterance_text = "User prompt"
+        overlay._collapsed_text = "Thought for 2s"
+        overlay._response_text = ""
+        overlay._update_layout = MagicMock()
+        _install_fake_attributed_string(monkeypatch)
+        overlay._make_tool_indicator_fragment = MagicMock(
+            side_effect=lambda token: _FakeAttributedString(token)
+        )
+        overlay._make_response_fragment = MagicMock(
+            side_effect=lambda token: _FakeAttributedString(token)
+        )
+
+        overlay.append_token("[calling list_directory…]")
+
+        first_append = (
+            overlay._text_view.textStorage()
+            .appendAttributedString_.call_args_list[0][0][0]
+            .text
+        )
+        assert first_append == "\n"
 
     def test_hide_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
