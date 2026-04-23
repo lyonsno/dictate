@@ -51,6 +51,7 @@ _CARVE_CADENCE = 2  # carve every Nth substantive turn
 _ASSISTANT_TRUNCATE_THRESHOLD = 500  # chars; assistant turns longer than this get middle-out truncated
 _ASSISTANT_KEEP_HEAD = 250  # chars to keep from the start of long assistant turns
 _ASSISTANT_KEEP_TAIL = 250  # chars to keep from the end of long assistant turns
+_PREFILL_STAGGER_S = 0.5  # seconds between pass launches to avoid concurrent prefills
 
 _CARVE_SYSTEM_PROMPT = """\
 You are a personal attractor carver. An attractor is a force pulling work
@@ -225,6 +226,40 @@ Output ONLY a JSON array:
 - {"op": "create", "slug": "kebab-case", "content": "The observed principle or rationale"}
 - {"op": "update", "slug": "<existing-slug>", "content": "Refined principle"}
 - [] when no policy-shaped reasoning was articulated
+"""
+
+_BEAST_SPECIES_PROMPT = """\
+You are a species classifier for a multi-surface carving system. You are
+given a user utterance and a set of candidate carves that four independent
+passes produced. Each candidate is tagged with its claimed surface:
+attractor, anamnesis, topos, or policy.
+
+Your job is to review each candidate and decide: is it correctly routed to
+the claimed surface, or is it the wrong species?
+
+The surfaces are:
+- ATTRACTOR: a force pulling work into existence, with an EXTINGUISHABLE
+  satisfaction condition. Once satisfied, you stop caring about it.
+  "Tool descriptions clearly communicate async behavior" — once done, done.
+- ANAMNESIS: a factual observation worth remembering. No satisfaction
+  condition. "The server runs on port 8001." "The user calls agents 'the boys'."
+- TOPOS: current state of a unit of work. Decays naturally. "Working on
+  the context window branch." "Merging into main."
+- POLICY: a standing rule or principle with COMPLIANCE, not satisfaction.
+  You can comply or violate but never finish it. "Development always
+  happens in worktrees." "Append-only is not stable for durable state."
+
+For each candidate, output one of:
+- "pass" — correctly routed, write it
+- "kill" — wrong species, do not write it
+- "reroute:<surface>" — belongs on a different surface (e.g., "reroute:anamnesis")
+
+Output ONLY a JSON array with one entry per candidate, in the same order:
+[
+  {"index": 0, "verdict": "pass"},
+  {"index": 1, "verdict": "kill", "reason": "This is an ephemeral command, not an attractor"},
+  {"index": 2, "verdict": "reroute:anamnesis", "reason": "This is a fact, not policy"}
+]
 """
 
 
@@ -757,148 +792,59 @@ class TurnCarver:
         context: list[dict[str, str]] | None = None,
         current_seq: int | None = None,
     ) -> None:
-        """Run all four carve passes for one utterance."""
+        """Run all four carve passes for one utterance, then beast-filter survivors."""
         self._carve_count += 1
-        # All passes share the same context block
         context_block = self._build_context_block(context, current_seq)
 
-        # Fire all four passes concurrently — OMLX batch parallel handles
-        # contention, and each pass is independent.
+        # Collect candidates from all four passes. Each pass appends to this
+        # shared list under its own lock section.
+        candidates: list[dict] = []  # {"surface": str, "op": dict, "prompt_hash": str}
+        candidates_lock = threading.Lock()
+
+        # Stagger pass launches so prefills don't all compete at once.
+        # Each pass starts after a brief delay, letting the prior one move
+        # from prefill into decode before the next prefill begins.
+        pass_fns = [
+            self._collect_attractors,
+            self._collect_anamnesis,
+            self._collect_topoi,
+            self._collect_policy,
+        ]
         pass_threads: list[threading.Thread] = []
-        for fn in (
-            self._pass_attractors,
-            self._pass_anamnesis,
-            self._pass_topoi,
-            self._pass_policy,
-        ):
+        for i, fn in enumerate(pass_fns):
             t = threading.Thread(
                 target=self._safe_call,
-                args=(fn, utterance, context_block),
+                args=(fn, utterance, context_block, candidates, candidates_lock),
                 daemon=True,
             )
+            if i > 0:
+                time.sleep(_PREFILL_STAGGER_S)
             t.start()
             pass_threads.append(t)
         for t in pass_threads:
             t.join(timeout=120)
 
-    def _pass_attractors(self, utterance: str, context_block: str) -> None:
-        """Attractor carve pass — extinguishable forces pulling work into existence."""
-        existing = self._load_existing_attractors_context()
-        user_prompt = ""
-        if context_block:
-            user_prompt += context_block
-        user_prompt += f"Current user utterance:\n\n\"{utterance}\"\n\n"
-        if existing:
-            user_prompt += f"{existing}\n\n"
-        user_prompt += "Identify attractor operations for this utterance."
-
-        prompt_hash = hashlib.sha256(_CARVE_SYSTEM_PROMPT.encode()).hexdigest()[:16]
-        try:
-            result_text, elapsed = self._call_model_for_carve(_CARVE_SYSTEM_PROMPT, user_prompt)
-        except Exception:
-            logger.debug("Converge: attractor pass failed", exc_info=True)
+        if not candidates:
             return
 
-        ops = self._parse_ops(result_text)
-        if ops is None:
-            self._trace("carve_parse_error", surface="attractor", elapsed=0, raw=result_text[:200], prompt_hash=prompt_hash)
-            return
-        if not ops:
-            self._trace("carve_empty", surface="attractor", elapsed=elapsed, utterance=utterance[:100], prompt_hash=prompt_hash)
-            return
+        # Beast pass: species-classify all candidates
+        survivors = self._beast_filter(utterance, candidates)
 
-        today = date.today().isoformat()
-        actions = []
-        with self._attractor_io_lock:
-            for op in ops:
-                op_type = op.get("op", "create")
-                slug = op.get("slug", "")
-                if not slug:
-                    continue
+        # Write survivors to their respective surfaces
+        self._write_survivors(survivors)
 
-                if op_type in ("reinforce", "expand"):
-                    path = _ATTRACTORS_DIR / f"{slug}.md"
-                    new_evidence = op.get("evidence", op.get("new_evidence", ""))
-                    if path.exists():
-                        # Recompile the file with new evidence
-                        recompiled = self._recompile_entry(path, new_evidence)
-                        if recompiled:
-                            path.write_text(recompiled, encoding="utf-8")
-                            actions.append(f"recompile:{slug}")
-                            logger.info("Converge: recompiled %s", slug)
-                        else:
-                            # Fallback: append if recompile fails
-                            existing = path.read_text(encoding="utf-8")
-                            existing = existing.rstrip() + f"\n- {op_type.title()}d: {today} — {new_evidence}\n"
-                            path.write_text(existing, encoding="utf-8")
-                            actions.append(f"{op_type}:{slug}")
-                    else:
-                        logger.debug("Converge: %s target %s not found, skipping", op_type, slug)
-
-                elif op_type == "correct":
-                    old_path = _ATTRACTORS_DIR / f"{slug}.md"
-                    new_slug = op.get("corrected_slug", slug)
-                    new_title = op.get("corrected_title", "")
-                    reason = op.get("reason", "")
-                    if old_path.exists():
-                        existing = old_path.read_text(encoding="utf-8")
-                        if new_title:
-                            file_lines = existing.split("\n")
-                            for i, line in enumerate(file_lines):
-                                if line.startswith("# "):
-                                    file_lines[i] = f"# {new_title}"
-                                    break
-                            existing = "\n".join(file_lines)
-                        existing = existing.rstrip() + f"\n- Corrected: {today} — {reason}\n"
-                        new_path = _ATTRACTORS_DIR / f"{new_slug}.md"
-                        new_path.write_text(existing, encoding="utf-8")
-                        if new_slug != slug:
-                            old_path.unlink()
-                        actions.append(f"correct:{slug}→{new_slug}")
-                        logger.info("Converge: corrected %s → %s (%s)", slug, new_slug, reason)
-
-                elif op_type == "create":
-                    title = op.get("title", slug)
-                    evidence = op.get("evidence", "")
-                    path = _ATTRACTORS_DIR / f"{slug}.md"
-                    if path.exists():
-                        # Already exists — recompile with new evidence
-                        recompiled = self._recompile_entry(path, evidence)
-                        if recompiled:
-                            path.write_text(recompiled, encoding="utf-8")
-                            actions.append(f"recompile:{slug}")
-                        else:
-                            existing = path.read_text(encoding="utf-8")
-                            existing = existing.rstrip() + f"\n- Re-observed: {today} — {evidence}\n"
-                            path.write_text(existing, encoding="utf-8")
-                            actions.append(f"reinforce:{slug}")
-                    else:
-                        content = f"# {title}\n\n{evidence}\n\n- Strength: tentative\n- Last observed: {today}\n"
-                        path.write_text(content, encoding="utf-8")
-                        actions.append(f"create:{slug}")
-                        logger.info("Converge: created %s", slug)
-
-        self._trace(
-            "carve_complete",
-            surface="attractor",
-            elapsed=elapsed,
-            utterance=utterance[:100],
-            ops_received=len(ops),
-            actions=actions,
-            prompt_hash=prompt_hash,
-        )
-
-    def _pass_surface(
+    def _collect_pass(
         self,
         surface_name: str,
         system_prompt: str,
         surface_dir: Path,
-        io_lock: threading.Lock,
         utterance: str,
         context_block: str,
         instruction: str,
+        candidates: list[dict],
+        candidates_lock: threading.Lock,
     ) -> None:
-        """Generic carve pass for anamnesis, tópoi, and policy surfaces."""
+        """Run a carve pass and collect candidates without writing to disk."""
         existing = self._load_existing_entries(surface_dir, surface_name)
         user_prompt = ""
         if context_block:
@@ -923,88 +869,273 @@ class TurnCarver:
             self._trace("carve_empty", surface=surface_name, elapsed=elapsed, utterance=utterance[:100], prompt_hash=prompt_hash)
             return
 
-        today = date.today().isoformat()
-        actions = []
-        with io_lock:
+        with candidates_lock:
             for op in ops:
-                op_type = op.get("op", "create")
                 slug = op.get("slug", "")
-                content = op.get("content", "")
                 if not slug:
                     continue
-
-                path = surface_dir / f"{slug}.md"
-
-                if op_type == "update" and path.exists():
-                    recompiled = self._recompile_entry(path, content)
-                    if recompiled:
-                        path.write_text(recompiled, encoding="utf-8")
-                        actions.append(f"recompile:{slug}")
-                    else:
-                        # Fallback: overwrite with new content
-                        path.write_text(f"# {slug}\n\n{content}\n\n- Last observed: {today}\n", encoding="utf-8")
-                        actions.append(f"update:{slug}")
-                    logger.info("Converge %s: updated %s", surface_name, slug)
-
-                elif op_type == "create":
-                    if path.exists():
-                        # Already exists — recompile
-                        recompiled = self._recompile_entry(path, content)
-                        if recompiled:
-                            path.write_text(recompiled, encoding="utf-8")
-                            actions.append(f"recompile:{slug}")
-                        else:
-                            actions.append(f"exists:{slug}")
-                    else:
-                        path.write_text(f"# {slug}\n\n{content}\n\n- Last observed: {today}\n", encoding="utf-8")
-                        actions.append(f"create:{slug}")
-                        logger.info("Converge %s: created %s", surface_name, slug)
+                candidates.append({
+                    "surface": surface_name,
+                    "op": op,
+                    "prompt_hash": prompt_hash,
+                    "elapsed": elapsed,
+                })
 
         self._trace(
-            "carve_complete",
+            "carve_candidates",
             surface=surface_name,
             elapsed=elapsed,
             utterance=utterance[:100],
-            ops_received=len(ops),
-            actions=actions,
+            ops_count=len(ops),
             prompt_hash=prompt_hash,
         )
 
-    def _pass_anamnesis(self, utterance: str, context_block: str) -> None:
-        """Anamnesis carve pass — factual/relational observations."""
-        self._pass_surface(
-            surface_name="anamnesis",
-            system_prompt=_ANAMNESIS_SYSTEM_PROMPT,
-            surface_dir=_ANAMNESIS_DIR,
-            io_lock=self._anamnesis_io_lock,
-            utterance=utterance,
-            context_block=context_block,
-            instruction="Extract factual observations worth remembering from this utterance.",
+    def _collect_attractors(
+        self, utterance: str, context_block: str,
+        candidates: list[dict], candidates_lock: threading.Lock,
+    ) -> None:
+        self._collect_pass(
+            "attractor", _CARVE_SYSTEM_PROMPT, _ATTRACTORS_DIR,
+            utterance, context_block,
+            "Identify attractor operations for this utterance.",
+            candidates, candidates_lock,
         )
 
-    def _pass_topoi(self, utterance: str, context_block: str) -> None:
-        """Tópos carve pass — state of ongoing work."""
-        self._pass_surface(
-            surface_name="topos",
-            system_prompt=_TOPOS_SYSTEM_PROMPT,
-            surface_dir=_TOPOI_DIR,
-            io_lock=self._topoi_io_lock,
-            utterance=utterance,
-            context_block=context_block,
-            instruction="Extract changes to the state of ongoing work from this utterance.",
+    def _collect_anamnesis(
+        self, utterance: str, context_block: str,
+        candidates: list[dict], candidates_lock: threading.Lock,
+    ) -> None:
+        self._collect_pass(
+            "anamnesis", _ANAMNESIS_SYSTEM_PROMPT, _ANAMNESIS_DIR,
+            utterance, context_block,
+            "Extract factual observations worth remembering from this utterance.",
+            candidates, candidates_lock,
         )
 
-    def _pass_policy(self, utterance: str, context_block: str) -> None:
-        """Policy carve pass — observed reasoning and principles."""
-        self._pass_surface(
-            surface_name="policy",
-            system_prompt=_POLICY_SYSTEM_PROMPT,
-            surface_dir=_POLICY_DIR,
-            io_lock=self._policy_io_lock,
-            utterance=utterance,
-            context_block=context_block,
-            instruction="Extract reasoning, rationales, or operational principles from this utterance.",
+    def _collect_topoi(
+        self, utterance: str, context_block: str,
+        candidates: list[dict], candidates_lock: threading.Lock,
+    ) -> None:
+        self._collect_pass(
+            "topos", _TOPOS_SYSTEM_PROMPT, _TOPOI_DIR,
+            utterance, context_block,
+            "Extract changes to the state of ongoing work from this utterance.",
+            candidates, candidates_lock,
         )
+
+    def _collect_policy(
+        self, utterance: str, context_block: str,
+        candidates: list[dict], candidates_lock: threading.Lock,
+    ) -> None:
+        self._collect_pass(
+            "policy", _POLICY_SYSTEM_PROMPT, _POLICY_DIR,
+            utterance, context_block,
+            "Extract reasoning, rationales, or operational principles from this utterance.",
+            candidates, candidates_lock,
+        )
+
+    def _beast_filter(self, utterance: str, candidates: list[dict]) -> list[dict]:
+        """Beast pass: species-classify candidates and return survivors."""
+        # Build the candidate list for the beast prompt
+        candidate_lines = []
+        for i, c in enumerate(candidates):
+            op = c["op"]
+            surface = c["surface"]
+            op_type = op.get("op", "create")
+            slug = op.get("slug", "?")
+            content = op.get("content", op.get("evidence", op.get("new_evidence", "")))
+            candidate_lines.append(
+                f"[{i}] surface={surface} op={op_type} slug={slug}"
+                + (f" content=\"{content[:150]}\"" if content else "")
+            )
+
+        user_prompt = (
+            f"User utterance:\n\"{utterance}\"\n\n"
+            f"Candidates ({len(candidates)}):\n"
+            + "\n".join(candidate_lines)
+            + "\n\nClassify each candidate."
+        )
+
+        beast_hash = hashlib.sha256(_BEAST_SPECIES_PROMPT.encode()).hexdigest()[:16]
+        try:
+            result_text, elapsed = self._call_model_for_carve(_BEAST_SPECIES_PROMPT, user_prompt)
+        except Exception:
+            logger.debug("Converge: beast pass failed, passing all candidates", exc_info=True)
+            # Fail-open: if the beast can't run, pass everything through
+            return candidates
+
+        verdicts = self._parse_ops(result_text)
+        if verdicts is None:
+            logger.debug("Converge: beast parse failed, passing all candidates")
+            self._trace("beast_parse_error", raw=result_text[:200], beast_hash=beast_hash)
+            return candidates
+
+        # Apply verdicts
+        survivors = []
+        killed = []
+        rerouted = []
+        for v in verdicts:
+            idx = v.get("index", -1)
+            if idx < 0 or idx >= len(candidates):
+                continue
+            verdict = v.get("verdict", "pass")
+            reason = v.get("reason", "")
+
+            if verdict == "pass":
+                survivors.append(candidates[idx])
+            elif verdict == "kill":
+                killed.append({"candidate": candidates[idx], "reason": reason})
+            elif verdict.startswith("reroute:"):
+                new_surface = verdict.split(":", 1)[1]
+                rerouted_candidate = dict(candidates[idx])
+                rerouted_candidate["surface"] = new_surface
+                survivors.append(rerouted_candidate)
+                rerouted.append({
+                    "from": candidates[idx]["surface"],
+                    "to": new_surface,
+                    "slug": candidates[idx]["op"].get("slug", "?"),
+                    "reason": reason,
+                })
+
+        self._trace(
+            "beast_complete",
+            elapsed=elapsed,
+            candidates=len(candidates),
+            survivors=len(survivors),
+            killed=len(killed),
+            rerouted=len(rerouted),
+            kill_details=[{
+                "surface": k["candidate"]["surface"],
+                "slug": k["candidate"]["op"].get("slug", "?"),
+                "reason": k["reason"],
+            } for k in killed],
+            reroute_details=rerouted,
+            beast_hash=beast_hash,
+        )
+
+        return survivors
+
+    def _write_survivors(self, survivors: list[dict]) -> None:
+        """Write beast-approved candidates to their respective surfaces."""
+        today = date.today().isoformat()
+
+        # Group by surface for lock efficiency
+        by_surface: dict[str, list[dict]] = {}
+        for s in survivors:
+            by_surface.setdefault(s["surface"], []).append(s)
+
+        surface_config = {
+            "attractor": (_ATTRACTORS_DIR, self._attractor_io_lock),
+            "anamnesis": (_ANAMNESIS_DIR, self._anamnesis_io_lock),
+            "topos": (_TOPOI_DIR, self._topoi_io_lock),
+            "policy": (_POLICY_DIR, self._policy_io_lock),
+        }
+
+        for surface_name, items in by_surface.items():
+            config = surface_config.get(surface_name)
+            if not config:
+                logger.debug("Converge: unknown surface %s, skipping", surface_name)
+                continue
+            surface_dir, io_lock = config
+
+            actions = []
+            with io_lock:
+                for item in items:
+                    op = item["op"]
+                    op_type = op.get("op", "create")
+                    slug = op.get("slug", "")
+                    if not slug:
+                        continue
+
+                    path = surface_dir / f"{slug}.md"
+
+                    if surface_name == "attractor":
+                        # Attractor-specific ops: reinforce/expand/correct/create
+                        if op_type in ("reinforce", "expand"):
+                            new_evidence = op.get("evidence", op.get("new_evidence", ""))
+                            if path.exists():
+                                recompiled = self._recompile_entry(path, new_evidence)
+                                if recompiled:
+                                    path.write_text(recompiled, encoding="utf-8")
+                                    actions.append(f"recompile:{slug}")
+                                else:
+                                    existing = path.read_text(encoding="utf-8")
+                                    existing = existing.rstrip() + f"\n- {op_type.title()}d: {today} — {new_evidence}\n"
+                                    path.write_text(existing, encoding="utf-8")
+                                    actions.append(f"{op_type}:{slug}")
+                            else:
+                                logger.debug("Converge: %s target %s not found", op_type, slug)
+
+                        elif op_type == "correct":
+                            old_path = _ATTRACTORS_DIR / f"{slug}.md"
+                            new_slug = op.get("corrected_slug", slug)
+                            new_title = op.get("corrected_title", "")
+                            reason = op.get("reason", "")
+                            if old_path.exists():
+                                existing = old_path.read_text(encoding="utf-8")
+                                if new_title:
+                                    file_lines = existing.split("\n")
+                                    for idx, line in enumerate(file_lines):
+                                        if line.startswith("# "):
+                                            file_lines[idx] = f"# {new_title}"
+                                            break
+                                    existing = "\n".join(file_lines)
+                                existing = existing.rstrip() + f"\n- Corrected: {today} — {reason}\n"
+                                new_path = _ATTRACTORS_DIR / f"{new_slug}.md"
+                                new_path.write_text(existing, encoding="utf-8")
+                                if new_slug != slug:
+                                    old_path.unlink()
+                                actions.append(f"correct:{slug}→{new_slug}")
+
+                        elif op_type == "create":
+                            title = op.get("title", slug)
+                            evidence = op.get("evidence", "")
+                            if path.exists():
+                                recompiled = self._recompile_entry(path, evidence)
+                                if recompiled:
+                                    path.write_text(recompiled, encoding="utf-8")
+                                    actions.append(f"recompile:{slug}")
+                                else:
+                                    existing = path.read_text(encoding="utf-8")
+                                    existing = existing.rstrip() + f"\n- Re-observed: {today} — {evidence}\n"
+                                    path.write_text(existing, encoding="utf-8")
+                                    actions.append(f"reinforce:{slug}")
+                            else:
+                                content = f"# {title}\n\n{evidence}\n\n- Strength: tentative\n- Last observed: {today}\n"
+                                path.write_text(content, encoding="utf-8")
+                                actions.append(f"create:{slug}")
+
+                    else:
+                        # Generic surfaces: create/update
+                        content = op.get("content", "")
+                        if op_type == "update" and path.exists():
+                            recompiled = self._recompile_entry(path, content)
+                            if recompiled:
+                                path.write_text(recompiled, encoding="utf-8")
+                                actions.append(f"recompile:{slug}")
+                            else:
+                                path.write_text(f"# {slug}\n\n{content}\n\n- Last observed: {today}\n", encoding="utf-8")
+                                actions.append(f"update:{slug}")
+                        elif op_type == "create":
+                            if path.exists():
+                                recompiled = self._recompile_entry(path, content)
+                                if recompiled:
+                                    path.write_text(recompiled, encoding="utf-8")
+                                    actions.append(f"recompile:{slug}")
+                                else:
+                                    actions.append(f"exists:{slug}")
+                            else:
+                                path.write_text(f"# {slug}\n\n{content}\n\n- Last observed: {today}\n", encoding="utf-8")
+                                actions.append(f"create:{slug}")
+
+            if actions:
+                self._trace(
+                    "write_complete",
+                    surface=surface_name,
+                    actions=actions,
+                )
+                for a in actions:
+                    logger.info("Converge %s: %s", surface_name, a)
 
     def _embed_single(self, utterance: str) -> None:
         """Embed a single utterance via OMLX /v1/embeddings and append to cache."""

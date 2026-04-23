@@ -240,6 +240,7 @@ class TestContextWindowCarver:
         monkeypatch.setattr(mod, "_TOPOI_DIR", tmp_path / "topoi")
         monkeypatch.setattr(mod, "_POLICY_DIR", tmp_path / "policy")
         monkeypatch.setattr(mod, "_TRACE_PATH", tmp_path / "trace.jsonl")
+        monkeypatch.setattr(mod, "_PREFILL_STAGGER_S", 0.0)
         for d in ("attractors", "anamnesis", "topoi", "policy"):
             (tmp_path / d).mkdir(exist_ok=True)
         monkeypatch.setattr(mod.urllib.request, "urlopen", urlopen_fn)
