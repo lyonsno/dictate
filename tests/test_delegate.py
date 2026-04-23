@@ -3789,6 +3789,20 @@ class TestCommandCallbacks:
         d._command_overlay.set_response_text.assert_called_once_with("Done.")
         d._command_overlay.finish.assert_called_once()
 
+    def test_command_complete_preserves_streamed_overlay_when_response_already_visible(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+        d._transcribing = True
+        d._command_streaming_text = "Done."
+
+        d.commandComplete_({"token": 1, "response": "Done."})
+
+        d._command_overlay.set_response_text.assert_not_called()
+        d._command_overlay.finish.assert_called_once()
+
     def test_command_approval_required_shows_pending_approval_card(
         self, main_module, monkeypatch
     ):

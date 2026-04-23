@@ -3717,7 +3717,11 @@ class SpokeAppDelegate(NSObject):
             self._last_command_response = response
         if overlay is not None and response:
             try:
-                overlay.set_response_text(response)
+                # If the streamed visible body already matches the final
+                # response, preserve it in place so collapsed thinking and
+                # tool/result ordering do not get rebuilt back to the top.
+                if getattr(self, "_command_streaming_text", "") != response:
+                    overlay.set_response_text(response)
             except Exception:
                 logger.exception("Command overlay failed to apply final response text")
         if overlay is not None:

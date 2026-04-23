@@ -587,6 +587,15 @@ class TestAdaptiveCompositing:
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
+    def test_fill_layer_opacity_breathes_in_tighter_legible_band(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            assert mod._fill_layer_opacity_for_breath(0.0) == pytest.approx(0.85)
+            assert mod._fill_layer_opacity_for_breath(1.0) == pytest.approx(0.95)
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
     def test_response_color_darkens_for_bright_backgrounds(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")

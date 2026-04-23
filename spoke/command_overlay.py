@@ -76,6 +76,8 @@ _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
 _ASSISTANT_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_ASSISTANT_TEXT_ALPHA_MIN", 0.75)
 _ASSISTANT_TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_ASSISTANT_TEXT_ALPHA_MAX", 1.0)
 _BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.715)
+_FILL_OPACITY_MIN = _env("SPOKE_COMMAND_FILL_OPACITY_MIN", 0.85)
+_FILL_OPACITY_MAX = _env("SPOKE_COMMAND_FILL_OPACITY_MAX", 0.95)
 _PULSE_PERIOD = _env("SPOKE_COMMAND_PULSE_PERIOD", 2.0)  # base period (seconds)
 _PULSE_PERIOD_USER = _PULSE_PERIOD * 1.5  # user text: 50% slower
 _PULSE_PERIOD_ASST = 5.0  # assistant text: slow deep breath
@@ -137,6 +139,10 @@ def _thinking_cutout_color_for_brightness(brightness: float) -> tuple[float, flo
 
 def _assistant_text_alpha_for_breath(breath: float) -> float:
     return _lerp(_ASSISTANT_TEXT_ALPHA_MIN, _ASSISTANT_TEXT_ALPHA_MAX, _clamp01(breath))
+
+
+def _fill_layer_opacity_for_breath(breath: float) -> float:
+    return _lerp(_FILL_OPACITY_MIN, _FILL_OPACITY_MAX, _clamp01(breath))
 
 
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
@@ -1156,7 +1162,7 @@ class CommandOverlay(NSObject):
         # Drive the SDF fill layer with the pulse — the fill breathes
         # with the assistant's thinking/response animation.
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
-            self._fill_layer.setOpacity_(min(glow_opacity * 0.7, 0.85))
+            self._fill_layer.setOpacity_(_fill_layer_opacity_for_breath(breath))
         # Cancel spring: warm amber tint over the overlay shape.
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
             if spring > 0.01:
