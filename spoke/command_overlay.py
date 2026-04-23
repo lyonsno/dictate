@@ -90,6 +90,7 @@ _OUTER_FEATHER = 220.0  # match preview overlay — room for the stretched-exp t
 _INNER_GLOW_DEPTH = 30.0
 _OUTER_GLOW_PEAK_TARGET = 0.35
 _BRIGHTNESS_CHASE = 0.08
+_BRIGHTNESS_SAMPLE_INTERVAL = 1.0
 
 # Adaptive compositing for command output.
 _USER_TEXT_COLOR_DARK = (0.16, 0.17, 0.20)
@@ -124,19 +125,41 @@ def _background_color_for_brightness(brightness: float) -> tuple[float, float, f
 
 
 def _user_text_color_for_brightness(brightness: float) -> tuple[float, float, float]:
-    return _lerp_color(_USER_TEXT_COLOR_DARK, _USER_TEXT_COLOR_LIGHT, _clamp01(brightness))
+    return _lerp_color(
+        _USER_TEXT_COLOR_DARK,
+        _USER_TEXT_COLOR_LIGHT,
+        _contrast_mix_for_brightness(brightness),
+    )
 
 
 def _assistant_foreground_color_for_brightness(brightness: float) -> tuple[float, float, float]:
     return _lerp_color(
         _ASSISTANT_TEXT_COLOR_DARK,
         _ASSISTANT_TEXT_COLOR_LIGHT,
-        _clamp01(brightness),
+        _contrast_mix_for_brightness(brightness),
     )
 
 
 def _user_text_alpha_for_breath(breath: float) -> float:
     return _lerp(_USER_TEXT_ALPHA_MIN, _USER_TEXT_ALPHA_MAX, _clamp01(breath))
+
+
+def _contrast_mix_for_brightness(brightness: float) -> float:
+    clamped = _clamp01(brightness)
+    lo = 0.44
+    hi = 0.56
+    if clamped <= lo:
+        return 0.0
+    if clamped >= hi:
+        return 1.0
+    t = (clamped - lo) / (hi - lo)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _sample_screen_brightness_for_overlay(screen) -> float:
+    from .glow import _sample_screen_brightness
+
+    return _sample_screen_brightness(screen)
 
 
 def _thinking_cutout_color_for_brightness(brightness: float) -> tuple[float, float, float]:
@@ -221,6 +244,7 @@ class CommandOverlay(NSObject):
         self._tts_amplitude = 0.0
         self._tts_active = False
         self._tts_blend = 0.0  # 0.0 = pure pulse, 1.0 = pure TTS
+        self._brightness_timer: NSTimer | None = None
 
         # Thinking timer state
         self._thinking_timer: NSTimer | None = None
@@ -468,6 +492,7 @@ class CommandOverlay(NSObject):
         self._apply_surface_theme()
 
         self._window.orderFrontRegardless()
+        self._start_brightness_sampling()
 
         # Entrance pop — start slightly oversized, ease back to 1.0.
         # Runs concurrently with the fade-in for a subtle "I just arrived" feel.
@@ -507,6 +532,22 @@ class CommandOverlay(NSObject):
         if immediate:
             self._brightness = self._brightness_target
             self._apply_surface_theme()
+
+    def _start_brightness_sampling(self) -> None:
+        old_timer = getattr(self, "_brightness_timer", None)
+        if old_timer is not None:
+            old_timer.invalidate()
+        self._brightness_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            _BRIGHTNESS_SAMPLE_INTERVAL, self, "brightnessResample:", None, True
+        )
+
+    def brightnessResample_(self, timer) -> None:
+        if not self._visible:
+            return
+        try:
+            self.set_brightness(_sample_screen_brightness_for_overlay(self._screen))
+        except Exception:
+            logger.debug("Command overlay brightness sampling failed", exc_info=True)
 
     def _entrancePopStep_(self, timer) -> None:
         """Ease the entrance pop back to scale 1.0."""
@@ -1225,6 +1266,11 @@ class CommandOverlay(NSObject):
             self._linger_timer.invalidate()
             self._linger_timer = None
 
+    def _cancel_brightness_sampling(self) -> None:
+        if getattr(self, "_brightness_timer", None) is not None:
+            self._brightness_timer.invalidate()
+            self._brightness_timer = None
+
     def _cancel_dismiss_animation(self) -> None:
         if self._cancel_timer_anim is not None:
             self._cancel_timer_anim.invalidate()
@@ -1241,6 +1287,7 @@ class CommandOverlay(NSObject):
         self._cancel_fade()
         self._cancel_pulse()
         self._cancel_linger()
+        self._cancel_brightness_sampling()
         self._stop_thinking_timer()
 
     def _set_overlay_scale(self, scale: float) -> None:

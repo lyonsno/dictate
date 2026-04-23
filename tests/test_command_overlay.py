@@ -257,6 +257,13 @@ class TestShowFinishHide:
         assert overlay._thinking_timer is not None
         assert overlay._thinking_seconds == 0.0
 
+    def test_show_starts_recurring_brightness_sampling(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+
+        overlay.show()
+
+        assert overlay._brightness_timer is not None
+
     def test_show_can_resume_thinking_timer_without_resetting_elapsed_state(
         self, mock_pyobjc
     ):
@@ -466,12 +473,14 @@ class TestTimerCancellation:
         assert overlay._fade_timer is not None
         assert overlay._pulse_timer is not None
         assert overlay._thinking_timer is not None
+        assert overlay._brightness_timer is not None
 
         overlay._cancel_all_timers()
         assert overlay._fade_timer is None
         assert overlay._pulse_timer is None
         assert overlay._linger_timer is None
         assert overlay._thinking_timer is None
+        assert overlay._brightness_timer is None
 
     def test_cancel_fade_safe_when_none(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
@@ -628,6 +637,29 @@ class TestAdaptiveCompositing:
             assert min(light) > 0.9
         finally:
             sys.modules.pop("spoke.command_overlay", None)
+
+    def test_text_contrast_mapping_snaps_aggressively_near_midpoint(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            below = mod._contrast_mix_for_brightness(0.45)
+            above = mod._contrast_mix_for_brightness(0.55)
+
+            assert below < 0.15
+            assert above > 0.85
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_brightness_resample_updates_target_while_visible(self, mock_pyobjc, monkeypatch):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._screen = MagicMock()
+
+        monkeypatch.setattr(mod, "_sample_screen_brightness_for_overlay", lambda _screen: 0.83)
+
+        overlay.brightnessResample_(None)
+
+        assert overlay._brightness_target == pytest.approx(0.83)
 
     def test_response_fragment_uses_blurry_colored_underlay_with_crisp_foreground(
         self, mock_pyobjc, monkeypatch
