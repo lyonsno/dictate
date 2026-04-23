@@ -3904,21 +3904,30 @@ class TestCommandCallbacks:
         assert result == "Speaking: hello world"
         assert d._command_tool_used_tts is True
 
-    def test_approval_tap_runs_pending_command(self, main_module, monkeypatch):
+    def test_approval_enter_runs_pending_command(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._approve_pending_command = MagicMock()
         d._pending_command_approval_active = True
 
-        d._on_hold_end(shift_held=False, enter_held=False, approval_tap=True)
+        d._on_approval_enter_pressed(shift_held=False)
 
         d._approve_pending_command.assert_called_once_with()
 
-    def test_approval_shift_tap_cancels_pending_command(self, main_module, monkeypatch):
+    def test_approval_shift_enter_still_runs_pending_command(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._approve_pending_command = MagicMock()
+        d._pending_command_approval_active = True
+
+        d._on_approval_enter_pressed(shift_held=True)
+
+        d._approve_pending_command.assert_called_once_with()
+
+    def test_approval_delete_cancels_pending_command(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._cancel_pending_command_approval = MagicMock()
         d._pending_command_approval_active = True
 
-        d._on_hold_end(shift_held=True, enter_held=False, approval_tap=True)
+        d._on_approval_delete_pressed()
 
         d._cancel_pending_command_approval.assert_called_once_with()
 

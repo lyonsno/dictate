@@ -970,7 +970,7 @@ class TestTrayAwareness:
     def test_approval_spacebar_tap_calls_hold_end_not_forward(
         self, input_tap_module
     ):
-        """During pending approval, quick spacebar tap should route through on_hold_end."""
+        """During pending approval, quick spacebar tap should still behave like a normal space tap."""
         mod = input_tap_module
 
         det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
@@ -980,30 +980,77 @@ class TestTrayAwareness:
         result = det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=0)
 
         assert result is True
-        on_end.assert_called_once_with(
-            shift_held=False,
-            enter_held=False,
-            approval_tap=True,
-        )
+        on_end.assert_not_called()
+        assert det._forwarding is True
 
-    def test_approval_shift_spacebar_tap_routes_cancel(
+    def test_approval_enter_key_approves_pending_command(
         self, input_tap_module
     ):
-        """Shift+space during pending approval should route as a cancel tap."""
+        """During pending approval, Enter should route approval directly."""
         mod = input_tap_module
+        Quartz = __import__("Quartz")
 
         det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
         det.approval_active = True
+        det._on_approval_enter_pressed = MagicMock()
+        mod._active_detector = det
+        event = MagicMock()
 
-        det.handle_key_down(mod.SPACEBAR_KEYCODE, mod.kCGEventFlagMaskShift)
-        result = det.handle_key_up(mod.SPACEBAR_KEYCODE, flags=mod.kCGEventFlagMaskShift)
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
 
-        assert result is True
-        on_end.assert_called_once_with(
-            shift_held=True,
-            enter_held=False,
-            approval_tap=True,
-        )
+        assert result_down is None
+        assert result_up is None
+        det._on_approval_enter_pressed.assert_called_once_with(shift_held=False)
+        on_end.assert_not_called()
+
+    def test_approval_shift_enter_routes_through_approval_callback(
+        self, input_tap_module
+    ):
+        """During pending approval, Shift+Enter should stay on the approval path."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        det.approval_active = True
+        det._on_approval_enter_pressed = MagicMock()
+        mod._active_detector = det
+        event = MagicMock()
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.ENTER_KEYCODE
+        Quartz.CGEventGetFlags.return_value = mod.kCGEventFlagMaskShift
+        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+
+        assert result_down is None
+        assert result_up is None
+        det._on_approval_enter_pressed.assert_called_once_with(shift_held=True)
+        on_end.assert_not_called()
+
+    def test_approval_delete_key_cancels_pending_command(
+        self, input_tap_module
+    ):
+        """During pending approval, Delete should cancel directly."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _, on_end, _, _, _ = self._make_detector(input_tap_module)
+        det.approval_active = True
+        det._on_approval_delete_pressed = MagicMock()
+        mod._active_detector = det
+        event = MagicMock()
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.DELETE_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+        result_down = mod._event_tap_callback(None, Quartz.kCGEventKeyDown, event, None)
+        result_up = mod._event_tap_callback(None, Quartz.kCGEventKeyUp, event, None)
+
+        assert result_down is None
+        assert result_up is None
+        det._on_approval_delete_pressed.assert_called_once_with()
+        on_end.assert_not_called()
 
     def test_tray_shift_hold_then_shift_release_stays_tray_native(
         self, input_tap_module

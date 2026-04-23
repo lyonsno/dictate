@@ -931,6 +931,8 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_cancel_spring_start = self._on_cancel_spring_start
         self._detector._on_cancel_spring_release = self._on_cancel_spring_release
         self._detector._on_enter_during_waiting = self._toggle_command_overlay
+        self._detector._on_approval_enter_pressed = self._on_approval_enter_pressed
+        self._detector._on_approval_delete_pressed = self._on_approval_delete_pressed
         self._detector._on_double_tap_shift = self._toggle_terraform_hud
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
@@ -2223,6 +2225,8 @@ class SpokeAppDelegate(NSObject):
                 self._refresh_startup_status()
             return
 
+        # Legacy shim: older callers used space-rooted approval_tap.
+        # New approval grammar is direct Enter/Delete callbacks instead.
         if approval_tap and getattr(self, "_pending_command_approval_active", False):
             logger.info("Approval tap — shift=%s", shift_held)
             if shift_held:
@@ -2337,6 +2341,7 @@ class SpokeAppDelegate(NSObject):
             )
             thread.start()
             return
+
         # Invalidate any in-flight transcription so its result is discarded
         self._transcription_token += 1
         token = self._transcription_token
@@ -2373,6 +2378,20 @@ class SpokeAppDelegate(NSObject):
                 target=self._transcribe_worker, args=(wav_bytes, token), daemon=True
             )
         thread.start()
+
+    def _on_approval_enter_pressed(self, *, shift_held: bool = False) -> None:
+        """Approve the pending command from the dedicated approval grammar."""
+        if not getattr(self, "_pending_command_approval_active", False):
+            return
+        logger.info("Approval enter — shift=%s", shift_held)
+        self._approve_pending_command()
+
+    def _on_approval_delete_pressed(self) -> None:
+        """Reject the pending command from the dedicated approval grammar."""
+        if not getattr(self, "_pending_command_approval_active", False):
+            return
+        logger.info("Approval delete — cancelling pending command")
+        self._cancel_pending_command_approval()
 
     def _transcribe_segments_and_tail(self, wav_bytes: bytes) -> str | None:
         """Try segment-accelerated transcription.  Returns final text, or None
