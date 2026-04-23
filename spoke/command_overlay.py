@@ -73,8 +73,10 @@ _COLOR_VELOCITY_MAX = 1.7  # fastest speed multiplier (transitions)
 _GLOW_COLOR = (0.6, 0.4, 0.9)  # initial color for setup (violet)
 _TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.35)  # strong visible pulse
 _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
-_ASSISTANT_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_ASSISTANT_TEXT_ALPHA_MIN", 0.75)
-_ASSISTANT_TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_ASSISTANT_TEXT_ALPHA_MAX", 1.0)
+_USER_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_USER_TEXT_ALPHA_MIN", 0.85)
+_USER_TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_USER_TEXT_ALPHA_MAX", 0.95)
+_ASSISTANT_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_ASSISTANT_TEXT_ALPHA_MIN", 0.85)
+_ASSISTANT_TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_ASSISTANT_TEXT_ALPHA_MAX", 0.95)
 _BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.715)
 _FILL_OPACITY_MIN = _env("SPOKE_COMMAND_FILL_OPACITY_MIN", 0.85)
 _FILL_OPACITY_MAX = _env("SPOKE_COMMAND_FILL_OPACITY_MAX", 0.95)
@@ -90,9 +92,11 @@ _OUTER_GLOW_PEAK_TARGET = 0.35
 _BRIGHTNESS_CHASE = 0.08
 
 # Adaptive compositing for command output.
-_USER_TEXT_COLOR_DARK = (0.92, 0.95, 1.0)
-_USER_TEXT_COLOR_LIGHT = (0.10, 0.12, 0.16)
-_RESPONSE_TEXT_LIGHT_BG_TARGET = (0.07, 0.08, 0.11)
+_USER_TEXT_COLOR_DARK = (0.16, 0.17, 0.20)
+_USER_TEXT_COLOR_LIGHT = (0.95, 0.97, 1.0)
+_ASSISTANT_TEXT_COLOR_DARK = (0.12, 0.13, 0.16)
+_ASSISTANT_TEXT_COLOR_LIGHT = (0.95, 0.97, 1.0)
+_ASSISTANT_BLUR_RADIUS = _env("SPOKE_COMMAND_ASSISTANT_BLUR_RADIUS", 8.0)
 _THINKING_CUTOUT_DARK = (0.05, 0.05, 0.06)
 _THINKING_CUTOUT_LIGHT = (0.80, 0.80, 0.78)
 
@@ -123,14 +127,16 @@ def _user_text_color_for_brightness(brightness: float) -> tuple[float, float, fl
     return _lerp_color(_USER_TEXT_COLOR_DARK, _USER_TEXT_COLOR_LIGHT, _clamp01(brightness))
 
 
-def _response_color_for_brightness(
-    color: tuple[float, float, float],
-    brightness: float,
-) -> tuple[float, float, float]:
-    # Keep the hue-rotating identity, but bias toward a dark endpoint on
-    # bright screens so the response remains readable.
-    t = _clamp01(brightness) ** 1.15
-    return _lerp_color(color, _RESPONSE_TEXT_LIGHT_BG_TARGET, t)
+def _assistant_foreground_color_for_brightness(brightness: float) -> tuple[float, float, float]:
+    return _lerp_color(
+        _ASSISTANT_TEXT_COLOR_DARK,
+        _ASSISTANT_TEXT_COLOR_LIGHT,
+        _clamp01(brightness),
+    )
+
+
+def _user_text_alpha_for_breath(breath: float) -> float:
+    return _lerp(_USER_TEXT_ALPHA_MIN, _USER_TEXT_ALPHA_MAX, _clamp01(breath))
 
 
 def _thinking_cutout_color_for_brightness(brightness: float) -> tuple[float, float, float]:
@@ -398,7 +404,7 @@ class CommandOverlay(NSObject):
         # Initial color set; will be updated by _apply_narrator_theme()
         user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
         self._narrator_label.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.35)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.90)
         )
         self._narrator_label.setStringValue_("")
         self._narrator_label.setHidden_(True)
@@ -583,7 +589,12 @@ class CommandOverlay(NSObject):
         attr_str = NSMutableAttributedString.alloc().initWithString_(text)
         attr_str.addAttribute_value_range_(
             NSForegroundColorAttributeName,
-            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4),
+            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                user_r,
+                user_g,
+                user_b,
+                _user_text_alpha_for_breath(0.5),
+            ),
             (0, len(text)),
         )
         from AppKit import NSFontAttributeName
@@ -594,10 +605,10 @@ class CommandOverlay(NSObject):
         )
         glow = NSShadow.alloc().init()
         glow.setShadowColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.15)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.10)
         )
         glow.setShadowOffset_((0, 0))
-        glow.setShadowBlurRadius_(3.0)
+        glow.setShadowBlurRadius_(2.0)
         attr_str.addAttribute_value_range_(
             NSShadowAttributeName, glow, (0, len(text))
         )
@@ -751,7 +762,12 @@ class CommandOverlay(NSObject):
             utt = NSMutableAttributedString.alloc().initWithString_(self._utterance_text)
             utt.addAttribute_value_range_(
                 NSForegroundColorAttributeName,
-                NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.4),
+                NSColor.colorWithSRGBRed_green_blue_alpha_(
+                    user_r,
+                    user_g,
+                    user_b,
+                    _user_text_alpha_for_breath(0.5),
+                ),
                 (0, len(self._utterance_text)),
             )
             utt.addAttribute_value_range_(
@@ -761,10 +777,10 @@ class CommandOverlay(NSObject):
             )
             glow = NSShadow.alloc().init()
             glow.setShadowColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.15)
+                NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.10)
             )
             glow.setShadowOffset_((0, 0))
-            glow.setShadowBlurRadius_(3.0)
+            glow.setShadowBlurRadius_(2.0)
             utt.addAttribute_value_range_(
                 NSShadowAttributeName, glow, (0, len(self._utterance_text))
             )
@@ -845,7 +861,8 @@ class CommandOverlay(NSObject):
     def _make_response_fragment(self, token: str):
         """Create an attributed string fragment for a response token.
 
-        Text color matches the current hue rotation. Glow matches too.
+        The colorful identity lives in a blurred underlay, while the readable
+        foreground stays high-contrast against the adaptive surface.
         """
         from AppKit import (
             NSMutableAttributedString,
@@ -854,11 +871,11 @@ class CommandOverlay(NSObject):
             NSShadowAttributeName,
             NSShadow,
         )
-        r, g, b = self._current_hue_rgb()
-        r, g, b = _response_color_for_brightness((r, g, b), self._brightness)
+        blur_r, blur_g, blur_b = self._current_hue_rgb()
+        fg_r, fg_g, fg_b = _assistant_foreground_color_for_brightness(self._brightness)
         frag = NSMutableAttributedString.alloc().initWithString_(token)
         response_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
-            r, g, b, _TEXT_ALPHA_MAX
+            fg_r, fg_g, fg_b, _ASSISTANT_TEXT_ALPHA_MAX
         )
         frag.addAttribute_value_range_(
             NSForegroundColorAttributeName, response_color, (0, len(token))
@@ -868,13 +885,13 @@ class CommandOverlay(NSObject):
             NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
             (0, len(token)),
         )
-        # Text glow in the current hue color
+        # Blurred colorful underlay behind the crisp readable text.
         glow = NSShadow.alloc().init()
         glow.setShadowColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, 0.6)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(blur_r, blur_g, blur_b, 0.7)
         )
         glow.setShadowOffset_((0, 0))
-        glow.setShadowBlurRadius_(3.0)
+        glow.setShadowBlurRadius_(_ASSISTANT_BLUR_RADIUS)
         frag.addAttribute_value_range_(
             NSShadowAttributeName, glow, (0, len(token))
         )
@@ -907,7 +924,7 @@ class CommandOverlay(NSObject):
     _TTS_DECAY = 0.82     # gentle falloff — no clipping between words
     _TTS_MULTIPLIER = 25.0
     _TTS_ALPHA_MIN = _ASSISTANT_TEXT_ALPHA_MIN  # keep assistant text firmly readable during playback
-    _TTS_ALPHA_MAX = 1.0   # full brightness on voice peaks
+    _TTS_ALPHA_MAX = _ASSISTANT_TEXT_ALPHA_MAX
 
     def update_tts_amplitude(self, rms: float) -> None:
         """Update smoothed TTS amplitude from audio RMS.
@@ -958,9 +975,10 @@ class CommandOverlay(NSObject):
                 utt_len = min(len(self._utterance_text), self._text_view.textStorage().length() if hasattr(self._text_view.textStorage(), 'length') else 0)
                 if utt_len > 0:
                     try:
+                        user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
                         self._text_view.textStorage().addAttribute_value_range_(
                             NSForegroundColorAttributeName,
-                            NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, utt_alpha),
+                            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, utt_alpha),
                             (0, utt_len),
                         )
                     except Exception:
@@ -1036,7 +1054,7 @@ class CommandOverlay(NSObject):
         # User: raw sine → single smoothstep (same aggressiveness as before)
         raw_u = 0.5 * (1.0 - math.cos(2.0 * math.pi * self._pulse_phase_user))
         pulse_u = raw_u * raw_u * (3.0 - 2.0 * raw_u)
-        utt_alpha = 0.325 + 0.125 * pulse_u
+        utt_alpha = _user_text_alpha_for_breath(pulse_u)
 
         # Full spectrum hue rotation with velocity undulation
         # The speed varies sinusoidally so it dwells in some colors and
@@ -1114,7 +1132,7 @@ class CommandOverlay(NSObject):
             r, g, b = x + m, m, c + m
         else:
             r, g, b = c + m, m, x + m
-        response_r, response_g, response_b = _response_color_for_brightness((r, g, b), t)
+        response_r, response_g, response_b = _assistant_foreground_color_for_brightness(t)
 
         # Update text colors per-range
         if self._text_view is not None:
@@ -1126,17 +1144,17 @@ class CommandOverlay(NSObject):
                 # User text keeps the adaptive light/dark base, then breathes subtly.
                 try:
                     user_base = _user_text_color_for_brightness(t)
-                    ur = _lerp(user_base[0], 1.0, 0.08 * pulse_u)
-                    ug = _lerp(user_base[1], 1.0, 0.06 * pulse_u)
-                    ub = _lerp(user_base[2], 1.0, 0.04 * pulse_u)
                     ts.addAttribute_value_range_(
                         _FG_pulse,
-                        NSColor.colorWithSRGBRed_green_blue_alpha_(ur, ug, ub, utt_alpha),
+                        NSColor.colorWithSRGBRed_green_blue_alpha_(
+                            user_base[0], user_base[1], user_base[2], utt_alpha
+                        ),
                         (0, utt_len),
                     )
                 except Exception:
                     pass
-                # Response text stays hue-rotating, but darkens on bright screens.
+                # Response text stays crisp and high-contrast, while the blur
+                # underlay continues to carry the colorful identity.
                 resp_start = utt_len + 2
                 if resp_start < total_len:
                     try:
@@ -1361,7 +1379,7 @@ class CommandOverlay(NSObject):
             return  # shimmer is driving the color
         user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
         self._narrator_label.setTextColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.35)
+            NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.90)
         )
 
     def _hide_narrator(self) -> None:

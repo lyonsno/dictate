@@ -576,14 +576,14 @@ class TestAdaptiveCompositing:
         overlay._apply_surface_theme()
         overlay._fill_layer.setCompositingFilter_.assert_called_with(None)
 
-    def test_assistant_text_alpha_floor_and_ceiling_are_punchier(self, mock_pyobjc):
+    def test_assistant_text_alpha_floor_and_ceiling_breathe_within_legible_band(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")
         try:
-            assert mod._assistant_text_alpha_for_breath(0.0) == pytest.approx(0.75)
-            assert mod._assistant_text_alpha_for_breath(1.0) == pytest.approx(1.0)
-            assert mod.CommandOverlay._TTS_ALPHA_MIN == pytest.approx(0.75)
-            assert mod.CommandOverlay._TTS_ALPHA_MAX == pytest.approx(1.0)
+            assert mod._assistant_text_alpha_for_breath(0.0) == pytest.approx(0.85)
+            assert mod._assistant_text_alpha_for_breath(1.0) == pytest.approx(0.95)
+            assert mod.CommandOverlay._TTS_ALPHA_MIN == pytest.approx(0.85)
+            assert mod.CommandOverlay._TTS_ALPHA_MAX == pytest.approx(0.95)
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
@@ -596,28 +596,109 @@ class TestAdaptiveCompositing:
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
-    def test_response_color_darkens_for_bright_backgrounds(self, mock_pyobjc):
+    def test_user_text_alpha_band_stays_tight_around_ninety_percent(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")
         try:
-            dark = mod._response_color_for_brightness((0.82, 0.66, 0.94), 0.0)
-            light = mod._response_color_for_brightness((0.82, 0.66, 0.94), 1.0)
-
-            assert sum(light) < sum(dark)
-            assert light[2] == max(light)
-            assert max(light) < 0.12
+            assert mod._user_text_alpha_for_breath(0.0) == pytest.approx(0.85)
+            assert mod._user_text_alpha_for_breath(1.0) == pytest.approx(0.95)
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
-    def test_user_text_turns_dark_on_light_backgrounds(self, mock_pyobjc):
+    def test_assistant_foreground_flips_from_dark_to_light_with_surface_brightness(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            dark = mod._assistant_foreground_color_for_brightness(0.0)
+            light = mod._assistant_foreground_color_for_brightness(1.0)
+
+            assert max(dark) < 0.2
+            assert min(light) > 0.9
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_user_text_turns_bright_on_light_backgrounds(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")
         try:
             dark = mod._user_text_color_for_brightness(0.0)
             light = mod._user_text_color_for_brightness(1.0)
 
-            assert min(dark) > 0.9
-            assert max(light) < 0.17
+            assert max(dark) < 0.25
+            assert min(light) > 0.9
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_response_fragment_uses_blurry_colored_underlay_with_crisp_foreground(
+        self, mock_pyobjc, monkeypatch
+    ):
+        sys.modules.pop("spoke.command_overlay", None)
+        try:
+            mod = importlib.import_module("spoke.command_overlay")
+
+            class _FakeAttr:
+                def __init__(self, text):
+                    self.text = text
+                    self.attrs = []
+
+                def addAttribute_value_range_(self, name, value, rng):
+                    self.attrs.append((name, value, rng))
+
+            class _AttrBuilder:
+                def initWithString_(self, text):
+                    return _FakeAttr(text)
+
+            class _AttrAlloc:
+                def alloc(self):
+                    return _AttrBuilder()
+
+            class _FakeShadow:
+                def __init__(self):
+                    self.color = None
+                    self.offset = None
+                    self.blur = None
+
+                def setShadowColor_(self, color):
+                    self.color = color
+
+                def setShadowOffset_(self, offset):
+                    self.offset = offset
+
+                def setShadowBlurRadius_(self, radius):
+                    self.blur = radius
+
+            class _ShadowBuilder:
+                def init(self):
+                    return _FakeShadow()
+
+            class _ShadowAlloc:
+                def alloc(self):
+                    return _ShadowBuilder()
+
+            monkeypatch.setattr(
+                sys.modules["AppKit"], "NSMutableAttributedString", _AttrAlloc(), raising=False
+            )
+            monkeypatch.setattr(sys.modules["AppKit"], "NSShadow", _ShadowAlloc(), raising=False)
+            monkeypatch.setattr(
+                sys.modules["AppKit"].NSColor,
+                "colorWithSRGBRed_green_blue_alpha_",
+                staticmethod(lambda r, g, b, a: (r, g, b, a)),
+                raising=False,
+            )
+
+            overlay, _ = _make_overlay(mock_pyobjc)
+            overlay._brightness = 1.0
+            overlay._color_phase = 0.75
+
+            frag = overlay._make_response_fragment("Done.")
+
+            fg = next(value for name, value, _ in frag.attrs if name == "NSForegroundColor")
+            shadow = next(value for name, value, _ in frag.attrs if name == "NSShadow")
+
+            assert min(fg[:3]) > 0.9
+            assert fg[3] == pytest.approx(mod._ASSISTANT_TEXT_ALPHA_MAX)
+            assert shadow.blur == pytest.approx(mod._ASSISTANT_BLUR_RADIUS)
+            assert shadow.color[:3] != fg[:3]
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
