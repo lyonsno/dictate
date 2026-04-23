@@ -634,6 +634,17 @@ class CommandOverlay(NSObject):
         )
         return attr
 
+    def _leading_response_separator(self) -> str:
+        """Return the visible break before the first streamed response token.
+
+        We want a larger pause between the user utterance and collapsed
+        thinking, but a tighter handoff between collapsed thinking and the
+        first assistant/tool token.
+        """
+        if self._collapsed_text:
+            return "\n"
+        return "\n\n"
+
     def set_thinking_collapsed(self, text: str) -> None:
         """Inject or append to a collapsed thinking summary in the text view.
 
@@ -675,18 +686,19 @@ class CommandOverlay(NSObject):
                 NSForegroundColorAttributeName,
                 NSFontAttributeName,
             )
-            sep = NSMutableAttributedString.alloc().initWithString_("\n\n")
+            separator = self._leading_response_separator()
+            sep = NSMutableAttributedString.alloc().initWithString_(separator)
             sep.addAttribute_value_range_(
                 NSForegroundColorAttributeName,
                 NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
-                (0, 2),
+                (0, len(separator)),
             )
             # Reset font to body size so the collapsed summary's 12pt
             # doesn't bleed into the first response token.
             sep.addAttribute_value_range_(
                 NSFontAttributeName,
                 NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
-                (0, 2),
+                (0, len(separator)),
             )
             self._text_view.textStorage().appendAttributedString_(sep)
 
@@ -755,21 +767,22 @@ class CommandOverlay(NSObject):
             # Re-inject collapsed thinking text if present
             if self._collapsed_text:
                 combined.appendAttributedString_(
-                    self._make_collapsed_attributed("\n" + self._collapsed_text)
+                    self._make_collapsed_attributed("\n\n" + self._collapsed_text)
                 )
 
             if text:
-                sep = NSMutableAttributedString.alloc().initWithString_("\n\n")
+                separator = self._leading_response_separator()
+                sep = NSMutableAttributedString.alloc().initWithString_(separator)
                 sep.addAttribute_value_range_(
                     NSForegroundColorAttributeName,
                     NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
-                    (0, 2),
+                    (0, len(separator)),
                 )
                 from AppKit import NSFontAttributeName
                 sep.addAttribute_value_range_(
                     NSFontAttributeName,
                     NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
-                    (0, 2),
+                    (0, len(separator)),
                 )
                 combined.appendAttributedString_(sep)
 
