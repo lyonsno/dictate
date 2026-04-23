@@ -423,7 +423,6 @@ def get_tool_schemas() -> list[dict]:
         _EDIT_FILE_SCHEMA,
         _SEARCH_FILE_SCHEMA,
         _FIND_FILE_SCHEMA,
-        _RUN_EPISTAXIS_OPS_SCHEMA,
         _SEARCH_WEB_SCHEMA,
         _QUERY_GMAIL_SCHEMA,
         _RUN_TERMINAL_COMMAND_SCHEMA,
