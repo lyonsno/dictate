@@ -141,7 +141,12 @@ from .command import CommandClient, _DEFAULT_COMMAND_MODEL, _DEFAULT_COMMAND_URL
 from .converge import TurnCarver, compact_history as compact_converge_history
 from .narrator import ThinkingNarrator
 from .focus_check import has_focused_text_input, focused_text_contains
-from .handsfree import HandsFreeController, HandsFreeState, match_voice_command
+from .handsfree import (
+    HandsFreeController,
+    HandsFreeState,
+    handsfree_env_ready,
+    match_voice_command,
+)
 from .scene_capture import SceneCaptureCache
 from .subagents import SubagentManager, run_search_subagent_query
 from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas, get_tool_schemas
@@ -950,6 +955,7 @@ class SpokeAppDelegate(NSObject):
         self._hold_rejected_during_warmup = False
         self._mic_probe_in_flight = False
         self._mic_ready = False  # True once mic probe succeeds at least once
+        self._handsfree_auto_enable_retry_count = 0
 
         # Command pathway — always enabled, but can persist a sidecar URL.
         self._command_backend = None
@@ -1146,6 +1152,8 @@ class SpokeAppDelegate(NSObject):
         self._recovery_pending_retry_insert = None
         self._recovery_hold_active: bool = False
         self._recovery_retry_pending: bool = False
+        self._pending_command_approval_active: bool = False
+        self._pending_command_approval_request: dict | None = None
 
         if self._local_mode and _MAX_RECORD_SECS is not None:
             logger.info(
@@ -1198,8 +1206,8 @@ class SpokeAppDelegate(NSObject):
         self._terraform_hud.restore_visibility()
         self._menubar._on_toggle_terraform = self._terraform_hud.toggle
 
-        # Hands-free mode — wire menubar toggle if Porcupine key is available
-        if os.environ.get("SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY"):
+        # Hands-free mode — expose the toggle when a wakeword backend is configured
+        if handsfree_env_ready():
             self._menubar._on_toggle_handsfree = self._toggle_handsfree
 
         # Iron Giant: install event tap and probe mic in parallel.
@@ -1295,6 +1303,8 @@ class SpokeAppDelegate(NSObject):
         self._mic_ready = True
         if self._menubar is not None and self._models_ready:
             self._menubar.set_status_text("Ready — hold spacebar")
+        self._maybe_auto_enable_handsfree()
+        self._schedule_handsfree_auto_enable_retry()
 
     def micPermissionDenied_(self, _sender) -> None:
         """Main-thread callback after mic probe fails — schedule retry."""
@@ -1397,6 +1407,8 @@ class SpokeAppDelegate(NSObject):
         # Register loaded models with the heartbeat manager.
         self._register_loaded_models()
         self._start_heartbeat_timer()
+        self._maybe_auto_enable_handsfree()
+        self._schedule_handsfree_auto_enable_retry()
 
         # Keep TTS lazy. Startup-time local TTS warmup can monopolize the same
         # MLX lock transcription uses, which starves preview/final text on
@@ -1411,11 +1423,75 @@ class SpokeAppDelegate(NSObject):
 
     # ── Hands-free mode ────────────────────────────────────────
 
+    def _handsfree_default_on_requested(self) -> bool:
+        value = os.environ.get("SPOKE_HANDSFREE_DEFAULT_ON", "").strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
+    def _maybe_auto_enable_handsfree(self) -> None:
+        if not self._handsfree_default_on_requested():
+            return
+        if not handsfree_env_ready():
+            logger.info("Hands-free default-on requested, but wakeword env is not ready")
+            return
+        if not getattr(self, "_models_ready", False) or not getattr(self, "_mic_ready", False):
+            logger.info(
+                "Hands-free default-on still waiting for readiness "
+                "(models_ready=%s mic_ready=%s)",
+                getattr(self, "_models_ready", False),
+                getattr(self, "_mic_ready", False),
+            )
+            return
+        hf = getattr(self, "_handsfree", None)
+        if hf is None or hf.is_active:
+            if hf is not None and hf.is_active:
+                self._handsfree_auto_enable_retry_count = 0
+            return
+        logger.info("Auto-enabling hands-free after startup readiness")
+        hf.enable()
+        if hf.is_active:
+            self._handsfree_auto_enable_retry_count = 0
+
+    def _schedule_handsfree_auto_enable_retry(self, delay_s: float = 1.0) -> None:
+        if not self._handsfree_default_on_requested():
+            return
+        if not handsfree_env_ready():
+            return
+        hf = getattr(self, "_handsfree", None)
+        if hf is None or hf.is_active:
+            return
+        retry_count = getattr(self, "_handsfree_auto_enable_retry_count", 0)
+        if retry_count >= 3:
+            return
+        self._handsfree_auto_enable_retry_count = retry_count + 1
+        logger.info(
+            "Scheduling hands-free auto-enable retry %d in %.1fs",
+            self._handsfree_auto_enable_retry_count,
+            delay_s,
+        )
+        from Foundation import NSTimer
+
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            delay_s, self, "retryAutoEnableHandsfree:", None, False
+        )
+
+    def retryAutoEnableHandsfree_(self, timer) -> None:
+        self._maybe_auto_enable_handsfree()
+        hf = getattr(self, "_handsfree", None)
+        if (
+            self._handsfree_default_on_requested()
+            and handsfree_env_ready()
+            and hf is not None
+            and not hf.is_active
+            and getattr(self, "_models_ready", False)
+            and getattr(self, "_mic_ready", False)
+        ):
+            self._schedule_handsfree_auto_enable_retry()
+
     def _toggle_handsfree(self) -> None:
         """Menu/manual toggle for hands-free mode."""
         hf = self._handsfree
         if hf.is_active:
-            hf.disable()
+            hf.disable(reason="menu/manual toggle")
         else:
             hf.enable()
 
@@ -1568,7 +1644,7 @@ class SpokeAppDelegate(NSObject):
         state = getattr(hf, "state", None)
         if state == HandsFreeState.LISTENING:
             logger.info("Suspending wake-word listener for spacebar hold")
-            hf.disable()
+            hf.disable(reason="manual hold suspend")
             self._handsfree_resume_state_for_hold = HandsFreeState.LISTENING
             return
 
@@ -2135,6 +2211,7 @@ class SpokeAppDelegate(NSObject):
         self,
         shift_held: bool = False,
         enter_held: bool = False,
+        approval_tap: bool = False,
         **_kwargs,  # absorb legacy toggle_command_overlay from any remaining callers
     ) -> None:
         if getattr(self, "_hold_rejected_during_warmup", False):
@@ -2144,6 +2221,14 @@ class SpokeAppDelegate(NSObject):
             )
             if not getattr(self, "_models_ready", True):
                 self._refresh_startup_status()
+            return
+
+        if approval_tap and getattr(self, "_pending_command_approval_active", False):
+            logger.info("Approval tap — shift=%s", shift_held)
+            if shift_held:
+                self._cancel_pending_command_approval()
+            else:
+                self._approve_pending_command()
             return
 
         # ── Tray intercept ──
@@ -2187,6 +2272,10 @@ class SpokeAppDelegate(NSObject):
             self._pre_stop_tail_wav = None
             self._pre_stop_segment_count = 0
         wav_bytes = self._capture.stop()
+
+        if wav_bytes and getattr(self, "_pending_command_approval_active", False):
+            logger.info("New utterance supersedes pending approval")
+            self._cancel_pending_command_approval(dismiss_overlay=False)
 
         # Short shift-hold (under 800ms of recording) = recall into tray
         elapsed = time.monotonic() - self._record_start_time if self._record_start_time else 0
@@ -3206,6 +3295,16 @@ class SpokeAppDelegate(NSObject):
                     elif event.kind == "assistant_final":
                         if not full_response:
                             full_response = event.text
+                    elif event.kind == "approval_request":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandApprovalRequired:",
+                            {
+                                "token": token,
+                                "approval_request": event.approval_request,
+                            },
+                            False,
+                        )
+                        return
             except urllib.error.HTTPError as exc:
                 logger.exception("Command stream failed with HTTP error")
                 self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3435,6 +3534,16 @@ class SpokeAppDelegate(NSObject):
                 elif event.kind == "assistant_final":
                     if not full_response:
                         full_response = event.text
+                elif event.kind == "approval_request":
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "commandApprovalRequired:",
+                        {
+                            "token": token,
+                            "approval_request": event.approval_request,
+                        },
+                        False,
+                    )
+                    return
         except urllib.error.HTTPError as exc:
             logger.exception("Command stream failed with HTTP error")
             self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -3476,6 +3585,9 @@ class SpokeAppDelegate(NSObject):
         self._last_command_utterance = utterance
         self._last_command_response = ""
         self._command_streaming_text = ""
+        self._pending_command_approval_active = False
+        self._pending_command_approval_request = None
+        self._detector.approval_active = False
         # Hide the input overlay
         if self._overlay is not None:
             self._overlay.hide()
@@ -3589,6 +3701,9 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
+        self._pending_command_approval_active = False
+        self._pending_command_approval_request = None
+        self._detector.approval_active = False
         # Reset cancel spring if generation finishes while spring is winding
         self._cancel_spring_active = False
         self._detector.cancel_spring_active = False
@@ -3618,12 +3733,116 @@ class SpokeAppDelegate(NSObject):
         self._command_tool_used_tts = False
         if self._glow is not None:
             self._glow.hide()
-
         # Converge: fire per-turn attractor carving in background
         turn_carver = getattr(self, "_turn_carver", None)
         if turn_carver is not None and response:
             utterance = getattr(self, "_last_command_utterance", "")
             turn_carver.on_turn_complete(utterance, response)
+
+    def commandApprovalRequired_(self, payload: dict) -> None:
+        """Main thread: present a pending command approval card on the overlay."""
+        if payload["token"] != self._transcription_token:
+            return
+        approval_request = payload.get("approval_request") or {}
+        self._transcribing = False
+        self._pending_command_approval_active = True
+        self._pending_command_approval_request = approval_request
+        self._detector.approval_active = True
+        self._detector.command_overlay_active = True
+        self._cancel_spring_active = False
+        self._detector.cancel_spring_active = False
+        overlay = self._command_overlay
+        if overlay is not None:
+            overlay.set_tool_active(False)
+            try:
+                overlay.set_response_text(approval_request.get("message", "Approval needed"))
+            except Exception:
+                logger.exception("Command overlay failed to apply approval text")
+            try:
+                overlay.finish()
+            except Exception:
+                logger.exception("Command overlay finish failed during approval presentation")
+        if self._menubar is not None:
+            self._menubar.set_status_text("Approval needed")
+
+    def _approve_pending_command(self) -> None:
+        """Resume a paused command turn after the user approved the pending tool call."""
+        if (
+            not getattr(self, "_pending_command_approval_active", False)
+            or self._command_client is None
+        ):
+            return
+        self._transcribing = True
+        self._pending_command_approval_active = False
+        self._pending_command_approval_request = None
+        self._detector.approval_active = False
+        token = self._transcription_token
+        if self._menubar is not None:
+            self._menubar.set_status_text("Running approved command…")
+
+        def _resume():
+            full_response = ""
+            try:
+                for event in self._command_client.approve_pending_tool_call(
+                    tool_executor=self._make_tool_executor(),
+                    cancel_check=lambda: token != self._transcription_token,
+                ):
+                    if token != self._transcription_token:
+                        break
+                    if event.kind == "assistant_delta":
+                        full_response += event.text
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToken:", {"token": token, "text": event.text}, False
+                        )
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToolEnd:", {"token": token}, False
+                        )
+                    elif event.kind == "tool_call":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToken:", {"token": token, "text": event.text}, False
+                        )
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandToolStart:", {"token": token}, False
+                        )
+                    elif event.kind == "assistant_final":
+                        if not full_response:
+                            full_response = event.text
+                    elif event.kind == "approval_request":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandApprovalRequired:",
+                            {
+                                "token": token,
+                                "approval_request": event.approval_request,
+                            },
+                            False,
+                        )
+                        return
+            except Exception:
+                logger.exception("Approved command resume failed")
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "commandFailed:", {"token": token, "error": "Command failed"}, False
+                )
+                return
+
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandComplete:", {"token": token, "response": full_response}, False
+            )
+
+        threading.Thread(target=_resume, daemon=True).start()
+
+    def _cancel_pending_command_approval(self, *, dismiss_overlay: bool = True) -> None:
+        """Discard the current pending command approval request."""
+        self._transcribing = False
+        self._pending_command_approval_active = False
+        self._pending_command_approval_request = None
+        self._detector.approval_active = False
+        if self._command_client is not None:
+            self._command_client.cancel_pending_tool_call()
+        if dismiss_overlay and self._command_overlay is not None:
+            self._command_overlay.cancel_dismiss()
+            self._detector.command_overlay_active = False
+        if self._menubar is not None:
+            self._menubar.set_status_text("Ready — hold spacebar")
 
     def _on_tts_amplitude(self, rms: float) -> None:
         """Called from TTS thread — marshal to main thread."""
@@ -3663,6 +3882,9 @@ class SpokeAppDelegate(NSObject):
         if payload["token"] != self._transcription_token:
             return
         self._transcribing = False
+        self._pending_command_approval_active = False
+        self._pending_command_approval_request = None
+        self._detector.approval_active = False
         error = payload.get("error", "Unknown error")
         error_text = (
             "couldn't reach the model — try again in a moment"
@@ -6211,7 +6433,7 @@ class SpokeAppDelegate(NSObject):
         self._preview_active = False
         hf = getattr(self, "_handsfree", None)
         if hf is not None and hf.is_active:
-            hf.disable()
+            hf.disable(reason="app quit")
         if hasattr(self, "_terraform_hud") and self._terraform_hud is not None:
             self._terraform_hud.cleanup()
         self._close_clients()

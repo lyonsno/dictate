@@ -185,6 +185,10 @@ class SpacebarHoldDetector(NSObject):
         # Tracks whether the command overlay is visible — used by the
         # delegate for toggle logic but no longer drives event suppression.
         self.command_overlay_active = False
+        # Tracks whether a host-side approval card is active on the command
+        # surface. When True, quick taps route to approval/cancel rather than
+        # forwarding a literal space to the foreground app.
+        self.approval_active = False
         self._on_shift_tap: Callable[[], None] | None = None
         self._on_shift_tap_during_hold: Callable[[], None] | None = None
         self._on_shift_tap_idle: Callable[[], None] | None = None
@@ -405,6 +409,12 @@ class SpacebarHoldDetector(NSObject):
             if enter_held:
                 # Space released while Enter held = assistant send path
                 self._on_hold_end(shift_held=False, enter_held=True)
+            elif getattr(self, 'approval_active', False):
+                self._on_hold_end(
+                    shift_held=shift_held,
+                    enter_held=False,
+                    approval_tap=True,
+                )
             elif getattr(self, 'tray_active', False):
                 # During tray, all spacebar taps route through on_hold_end
                 # instead of forwarding a space character.
@@ -763,9 +773,24 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             if det._state == _State.IDLE:
                 actual_enter_held = _current_enter_key_state()
                 if actual_enter_held is not None:
-                    det._enter_held = actual_enter_held
-                    det._enter_observed = actual_enter_held
-                    if not actual_enter_held:
+                    if actual_enter_held:
+                        if (
+                            getattr(det, '_enter_observed', False)
+                            and det._enter_observation_is_fresh()
+                        ):
+                            det._enter_held = True
+                        else:
+                            # A bare Quartz "Enter is down" probe can stay
+                            # wedged true across a missed keyUp or relaunch.
+                            # Only trust it for a fresh space-rooted gesture
+                            # if this process actually saw a recent Enter
+                            # keyDown that could own the chord.
+                            det._enter_held = False
+                            det._enter_observed = False
+                            det._enter_last_down_monotonic = 0.0
+                    else:
+                        det._enter_held = False
+                        det._enter_observed = False
                         det._enter_last_down_monotonic = 0.0
                 elif (
                     not getattr(det, '_enter_observed', False)

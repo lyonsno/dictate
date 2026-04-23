@@ -47,7 +47,16 @@ class TestCommandClient:
         assert msgs[0]["role"] == "system"
         assert "add_to_tray" in msgs[0]["content"]
         assert "query_gmail" in msgs[0]["content"]
+        assert "search_web" in msgs[0]["content"]
+        assert "run_terminal_command" in msgs[0]["content"]
         assert msgs[1] == {"role": "user", "content": "hello world"}
+
+    def test_system_prompt_describes_terminal_argv_contract(self):
+        from spoke.command import _SYSTEM_PROMPT
+
+        assert "run_terminal_command" in _SYSTEM_PROMPT
+        assert "argv" in _SYSTEM_PROMPT
+        assert "Do not use shell syntax" in _SYSTEM_PROMPT
 
     def test_system_prompt_explicitly_allows_literal_read_aloud(self):
         """The prompt should tell the assistant to use literal refs for arbitrary speech."""
@@ -105,9 +114,14 @@ class TestCommandClient:
             with patch("urllib.request.urlopen", return_value=fake_resp):
                 list(client.stream_command(f"q{i}"))
         assert len(client._history) == 3
-        # Each chain's last user message is the actual utterance for that turn
-        assert client._history[0][-1] == {"role": "user", "content": "q2"}
-        assert client._history[2][-1] == {"role": "user", "content": "q4"}
+        assert client._history[0] == [
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "a2"},
+        ]
+        assert client._history[2] == [
+            {"role": "user", "content": "q4"},
+            {"role": "assistant", "content": "a4"},
+        ]
 
     def test_history_property_returns_copy(self):
         """history property should return a copy, not a reference."""
@@ -544,10 +558,517 @@ class TestStreamCommand:
             )
 
         assert tool_calls == [("capture_context", {"scope": "active_window"})]
-        assert events[-1] == _cmd_mod.CommandStreamEvent(
-            kind="assistant_final",
-            text="Done.",
+        assert events[-1].kind == "assistant_final"
+        assert events[-1].text == "Done."
+
+    def test_stream_pauses_for_terminal_approval_request_without_committing_history(self):
+        from spoke.command import CommandClient
+
+        tool_round_chunks = [
+            {"choices": [{"index": 0, "delta": {"content": "Checking. "}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "run_terminal_command", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"argv":["git","commit","-m","x"]}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test-model",
+            api_key="key",
+            history_path=None,
         )
+
+        def tool_executor(name, arguments, **kwargs):
+            assert name == "run_terminal_command"
+            assert arguments == {"argv": ["git", "commit", "-m", "x"]}
+            return {
+                "decision": "approval_required",
+                "executed": False,
+                "pending_approval": True,
+                "approval_request": {
+                    "kind": "terminal_command",
+                    "argv": ["git", "commit", "-m", "x"],
+                    "cwd": "/tmp/repo",
+                    "reason": "command requires approval: git commit -m",
+                    "message": "Approval needed\n\ngit commit -m x",
+                },
+            }
+
+        with patch("urllib.request.urlopen", return_value=_make_sse_response(tool_round_chunks)):
+            events = list(
+                client.stream_command_events(
+                    "commit it",
+                    tools=[{"type": "function", "function": {"name": "run_terminal_command"}}],
+                    tool_executor=tool_executor,
+                )
+            )
+
+        assert events[0].kind == "assistant_delta"
+        assert any(event.kind == "tool_call" for event in events)
+        assert events[-1].kind == "approval_request"
+        assert all(event.kind != "assistant_final" for event in events)
+        assert events[-1].approval_request == {
+            "kind": "terminal_command",
+            "argv": ["git", "commit", "-m", "x"],
+            "cwd": "/tmp/repo",
+            "reason": "command requires approval: git commit -m",
+            "message": "Approval needed\n\ngit commit -m x",
+        }
+        assert client.history == []
+        assert client._pending_tool_approval is not None
+        assert client._pending_tool_approval.call["id"] == "call_1"
+
+    def test_stream_pauses_for_terminal_approval_request_from_tool_dispatch_json_result(self):
+        from spoke.command import CommandClient
+        from spoke.tool_dispatch import execute_tool, get_tool_schemas
+
+        tool_round_chunks = [
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "run_terminal_command", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"argv":["python","-m","pytest"],"cwd":"~/dev"}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        final_chunks = [
+            {"choices": [{"index": 0, "delta": {"content": "This should not happen."}}]},
+        ]
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test-model",
+            api_key="key",
+            history_path=None,
+        )
+
+        fake_operator = MagicMock()
+        fake_operator.execute_command.return_value = {
+            "decision": "approval_required",
+            "executed": False,
+            "pending_approval": True,
+            "approval_request": {
+                "kind": "terminal_command",
+                "argv": ["python", "-m", "pytest"],
+                "cwd": "/Users/noahlyons/dev",
+                "reason": "command requires approval: python -m pytest",
+                "message": "Approval needed\n\npython -m pytest",
+            },
+        }
+
+        request_count = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            request_count["n"] += 1
+            if request_count["n"] == 1:
+                return _make_sse_response(tool_round_chunks)
+            if request_count["n"] == 2:
+                return _make_sse_response(final_chunks)
+            raise AssertionError("unexpected extra chat completion request")
+
+        with (
+            patch("spoke.tool_dispatch.TerminalOperator", return_value=fake_operator),
+            patch("urllib.request.urlopen", side_effect=fake_urlopen),
+        ):
+            events = list(
+                client.stream_command_events(
+                    "run the tests",
+                    tools=get_tool_schemas(),
+                    tool_executor=execute_tool,
+                )
+            )
+
+        assert request_count["n"] == 1
+        assert events[-1].kind == "approval_request"
+        assert events[-1].approval_request == {
+            "kind": "terminal_command",
+            "argv": ["python", "-m", "pytest"],
+            "cwd": "/Users/noahlyons/dev",
+            "reason": "command requires approval: python -m pytest",
+            "message": "Approval needed\n\npython -m pytest",
+        }
+        assert client.history == []
+        assert client._pending_tool_approval is not None
+        assert client._pending_tool_approval.call["id"] == "call_1"
+        fake_operator.execute_command.assert_called_once_with(
+            ["python", "-m", "pytest"],
+            cwd="~/dev",
+            timeout_seconds=10,
+            approval_granted=False,
+        )
+
+    def test_approve_pending_tool_call_replays_exact_terminal_command_and_finishes_turn(self):
+        from spoke.command import CommandClient
+
+        first_chunks = [
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "run_terminal_command", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"argv":["git","status","--short"]}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        second_chunks = [
+            {"choices": [{"index": 0, "delta": {"content": "Done."}}]},
+        ]
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test-model",
+            api_key="key",
+            history_path=None,
+        )
+
+        tool_calls = []
+
+        def tool_executor(name, arguments, **kwargs):
+            tool_calls.append((name, arguments, kwargs))
+            if len(tool_calls) == 1:
+                return {
+                    "decision": "approval_required",
+                    "executed": False,
+                    "pending_approval": True,
+                    "approval_request": {
+                        "kind": "terminal_command",
+                        "argv": ["git", "status", "--short"],
+                        "cwd": "/tmp/repo",
+                        "reason": "command requires approval: git status --short",
+                        "message": "Approval needed",
+                    },
+                }
+            return {
+                "decision": "allow",
+                "executed": True,
+                "exit_code": 0,
+                "stdout": " M spoke/command.py\n",
+                "stderr": "",
+                "approved_by_user": kwargs.get("approval_granted"),
+            }
+
+        request_count = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            request_count["n"] += 1
+            if request_count["n"] == 1:
+                return _make_sse_response(first_chunks)
+            if request_count["n"] == 2:
+                return _make_sse_response(second_chunks)
+            raise AssertionError("unexpected extra chat completion request")
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            list(
+                client.stream_command_events(
+                    "status?",
+                    tools=[{"type": "function", "function": {"name": "run_terminal_command"}}],
+                    tool_executor=tool_executor,
+                )
+            )
+            resumed_events = list(client.approve_pending_tool_call(tool_executor=tool_executor))
+
+        assert resumed_events[-1].kind == "assistant_final"
+        assert resumed_events[-1].text == "Done."
+        assert tool_calls[1][0] == "run_terminal_command"
+        assert tool_calls[1][1] == {"argv": ["git", "status", "--short"]}
+        assert tool_calls[1][2]["approval_granted"] is True
+        assert client.history == [("status?", "Done.")]
+
+    def test_stream_command_surfaces_approval_pause_text_for_compatibility_callers(self):
+        from spoke.command import CommandClient
+
+        tool_round_chunks = [
+            {"choices": [{"index": 0, "delta": {"content": "Checking. "}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "run_terminal_command", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"argv":["git","commit","-m","x"]}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test-model",
+            api_key="key",
+            history_path=None,
+        )
+
+        def tool_executor(name, arguments, **kwargs):
+            assert name == "run_terminal_command"
+            assert arguments == {"argv": ["git", "commit", "-m", "x"]}
+            return {
+                "decision": "approval_required",
+                "executed": False,
+                "pending_approval": True,
+                "approval_request": {
+                    "kind": "terminal_command",
+                    "argv": ["git", "commit", "-m", "x"],
+                    "cwd": "/tmp/repo",
+                    "reason": "command requires approval: git commit -m",
+                    "message": "Approval needed\n\ngit commit -m x",
+                },
+            }
+
+        with patch("urllib.request.urlopen", return_value=_make_sse_response(tool_round_chunks)):
+            tokens = list(
+                client.stream_command(
+                    "commit it",
+                    tools=[{"type": "function", "function": {"name": "run_terminal_command"}}],
+                    tool_executor=tool_executor,
+                )
+            )
+
+        assert tokens[0] == "Checking. "
+        assert any(token == "Approval needed\n\ngit commit -m x" for token in tokens)
+        assert client.history == []
+        assert client._pending_tool_approval is not None
+
+    def test_approve_pending_tool_call_keeps_tool_ui_markers_out_of_history(self):
+        from spoke.command import CommandClient
+
+        first_chunks = [
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "run_terminal_command", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"argv":["git","status","--short"]}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        second_chunks = [
+            {"choices": [{"index": 0, "delta": {"content": "Let me check. "}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_2", "type": "function",
+                 "function": {"name": "capture_context", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"scope":"active_window"}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        third_chunks = [
+            {"choices": [{"index": 0, "delta": {"content": "Done."}}]},
+        ]
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test-model",
+            api_key="key",
+            history_path=None,
+        )
+
+        tool_calls = []
+
+        def tool_executor(name, arguments, **kwargs):
+            tool_calls.append((name, arguments, kwargs))
+            if len(tool_calls) == 1:
+                return {
+                    "decision": "approval_required",
+                    "executed": False,
+                    "pending_approval": True,
+                    "approval_request": {
+                        "kind": "terminal_command",
+                        "argv": ["git", "status", "--short"],
+                        "cwd": "/tmp/repo",
+                        "reason": "command requires approval: git status --short",
+                        "message": "Approval needed",
+                    },
+                }
+            if name == "run_terminal_command":
+                return {
+                    "decision": "allow",
+                    "executed": True,
+                    "exit_code": 0,
+                    "stdout": " M spoke/command.py\n",
+                    "stderr": "",
+                    "approved_by_user": kwargs.get("approval_granted"),
+                }
+            return "screen summary"
+
+        request_count = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            request_count["n"] += 1
+            if request_count["n"] == 1:
+                return _make_sse_response(first_chunks)
+            if request_count["n"] == 2:
+                return _make_sse_response(second_chunks)
+            if request_count["n"] == 3:
+                return _make_sse_response(third_chunks)
+            raise AssertionError("unexpected extra chat completion request")
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            list(
+                client.stream_command_events(
+                    "status?",
+                    tools=[
+                        {"type": "function", "function": {"name": "run_terminal_command"}},
+                        {"type": "function", "function": {"name": "capture_context"}},
+                    ],
+                    tool_executor=tool_executor,
+                )
+            )
+            resumed_events = list(client.approve_pending_tool_call(tool_executor=tool_executor))
+
+        assert resumed_events[-1].kind == "assistant_final"
+        assert resumed_events[-1].text == "Done."
+        chain = client._history[0]
+        assistant_messages = [
+            msg["content"]
+            for msg in chain
+            if msg.get("role") == "assistant" and msg.get("content")
+        ]
+        joined = "".join(assistant_messages)
+        assert joined.startswith("Let me check.")
+        assert joined.endswith("Done.")
+        assert "[calling capture_context" not in joined
+        assert "~" not in joined
+
+    def test_approve_pending_tool_call_strips_think_tags_like_normal_stream(self):
+        from spoke.command import CommandClient
+
+        first_chunks = [
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "run_terminal_command", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"argv":["git","status","--short"]}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        second_chunks = [
+            {"choices": [{"index": 0, "delta": {"content": "\n\n<think>"}}]},
+            {"choices": [{"index": 0, "delta": {"content": "deep thought"}}]},
+            {"choices": [{"index": 0, "delta": {"content": "</think>"}}]},
+            {"choices": [{"index": 0, "delta": {"content": "visible answer"}}]},
+        ]
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test-model",
+            api_key="key",
+            history_path=None,
+        )
+
+        def tool_executor(name, arguments, **kwargs):
+            if kwargs.get("approval_granted"):
+                return {
+                    "decision": "allow",
+                    "executed": True,
+                    "exit_code": 0,
+                    "stdout": "",
+                    "stderr": "",
+                    "approved_by_user": True,
+                }
+            return {
+                "decision": "approval_required",
+                "executed": False,
+                "pending_approval": True,
+                "approval_request": {
+                    "kind": "terminal_command",
+                    "argv": ["git", "status", "--short"],
+                    "cwd": "/tmp/repo",
+                    "reason": "command requires approval: git status --short",
+                    "message": "Approval needed",
+                },
+            }
+
+        request_count = {"n": 0}
+
+        def fake_urlopen(req, timeout=None):
+            request_count["n"] += 1
+            if request_count["n"] == 1:
+                return _make_sse_response(first_chunks)
+            if request_count["n"] == 2:
+                return _make_sse_response(second_chunks)
+            raise AssertionError("unexpected extra chat completion request")
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            list(
+                client.stream_command_events(
+                    "status?",
+                    tools=[{"type": "function", "function": {"name": "run_terminal_command"}}],
+                    tool_executor=tool_executor,
+                )
+            )
+            resumed_events = list(client.approve_pending_tool_call(tool_executor=tool_executor))
+
+        thinking = [event.text for event in resumed_events if event.kind == "thinking_delta"]
+        visible = [event.text for event in resumed_events if event.kind == "assistant_delta"]
+        assert "".join(thinking) == "deep thought"
+        visible_text = "".join(visible)
+        assert visible_text.endswith("visible answer")
+        assert "<think>" not in visible_text
+        assert "deep thought" not in visible_text
+        assistant_messages = [
+            msg["content"]
+            for msg in client._history[0]
+            if msg.get("role") == "assistant" and msg.get("content")
+        ]
+        joined = "".join(assistant_messages)
+        assert joined == "visible answer"
+        assert "<think>" not in joined
+        assert "deep thought" not in joined
+
+    def test_cancel_pending_tool_call_clears_pause_without_history_mutation(self):
+        from spoke.command import CommandClient
+
+        tool_round_chunks = [
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "run_terminal_command", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"argv":["git","commit","-m","x"]}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test-model",
+            api_key="key",
+            history_path=None,
+        )
+
+        def tool_executor(name, arguments, **kwargs):
+            return {
+                "decision": "approval_required",
+                "executed": False,
+                "pending_approval": True,
+                "approval_request": {
+                    "kind": "terminal_command",
+                    "argv": ["git", "commit", "-m", "x"],
+                    "cwd": "/tmp/repo",
+                    "reason": "command requires approval: git commit -m",
+                    "message": "Approval needed",
+                },
+            }
+
+        with patch("urllib.request.urlopen", return_value=_make_sse_response(tool_round_chunks)):
+            list(
+                client.stream_command_events(
+                    "commit it",
+                    tools=[{"type": "function", "function": {"name": "run_terminal_command"}}],
+                    tool_executor=tool_executor,
+                )
+            )
+
+        assert client._pending_tool_approval is not None
+        client.cancel_pending_tool_call()
+        assert client._pending_tool_approval is None
+        assert client.history == []
 
     def test_stream_skips_reasoning_tokens(self):
         """reasoning_content tokens should not be yielded."""
@@ -622,9 +1143,14 @@ class TestStreamCommand:
             with patch("urllib.request.urlopen", return_value=fake_resp):
                 list(client.stream_command(f"q{i}"))
         assert len(client._history) == 2
-        # Each chain's last user message is the actual utterance for that turn
-        assert client._history[0][-1] == {"role": "user", "content": "q1"}
-        assert client._history[1][-1] == {"role": "user", "content": "q2"}
+        assert client._history[0] == [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "answer1"},
+        ]
+        assert client._history[1] == [
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "answer2"},
+        ]
 
     def test_stream_sends_auth_header(self):
         """Request should include Authorization header when API key is set."""
