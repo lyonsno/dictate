@@ -37,6 +37,8 @@ if TYPE_CHECKING:
     import numpy as np
 
 _ATTRACTORS_DIR = Path.home() / ".config" / "spoke" / "attractors"
+_ANAMNESIS_DIR = Path.home() / ".config" / "spoke" / "anamnesis"
+_ATTRACTORS_ARCHIVE_DIR = Path.home() / ".config" / "spoke" / "attractors-archive"
 _ATTRACTOR_INDEX_PATH = Path.home() / ".config" / "spoke" / "attractor-index.npz"
 _TRACE_PATH = Path.home() / ".config" / "spoke" / "converge-trace.jsonl"
 _TURN_EMBEDDINGS_PATH = Path.home() / ".config" / "spoke" / "turn-embeddings.npz"
@@ -49,29 +51,38 @@ _ASSISTANT_KEEP_HEAD = 250  # chars to keep from the start of long assistant tur
 _ASSISTANT_KEEP_TAIL = 250  # chars to keep from the end of long assistant turns
 
 _CARVE_SYSTEM_PROMPT = """\
-You are a personal attractor carver. You observe a single turn of voice
-interaction between a user and their assistant, and identify any personal
-attractors revealed — durable concerns, recurring interests, or persistent
-preferences that transcend the immediate task.
+You are a personal attractor carver. An attractor is a durable concern or
+recurring pattern that persists across tasks and sessions — something that
+would still matter next week regardless of what the user is working on today.
 
-The user speaks via voice dictation. Their input contains transcription
-errors, false starts, and informal language. Read through them to the
-intent. Do NOT create attractors from transcription artifacts — if a word
-looks like a garbled version of a technical term, it probably is. "Tractor"
-is almost certainly "attractor." "Epístaxis" is correct Greek, not a typo.
+Before carving, apply this test to distinguish attractors from ephemeral
+commands:
 
-Personal attractors are NOT project-specific tasks or bugs. They are patterns
-like:
-- Aesthetic preferences (visual, auditory, interaction design)
-- Technical philosophy (architecture, abstractions, tool choices)
-- Workflow patterns (how they prefer to collaborate, communicate)
-- Quality standards they consistently enforce
-- Recurring interests regardless of current task
+- Ephemeral commands have ACTION-SHAPED satisfaction: a single action
+  completes them and they are done. "Compact the context" is satisfied the
+  moment you compact. "Merge this into main" is satisfied the moment you
+  merge. "Find that file" is satisfied when you find it. These are NOT
+  attractors — return [].
+- Attractors have STATE-SHAPED satisfaction: they describe a persistent
+  condition of the world that should hold going forward. "Development always
+  happens in isolated worktrees" describes a durable state. "Tool
+  descriptions clearly communicate async wait behavior" describes a durable
+  state. These ARE attractors.
 
-You will be given the user's EXISTING personal attractors. Before creating
-a new attractor, check if the utterance is evidence for an existing one.
+If the utterance only contains action-shaped requests (do X, find Y, run Z),
+return []. If it reveals a state-shaped concern — how the user wants the
+world to persistently be — that is an attractor.
 
-Your response is a JSON array of operations. Each operation is one of:
+The user speaks via voice dictation with transcription artifacts. Read through
+them to the intent. "Tractor" is almost certainly "attractor." "Epístaxis"
+is correct Greek, not a typo.
+
+You will be given EXISTING personal attractors. Before creating a new one,
+check if the utterance is evidence for an existing attractor. Prefer
+reinforce/expand over create. Be skeptical — most turns are task execution
+and reveal nothing durable.
+
+Your response is a JSON array of operations:
 
 1. REINFORCE an existing attractor (re-observed evidence):
    {"op": "reinforce", "slug": "<existing-slug>", "evidence": "New evidence observed"}
@@ -86,11 +97,34 @@ Your response is a JSON array of operations. Each operation is one of:
    {"op": "create", "slug": "kebab-case-id", "title": "Short title", "evidence": "One sentence"}
 
 Rules:
-- Prefer reinforce/expand over create. New attractors need STRONG signal.
-- Be skeptical. Most turns are just task execution and reveal nothing durable.
-- If the turn is a test, a short command, or purely about a specific bug, return [].
-- Do NOT create attractors about the project's specific features or bugs.
 - Output ONLY the JSON array. No markdown, no commentary.
+- Return [] when nothing durable is revealed. Most turns are just task execution.
+"""
+
+_RECOMPILE_SYSTEM_PROMPT = """\
+You are a personal attractor recompiler. You are given an existing attractor
+file and new evidence from a recent conversation. Your job is to produce an
+UPDATED version of the attractor file that integrates the new evidence into
+a coherent current-state description.
+
+Rules:
+- The output replaces the entire file. Write it as a clean current-state summary.
+- Do NOT append dated "Re-observed" lines. Integrate the new evidence into the
+  description.
+- Keep the file roughly the same length or shorter unless the scope genuinely
+  expanded.
+- Preserve the attractor's core identity — do not drift the meaning.
+- Use this format:
+
+# Title
+
+Summary of what this attractor captures, integrating all evidence into
+a coherent description of the durable pattern.
+
+- Strength: tentative | strong
+- Last observed: YYYY-MM-DD
+
+Output ONLY the markdown file content. No commentary.
 """
 
 
@@ -375,7 +409,9 @@ class TurnCarver:
         self._substantive_turn_count = 0  # counts substantive turns for cadence
         self._turn_seq = 0  # monotonic sequence number for context entries
         self._last_carve_seqs: set[int] = set()  # sequence numbers seen by last carve
+        self._anamnesis_io_lock = threading.Lock()  # serialize anamnesis file mutations
         _ATTRACTORS_DIR.mkdir(parents=True, exist_ok=True)
+        _ANAMNESIS_DIR.mkdir(parents=True, exist_ok=True)
 
     def on_turn_complete(self, user_utterance: str, assistant_response: str) -> None:
         """Called after each command turn. Fires async carve + embed."""

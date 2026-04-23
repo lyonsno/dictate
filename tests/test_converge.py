@@ -236,8 +236,10 @@ class TestContextWindowCarver:
 
     def _make_carver(self, monkeypatch, tmp_path, mod, urlopen_fn):
         monkeypatch.setattr(mod, "_ATTRACTORS_DIR", tmp_path / "attractors")
+        monkeypatch.setattr(mod, "_ANAMNESIS_DIR", tmp_path / "anamnesis")
         monkeypatch.setattr(mod, "_TRACE_PATH", tmp_path / "trace.jsonl")
         (tmp_path / "attractors").mkdir(exist_ok=True)
+        (tmp_path / "anamnesis").mkdir(exist_ok=True)
         monkeypatch.setattr(mod.urllib.request, "urlopen", urlopen_fn)
         return mod.TurnCarver(
             base_url="http://localhost:8090",
