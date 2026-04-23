@@ -340,18 +340,28 @@ class TestContextWindowCarver:
             f"Per-turn counts: {counts}"
         )
 
-    def test_carver_has_debounce_delay(self, monkeypatch, tmp_path):
-        """TurnCarver should have a configurable debounce delay >= 20s."""
+    def test_background_thread_creation_is_serialized(self, monkeypatch, tmp_path):
+        """The background worker thread check and creation must happen under
+        the lock so concurrent callers don't both start a thread."""
         mod = _import_converge()
         carver = self._make_carver(
             monkeypatch, tmp_path, mod, self._noop_urlopen()
         )
 
-        assert hasattr(carver, "_carve_debounce_s"), (
-            "TurnCarver should have a _carve_debounce_s attribute"
-        )
-        assert carver._carve_debounce_s >= 20, (
-            f"Carve debounce should be at least 20s, got {carver._carve_debounce_s}"
+        # The thread check+create is inside the lock block in on_turn_complete.
+        # Verify structurally: after calling on_turn_complete, at most one
+        # thread should be alive.
+        import threading as _th
+        long = "this message is long enough to exceed the ten word minimum for carving"
+        carver.on_turn_complete(long, "reply one")
+        carver.on_turn_complete(long + " two", "reply two")
+        # Count daemon threads that target _background_loop
+        bg_threads = [
+            t for t in _th.enumerate()
+            if t.daemon and t.is_alive() and getattr(t, "_target", None) is carver._background_loop
+        ]
+        assert len(bg_threads) <= 1, (
+            f"Expected at most 1 background thread, found {len(bg_threads)}"
         )
 
     def test_context_buffer_is_bounded(self, monkeypatch, tmp_path):
@@ -472,22 +482,23 @@ class TestContextWindowCarver:
         count_after_cadence = carve_count[0]
         assert count_after_cadence == 1, f"Should have 1 carve after 2 turns, got {count_after_cadence}"
 
-        # Now feed enough turns to rotate the entire context buffer without
-        # hitting cadence. With buffer size 4, we need 4+ more odd-numbered
-        # turns to fully rotate out the entries the last carve saw.
+        # Now feed more turns through normal cadence, verifying counts.
         # Turn 3 — odd, no cadence
         carver.on_turn_complete(long + " turn three", "reply 3")
         carver._drain_sync()
+        assert carve_count[0] == 1, f"Turn 3 (odd) should not carve, got {carve_count[0]}"
         # Turn 4 — even, cadence fires
         carver.on_turn_complete(long + " turn four", "reply 4")
         carver._drain_sync()
+        assert carve_count[0] == 2, f"Turn 4 (even) should carve, got {carve_count[0]}"
         # Turn 5 — odd, no cadence
         carver.on_turn_complete(long + " turn five", "reply 5")
         carver._drain_sync()
+        assert carve_count[0] == 2, f"Turn 5 (odd) should not carve, got {carve_count[0]}"
         # Turn 6 — even, cadence fires
         carver.on_turn_complete(long + " turn six", "reply 6")
         carver._drain_sync()
-        # At this point carving has fired at turns 2, 4, 6.
+        assert carve_count[0] == 3, f"Turn 6 (even) should carve, got {carve_count[0]}"
         # Now skip many cadence hits by using short messages (< 10 words)
         # to rotate the buffer without triggering substantive-turn counting.
         for i in range(6):

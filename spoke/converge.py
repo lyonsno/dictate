@@ -363,7 +363,7 @@ class TurnCarver:
             model
             or os.environ.get("SPOKE_COMMAND_MODEL", "Qwen3.6-35B-A3B-bf16")
         )
-        self._pending: list[tuple[str, list[dict[str, str]]]] = []  # (utterance, context_snapshot)
+        self._pending: list[tuple[str, list[dict[str, str]], int]] = []  # (utterance, context_snapshot, current_seq)
         self._embed_pending: list[str] = []  # user utterances not yet embedded
         self._lock = threading.Lock()
         self._embed_io_lock = threading.Lock()  # serialize embed cache read-modify-write
@@ -372,8 +372,6 @@ class TurnCarver:
         self._embed_model_loaded = False
         self._context_buffer: list[dict[str, str]] = []  # rolling window of recent turns
         self._substantive_turn_count = 0  # counts substantive turns for cadence
-        self._carve_debounce_s = _CARVE_DEBOUNCE_S
-        self._debounce_timer: threading.Timer | None = None
         self._turn_seq = 0  # monotonic sequence number for context entries
         self._last_carve_seqs: set[int] = set()  # sequence numbers seen by last carve
         _ATTRACTORS_DIR.mkdir(parents=True, exist_ok=True)
@@ -419,17 +417,16 @@ class TurnCarver:
                 if should_carve:
                     context_snapshot = list(self._context_buffer)
                     self._last_carve_seqs = {e["_seq"] for e in self._context_buffer}
-                    self._pending.append((user_utterance, context_snapshot))
+                    self._pending.append((user_utterance, context_snapshot, self._turn_seq))
 
-        # Fire background worker if not already running
-        if self._thread is None or not self._thread.is_alive():
-            self._thread = threading.Thread(target=self._background_loop, daemon=True)
-            self._thread.start()
+            # Fire background worker if not already running (under lock to
+            # prevent concurrent callers from both starting a thread)
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._background_loop, daemon=True)
+                self._thread.start()
 
     def _drain_sync(self) -> None:
         """Drain all pending work synchronously. For testing only."""
-        if self._debounce_timer is not None:
-            self._debounce_timer.cancel()
         self._background_loop()
 
     def _background_loop(self) -> None:
@@ -441,7 +438,7 @@ class TurnCarver:
         the server side.
         """
         while True:
-            carve_work: list[tuple[str, list[dict[str, str]]]] = []
+            carve_work: list[tuple[str, list[dict[str, str]], int]] = []
             embed_work: list[str] = []
 
             with self._lock:
@@ -455,10 +452,10 @@ class TurnCarver:
 
             # Fire all work items concurrently
             threads: list[threading.Thread] = []
-            for utterance, context in carve_work:
+            for utterance, context, seq in carve_work:
                 t = threading.Thread(
                     target=self._safe_call,
-                    args=(self._carve_single, utterance, context),
+                    args=(self._carve_single, utterance, context, seq),
                     daemon=True,
                 )
                 t.start()
@@ -510,7 +507,10 @@ class TurnCarver:
         return "Existing personal attractors:\n" + "\n".join(lines)
 
     def _carve_single(
-        self, utterance: str, context: list[dict[str, str]] | None = None
+        self,
+        utterance: str,
+        context: list[dict[str, str]] | None = None,
+        current_seq: int | None = None,
     ) -> None:
         """Send one utterance to the model for attractor carving."""
         t0 = time.time()
@@ -520,11 +520,12 @@ class TurnCarver:
         # Build the recent conversational context block
         context_block = ""
         if context:
-            # Exclude the current utterance from context (it's shown separately)
+            # Exclude the current turn from context (it's shown separately).
+            # Use the monotonic _seq to identify it reliably.
             prior = [
                 c for c in context
-                if c.get("user", "")[:200] != utterance[:200]
-            ]
+                if c.get("_seq") != current_seq
+            ] if current_seq is not None else context
             if prior:
                 lines = []
                 for c in prior:
