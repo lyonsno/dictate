@@ -232,6 +232,34 @@ class TestCommandClient:
         assert "do not itch for tasks" in system_prompt
         assert "run_terminal_command" in system_prompt
 
+    def test_build_messages_reads_personality_at_prompt_assembly_time(self, tmp_path, monkeypatch):
+        """Switching personality.conf should affect the next assembled operator prompt."""
+        from spoke import command as command_mod
+
+        monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
+        config_dir = tmp_path / ".config" / "spoke"
+        personalities_dir = config_dir / "personalities"
+        personalities_dir.mkdir(parents=True)
+        (personalities_dir / "agentic.md").write_text(
+            "Stay crisp, tactical, and implementation-forward.\n",
+            encoding="utf-8",
+        )
+        (personalities_dir / "conversational.md").write_text(
+            "Stay loose, curious, and comfortable with open-ended discussion.\n",
+            encoding="utf-8",
+        )
+        (config_dir / "personality.conf").write_text("agentic.md\n", encoding="utf-8")
+        client = self._make_client()
+
+        first_prompt = client._build_messages("first")[0]["content"]
+        (config_dir / "personality.conf").write_text("conversational.md\n", encoding="utf-8")
+        second_prompt = client._build_messages("second")[0]["content"]
+
+        assert "implementation-forward" in first_prompt
+        assert "open-ended discussion" not in first_prompt
+        assert "open-ended discussion" in second_prompt
+        assert "implementation-forward" not in second_prompt
+
     def test_build_messages_bootstraps_default_personality_packet(self, tmp_path, monkeypatch):
         """Missing local personality config should be created with a minimal default."""
         from spoke import command as command_mod
