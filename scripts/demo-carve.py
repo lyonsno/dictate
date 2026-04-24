@@ -191,8 +191,14 @@ def main():
 
                 carver.on_turn_complete(turn["user"], turn["assistant"])
 
-                # Wait for background work to complete
-                if carver._thread is not None:
+                # Wait for background work to complete — _drain_sync runs
+                # the background loop synchronously, processing all pending
+                # carve and embed work before returning.
+                carver._drain_sync()
+
+                # Also wait for any thread that on_turn_complete may have
+                # started before _drain_sync could grab the work.
+                if carver._thread is not None and carver._thread.is_alive():
                     carver._thread.join(timeout=300)
 
                 # Show carve count
