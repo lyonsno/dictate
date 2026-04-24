@@ -289,6 +289,49 @@ class TestCommandClient:
         assert "## Personality Stub Authoring" in system_prompt
         assert "## Active Personality Stub" in system_prompt
 
+    def test_build_messages_exposes_personality_authoring_packet_for_natural_register_verbs(self, tmp_path, monkeypatch):
+        """Casual register-change phrasing should be treated as persistent personality work."""
+        from spoke import command as command_mod
+
+        monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
+        client = self._make_client()
+
+        assert "## Personality Stub Authoring" in client._build_messages("be more casual")[0]["content"]
+        assert "## Personality Stub Authoring" in client._build_messages("stay playful")[0]["content"]
+        assert "## Personality Stub Authoring" in client._build_messages("go back to the default style")[0]["content"]
+
+    def test_build_messages_keeps_authoring_packet_out_of_substring_false_positives(self, tmp_path, monkeypatch):
+        """The authoring gate should not trigger on unrelated substring collisions."""
+        from spoke import command as command_mod
+
+        monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
+        client = self._make_client()
+        system_prompt = client._build_messages(
+            "I like this style because of the stone texture."
+        )[0]["content"]
+
+        assert "## Active Personality Stub" in system_prompt
+        assert "## Personality Stub Authoring" not in system_prompt
+
+    def test_build_messages_keeps_authoring_packet_for_recent_personality_followups(self, tmp_path, monkeypatch):
+        """Follow-up commands like 'load it' should inherit recent personality context."""
+        from spoke import command as command_mod
+
+        monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
+        client = self._make_client()
+        client._history.append([
+            {
+                "role": "user",
+                "content": "Make me a David Foster Wallace-ish operator personality stub.",
+            },
+            {"role": "assistant", "content": "Drafted dfw.md."},
+        ])
+
+        system_prompt = client._build_messages("load it")[0]["content"]
+
+        assert "## Personality Stub Authoring" in system_prompt
+        assert "## Active Personality Stub" in system_prompt
+
     def test_build_messages_reads_personality_at_prompt_assembly_time(self, tmp_path, monkeypatch):
         """Switching personality.conf should affect the next assembled operator prompt."""
         from spoke import command as command_mod
