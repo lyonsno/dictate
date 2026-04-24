@@ -74,6 +74,7 @@ class PreviewWarpHUD(NSObject):
         self._slider_keys: dict[object, str] = {}
         self._value_labels: dict[str, object] = {}
         self._formats = {key: fmt for _, key, _, _, fmt in _SLIDER_SPECS}
+        self._restore_persisted_tuning()
         return self
 
     def setup(self) -> None:
@@ -202,12 +203,33 @@ class PreviewWarpHUD(NSObject):
         value = float(sender.doubleValue())
         self._overlay.set_preview_warp_tuning_value(key, value)
         self._sync_from_overlay()
+        self._save_prefs()
 
     def resetDefaults_(self, sender) -> None:
         if self._overlay is None:
             return
         self._overlay.reset_preview_warp_tuning()
         self._sync_from_overlay()
+        self._save_prefs()
+
+    def _restore_persisted_tuning(self) -> None:
+        overlay = self._overlay
+        if overlay is None or not hasattr(overlay, "update_preview_warp_tuning"):
+            return
+        prefs = self._load_prefs()
+        persisted = prefs.get("tuning")
+        if not isinstance(persisted, dict):
+            return
+        updates = {}
+        for _, key, _, _, _ in _SLIDER_SPECS:
+            if key not in persisted:
+                continue
+            try:
+                updates[key] = float(persisted[key])
+            except (TypeError, ValueError):
+                logger.debug("Ignoring invalid persisted preview warp tuning for %s", key, exc_info=True)
+        if updates:
+            overlay.update_preview_warp_tuning(**updates)
 
     def _sync_from_overlay(self) -> None:
         overlay = self._overlay
@@ -241,6 +263,15 @@ class PreviewWarpHUD(NSObject):
                 "y": float(frame.origin.y),
                 "visible": bool(self._visible),
             }
+            overlay = self._overlay
+            if overlay is not None and hasattr(overlay, "preview_warp_tuning_snapshot"):
+                tuning = overlay.preview_warp_tuning_snapshot()
+                if isinstance(tuning, dict):
+                    payload["tuning"] = {
+                        key: float(tuning[key])
+                        for _, key, _, _, _ in _SLIDER_SPECS
+                        if key in tuning
+                    }
             _PREFS_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True))
         except Exception:
             logger.debug("Failed to save preview warp HUD prefs", exc_info=True)
