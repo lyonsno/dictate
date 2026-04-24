@@ -3835,6 +3835,59 @@ class TestCommandCallbacks:
         d._command_overlay.finish.assert_called_once_with()
         d._menubar.set_status_text.assert_called_once_with("Approval needed")
 
+    def test_command_approval_required_preserves_visible_transcript_above_pending_card(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+        d._transcribing = True
+        d._command_streaming_text = "Let me check.\n[calling read_file…]"
+
+        d.commandApprovalRequired_(
+            {
+                "token": 1,
+                "approval_request": {
+                    "kind": "terminal_command",
+                    "argv": ["git", "commit", "-m", "x"],
+                    "cwd": "/tmp/repo",
+                    "reason": "command requires approval: git commit -m",
+                    "message": "Approval needed\n\ngit commit -m x",
+                },
+            }
+        )
+
+        d._command_overlay.set_response_text.assert_called_once_with(
+            "Let me check.\n[calling read_file…]\n\nApproval needed\n\ngit commit -m x"
+        )
+
+    def test_approve_pending_command_collapses_pending_card_to_approved_marker_before_resume(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.approve_pending_tool_call.return_value = []
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+        d._pending_command_approval_active = True
+        d._pending_command_approval_request = {"message": "Approval needed\n\ngit commit -m x"}
+        d._command_streaming_text = "Let me check.\n[calling read_file…]"
+
+        class _ImmediateThread:
+            def __init__(self, *, target, daemon):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
+
+        d._approve_pending_command()
+
+        d._command_overlay.set_response_text.assert_called_once_with(
+            "Let me check.\n[calling read_file…]\n\n[approved]"
+        )
+
     def test_command_complete_finish_failure_hides_glow(
         self, main_module, monkeypatch, caplog
     ):
@@ -4245,6 +4298,30 @@ class TestCommandOverlayToggle:
         d._command_overlay.set_utterance.assert_called_once_with("open file")
         d._command_overlay.set_response_text.assert_called_once_with("still working")
         d._command_overlay.invert_thinking_timer.assert_called_once()
+
+    def test_toggle_command_overlay_re_shows_live_pending_approval_instead_of_stale_history(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        d._command_client.history = [("old question", "old answer")]
+        d._command_overlay = MagicMock(_visible=False)
+        d._pending_command_approval_active = True
+        d._pending_command_approval_request = {
+            "message": "Approval needed\n\ngit commit -m x"
+        }
+        d._last_command_utterance = "new question"
+        d._command_streaming_text = "Let me check.\n[calling read_file…]"
+
+        d._toggle_command_overlay()
+
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.set_utterance.assert_called_once_with("new question")
+        d._command_overlay.set_response_text.assert_called_once_with(
+            "Let me check.\n[calling read_file…]\n\nApproval needed\n\ngit commit -m x"
+        )
+        d._command_overlay.append_token.assert_not_called()
+        d._command_overlay.finish.assert_called_once()
 
 
 class TestHoldStartDuringTranscription:

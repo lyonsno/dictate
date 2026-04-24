@@ -2781,6 +2781,25 @@ class SpokeAppDelegate(NSObject):
             return utterance, response
         return None
 
+    def _current_command_overlay_body(self) -> str:
+        """Return the best available live body for the current command turn."""
+        streaming = getattr(self, "_command_streaming_text", "")
+        if streaming:
+            return streaming
+        return getattr(self, "_last_command_response", "")
+
+    def _compose_pending_approval_overlay_body(self, *, approved: bool = False) -> str:
+        """Layer approval state over the live command transcript without replacing it."""
+        base = self._current_command_overlay_body()
+        if approved:
+            marker = "[approved]"
+        else:
+            request = getattr(self, "_pending_command_approval_request", None) or {}
+            marker = request.get("message", "Approval needed")
+        if base and marker:
+            return f"{base}\n\n{marker}"
+        return marker or base
+
     def _recallLastResponse_(self, payload) -> None:
         """Main thread: recall the last command/response from history."""
         if payload["token"] != self._transcription_token:
@@ -3061,6 +3080,22 @@ class SpokeAppDelegate(NSObject):
             logger.info("Double-tap Enter — dismissing command overlay")
             self._command_overlay.cancel_dismiss()
             self._detector.command_overlay_active = False
+        elif (
+            getattr(self, "_pending_command_approval_active", False)
+            and self._command_overlay is not None
+        ):
+            utterance = getattr(self, "_last_command_utterance", "")
+            pending_body = self._compose_pending_approval_overlay_body()
+            logger.info("Double-tap Enter — re-showing pending approval overlay")
+            try:
+                self._sync_command_overlay_brightness(immediate=True)
+                self._command_overlay.show()
+                self._command_overlay.set_utterance(utterance)
+                self._command_overlay.set_response_text(pending_body)
+                self._command_overlay.finish()
+                self._detector.command_overlay_active = True
+            except Exception:
+                logger.exception("Restore pending approval overlay failed")
         elif self._transcribing and self._command_overlay is not None:
             # Generation still in progress — re-show with accumulated text.
             utterance = getattr(self, "_last_command_utterance", "")
@@ -3798,7 +3833,7 @@ class SpokeAppDelegate(NSObject):
         if overlay is not None:
             overlay.set_tool_active(False)
             try:
-                overlay.set_response_text(approval_request.get("message", "Approval needed"))
+                overlay.set_response_text(self._compose_pending_approval_overlay_body())
             except Exception:
                 logger.exception("Command overlay failed to apply approval text")
             try:
@@ -3822,6 +3857,13 @@ class SpokeAppDelegate(NSObject):
         token = self._transcription_token
         if self._menubar is not None:
             self._menubar.set_status_text("Running approved command…")
+        overlay = self._command_overlay
+        if overlay is not None:
+            try:
+                approved_body = self._compose_pending_approval_overlay_body(approved=True)
+                overlay.set_response_text(approved_body)
+            except Exception:
+                logger.exception("Command overlay failed to collapse approval card")
 
         def _resume():
             full_response = ""
