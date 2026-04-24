@@ -250,7 +250,7 @@ kernel vec2 opticalShellWarp(
     vec2 c = vec2(width * 0.5, height * 0.5);
     vec2 p = d - c;
     vec2 halfRect = vec2(rectWidth * 0.5, rectHeight * 0.5);
-    float capsuleRadius = max(halfRect.y, 1.0);
+    float capsuleRadius = max(min(cornerRadius, halfRect.y), 1.0);
     float spineHalf = max(halfRect.x - capsuleRadius, 0.0);
 
     float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);
@@ -665,21 +665,22 @@ def _debug_shell_grid_ci_image(extent, shell_config):
         distance = np.abs(normalized - np.rint(normalized)) * float(step)
         return distance < float(halfwidth)
 
-    capsule_radius = max(content_height * 0.5, 1.0)
-    spine_half = max(content_width * 0.5 - capsule_radius, 0.0)
+    shell_radius = max(min(corner_radius, content_height * 0.5), 1.0)
+    shell_sdf = _rounded_rect_sdf(
+        width,
+        height,
+        content_width,
+        content_height,
+        shell_radius,
+    )
 
-    # Capsule SDF: distance to horizontal line segment minus radius.
-    # Iso-contours are pills at every depth.
-    spine_dist = np.maximum(np.abs(xs) - spine_half, 0.0)
-    capsule_sdf = (np.hypot(spine_dist, ys) - capsule_radius).astype(np.float32)
-
-    ring = np.abs(capsule_sdf) < float(profile["ring_halfwidth"])
-    interior = capsule_sdf < 0.0
+    ring = np.abs(shell_sdf) < float(profile["ring_halfwidth"])
+    interior = shell_sdf < 0.0
     curve_boost = _optical_shell_curve_boost(
         float(shell_config.get("core_magnification", 1.0)),
         float(shell_config.get("ring_amplitude_points", 12.0)),
     )
-    raw_field01 = np.clip(1.0 + capsule_sdf / capsule_radius, 0.0, 1.0).astype(np.float32)
+    raw_field01 = np.clip(1.0 + shell_sdf / shell_radius, 0.0, 1.0).astype(np.float32)
     field01 = np.clip(
         1.0 - np.clip((1.0 - raw_field01) + curve_boost * (1.0 - raw_field01) * raw_field01, 0.0, 1.0),
         0.0,

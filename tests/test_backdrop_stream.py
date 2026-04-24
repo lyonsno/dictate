@@ -1429,7 +1429,7 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
 
     source = mod._SHELL_WARP_KERNEL_SOURCE
 
-    assert "float capsuleRadius = max(halfRect.y, 1.0);" in source
+    assert "float capsuleRadius = max(min(cornerRadius, halfRect.y), 1.0);" in source
     assert "float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);" in source
     assert "depthRemap" in source
     assert "vec2(scaleX, scaleY)" in source
@@ -1442,7 +1442,7 @@ def test_optical_shell_kernel_avoids_global_center_depth_mix():
 
     assert "float centerDepth = max(min(halfRect.x, halfRect.y), 1.0);" not in source
     assert "vec2 src = mix(boundary, c, source01);" not in source
-    assert "float capsuleRadius = max(halfRect.y, 1.0);" in source
+    assert "float capsuleRadius = max(halfRect.y, 1.0);" not in source
 
 
 def test_capture_blurred_image_debug_visualize_skips_stream_start(monkeypatch):

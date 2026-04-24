@@ -76,6 +76,17 @@ def _shell_bleed_zone_frac(shell_config: dict) -> float:
     return max(float(shell_config.get("bleed_zone_frac", _WARP_BLEED_ZONE_FRAC)), 0.0)
 
 
+def _shell_corner_radius(shell_config: dict[str, float]) -> float:
+    rect_w = float(shell_config.get("content_width_points", 1.0))
+    rect_h = float(shell_config.get("content_height_points", 1.0))
+    half_w = max(rect_w * 0.5, 1.0)
+    half_h = max(rect_h * 0.5, 1.0)
+    configured = float(shell_config.get("corner_radius_points", half_h))
+    if configured > 0.0:
+        return max(min(configured, half_h), 1.0)
+    return max(min(half_h, half_w * 0.35), 1.0)
+
+
 def _warp_exterior_mix_weight(capsule_sdf: float, mix_width_points: float) -> float:
     width = max(float(mix_width_points), 1e-6)
     x = min(max(float(capsule_sdf) / width, 0.0), 1.0)
@@ -89,7 +100,7 @@ def _warp_dispatch_box(width: float, height: float, shell_config: dict[str, floa
     cy = float(shell_config.get("center_y", height * 0.5))
     rect_w = float(shell_config.get("content_width_points", width))
     rect_h = float(shell_config.get("content_height_points", height))
-    capsule_r = max(rect_h * 0.5, 1.0)
+    capsule_r = _shell_corner_radius(shell_config)
     bleed = capsule_r * _shell_bleed_zone_frac(shell_config)
     box_x0 = max(int(cx - rect_w * 0.5 - bleed), 0)
     box_y0 = max(int(cy - rect_h * 0.5 - bleed), 0)

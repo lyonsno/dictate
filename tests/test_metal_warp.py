@@ -88,6 +88,37 @@ def test_warp_dispatch_box_respects_shell_specific_bleed_zone_frac():
     assert tight[3] < wide[3]
 
 
+def test_warp_dispatch_box_respects_shell_specific_corner_radius():
+    rounder = metal_warp._warp_dispatch_box(
+        1440.0,
+        900.0,
+        {
+            "center_x": 720.0,
+            "center_y": 450.0,
+            "content_width_points": 640.0,
+            "content_height_points": 120.0,
+            "corner_radius_points": 60.0,
+            "bleed_zone_frac": 0.8,
+        },
+    )
+    squarer = metal_warp._warp_dispatch_box(
+        1440.0,
+        900.0,
+        {
+            "center_x": 720.0,
+            "center_y": 450.0,
+            "content_width_points": 640.0,
+            "content_height_points": 120.0,
+            "corner_radius_points": 20.0,
+            "bleed_zone_frac": 0.8,
+        },
+    )
+    assert squarer[0] > rounder[0]
+    assert squarer[1] > rounder[1]
+    assert squarer[2] < rounder[2]
+    assert squarer[3] < rounder[3]
+
+
 def test_warp_exterior_mix_weight_keeps_boundary_strength_but_starts_later_with_tighter_width():
     assert metal_warp._warp_exterior_mix_weight(0.0, 40.0) == pytest.approx(1.0)
     assert metal_warp._warp_exterior_mix_weight(0.0, 20.0) == pytest.approx(1.0)

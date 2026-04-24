@@ -683,3 +683,66 @@ def test_update_layout_uses_optical_shell_feather_when_fullscreen_compositor_act
         overlay_module._OVERLAY_WIDTH + 2 * f
     )
     assert overlay._window.frame().size.height == pytest.approx(expected_height + 2 * f)
+
+
+def test_update_layout_refreshes_preview_shell_geometry_from_shared_config(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay._window = _FakeWindow()
+    overlay._window._frame = _make_rect(
+        0.0,
+        overlay_module._window_origin_y(
+            overlay_module._OVERLAY_HEIGHT,
+            overlay_module._OUTER_FEATHER,
+        ),
+        overlay_module._OVERLAY_WIDTH + 2 * overlay_module._OUTER_FEATHER,
+        overlay_module._OVERLAY_HEIGHT + 2 * overlay_module._OUTER_FEATHER,
+    )
+    overlay._content_view = _FakeView(
+        _make_rect(
+            overlay_module._OUTER_FEATHER,
+            overlay_module._OUTER_FEATHER,
+            overlay_module._OVERLAY_WIDTH,
+            overlay_module._OVERLAY_HEIGHT,
+        )
+    )
+    overlay._text_view = _FakeTextView(
+        _make_rect(0.0, 0.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        "live preview",
+    )
+    overlay._text_view.set_layout_height(260.0)
+    overlay._scroll_view = _FakeScrollView(
+        _make_rect(12.0, 8.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        overlay._text_view,
+        y_offset=0.0,
+    )
+    overlay._visible = False
+    overlay._typewriter_displayed = "live preview"
+    overlay._reset_overlay_chrome_geometry = MagicMock()
+    overlay._fullscreen_compositor = MagicMock()
+
+    overlay._update_layout()
+
+    expected_height = overlay_module._max_overlay_height(overlay._screen.frame().size.height)
+    expected_cfg = overlay_module._preview_optical_shell_config(
+        overlay_module._OVERLAY_WIDTH,
+        expected_height,
+    )
+    updates = {
+        call.args[0]: call.args[1]
+        for call in overlay._fullscreen_compositor.update_shell_config_key.call_args_list
+    }
+
+    assert updates["content_width_points"] == pytest.approx(
+        float(expected_cfg["content_width_points"]) * 2.0
+    )
+    assert updates["content_height_points"] == pytest.approx(
+        float(expected_cfg["content_height_points"]) * 2.0
+    )
+    assert updates["corner_radius_points"] == pytest.approx(
+        float(expected_cfg["corner_radius_points"]) * 2.0
+    )

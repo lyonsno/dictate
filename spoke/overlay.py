@@ -540,6 +540,12 @@ def _preview_shell_feather(has_compositor: bool) -> float:
     return _OPTICAL_SHELL_FEATHER if has_compositor else _OUTER_FEATHER
 
 
+def _preview_shell_body_corner_radius(body_height_points: float) -> float:
+    """Corner radius for the visible preview shell body."""
+    body_height = max(float(body_height_points), 1.0)
+    return min(_OVERLAY_CORNER_RADIUS, body_height * 0.5)
+
+
 def _window_origin_y(visible_height: float, feather: float = _OUTER_FEATHER) -> float:
     base_y = _OVERLAY_BOTTOM_MARGIN - feather
     if _EXPAND_UPWARD:
@@ -564,9 +570,9 @@ def _preview_optical_shell_config(
     # Preview shell inflation is independently tunable in X/Y so its
     # proportion to the visible rounded rect does not have to mirror
     # the assistant overlay.
-    capsule_r = _OVERLAY_HEIGHT / 4.0
-    width_points += _PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII * capsule_r
-    height_points += _PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII * capsule_r
+    shell_body_corner_r = _preview_shell_body_corner_radius(height_points)
+    width_points += _PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII * shell_body_corner_r
+    height_points += _PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII * shell_body_corner_r
     band_mm = 4.0
     tail_mm = 3.0
     ring_refraction = 1.0
@@ -575,7 +581,7 @@ def _preview_optical_shell_config(
         "enabled": True,
         "content_width_points": width_points,
         "content_height_points": height_points,
-        "corner_radius_points": _OVERLAY_CORNER_RADIUS,
+        "corner_radius_points": shell_body_corner_r,
         "core_magnification": 1.55,
         "band_width_points": _cm_to_points(band_mm / 10.0),
         "tail_width_points": _cm_to_points(tail_mm / 10.0),
@@ -1362,7 +1368,7 @@ class TranscriptionOverlay(NSObject):
                         total_h,
                         width,
                         height,
-                        _OVERLAY_CORNER_RADIUS,
+                        _preview_shell_body_corner_radius(height),
                         scale,
                     )
 
@@ -1920,7 +1926,7 @@ class TranscriptionOverlay(NSObject):
             if abs(win_frame.size.height - new_win_h) > 4:
                 self._apply_overlay_window_geometry(new_height, f)
                 self._reset_overlay_chrome_geometry(new_height)
-                # Update compositor capsule to match new overlay size
+                # Update compositor shell geometry from the same helper used at startup.
                 compositor = getattr(self, "_fullscreen_compositor", None)
                 if compositor is not None:
                     scale = self._screen.backingScaleFactor() if hasattr(self._screen, "backingScaleFactor") else 2.0
@@ -1930,9 +1936,29 @@ class TranscriptionOverlay(NSObject):
                     cx = new_win_frame.origin.x + content_frame.origin.x + content_frame.size.width / 2
                     cy_cocoa = new_win_frame.origin.y + content_frame.origin.y + content_frame.size.height / 2
                     cy_metal = screen_h - cy_cocoa
-                    capsule_r = _OVERLAY_HEIGHT / 4.0
-                    compositor.update_shell_config_key("content_width_points", (_OVERLAY_WIDTH + 2.0 * capsule_r) * scale)
-                    compositor.update_shell_config_key("content_height_points", (new_height + 2.0 * capsule_r) * scale)
+                    shell_config = _preview_optical_shell_config(
+                        content_frame.size.width,
+                        new_height,
+                    )
+                    for key in (
+                        "content_width_points",
+                        "content_height_points",
+                        "corner_radius_points",
+                        "band_width_points",
+                        "tail_width_points",
+                    ):
+                        compositor.update_shell_config_key(
+                            key,
+                            float(shell_config[key]) * scale,
+                        )
+                    for key in (
+                        "core_magnification",
+                        "ring_amplitude_points",
+                        "tail_amplitude_points",
+                        "bleed_zone_frac",
+                        "exterior_mix_width_points",
+                    ):
+                        compositor.update_shell_config_key(key, shell_config[key])
                     compositor.update_shell_config_key("center_x", cx * scale)
                     compositor.update_shell_config_key("center_y", cy_metal * scale)
 
