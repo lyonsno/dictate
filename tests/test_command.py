@@ -128,6 +128,29 @@ class TestCommandClient:
             {"role": "assistant", "content": "a4"},
         ]
 
+    def test_ring_buffer_eviction_preserves_summary(self):
+        """Eviction should skip summary turns and evict the oldest non-summary turn."""
+        client = self._make_client(max_history=3)
+        # Seed a summary turn as oldest entry
+        client._history = [
+            [
+                {"role": "user", "content": "[compacted history]"},
+                {"role": "assistant", "content": "Summary of prior work."},
+            ]
+        ]
+        # Fill past max_history with normal turns
+        for i in range(4):
+            chunks = [{"choices": [{"index": 0, "delta": {"content": f"a{i}"}}]}]
+            fake_resp = _make_sse_response(chunks)
+            with patch("urllib.request.urlopen", return_value=fake_resp):
+                list(client.stream_command(f"q{i}"))
+        assert len(client._history) == 3
+        # Summary should still be the first entry
+        assert client._history[0][0]["content"] == "[compacted history]"
+        # Oldest non-summary turns should have been evicted
+        assert client._history[1][0]["content"] == "q2"
+        assert client._history[2][0]["content"] == "q3"
+
     def test_history_property_returns_copy(self):
         """history property should return a copy, not a reference."""
         client = self._make_client()

@@ -570,8 +570,27 @@ class CommandClient:
                 if normalized:
                     normalized[0] = {**normalized[0], "_overlay_response": overlay_response}
         self._history.append(normalized)
-        if len(self._history) > self._max_history:
-            self._history.pop(0)
+        while len(self._history) > self._max_history:
+            # Evict the oldest non-summary turn.  Summary turns
+            # (produced by compact_history) are the highest-value
+            # context in the buffer and should survive until the
+            # next explicit compaction.
+            evict_idx = None
+            for i in range(len(self._history)):
+                turn = self._history[i]
+                is_summary = (
+                    turn
+                    and isinstance(turn[0], dict)
+                    and turn[0].get("content") == "[compacted history]"
+                )
+                if not is_summary:
+                    evict_idx = i
+                    break
+            if evict_idx is not None:
+                self._history.pop(evict_idx)
+            else:
+                # All turns are summaries (shouldn't happen) — pop oldest
+                self._history.pop(0)
         self._save_history()
 
     def append_history_pair(self, user_text: str, assistant_text: str) -> None:
