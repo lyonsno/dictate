@@ -127,6 +127,76 @@ class TestConvergeService:
         ]
         assert client.save_calls == 0
 
+    def test_compact_history_reset_to_summary_keeps_only_summary(self):
+        mod = _import_converge()
+        client = _FakeCommandClient()
+        summary_turn = [
+            {"role": "user", "content": "[compacted history]"},
+            {"role": "assistant", "content": "Summary of prior work."},
+        ]
+        post_turn_1 = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok doing it"},
+        ]
+        post_turn_2 = [
+            {"role": "user", "content": "now do another thing"},
+            {"role": "assistant", "content": "sure"},
+        ]
+        client._history = [summary_turn, post_turn_1, post_turn_2]
+
+        result = mod.compact_history(client, {"mode": "reset_to_summary", "n": 0})
+
+        assert result == {
+            "status": "ok",
+            "mode": "reset_to_summary",
+            "turns_dropped": 2,
+            "turns_remaining": 1,
+        }
+        assert client._history == [summary_turn]
+        assert client.save_calls == 1
+
+    def test_compact_history_reset_to_summary_no_summary_errors(self):
+        mod = _import_converge()
+        client = _FakeCommandClient()
+        client._history = [
+            [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi"},
+            ]
+        ]
+
+        result = mod.compact_history(client, {"mode": "reset_to_summary", "n": 0})
+
+        assert result["status"] == "error"
+        assert "no compaction summary" in result["error"]
+        assert client.save_calls == 0
+
+    def test_compact_history_reset_to_summary_finds_most_recent(self):
+        mod = _import_converge()
+        client = _FakeCommandClient()
+        old_summary = [
+            {"role": "user", "content": "[compacted history]"},
+            {"role": "assistant", "content": "Old summary."},
+        ]
+        middle_turn = [
+            {"role": "user", "content": "stuff"},
+            {"role": "assistant", "content": "things"},
+        ]
+        new_summary = [
+            {"role": "user", "content": "[compacted history]"},
+            {"role": "assistant", "content": "New summary."},
+        ]
+        post_turn = [
+            {"role": "user", "content": "more stuff"},
+            {"role": "assistant", "content": "more things"},
+        ]
+        client._history = [old_summary, middle_turn, new_summary, post_turn]
+
+        result = mod.compact_history(client, {"mode": "reset_to_summary", "n": 0})
+
+        assert result["turns_dropped"] == 1
+        assert client._history == [new_summary]
+
     def test_converge_module_import_does_not_require_numpy_until_runtime(self):
         repo_root = Path(__file__).resolve().parents[1]
         script = """

@@ -363,7 +363,7 @@ _COMPACT_HISTORY_SCHEMA = {
         "name": "compact_history",
         "description": (
             "Compact the conversation history to reduce context size. "
-            "Three modes:\n"
+            "Four modes:\n"
             "- drop_tool_results: strip tool call/result messages from "
             "the oldest N turns, keeping user and assistant text.\n"
             "- summarize: replace the oldest N turns with a summary you "
@@ -375,19 +375,27 @@ _COMPACT_HISTORY_SCHEMA = {
             "durable intent. Call this first, then call again with "
             "mode='summarize' using the flags to guide your summary. "
             "The flags are the safety net; your conversational judgment "
-            "handles everything else."
+            "handles everything else.\n"
+            "- reset_to_summary: drop all turns after the most recent "
+            "compaction summary, keeping only the summary itself. Use "
+            "this when post-compaction turns have become incoherent or "
+            "path-dependent and you want to restart from a clean known "
+            "state without losing the summary context."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "mode": {
                     "type": "string",
-                    "enum": ["drop_tool_results", "summarize", "guided"],
+                    "enum": ["drop_tool_results", "summarize", "guided", "reset_to_summary"],
                     "description": (
                         "drop_tool_results: strip tool messages from oldest N turns. "
                         "summarize: replace oldest N turns with a summary. "
                         "guided: return attractor-aware retention flags for the "
-                        "oldest N turns, then follow up with summarize."
+                        "oldest N turns, then follow up with summarize. "
+                        "reset_to_summary: drop all turns after the last summary, "
+                        "keeping only the summary. Use when post-compaction context "
+                        "has gone bad."
                     ),
                 },
                 "n": {

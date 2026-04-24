@@ -325,6 +325,38 @@ def compact_history(
             "turns_remaining": len(remaining),
         }
 
+    if mode == "reset_to_summary":
+        # Find the most recent summary turn — identified by the
+        # "[compacted history]" user message that summarize mode writes.
+        summary_idx = None
+        for i in range(len(history) - 1, -1, -1):
+            turn = history[i]
+            if (
+                turn
+                and isinstance(turn[0], dict)
+                and turn[0].get("role") == "user"
+                and turn[0].get("content") == "[compacted history]"
+            ):
+                summary_idx = i
+                break
+        if summary_idx is None:
+            return {"status": "error", "error": "no compaction summary found in history"}
+        dropped = len(history) - summary_idx - 1
+        client._history = [history[summary_idx]]
+        client._save_history()
+        _append_trace(
+            trace_path,
+            "compact_reset_to_summary",
+            summary_turn_index=summary_idx,
+            turns_dropped=dropped,
+        )
+        return {
+            "status": "ok",
+            "mode": "reset_to_summary",
+            "turns_dropped": dropped,
+            "turns_remaining": 1,
+        }
+
     if mode == "guided":
         try:
             return _guided_compaction(
