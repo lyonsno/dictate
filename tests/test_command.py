@@ -232,6 +232,33 @@ class TestCommandClient:
         assert "do not itch for tasks" in system_prompt
         assert "run_terminal_command" in system_prompt
 
+    def test_build_messages_exposes_personality_authoring_packet(self, tmp_path, monkeypatch):
+        """The operator prompt should tell the assistant where personality files live."""
+        from spoke import command as command_mod
+
+        monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
+        personality_conf = tmp_path / ".config" / "spoke" / "personality.conf"
+        personalities_dir = tmp_path / ".config" / "spoke" / "personalities"
+        readme_path = personalities_dir / "README.md"
+        repo_root = command_mod.Path.cwd()
+        client = self._make_client()
+        system_prompt = client._build_messages("hello world")[0]["content"]
+
+        assert "## Personality Stub Authoring" in system_prompt
+        assert "When the user asks to create, modify, save, switch, or load" in system_prompt
+        assert "personality stub, use this contract:" in system_prompt
+        assert f"{personalities_dir}/" in system_prompt
+        assert str(personality_conf) in system_prompt
+        assert str(readme_path) in system_prompt
+        assert "Read the README" in system_prompt
+        assert "before creating or editing personality stubs" in system_prompt
+        assert "Use these absolute paths in tool calls" in system_prompt
+        assert "do not rely on shell `~` expansion" in system_prompt
+        assert "Create or edit only the requested stub file" in system_prompt
+        assert f"write that stub filename into `{personality_conf}`" in system_prompt
+        assert "filesystem edit, not a chat-side signal" in system_prompt
+        assert f"Do not create personality files under this repo checkout (`{repo_root}`)" in system_prompt
+
     def test_build_messages_reads_personality_at_prompt_assembly_time(self, tmp_path, monkeypatch):
         """Switching personality.conf should affect the next assembled operator prompt."""
         from spoke import command as command_mod
