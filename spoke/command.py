@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import shlex
+import threading
 import uuid
 from typing import Any, Callable, Generator, Literal
 
@@ -343,6 +344,10 @@ class CommandClient:
         # those keys are stripped before prompt assembly.
         self._history_path = _HISTORY_PATH if history_path is self._SENTINEL else history_path
         self._history: list[list[dict]] = self._load_history()
+        # Serialize concurrent stream_command_events calls so a new
+        # utterance cannot snapshot history before the previous stream
+        # has committed its turn.
+        self._stream_lock = threading.Lock()
         self._pending_tool_approval: PendingToolApproval | None = None
         self._pending_tool_approval_request: dict[str, Any] | None = None
         self._pending_tool_overlay_response: str = ""
@@ -850,6 +855,12 @@ class CommandClient:
         Returns the full assembled response text when the stream ends.
         The response is automatically added to the ring buffer.
 
+        The method holds ``_stream_lock`` for its entire lifetime so that
+        a new utterance cannot snapshot history before the previous
+        stream has committed its turn.  Stale streams bail quickly via
+        ``cancel_check``, so the lock is not held long in the common
+        overtake case.
+
         Parameters
         ----------
         cancel_check:
@@ -869,6 +880,26 @@ class CommandClient:
             Host-side approval is required before the exact pending tool call
             can be replayed and the assistant turn may continue.
         """
+        self._stream_lock.acquire()
+        try:
+            yield from self._stream_command_events_locked(
+                utterance,
+                tools=tools,
+                tool_executor=tool_executor,
+                cancel_check=cancel_check,
+            )
+        finally:
+            self._stream_lock.release()
+
+    def _stream_command_events_locked(
+        self,
+        utterance: str,
+        *,
+        tools: list[dict] | None = None,
+        tool_executor: Callable[..., Any] | None = None,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> Generator[CommandStreamEvent, None, str]:
+        """Inner implementation of stream_command_events, called under _stream_lock."""
         self._pending_tool_approval = None
         messages = self._build_messages(utterance)
         # Track where this turn's messages start (after system + history)
@@ -1211,6 +1242,22 @@ class CommandClient:
         cancel_check: Callable[[], bool] | None = None,
     ) -> Generator[CommandStreamEvent, None, str]:
         """Resume a paused tool-call turn after the user approved the pending call."""
+        self._stream_lock.acquire()
+        try:
+            yield from self._approve_pending_tool_call_locked(
+                tool_executor=tool_executor,
+                cancel_check=cancel_check,
+            )
+        finally:
+            self._stream_lock.release()
+
+    def _approve_pending_tool_call_locked(
+        self,
+        *,
+        tool_executor: Callable[..., Any],
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> Generator[CommandStreamEvent, None, str]:
+        """Inner implementation of approve_pending_tool_call, called under _stream_lock."""
         pending = self._pending_tool_approval
         if pending is None:
             raise RuntimeError("No pending tool approval to resume")
