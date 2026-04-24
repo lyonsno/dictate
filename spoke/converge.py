@@ -100,27 +100,20 @@ Rules:
 """
 
 _RECOMPILE_SYSTEM_PROMPT = """\
-You are a personal attractor recompiler. You are given an existing attractor
-file and new evidence from a recent conversation. Your job is to produce an
-UPDATED version of the attractor file that integrates the new evidence into
-a coherent current-state description.
+You are a file recompiler. You are given an existing file and new evidence
+from a recent conversation. Your job is to produce an UPDATED version that
+integrates the new evidence into a coherent current-state description.
 
 Rules:
-- The output replaces the entire file. Write it as a clean current-state summary.
-- Do NOT append dated "Re-observed" lines. Integrate the new evidence into the
-  description.
+- The output replaces the entire file.
+- Do NOT append dated lines. Integrate the new evidence into the description.
 - Keep the file roughly the same length or shorter unless the scope genuinely
   expanded.
-- Preserve the attractor's core identity — do not drift the meaning.
-- Use this format:
-
-# Title
-
-Summary of what this attractor captures, integrating all evidence into
-a coherent description of the durable pattern.
-
-- Strength: tentative | strong
-- Last observed: YYYY-MM-DD
+- Preserve the file's core identity — do not drift the meaning.
+- Preserve the file's existing format and metadata fields (Strength, Last
+  observed, or whatever fields the file already uses). Do not add fields
+  that are not already present.
+- Use a # Title as the first line.
 
 Output ONLY the markdown file content. No commentary.
 """

@@ -437,26 +437,6 @@ class TestContextWindowCarver:
         """If continued debouncing would mean zero overlap with the last
         carve's context, the carver should fire regardless of cadence."""
         mod = _import_converge()
-        carve_count = [0]
-
-        def counting_urlopen(req, timeout=0):
-            if "chat/completions" in req.full_url:
-                carve_count[0] += 1
-
-            class _Resp:
-                def __enter__(self):
-                    return self
-
-                def __exit__(self, *a):
-                    return False
-
-                def read(self):
-                    return json.dumps(
-                        {"choices": [{"message": {"content": "[]"}}]}
-                    ).encode("utf-8")
-
-            return _Resp()
-
         carver = self._make_carver(monkeypatch, tmp_path, mod, self._noop_urlopen())
         long = "this message is definitely long enough to exceed the ten word minimum for carving to proceed"
 
