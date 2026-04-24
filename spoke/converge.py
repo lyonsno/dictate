@@ -741,6 +741,7 @@ class TurnCarver:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
+        headers["X-Spoke-Pathway"] = "converge"
 
         req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=120) as resp:
