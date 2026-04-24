@@ -54,9 +54,26 @@ def test_pack_warp_params_uses_shell_specific_bleed_zone_frac():
             "exterior_mix_width_points": 20.0,
         },
     )
-    values = metal_warp.struct.unpack("18f", payload)
+    values = metal_warp.struct.unpack("20f", payload)
     assert values[16] == pytest.approx(0.8)
     assert values[17] == pytest.approx(20.0)
+
+
+def test_pack_warp_params_uses_shell_specific_axis_squeeze():
+    payload = metal_warp._pack_warp_params(
+        1440.0,
+        900.0,
+        {
+            "content_width_points": 640.0,
+            "content_height_points": 120.0,
+            "corner_radius_points": 20.0,
+            "x_squeeze": 3.25,
+            "y_squeeze": 1.2,
+        },
+    )
+    values = metal_warp.struct.unpack("20f", payload)
+    assert values[18] == pytest.approx(3.25)
+    assert values[19] == pytest.approx(1.2)
 
 
 def test_warp_dispatch_box_respects_shell_specific_bleed_zone_frac():

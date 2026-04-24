@@ -692,6 +692,8 @@ def test_optical_shell_pipeline_uses_warp_kernel(monkeypatch):
             10.0,
             72.0,
             18.0,
+            mod._WARP_X_SQUEEZE,
+            mod._WARP_Y_SQUEEZE,
         ]
     )
 
@@ -1433,6 +1435,17 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
     assert "float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);" in source
     assert "depthRemap" in source
     assert "vec2(scaleX, scaleY)" in source
+
+
+def test_optical_shell_kernel_accepts_live_axis_squeeze_args():
+    mod = _import_module()
+
+    source = mod._SHELL_WARP_KERNEL_SOURCE
+
+    assert "float xSqueeze," in source
+    assert "float ySqueeze" in source
+    assert "pow(max(scale, 0.0), xSqueeze)" in source
+    assert "pow(max(scale, 0.0), ySqueeze)" in source
 
 
 def test_optical_shell_kernel_avoids_global_center_depth_mix():

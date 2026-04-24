@@ -732,10 +732,7 @@ def test_update_layout_refreshes_preview_shell_geometry_from_shared_config(
         overlay_module._OVERLAY_WIDTH,
         expected_height,
     )
-    updates = {
-        call.args[0]: call.args[1]
-        for call in overlay._fullscreen_compositor.update_shell_config_key.call_args_list
-    }
+    updates = overlay._fullscreen_compositor.update_shell_config.call_args.args[0]
 
     assert updates["content_width_points"] == pytest.approx(
         float(expected_cfg["content_width_points"]) * 2.0
@@ -746,3 +743,48 @@ def test_update_layout_refreshes_preview_shell_geometry_from_shared_config(
     assert updates["corner_radius_points"] == pytest.approx(
         float(expected_cfg["corner_radius_points"]) * 2.0
     )
+
+
+def test_update_preview_warp_tuning_repushes_live_shell_config(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay._window = _FakeWindow()
+    overlay._content_view = _FakeView(
+        _make_rect(
+            overlay_module._OUTER_FEATHER,
+            overlay_module._OUTER_FEATHER,
+            overlay_module._OVERLAY_WIDTH,
+            overlay_module._OVERLAY_HEIGHT,
+        )
+    )
+    overlay._backdrop_renderer = MagicMock()
+    overlay._fullscreen_compositor = MagicMock()
+    overlay._refresh_backdrop_snapshot = MagicMock()
+    overlay._apply_ridge_masks = MagicMock()
+    overlay._visible = True
+
+    overlay.update_preview_warp_tuning(
+        x_squeeze=3.25,
+        y_squeeze=1.2,
+        core_magnification=1.9,
+    )
+
+    tuning = overlay.preview_warp_tuning_snapshot()
+    assert tuning["x_squeeze"] == pytest.approx(3.25)
+    assert tuning["y_squeeze"] == pytest.approx(1.2)
+    assert tuning["core_magnification"] == pytest.approx(1.9)
+
+    live_cfg = overlay._backdrop_renderer.set_live_optical_shell_config.call_args.args[0]
+    assert live_cfg["x_squeeze"] == pytest.approx(3.25)
+    assert live_cfg["y_squeeze"] == pytest.approx(1.2)
+    assert live_cfg["core_magnification"] == pytest.approx(1.9)
+
+    compositor_cfg = overlay._fullscreen_compositor.update_shell_config.call_args.args[0]
+    assert compositor_cfg["x_squeeze"] == pytest.approx(3.25)
+    assert compositor_cfg["y_squeeze"] == pytest.approx(1.2)
+    assert compositor_cfg["core_magnification"] == pytest.approx(1.9)
+    overlay._refresh_backdrop_snapshot.assert_called_once_with()

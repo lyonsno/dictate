@@ -44,10 +44,8 @@ _OPTICAL_SHELL_NORMAL_EPS_MULTIPLIER = 0.22
 # ---------------------------------------------------------------------------
 # Warp kernel tuning constants
 # ---------------------------------------------------------------------------
-# Each is substituted into the GLSL source at compile time.  Changing a
-# constant here changes the kernel; the app must be relaunched to pick
-# it up.  Constants that appear in more than one expression share a
-# single Python name so they stay in sync.
+# Defaults for the optical-shell warp family. Some remain compile-time
+# defaults, while others can now be overridden per shell config at runtime.
 
 # How far past the shell boundary (as a fraction of the corner radius) the
 # warp bleeds before fading to identity via smoothstep.
@@ -244,7 +242,9 @@ kernel vec2 opticalShellWarp(
     float bandWidth,
     float tailWidth,
     float ringAmplitudePoints,
-    float tailAmplitudePoints
+    float tailAmplitudePoints,
+    float xSqueeze,
+    float ySqueeze
 ) {
     vec2 d = destCoord();
     vec2 c = vec2(width * 0.5, height * 0.5);
@@ -274,8 +274,8 @@ kernel vec2 opticalShellWarp(
     float sourceField01 = 1.0 - depthRemap(1.0 - field01, curveBoost);
     float scale = sourceField01 / field01;
 
-    float scaleX = pow(max(scale, 0.0), %(x_squeeze)s);
-    float scaleY = pow(max(scale, 0.0), %(y_squeeze)s);
+    float scaleX = pow(max(scale, 0.0), xSqueeze);
+    float scaleY = pow(max(scale, 0.0), ySqueeze);
     vec2 warped = c + p * vec2(scaleX, scaleY);
 
     float exteriorT = max(capsuleSdf, 0.0);
@@ -301,8 +301,6 @@ kernel vec2 opticalShellWarp(
         "cb_ring_div": _WARP_CURVEBOOST_RING_DIVISOR,
         "cb_ring_cap": _WARP_CURVEBOOST_RING_CAP,
         "spine_boost": _WARP_SPINE_PROXIMITY_BOOST,
-        "x_squeeze": _WARP_X_SQUEEZE,
-        "y_squeeze": _WARP_Y_SQUEEZE,
         "ext_mag_strength": _WARP_EXTERIOR_MAG_STRENGTH,
         "ext_mag_decay": _WARP_EXTERIOR_MAG_DECAY,
     }
@@ -747,6 +745,8 @@ def _apply_optical_shell_warp_ci_image(ci_image, extent, shell_config):
         float(shell_config.get("tail_width_points", 9.0)),
         float(shell_config.get("ring_amplitude_points", 12.0)),
         float(shell_config.get("tail_amplitude_points", 4.0)),
+        float(shell_config.get("x_squeeze", _WARP_X_SQUEEZE)),
+        float(shell_config.get("y_squeeze", _WARP_Y_SQUEEZE)),
     ]
     try:
         candidate = warp_kernel.applyWithExtent_roiCallback_inputImage_arguments_(

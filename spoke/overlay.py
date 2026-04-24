@@ -105,6 +105,15 @@ _PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII = _env(
 _PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII = _env(
     "SPOKE_PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII", 2.0
 )
+_PREVIEW_OPTICAL_SHELL_CORE_MAGNIFICATION = _env(
+    "SPOKE_PREVIEW_OPTICAL_SHELL_CORE_MAGNIFICATION", 1.55
+)
+_PREVIEW_OPTICAL_SHELL_BAND_WIDTH_POINTS = (72.0 / 2.54) * (4.0 / 10.0)
+_PREVIEW_OPTICAL_SHELL_TAIL_WIDTH_POINTS = (72.0 / 2.54) * (3.0 / 10.0)
+_PREVIEW_OPTICAL_SHELL_RING_AMPLITUDE_POINTS = _PREVIEW_OPTICAL_SHELL_BAND_WIDTH_POINTS
+_PREVIEW_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS = _PREVIEW_OPTICAL_SHELL_TAIL_WIDTH_POINTS * 0.75
+_PREVIEW_OPTICAL_SHELL_X_SQUEEZE = _env("SPOKE_PREVIEW_OPTICAL_SHELL_X_SQUEEZE", 2.5)
+_PREVIEW_OPTICAL_SHELL_Y_SQUEEZE = _env("SPOKE_PREVIEW_OPTICAL_SHELL_Y_SQUEEZE", 1.5)
 
 # Adaptive compositing endpoints.
 # On dark backgrounds: light/white fill, dark text — the overlay is a
@@ -546,6 +555,22 @@ def _preview_shell_body_corner_radius(body_height_points: float) -> float:
     return min(_OVERLAY_CORNER_RADIUS, body_height * 0.5)
 
 
+def _preview_warp_tuning_defaults() -> dict[str, float]:
+    return {
+        "inflation_x_radii": _PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII,
+        "inflation_y_radii": _PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII,
+        "core_magnification": _PREVIEW_OPTICAL_SHELL_CORE_MAGNIFICATION,
+        "band_width_points": _PREVIEW_OPTICAL_SHELL_BAND_WIDTH_POINTS,
+        "tail_width_points": _PREVIEW_OPTICAL_SHELL_TAIL_WIDTH_POINTS,
+        "ring_amplitude_points": _PREVIEW_OPTICAL_SHELL_RING_AMPLITUDE_POINTS,
+        "tail_amplitude_points": _PREVIEW_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS,
+        "bleed_zone_frac": _PREVIEW_OPTICAL_SHELL_BLEED_ZONE_FRAC,
+        "exterior_mix_width_points": _PREVIEW_OPTICAL_SHELL_EXTERIOR_MIX_WIDTH_POINTS,
+        "x_squeeze": _PREVIEW_OPTICAL_SHELL_X_SQUEEZE,
+        "y_squeeze": _PREVIEW_OPTICAL_SHELL_Y_SQUEEZE,
+    }
+
+
 def _window_origin_y(visible_height: float, feather: float = _OUTER_FEATHER) -> float:
     base_y = _OVERLAY_BOTTOM_MARGIN - feather
     if _EXPAND_UPWARD:
@@ -563,32 +588,37 @@ def _ontology_text_rgb(text_lum: float) -> tuple[float, float, float]:
 def _preview_optical_shell_config(
     content_width_points: float | None = None,
     content_height_points: float | None = None,
+    *,
+    tuning: dict[str, float] | None = None,
 ) -> dict[str, float | bool]:
     """Return optical shell config dict for the preview overlay compositor."""
+    active_tuning = _preview_warp_tuning_defaults()
+    if tuning:
+        for key, value in tuning.items():
+            if key in active_tuning:
+                active_tuning[key] = float(value)
     width_points = _OVERLAY_WIDTH if content_width_points is None else max(float(content_width_points), 1.0)
     height_points = _OVERLAY_HEIGHT if content_height_points is None else max(float(content_height_points), 1.0)
     # Preview shell inflation is independently tunable in X/Y so its
     # proportion to the visible rounded rect does not have to mirror
     # the assistant overlay.
     shell_body_corner_r = _preview_shell_body_corner_radius(height_points)
-    width_points += _PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII * shell_body_corner_r
-    height_points += _PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII * shell_body_corner_r
-    band_mm = 4.0
-    tail_mm = 3.0
-    ring_refraction = 1.0
-    tail_refraction = 0.75
+    width_points += active_tuning["inflation_x_radii"] * shell_body_corner_r
+    height_points += active_tuning["inflation_y_radii"] * shell_body_corner_r
     return {
         "enabled": True,
         "content_width_points": width_points,
         "content_height_points": height_points,
         "corner_radius_points": shell_body_corner_r,
-        "core_magnification": 1.55,
-        "band_width_points": _cm_to_points(band_mm / 10.0),
-        "tail_width_points": _cm_to_points(tail_mm / 10.0),
-        "ring_amplitude_points": _cm_to_points(band_mm / 10.0) * ring_refraction,
-        "tail_amplitude_points": _cm_to_points(tail_mm / 10.0) * tail_refraction,
-        "bleed_zone_frac": _PREVIEW_OPTICAL_SHELL_BLEED_ZONE_FRAC,
-        "exterior_mix_width_points": _PREVIEW_OPTICAL_SHELL_EXTERIOR_MIX_WIDTH_POINTS,
+        "core_magnification": active_tuning["core_magnification"],
+        "band_width_points": active_tuning["band_width_points"],
+        "tail_width_points": active_tuning["tail_width_points"],
+        "ring_amplitude_points": active_tuning["ring_amplitude_points"],
+        "tail_amplitude_points": active_tuning["tail_amplitude_points"],
+        "bleed_zone_frac": active_tuning["bleed_zone_frac"],
+        "exterior_mix_width_points": active_tuning["exterior_mix_width_points"],
+        "x_squeeze": active_tuning["x_squeeze"],
+        "y_squeeze": active_tuning["y_squeeze"],
         "debug_visualize": False,
         "debug_grid_spacing_points": 0.0,
         "cleanup_blur_radius_points": 0.75,
@@ -662,6 +692,7 @@ class TranscriptionOverlay(NSObject):
         self._backdrop_capture_overscan_points = _preview_backdrop_capture_overscan_points()
         self._backdrop_capture_rect = None
         self._backdrop_timer: NSTimer | None = None
+        self._preview_warp_tuning_overrides: dict[str, float] = {}
 
         # Recovery mode state
         self._recovery_mode = False
@@ -675,6 +706,108 @@ class TranscriptionOverlay(NSObject):
         self._on_insert_callback = None
         self._on_clipboard_toggle_callback = None
         return self
+
+    def preview_warp_tuning_snapshot(self) -> dict[str, float]:
+        tuning = _preview_warp_tuning_defaults()
+        tuning.update(getattr(self, "_preview_warp_tuning_overrides", {}))
+        return tuning
+
+    def set_preview_warp_tuning_value(self, key: str, value: float) -> None:
+        self.update_preview_warp_tuning(**{key: value})
+
+    def update_preview_warp_tuning(self, **updates: float) -> None:
+        defaults = _preview_warp_tuning_defaults()
+        overrides = dict(getattr(self, "_preview_warp_tuning_overrides", {}))
+        for key, value in updates.items():
+            if key not in defaults:
+                continue
+            numeric = float(value)
+            if abs(numeric - defaults[key]) <= 1e-6:
+                overrides.pop(key, None)
+            else:
+                overrides[key] = numeric
+        self._preview_warp_tuning_overrides = overrides
+        self._reapply_preview_warp_tuning()
+
+    def reset_preview_warp_tuning(self) -> None:
+        self._preview_warp_tuning_overrides = {}
+        self._reapply_preview_warp_tuning()
+
+    def _current_preview_optical_shell_config(
+        self,
+        content_width_points: float | None = None,
+        content_height_points: float | None = None,
+    ) -> dict[str, float | bool]:
+        return _preview_optical_shell_config(
+            content_width_points,
+            content_height_points,
+            tuning=self.preview_warp_tuning_snapshot(),
+        )
+
+    def _current_preview_compositor_shell_config(
+        self,
+        content_width_points: float | None = None,
+        content_height_points: float | None = None,
+    ) -> dict[str, float | bool] | None:
+        if self._window is None or self._content_view is None:
+            return None
+        shell_config = self._current_preview_optical_shell_config(
+            content_width_points,
+            content_height_points,
+        )
+        scale = (
+            self._screen.backingScaleFactor()
+            if hasattr(self._screen, "backingScaleFactor")
+            else 2.0
+        )
+        screen_frame = self._screen.frame()
+        win_frame = self._window.frame()
+        content_frame = self._content_view.frame()
+        capsule_cx = win_frame.origin.x + content_frame.origin.x + content_frame.size.width / 2
+        capsule_cy_cocoa = win_frame.origin.y + content_frame.origin.y + content_frame.size.height / 2
+        scaled = dict(shell_config)
+        scaled["center_x"] = capsule_cx * scale
+        scaled["center_y"] = (screen_frame.size.height - capsule_cy_cocoa) * scale
+        for key in (
+            "content_width_points",
+            "content_height_points",
+            "corner_radius_points",
+            "band_width_points",
+            "tail_width_points",
+            "ring_amplitude_points",
+            "tail_amplitude_points",
+            "exterior_mix_width_points",
+        ):
+            if key in scaled:
+                scaled[key] = float(scaled[key]) * scale
+        return scaled
+
+    def _reapply_preview_warp_tuning(self) -> None:
+        content = getattr(self, "_content_view", None)
+        if content is None or not hasattr(content, "frame"):
+            return
+        try:
+            frame = content.frame()
+        except Exception:
+            return
+        width = float(frame.size.width)
+        height = float(frame.size.height)
+        shell_config = self._current_preview_optical_shell_config(width, height)
+        renderer = getattr(self, "_backdrop_renderer", None)
+        if renderer is not None and hasattr(renderer, "set_live_optical_shell_config"):
+            renderer.set_live_optical_shell_config(shell_config)
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is not None:
+            scaled = self._current_preview_compositor_shell_config(width, height)
+            if scaled is not None:
+                compositor.update_shell_config(scaled)
+        self._sdf_cache_key = None
+        self._sdf_geom_key = None
+        self._sdf_appearance_b = -1.0
+        self._fill_image_brightness = -1.0
+        self._apply_ridge_masks(width, height)
+        if self._visible:
+            self._refresh_backdrop_snapshot()
 
     def setup(self) -> None:
         """Create the overlay window."""
@@ -905,7 +1038,7 @@ class TranscriptionOverlay(NSObject):
         self._reset_text_geometry(_OVERLAY_HEIGHT - 16, scroll_to_top=True)
 
         self._window.orderFrontRegardless()
-        self._refresh_backdrop_snapshot()
+        self._reapply_preview_warp_tuning()
         self._start_backdrop_refresh_timer()
         self._start_fullscreen_compositor()
 
@@ -1577,28 +1710,18 @@ class TranscriptionOverlay(NSObject):
                     visible_height = _OVERLAY_HEIGHT
             self._apply_overlay_window_geometry(visible_height, _OPTICAL_SHELL_FEATHER)
             if content is None or not hasattr(content, "frame"):
-                shell_config = _preview_optical_shell_config()
+                shell_config = self._current_preview_compositor_shell_config()
             else:
                 try:
                     frame = content.frame()
-                    shell_config = _preview_optical_shell_config(frame.size.width, frame.size.height)
+                    shell_config = self._current_preview_compositor_shell_config(
+                        frame.size.width,
+                        frame.size.height,
+                    )
                 except Exception:
-                    shell_config = _preview_optical_shell_config()
-            scale = self._screen.backingScaleFactor() if hasattr(self._screen, "backingScaleFactor") else 2.0
-            screen_frame = self._screen.frame()
-            win_frame = self._window.frame()
-            content_frame = self._content_view.frame()
-            # Capsule center in screen points
-            capsule_cx = win_frame.origin.x + content_frame.origin.x + content_frame.size.width / 2
-            capsule_cy_cocoa = win_frame.origin.y + content_frame.origin.y + content_frame.size.height / 2
-            capsule_cy_metal = screen_frame.size.height - capsule_cy_cocoa
-            shell_config["center_x"] = capsule_cx * scale
-            shell_config["center_y"] = capsule_cy_metal * scale
-            for k in ("content_width_points", "content_height_points",
-                      "corner_radius_points", "band_width_points",
-                      "tail_width_points"):
-                if k in shell_config:
-                    shell_config[k] = float(shell_config[k]) * scale
+                    shell_config = self._current_preview_compositor_shell_config()
+            if shell_config is None:
+                return
             compositor = start_overlay_compositor(
                 screen=self._screen,
                 window=self._window,
@@ -1929,38 +2052,13 @@ class TranscriptionOverlay(NSObject):
                 # Update compositor shell geometry from the same helper used at startup.
                 compositor = getattr(self, "_fullscreen_compositor", None)
                 if compositor is not None:
-                    scale = self._screen.backingScaleFactor() if hasattr(self._screen, "backingScaleFactor") else 2.0
-                    screen_h = self._screen.frame().size.height
                     content_frame = self._content_view.frame()
-                    new_win_frame = self._window.frame()
-                    cx = new_win_frame.origin.x + content_frame.origin.x + content_frame.size.width / 2
-                    cy_cocoa = new_win_frame.origin.y + content_frame.origin.y + content_frame.size.height / 2
-                    cy_metal = screen_h - cy_cocoa
-                    shell_config = _preview_optical_shell_config(
+                    shell_config = self._current_preview_compositor_shell_config(
                         content_frame.size.width,
                         new_height,
                     )
-                    for key in (
-                        "content_width_points",
-                        "content_height_points",
-                        "corner_radius_points",
-                        "band_width_points",
-                        "tail_width_points",
-                    ):
-                        compositor.update_shell_config_key(
-                            key,
-                            float(shell_config[key]) * scale,
-                        )
-                    for key in (
-                        "core_magnification",
-                        "ring_amplitude_points",
-                        "tail_amplitude_points",
-                        "bleed_zone_frac",
-                        "exterior_mix_width_points",
-                    ):
-                        compositor.update_shell_config_key(key, shell_config[key])
-                    compositor.update_shell_config_key("center_x", cx * scale)
-                    compositor.update_shell_config_key("center_y", cy_metal * scale)
+                    if shell_config is not None:
+                        compositor.update_shell_config(shell_config)
 
             self._reset_text_geometry(max(new_height - 16, text_height))
             end = self._text_view.string().length() if hasattr(self._text_view.string(), 'length') else len(self._typewriter_displayed)

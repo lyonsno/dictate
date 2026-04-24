@@ -1206,6 +1206,11 @@ class SpokeAppDelegate(NSObject):
         self._terraform_hud.restore_visibility()
         self._menubar._on_toggle_terraform = self._terraform_hud.toggle
 
+        from .preview_warp_hud import PreviewWarpHUD
+        self._preview_warp_hud = PreviewWarpHUD.alloc().initWithOverlay_(self._overlay)
+        self._preview_warp_hud.restore_visibility()
+        self._menubar._on_toggle_preview_warp = self._preview_warp_hud.toggle
+
         # Hands-free mode — expose the toggle when a wakeword backend is configured
         if handsfree_env_ready():
             self._menubar._on_toggle_handsfree = self._toggle_handsfree
@@ -6453,6 +6458,8 @@ class SpokeAppDelegate(NSObject):
             hf.disable(reason="app quit")
         if hasattr(self, "_terraform_hud") and self._terraform_hud is not None:
             self._terraform_hud.cleanup()
+        if hasattr(self, "_preview_warp_hud") and self._preview_warp_hud is not None:
+            self._preview_warp_hud.cleanup()
         self._close_clients()
         NSApp.terminate_(None)
 

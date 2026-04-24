@@ -87,6 +87,14 @@ def _shell_corner_radius(shell_config: dict[str, float]) -> float:
     return max(min(half_h, half_w * 0.35), 1.0)
 
 
+def _shell_x_squeeze(shell_config: dict[str, float]) -> float:
+    return float(shell_config.get("x_squeeze", _WARP_X_SQUEEZE))
+
+
+def _shell_y_squeeze(shell_config: dict[str, float]) -> float:
+    return float(shell_config.get("y_squeeze", _WARP_Y_SQUEEZE))
+
+
 def _warp_exterior_mix_weight(capsule_sdf: float, mix_width_points: float) -> float:
     width = max(float(mix_width_points), 1e-6)
     x = min(max(float(capsule_sdf) / width, 0.0), 1.0)
@@ -133,6 +141,8 @@ struct WarpParams {{
     float minBrightness; // floor for interior pixel luminance (0 = no floor)
     float bleedZoneFrac; // exterior warp cutoff relative to shell corner radius
     float exteriorMixWidth; // width of the exterior onset band in pixels
+    float xSqueeze;
+    float ySqueeze;
 }};
 
 float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
@@ -212,8 +222,8 @@ kernel void opticalShellWarp(
     float sourceField01 = 1.0f - depthRemap(1.0f - field01, curveBoost);
     float scale = sourceField01 / field01;
 
-    float scaleX = pow(max(scale, 0.0f), {_WARP_X_SQUEEZE}f);
-    float scaleY = pow(max(scale, 0.0f), {_WARP_Y_SQUEEZE}f);
+    float scaleX = pow(max(scale, 0.0f), params.xSqueeze);
+    float scaleY = pow(max(scale, 0.0f), params.ySqueeze);
     float2 warped = c + p * float2(scaleX, scaleY);
 
     float2 result = warped;
@@ -223,8 +233,8 @@ kernel void opticalShellWarp(
         float probeField = mix(localFloor, 1.0f, pow(probeRaw, {_WARP_FIELD_EXPONENT}f));
         float probeSource = 1.0f - depthRemap(1.0f - probeField, curveBoost);
         float probeScale = probeSource / probeField;
-        float probeSX = pow(max(probeScale, 0.0f), {_WARP_X_SQUEEZE}f);
-        float probeSY = pow(max(probeScale, 0.0f), {_WARP_Y_SQUEEZE}f);
+        float probeSX = pow(max(probeScale, 0.0f), params.xSqueeze);
+        float probeSY = pow(max(probeScale, 0.0f), params.ySqueeze);
 
         float t = 1.0f - smoothstep(0.0f, max(params.exteriorMixWidth, 1.0f), capsuleSdf);
         t = t * t;
@@ -304,13 +314,13 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-_WARP_PARAMS_SIZE = struct.calcsize("18f")
+_WARP_PARAMS_SIZE = struct.calcsize("20f")
 
 
 def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offset_y=0.0):
     """Pack WarpParams struct for the Metal compute shader."""
     return struct.pack(
-        "18f",
+        "20f",
         float(width),
         float(height),
         float(shell_config.get("content_width_points", width)),
@@ -329,6 +339,8 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         float(shell_config.get("min_brightness", 0.0)),
         _shell_bleed_zone_frac(shell_config),
         float(shell_config.get("exterior_mix_width_points", _WARP_EXTERIOR_MIX_WIDTH_POINTS)),
+        _shell_x_squeeze(shell_config),
+        _shell_y_squeeze(shell_config),
     )
 
 
