@@ -209,6 +209,74 @@ class TestCommandClient:
         msgs = client._build_messages("hello world")
         assert msgs[0] == {"role": "system", "content": "Custom prompt"}
 
+    def test_build_messages_injects_selected_personality_stub(self, tmp_path, monkeypatch):
+        """The operator prompt should include the stub selected by personality.conf."""
+        from spoke import command as command_mod
+
+        monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
+        config_dir = tmp_path / ".config" / "spoke"
+        personalities_dir = config_dir / "personalities"
+        personalities_dir.mkdir(parents=True)
+        (personalities_dir / "conversational.md").write_text(
+            "Hold a relaxed conversational register when the user is bullshitting.\n"
+            "Keep tool use available, but do not itch for tasks before the user asks.\n",
+            encoding="utf-8",
+        )
+        (config_dir / "personality.conf").write_text("conversational.md\n", encoding="utf-8")
+
+        client = self._make_client()
+        system_prompt = client._build_messages("what do you make of this?")[0]["content"]
+
+        assert "## Active Personality Stub" in system_prompt
+        assert "Hold a relaxed conversational register" in system_prompt
+        assert "do not itch for tasks" in system_prompt
+        assert "run_terminal_command" in system_prompt
+
+    def test_build_messages_bootstraps_default_personality_packet(self, tmp_path, monkeypatch):
+        """Missing local personality config should be created with a minimal default."""
+        from spoke import command as command_mod
+
+        monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
+        client = self._make_client()
+        system_prompt = client._build_messages("hello")[0]["content"]
+
+        config_dir = tmp_path / ".config" / "spoke"
+        personalities_dir = config_dir / "personalities"
+        pointer = config_dir / "personality.conf"
+        default_stub = personalities_dir / "default.md"
+        readme = personalities_dir / "README.md"
+
+        assert personalities_dir.is_dir()
+        assert pointer.read_text(encoding="utf-8").strip() == "default.md"
+        assert "preserve current agent behavior" in default_stub.read_text(encoding="utf-8").lower()
+        readme_text = readme.read_text(encoding="utf-8").lower()
+        assert "personality stub" in readme_text
+        assert "user provides" in readme_text
+        assert "good stub" in readme_text
+        assert "bad stub" in readme_text
+        assert "preserve current agent behavior" in system_prompt.lower()
+
+    def test_build_messages_rejects_personality_pointer_escape(self, tmp_path, monkeypatch):
+        """personality.conf should not load files outside ~/.config/spoke/personalities."""
+        from spoke import command as command_mod
+
+        monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
+        config_dir = tmp_path / ".config" / "spoke"
+        personalities_dir = config_dir / "personalities"
+        personalities_dir.mkdir(parents=True)
+        (tmp_path / "outside.md").write_text("ESCAPED PERSONALITY\n", encoding="utf-8")
+        (personalities_dir / "default.md").write_text(
+            "Preserve current agent behavior.\n",
+            encoding="utf-8",
+        )
+        (config_dir / "personality.conf").write_text("../../outside.md\n", encoding="utf-8")
+
+        client = self._make_client()
+        system_prompt = client._build_messages("hello")[0]["content"]
+
+        assert "ESCAPED PERSONALITY" not in system_prompt
+        assert "Preserve current agent behavior" in system_prompt
+
     def test_config_kwargs_override_default(self, monkeypatch):
         """Explicit kwargs should take precedence over the built-in default."""
         client = self._make_client(base_url="http://kwarg-host:8888")
