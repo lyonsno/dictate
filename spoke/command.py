@@ -191,6 +191,60 @@ personality stub, use this contract:
 """
 
 
+def _utterance_requests_personality_authoring(utterance: str) -> bool:
+    text = utterance.lower()
+    if any(
+        term in text
+        for term in (
+            "personality",
+            "persona",
+            "personality stub",
+            "personality system",
+        )
+    ):
+        return True
+
+    action_terms = (
+        "make",
+        "create",
+        "write",
+        "draft",
+        "edit",
+        "modify",
+        "update",
+        "change",
+        "switch",
+        "load",
+        "select",
+        "activate",
+        "use",
+        "save",
+        "move",
+        "migrate",
+    )
+    register_terms = (
+        "conversational",
+        "conversation",
+        "register",
+        "tone",
+        "voice",
+        "style",
+        "vibe",
+        "casual",
+        "relaxed",
+        "playful",
+        "reflective",
+        "agentic",
+        "tactical",
+        "dfw",
+        "david foster wallace",
+        "wallace",
+    )
+    return any(term in text for term in action_terms) and any(
+        term in text for term in register_terms
+    )
+
+
 def _write_if_missing(path: Path, text: str) -> None:
     if path.exists():
         return
@@ -230,11 +284,16 @@ def _active_personality_stub() -> str:
         return _DEFAULT_PERSONALITY_STUB.strip()
 
 
-def _inject_active_personality_stub(system_prompt: str) -> str:
+def _inject_active_personality_stub(system_prompt: str, utterance: str) -> str:
     stub = _active_personality_stub()
     if not stub:
         stub = _DEFAULT_PERSONALITY_STUB.strip()
-    return f"{system_prompt}\n\n{_personality_authoring_guide()}\n## Active Personality Stub\n\n{stub}"
+    authoring_guide = (
+        f"{_personality_authoring_guide()}\n"
+        if _utterance_requests_personality_authoring(utterance)
+        else ""
+    )
+    return f"{system_prompt}\n\n{authoring_guide}## Active Personality Stub\n\n{stub}"
 
 
 def _terminal_preview_body_line_limit(body_line_count: int) -> int:
@@ -764,7 +823,7 @@ class CommandClient:
         and results from that turn.
         """
         system_prompt = (
-            _inject_active_personality_stub(self._system_prompt)
+            _inject_active_personality_stub(self._system_prompt, utterance)
             if self._uses_default_system_prompt
             else self._system_prompt
         )
