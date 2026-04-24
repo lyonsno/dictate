@@ -1439,6 +1439,28 @@ class CommandOverlay(NSObject):
         )
         return attr
 
+    def _make_tool_indicator_fragment(self, text: str):
+        """Build a compact attributed string for tool call/result indicators."""
+        from AppKit import (
+            NSMutableAttributedString,
+            NSForegroundColorAttributeName,
+            NSFontAttributeName,
+        )
+
+        attr = NSMutableAttributedString.alloc().initWithString_(text)
+        rng = (0, len(text))
+        attr.addAttribute_value_range_(
+            NSForegroundColorAttributeName,
+            NSColor.colorWithSRGBRed_green_blue_alpha_(0.42, 0.50, 0.56, 0.72),
+            rng,
+        )
+        attr.addAttribute_value_range_(
+            NSFontAttributeName,
+            NSFont.systemFontOfSize_weight_(12.0, 0.0),
+            rng,
+        )
+        return attr
+
     def _leading_response_separator(self) -> str:
         """Return the visible break before the first streamed response token.
 

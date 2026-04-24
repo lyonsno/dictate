@@ -531,6 +531,24 @@ class TestWindowLayering:
         overlay._update_layout.assert_called_once()
         overlay._update_punchthrough_mask.assert_called_once()
 
+    def test_append_token_renders_tool_indicator_without_monkeypatch(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._response_text = "Already streaming"
+        overlay._update_layout = MagicMock()
+        _install_fake_attributed_string(monkeypatch)
+
+        overlay.append_token("[calling search_file…]")
+
+        appended = (
+            overlay._text_view.textStorage()
+            .appendAttributedString_.call_args[0][0]
+            .text
+        )
+        assert appended == "[calling search_file…]"
+
     def test_hide_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._window = None
