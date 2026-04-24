@@ -2842,7 +2842,7 @@ class SpokeAppDelegate(NSObject):
             logger.info("Recalling last response: %r", last_utterance[:50])
             if self._command_overlay is not None:
                 self._sync_command_overlay_brightness(immediate=True)
-                self._command_overlay.show()
+                self._command_overlay.show(start_thinking_timer=False)
                 self._command_overlay.set_utterance(last_utterance)
                 for ch in last_response:
                     self._command_overlay.append_token(ch)
@@ -3115,7 +3115,7 @@ class SpokeAppDelegate(NSObject):
             logger.info("Double-tap Enter — re-showing pending approval overlay")
             try:
                 self._sync_command_overlay_brightness(immediate=True)
-                self._command_overlay.show()
+                self._command_overlay.show(start_thinking_timer=False)
                 self._command_overlay.set_utterance(utterance)
                 self._command_overlay.set_response_text(pending_body)
                 self._command_overlay.finish()
@@ -3163,7 +3163,7 @@ class SpokeAppDelegate(NSObject):
                 logger.info("Double-tap Enter — restoring durable pending approval overlay")
                 try:
                     self._sync_command_overlay_brightness(immediate=True)
-                    self._command_overlay.show()
+                    self._command_overlay.show(start_thinking_timer=False)
                     self._command_overlay.set_utterance(utterance)
                     self._command_overlay.set_response_text(
                         self._compose_pending_approval_overlay_body()
@@ -3181,7 +3181,7 @@ class SpokeAppDelegate(NSObject):
                 if self._command_overlay is not None:
                     try:
                         self._sync_command_overlay_brightness(immediate=True)
-                        self._command_overlay.show()
+                        self._command_overlay.show(start_thinking_timer=False)
                         self._command_overlay.set_utterance(last_utterance)
                         self._command_overlay.append_token(last_response)
                         self._command_overlay.finish()

@@ -374,6 +374,14 @@ class TestWindowLayering:
 
         overlay._text_view.textStorage().setAttributedString_.assert_called_once()
 
+    def test_show_can_skip_thinking_timer_for_recalled_history(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._start_thinking_timer = MagicMock()
+
+        overlay.show(start_thinking_timer=False)
+
+        overlay._start_thinking_timer.assert_not_called()
+
     def test_show_rebuilds_default_fill_geometry_before_reuse(self, mock_pyobjc, monkeypatch):
         overlay, mod = _make_overlay(mock_pyobjc)
         monkeypatch.setattr(mod, "NSMakeRect", _make_rect)

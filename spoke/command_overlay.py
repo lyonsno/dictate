@@ -1184,8 +1184,13 @@ class CommandOverlay(NSObject):
 
     # ── public interface ────────────────────────────────────
 
-    def show(self, *, preserve_thinking_timer: bool = False) -> None:
-        """Fade the overlay in and start or resume the thinking timer."""
+    def show(
+        self,
+        *,
+        preserve_thinking_timer: bool = False,
+        start_thinking_timer: bool = True,
+    ) -> None:
+        """Fade the overlay in, optionally starting or resuming the thinking timer."""
         if self._window is None:
             return
         self._cancel_all_timers()
@@ -1267,8 +1272,9 @@ class CommandOverlay(NSObject):
             1.0 / _PULSE_HZ, self, "pulseStep:", None, True
         )
 
-        # Start or resume the thinking timer.
-        self._start_thinking_timer(reset=not preserve_thinking_timer)
+        # Only live generation owns the thinking timer; history/approval recall does not.
+        if start_thinking_timer:
+            self._start_thinking_timer(reset=not preserve_thinking_timer)
 
         # Full-screen compositor: captures entire display, warps the rounded
         # shell region,

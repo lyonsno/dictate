@@ -3697,7 +3697,7 @@ class TestCommandCallbacks:
         d.commandUtteranceReady_({"token": 1, "utterance": "open file"})
 
         d._overlay.hide.assert_called()
-        d._command_overlay.show.assert_called()
+        d._command_overlay.show.assert_called_once()
         d._command_overlay.set_utterance.assert_called_with("open file")
 
     def test_command_utterance_ready_primes_command_overlay_brightness(
@@ -4261,7 +4261,7 @@ class TestCommandCallbacks:
 
         d._recallLastResponse_({"token": 1})
 
-        d._command_overlay.show.assert_called_once()
+        d._command_overlay.show.assert_called_once_with(start_thinking_timer=False)
         d._command_overlay.set_utterance.assert_called_once_with("what time is it")
         d._command_overlay.finish.assert_called_once()
 
@@ -4315,7 +4315,7 @@ class TestCommandOverlayToggle:
 
         d._toggle_command_overlay()
 
-        d._command_overlay.show.assert_called_once()
+        d._command_overlay.show.assert_called_once_with(start_thinking_timer=False)
         d._command_overlay.set_utterance.assert_called_once_with("new question")
         d._command_overlay.set_response_text.assert_called_once_with(
             "Let me check.\n[calling read_file…]\n\nApproval needed\n\ngit commit -m x"
@@ -4346,7 +4346,7 @@ class TestCommandOverlayToggle:
         }
         assert d._last_command_utterance == "push it"
         assert d._command_streaming_text == "Checking. \n[calling run_terminal_command…]\n"
-        d._command_overlay.show.assert_called_once()
+        d._command_overlay.show.assert_called_once_with(start_thinking_timer=False)
         d._command_overlay.set_utterance.assert_called_once_with("push it")
         d._command_overlay.set_response_text.assert_called_once_with(
             "Checking. \n[calling run_terminal_command…]\n\nApproval needed\n\ngit push -u origin feat/x"

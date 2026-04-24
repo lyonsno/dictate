@@ -802,6 +802,13 @@ class _SharedOverlayHost:
             return float(sampler(config))
         return float(getattr(self._compositor, "sampled_brightness", 0.5))
 
+    def refresh_brightness_for_client(self, client_id: str) -> None:
+        if client_id not in self._clients:
+            return
+        refresher = getattr(self._compositor, "refresh_brightness", None)
+        if callable(refresher):
+            refresher()
+
     def debug_snapshot(self) -> dict:
         clients = []
         for client_id, entry in self._clients.items():
@@ -860,6 +867,10 @@ class _OverlayCompositorSession:
         if self._host is None:
             return 0.5
         return self._host.sampled_brightness_for_client(self._client_id)
+
+    def refresh_brightness(self) -> None:
+        if self._host is not None:
+            self._host.refresh_brightness_for_client(self._client_id)
 
     def stop(self) -> None:
         if self._host is None:
