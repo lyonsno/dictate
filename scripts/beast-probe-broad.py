@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Beast probe: run real Grapheus samples through all four carve surfaces,
-then the beast species filter, and show what survives vs what gets killed.
+"""Broad beast probe: run diverse samples from multiple days through the
+full four-surface + beast pipeline.
 
 Usage:
-    uv run scripts/beast-probe.py
+    uv run scripts/beast-probe-broad.py
 """
 
 from __future__ import annotations
@@ -17,10 +17,23 @@ import time
 import urllib.request
 from pathlib import Path
 
-_GRAPHEUS_LOG = Path.home() / "dev" / "grapheus" / "logs" / "grapheus-2026-04-23.jsonl"
+_GRAPHEUS_DIR = Path.home() / "dev" / "grapheus" / "logs"
 _ATTRACTORS_DIR = Path.home() / ".config" / "spoke" / "attractors"
 
-_SAMPLE_INDICES = [19, 143, 178]
+# Diverse samples across days:
+# 04-20/15: technical work (metal shaders, warping effects)
+# 04-20/20: excitement about autonomous bug-finding agent
+# 04-20/74: testing persistent chat ring buffer
+# 04-20/78: Rocky movie quote / cultural reference
+# 04-20/135: tool design discussion (compaction architecture)
+# 04-20/137: asking about foot guns in tool design
+# 04-23/19: subagent async reasoning
+# 04-23/143: find attractor file ("the boys")
+# 04-23/178: compact context + merge
+SAMPLES_BY_DAY = {
+    "2026-04-20": [15, 20, 74, 78, 135, 137],
+    "2026-04-23": [19, 143, 178],
+}
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from spoke.converge import (
@@ -41,17 +54,27 @@ SURFACES = [
 
 def _load_samples():
     samples = []
-    with open(_GRAPHEUS_LOG) as f:
-        for i, line in enumerate(f):
-            if i not in _SAMPLE_INDICES:
-                continue
-            entry = json.loads(line)
-            req = entry.get("request", {})
-            msgs = req.get("messages", [])
-            user_msgs = [m for m in msgs if isinstance(m, dict) and m.get("role") == "user"]
-            if not user_msgs:
-                continue
-            samples.append({"index": i, "user": user_msgs[-1].get("content", "")})
+    for day, indices in SAMPLES_BY_DAY.items():
+        log = _GRAPHEUS_DIR / f"grapheus-{day}.jsonl"
+        if not log.exists():
+            continue
+        with open(log) as f:
+            for i, line in enumerate(f):
+                if i not in indices:
+                    continue
+                entry = json.loads(line)
+                req = entry.get("request", {})
+                msgs = req.get("messages", [])
+                sys_msgs = [m for m in msgs if isinstance(m, dict) and m.get("role") == "system"]
+                if any("attractor carver" in (m.get("content") or "") for m in sys_msgs):
+                    continue
+                user_msgs = [m for m in msgs if isinstance(m, dict) and m.get("role") == "user"]
+                if not user_msgs:
+                    continue
+                samples.append({
+                    "label": f"{day[-5:]}/{i}",
+                    "user": user_msgs[-1].get("content", ""),
+                })
     return samples
 
 
@@ -83,7 +106,10 @@ def _call(system, user):
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    req = urllib.request.Request(f"{base_url.rstrip('/')}/v1/chat/completions", data=payload, headers=headers, method="POST")
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/v1/chat/completions",
+        data=payload, headers=headers, method="POST",
+    )
     with urllib.request.urlopen(req, timeout=300) as resp:
         body = json.loads(resp.read())
     return body["choices"][0]["message"]["content"], time.time() - t0
@@ -104,17 +130,15 @@ def _parse(raw):
 def main():
     samples = _load_samples()
     existing = _load_existing()
-    # 4 carve passes + 1 beast pass per sample = 5 serial calls per sample
-    print(f"Samples: {len(samples)}, Calls per sample: 5 (4 carve + 1 beast)")
-    print(f"Staggering prefills by 0.5s between carve passes.\n")
+    print(f"Samples: {len(samples)}, Calls per sample: ~5")
+    print(f"Estimated total time: {len(samples) * 2}–{len(samples) * 3} minutes\n")
 
     for sample in samples:
         print(f"{'='*70}")
-        print(f"SAMPLE {sample['index']} ({len(sample['user'].split())}w)")
+        print(f"SAMPLE {sample['label']} ({len(sample['user'].split())}w)")
         print(f"  {sample['user'][:150]}...")
         print()
 
-        # Phase 1: collect candidates from all four surfaces (staggered)
         candidates = []
         for i, (name, prompt, instruction) in enumerate(SURFACES):
             if i > 0:
@@ -124,29 +148,29 @@ def main():
                 user_prompt += f"{existing}\n\n"
             user_prompt += instruction
 
-            print(f"  {name}: ", end="", flush=True)
+            print(f"  {name:10s}: ", end="", flush=True)
             try:
                 raw, elapsed = _call(prompt, user_prompt)
                 ops = _parse(raw)
                 if not ops:
                     print(f"[]  ({elapsed:.1f}s)")
                     continue
+                parts = []
                 for op in ops:
                     slug = op.get("slug", "?")
                     op_type = op.get("op", "?")
-                    content = op.get("content", op.get("evidence", op.get("new_evidence", "")))
                     candidates.append({"surface": name, "op": op})
-                    print(f"{op_type}:{slug}", end="  ")
-                print(f"({elapsed:.1f}s)")
+                    parts.append(f"{op_type}:{slug}")
+                print(f"{', '.join(parts)}  ({elapsed:.1f}s)")
             except Exception as e:
                 print(f"ERROR: {e}")
 
         if not candidates:
-            print("\n  No candidates — beast pass skipped.\n")
+            print("  No candidates — beast skipped.\n")
             continue
 
-        # Phase 2: beast species filter
-        print(f"\n  --- BEAST ({len(candidates)} candidates) ---")
+        # Beast pass
+        print(f"\n  BEAST ({len(candidates)} candidates):")
         candidate_lines = []
         for i, c in enumerate(candidates):
             op = c["op"]
@@ -155,19 +179,17 @@ def main():
                 f"[{i}] surface={c['surface']} op={op.get('op','?')} slug={op.get('slug','?')}"
                 + (f' content="{content[:100]}"' if content else "")
             )
-
         beast_prompt = (
             f"User utterance:\n\"{sample['user']}\"\n\n"
             f"Candidates ({len(candidates)}):\n"
             + "\n".join(candidate_lines)
             + "\n\nClassify each candidate."
         )
-
         try:
             raw, elapsed = _call(_BEAST_SPECIES_PROMPT, beast_prompt)
             verdicts = _parse(raw)
             if not verdicts:
-                print(f"  Beast parse failed — all pass through ({elapsed:.1f}s)")
+                print(f"    Parse failed — all pass ({elapsed:.1f}s)")
             else:
                 for v in verdicts:
                     idx = v.get("index", -1)
@@ -176,15 +198,16 @@ def main():
                     if 0 <= idx < len(candidates):
                         c = candidates[idx]
                         slug = c["op"].get("slug", "?")
-                        marker = {"pass": "✓", "kill": "✗"}.get(verdict, "→") if not verdict.startswith("reroute") else "→"
+                        sym = {"pass": "+", "kill": "X"}.get(verdict, ">")
                         if verdict.startswith("reroute"):
-                            marker = "→"
-                        print(f"  [{idx}] {marker} {verdict:20s} {c['surface']:10s} {slug}")
+                            sym = ">"
+                        line = f"    [{sym}] {verdict:20s} {c['surface']:10s} {slug}"
+                        print(line)
                         if reason:
-                            print(f"      reason: {reason}")
-                print(f"  ({elapsed:.1f}s)")
+                            print(f"        {reason[:120]}")
+                print(f"    ({elapsed:.1f}s)")
         except Exception as e:
-            print(f"  Beast ERROR: {e}")
+            print(f"    Beast ERROR: {e}")
 
         print()
 

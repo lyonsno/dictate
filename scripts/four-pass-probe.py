@@ -107,7 +107,7 @@ def _call_model(system: str, user: str) -> tuple[str, float]:
             {"role": "user", "content": user},
         ],
         "stream": False,
-        "temperature": 0.3,
+        "temperature": 0.8, "top_p": 0.95, "top_k": 20, "repetition_penalty": 1.0,
     }).encode("utf-8")
 
     headers = {"Content-Type": "application/json"}

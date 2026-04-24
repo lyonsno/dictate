@@ -707,7 +707,10 @@ class TurnCarver:
                 {"role": "user", "content": user_prompt},
             ],
             "stream": False,
-            "temperature": 0.3,
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "top_k": 20,
+            "repetition_penalty": 1.0,
         }).encode("utf-8")
 
         headers = {"Content-Type": "application/json"}
