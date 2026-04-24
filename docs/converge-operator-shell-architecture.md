@@ -96,7 +96,7 @@ The current fleet shape in `services.yaml` is:
 
 ### 3. The landed bounded tool surface
 
-On current `origin/main`, the command model gets a bounded 16-tool surface.
+On current trunk, the command model gets a bounded 17-tool surface.
 Grouped by role, that surface is:
 
 - Perception and expression:
@@ -110,10 +110,11 @@ Grouped by role, that surface is:
   - `edit_file`
   - `search_file`
   - `find_file`
-- Private substrate bridge:
-  - `run_epistaxis_ops`
-- External bounded read surface:
+- External bounded read surfaces:
+  - `search_web`
   - `query_gmail`
+- Local bounded terminal surface:
+  - `run_terminal_command`
 - Background work coordination:
   - `launch_subagent`
   - `list_subagents`
@@ -123,8 +124,9 @@ Grouped by role, that surface is:
   - `compact_history`
 
 This is already enough to do real operator-shell work: inspect local state,
-change files in bounded ways, query private review/state custody, kick off
-background search, and compress context instead of just letting the prompt bloat.
+change files in bounded ways, search the public web, query mail, run bounded
+local terminal commands under an approval contract, kick off background search,
+and compress context instead of just letting the prompt bloat.
 
 ### 4. Targeted file editing is now real
 
@@ -172,11 +174,18 @@ What the landed Converge layer does today:
 
 - observes completed command turns
 - embeds every user utterance
-- carves only more substantive turns into personal-attractor operations
+- carves more substantive turns across four internal surfaces:
+  - personal attractors
+  - anamnesis
+  - tópoi
+  - observed policy
 - fires this work asynchronously in the background
 - relies on OMLX batch parallel scheduling so background carve/embed requests do
   not require a second architecture
 - writes personal attractors to `~/.config/spoke/attractors/`
+- writes anamnesis to `~/.config/spoke/anamnesis/`
+- writes tópoi to `~/.config/spoke/topoi/`
+- writes observed policy to `~/.config/spoke/policy/`
 - writes a rolling turn-embedding cache to
   `~/.config/spoke/turn-embeddings.npz`
 - writes trace events to `~/.config/spoke/converge-trace.jsonl`
@@ -191,11 +200,12 @@ full Epistaxis, but it is the same pattern:
 
 ### 7. Compaction has crossed into semantic territory
 
-`compact_history` is not just token shedding. It has three modes:
+`compact_history` is not just token shedding. It now has four modes:
 
 - `drop_tool_results`
 - `summarize`
 - `guided`
+- `reset_to_summary`
 
 The important one is `guided`. In guided mode, `spoke.converge` loads an
 attractor embedding index, compares the current history slice against the turn
@@ -205,21 +215,26 @@ That means context compaction is already starting to use a semantic substrate,
 not just recency and truncation. It is still modest and bounded, but it is a
 real substrate-aware memory operation.
 
-### 8. The private Epistaxis bridge is narrow on purpose
+### 8. Epistaxis access is real, but the old helper is demoted
 
-`run_epistaxis_ops` is not a shell escape hatch. It is a deliberately narrow
-bridge into private Epistaxis custody. It is restricted to:
+The command shell can read Epistaxis directly through file tools and bounded
+terminal reads, and current trunk also carries a runbook-gated terminal path
+for Epistaxis git operations. The important design shift is that the assistant
+is no longer supposed to rely on `run_epistaxis_ops` as a default first-class
+surface.
 
-- reading the repo note
-- listing review tickets
-- writing review tickets
-- appending review pointers
-- staging review artifacts
-- git status / commit / push on the dedicated Epistaxis worktree branch
+`run_epistaxis_ops` still exists in the implementation, but it has been demoted
+from the default advertised tool surface because the old shape was too easy to
+mix incoherently with normal file tools and terminal git. The current system is
+biased toward:
 
-That boundedness is load-bearing. The operator shell needs access to private
-coordination state, but it cannot turn the whole private repo into a raw mutable
-shell surface just because the model wants convenience.
+- direct file reads and bounded file writes for Epistaxis contents
+- bounded terminal git with an explicit runbook gate for merge/push flows
+- a future stricter Epistaxis write membrane rather than the old partial helper
+
+That demotion is load-bearing. The operator shell needs access to private
+coordination state, but it also needs one coherent mutation story rather than
+two overlapping brittle ones.
 
 ## The Architectural Layering Now
 
@@ -253,7 +268,7 @@ This is the current operational center of the shell.
 
 This is where Converge lives:
 
-- personal attractor carving
+- four-pass carving across attractors, anamnesis, tópoi, and policy
 - turn embeddings
 - semantic compaction support
 - trace logs for observation and tuning
@@ -267,49 +282,43 @@ This is the relationship to the existing private Epistaxis world:
 
 - the command prompt knows the Epistaxis layout
 - the file tools can read Epistaxis directly
-- `run_epistaxis_ops` can perform narrow write-side custody tasks
+- bounded terminal git can operate against Epistaxis under a runbook gate
+- the legacy helper exists but is not part of the default advertised surface
 - the external private substrate remains the source of truth for project-level
   coordination, reviews, attractors, topoi, and metadosis
 
 The important distinction is that the command shell is not replacing Epistaxis.
 It is learning how to participate in it.
 
-## What Is Partly Staged Or Not Yet Live
+## What Has Recently Crossed From Staged To Live
 
-This part matters because the repo currently contains several future-adjacent
-surfaces in different states.
+Some surfaces that used to be branch-only or merely described are now part of
+the live shell and are worth calling out explicitly.
 
-### Brave search: module present, not live on current main
+### Bounded terminal execution is landed
 
-There is a `spoke.brave_search_operator` module and an attractor for Brave
-Search MCP integration. The command prompt also talks as if a `search_web` tool
-exists.
+`run_terminal_command` is no longer a branch-only idea. Current trunk carries:
 
-But on current `origin/main`, `get_tool_schemas()` does not expose
-`search_web`, and the live runtime tool bundle does not include it.
-
-So the honest state is:
-
-- the concept is staged
-- the code module exists
-- the live tool surface does not expose it yet
-
-### Terminal tool: real branch, not landed
-
-There is also a real bounded terminal tool lane on
-`origin/cc/operator-terminal-tool-0421`. That branch adds:
-
-- `run_terminal_command`
 - parsed argv instead of raw shell strings
 - allow / deny / approval-required policy classification
 - bounded command families and cwd constraints
+- explicit Enter/Delete approval grammar
+- durable pending-approval recovery across recall and restart
+- terminal preview truncation and explicit tool-output truncation signaling
 
-But it is not landed on `main`, and the active review note says the approval
-path is still incomplete: approval-gated commands become dead ends because the
-conversation loop has no full approval token / retry round-trip yet.
+That matters because it closes one of the biggest gaps between "chat with some
+tools" and "actual operator shell": the model can now perform bounded terminal
+work without escaping into arbitrary shell semantics.
 
-So the terminal tool is not vapor, but it is not part of the current operator
-shell trunk either.
+### Brave search is landed as a bounded read surface
+
+`search_web` is now part of the live default tool surface. It is a bounded
+read-only public web lookup, not a general browser automation path.
+
+## What Is Still Future-Adjacent
+
+This part matters because the repo still contains several next-surface ideas in
+design or attractor form rather than as landed runtime.
 
 ### Git tooling: carved as direction, not built
 
@@ -403,12 +412,13 @@ If you need the short version:
 - The bounded local tool surface is real.
 - `edit_file` is real and now good enough to count as a serious operator tool.
 - Gmail query is real.
-- bounded Epistaxis ops are real.
+- Epistaxis access is real; the legacy helper still exists, but the shell is
+  now biased toward direct files plus runbook-gated terminal git.
 - search subagents are real in a narrow local-search form.
-- Converge is real in first form: background carving, embeddings, and guided
-  compaction support are integrated into the app.
-- Brave search is staged but not yet live on current main.
-- the bounded terminal tool is branch-real but not yet landed.
+- Converge is real in first substantial form: four-pass background carving,
+  embeddings, and guided/reset compaction support are integrated into the app.
+- Brave search is live as a bounded read surface.
+- the bounded terminal tool is live, including approval and recovery plumbing.
 - the full runtime continuity substrate is still ahead of the current code, but
   the port has started.
 
