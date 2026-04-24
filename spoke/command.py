@@ -191,20 +191,35 @@ personality stub, use this contract:
 """
 
 
-def _utterance_requests_personality_authoring(utterance: str) -> bool:
+def _contains_word_or_phrase(text: str, terms: tuple[str, ...]) -> bool:
+    for term in terms:
+        if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", text):
+            return True
+    return False
+
+
+def _utterance_requests_personality_authoring(
+    utterance: str,
+    *,
+    recent_personality_context: bool = False,
+) -> bool:
     text = utterance.lower()
-    if any(
-        term in text
-        for term in (
-            "personality",
-            "persona",
-            "personality stub",
-            "personality system",
-        )
-    ):
+    explicit_personality_terms = (
+        "personality stub",
+        "personality stubs",
+        "personality file",
+        "personality files",
+        "personality system",
+        "persona stub",
+        "operator personality",
+        "active personality",
+        "personality.conf",
+    )
+    if _contains_word_or_phrase(text, explicit_personality_terms):
         return True
 
     action_terms = (
+        "be",
         "make",
         "create",
         "write",
@@ -221,6 +236,12 @@ def _utterance_requests_personality_authoring(utterance: str) -> bool:
         "save",
         "move",
         "migrate",
+        "stay",
+        "keep",
+        "reset",
+        "restore",
+        "default",
+        "go back",
     )
     register_terms = (
         "conversational",
@@ -239,10 +260,42 @@ def _utterance_requests_personality_authoring(utterance: str) -> bool:
         "dfw",
         "david foster wallace",
         "wallace",
+        "default",
     )
-    return any(term in text for term in action_terms) and any(
-        term in text for term in register_terms
+    has_action = _contains_word_or_phrase(text, action_terms)
+    if not has_action:
+        return False
+    if _contains_word_or_phrase(text, ("personality", "persona")):
+        return True
+    if _contains_word_or_phrase(text, register_terms):
+        return True
+    return recent_personality_context and _contains_word_or_phrase(
+        text,
+        (
+            "it",
+            "that",
+            "this",
+            "one",
+            "stub",
+            "file",
+            "dfw",
+        ),
     )
+
+
+def _history_has_recent_personality_authoring_context(
+    history: list[list[dict]],
+    *,
+    max_turns: int = 3,
+) -> bool:
+    for chain in reversed(history[-max_turns:]):
+        for message in chain:
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, str) and _utterance_requests_personality_authoring(content):
+                return True
+    return False
 
 
 def _write_if_missing(path: Path, text: str) -> None:
@@ -284,13 +337,21 @@ def _active_personality_stub() -> str:
         return _DEFAULT_PERSONALITY_STUB.strip()
 
 
-def _inject_active_personality_stub(system_prompt: str, utterance: str) -> str:
+def _inject_active_personality_stub(
+    system_prompt: str,
+    utterance: str,
+    *,
+    recent_personality_context: bool = False,
+) -> str:
     stub = _active_personality_stub()
     if not stub:
         stub = _DEFAULT_PERSONALITY_STUB.strip()
     authoring_guide = (
         f"{_personality_authoring_guide()}\n"
-        if _utterance_requests_personality_authoring(utterance)
+        if _utterance_requests_personality_authoring(
+            utterance,
+            recent_personality_context=recent_personality_context,
+        )
         else ""
     )
     return f"{system_prompt}\n\n{authoring_guide}## Active Personality Stub\n\n{stub}"
@@ -823,7 +884,13 @@ class CommandClient:
         and results from that turn.
         """
         system_prompt = (
-            _inject_active_personality_stub(self._system_prompt, utterance)
+            _inject_active_personality_stub(
+                self._system_prompt,
+                utterance,
+                recent_personality_context=_history_has_recent_personality_authoring_context(
+                    self._history
+                ),
+            )
             if self._uses_default_system_prompt
             else self._system_prompt
         )
