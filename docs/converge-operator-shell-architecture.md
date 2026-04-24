@@ -363,7 +363,50 @@ The obvious next expansions are:
 The system is moving toward "bounded operator affordances with clear contracts,"
 not toward arbitrary shell freedom.
 
-### 3. A deeper inward Epistaxis
+### 3. A real Epistaxis workspace membrane
+
+The current demotion of `run_epistaxis_ops` is not the end state. It is a
+holding pattern until the shell can offer an Epistaxis mutation surface that is
+actually simpler than mixing file tools, bounded terminal git, and a partial
+helper.
+
+The direction we want is:
+
+- explicit Epistaxis workspace handles rather than raw filesystem paths
+- no hidden mutable "current Epistaxis workspace" state machine
+- one workspace per ops call
+- one canonical write membrane for Epistaxis mutation flows
+
+The likely shape is:
+
+- `ensure_epistaxis_workspace(...)` or equivalent
+  - resolves or creates a named Epistaxis worktree
+  - returns a stable session-local handle plus metadata like path, branch, base,
+    dirty/clean state, and detached/not-detached state
+- `list_epistaxis_workspaces()`
+  - exposes the currently known handles and enough summary information to pick
+    the right one without raw path recall
+- `run_epistaxis_ops(workspace_handle=..., operations=[...])`
+  - executes bounded operations against exactly one explicit workspace handle
+  - no cross-worktree mutation plan in one call
+
+The important architectural decision is that this should become the canonical
+Epistaxis write path if it exists at all. If the shell is going to pay the
+prompt and cognitive cost of an Epistaxis-specific helper, it has to collapse
+friction and ambiguity, not add a second half-overlapping mutation surface.
+
+That means the target contract is not "another way to do some git and file
+steps." It is:
+
+- prepare or resolve the right Epistaxis workspace
+- perform bounded writes inside that one workspace
+- stage / commit / push through one coherent membrane
+
+Until that exists, the honest default remains direct file access plus
+runbook-gated terminal git, because that is less magical and less confusing
+than the older partial helper shape.
+
+### 4. A deeper inward Epistaxis
 
 The bigger architectural target is still what the original Converge thread
 described:
