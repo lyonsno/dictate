@@ -3398,6 +3398,9 @@ class SpokeAppDelegate(NSObject):
 
         # Stream the command in a background thread
         def _stream():
+            self._command_client.set_spoke_headers(
+                pathway="command", utterance_id=str(token),
+            )
             full_response = ""
             stale_break = False
             try:
@@ -3606,6 +3609,9 @@ class SpokeAppDelegate(NSObject):
                     "narratorShimmer:", {"active": True}, False
                 )
 
+            self._command_client.set_spoke_headers(
+                pathway="command", utterance_id=str(token),
+            )
             for event in self._command_client.stream_command_events(
                 utterance,
                 tools=self._tool_schemas,
