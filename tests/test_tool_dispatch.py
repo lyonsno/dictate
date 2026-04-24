@@ -1723,6 +1723,86 @@ class TestExecuteToolIntegration:
 # ── Output capping ───────────────────────────────────────────────
 
 
+class TestEpistaxisRunbookGate:
+    """First git command targeting epistaxis should return the runbook, not execute."""
+
+    def test_gate_fires_on_epistaxis_cwd(self, tmp_path):
+        mod = _import_tools()
+        # Reset session flag
+        mod._epistaxis_runbook_injected = False
+        runbook = tmp_path / "runbook.md"
+        runbook.write_text("# Test Runbook\nStep 1: do the thing.")
+        with patch.object(mod, "_EPISTAXIS_RUNBOOK_PATH", runbook):
+            result = json.loads(mod._execute_run_terminal_command(
+                {"argv": ["git", "status"], "cwd": "/Users/me/dev/epistaxis-wt"},
+            ))
+        assert result["executed"] is False
+        assert result["gate"] == "epistaxis_runbook"
+        assert "Test Runbook" in result["runbook"]
+
+    def test_gate_does_not_fire_twice(self, tmp_path):
+        mod = _import_tools()
+        mod._epistaxis_runbook_injected = False
+        runbook = tmp_path / "runbook.md"
+        runbook.write_text("# Runbook")
+        with patch.object(mod, "_EPISTAXIS_RUNBOOK_PATH", runbook):
+            first = json.loads(mod._execute_run_terminal_command(
+                {"argv": ["git", "status"], "cwd": "/Users/me/dev/epistaxis"},
+            ))
+            assert first["executed"] is False
+            # Second call should go through (mock the operator)
+            with patch("spoke.tool_dispatch.TerminalOperator") as mock_op:
+                mock_op.return_value.execute_command.return_value = {
+                    "executed": True, "exit_code": 0, "stdout": "on main\n",
+                }
+                second = json.loads(mod._execute_run_terminal_command(
+                    {"argv": ["git", "status"], "cwd": "/Users/me/dev/epistaxis"},
+                ))
+            assert second["executed"] is True
+
+    def test_gate_does_not_fire_on_non_epistaxis(self, tmp_path):
+        mod = _import_tools()
+        mod._epistaxis_runbook_injected = False
+        runbook = tmp_path / "runbook.md"
+        runbook.write_text("# Runbook")
+        with patch.object(mod, "_EPISTAXIS_RUNBOOK_PATH", runbook):
+            with patch("spoke.tool_dispatch.TerminalOperator") as mock_op:
+                mock_op.return_value.execute_command.return_value = {
+                    "executed": True, "exit_code": 0, "stdout": "ok\n",
+                }
+                result = json.loads(mod._execute_run_terminal_command(
+                    {"argv": ["git", "status"], "cwd": "/Users/me/dev/spoke"},
+                ))
+        assert result["executed"] is True
+
+    def test_gate_detects_git_c_flag(self, tmp_path):
+        mod = _import_tools()
+        mod._epistaxis_runbook_injected = False
+        runbook = tmp_path / "runbook.md"
+        runbook.write_text("# Runbook")
+        with patch.object(mod, "_EPISTAXIS_RUNBOOK_PATH", runbook):
+            result = json.loads(mod._execute_run_terminal_command(
+                {"argv": ["git", "-C", "/Users/me/dev/epistaxis", "log"]},
+            ))
+        assert result["executed"] is False
+        assert result["gate"] == "epistaxis_runbook"
+
+    def test_gate_does_not_fire_on_non_git(self, tmp_path):
+        mod = _import_tools()
+        mod._epistaxis_runbook_injected = False
+        runbook = tmp_path / "runbook.md"
+        runbook.write_text("# Runbook")
+        with patch.object(mod, "_EPISTAXIS_RUNBOOK_PATH", runbook):
+            with patch("spoke.tool_dispatch.TerminalOperator") as mock_op:
+                mock_op.return_value.execute_command.return_value = {
+                    "executed": True, "exit_code": 0, "stdout": "ok\n",
+                }
+                result = json.loads(mod._execute_run_terminal_command(
+                    {"argv": ["ls"], "cwd": "/Users/me/dev/epistaxis"},
+                ))
+        assert result["executed"] is True
+
+
 class TestOutputCapping:
     """Tools must cap output to avoid flooding the LLM context."""
 

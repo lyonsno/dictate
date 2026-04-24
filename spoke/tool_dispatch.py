@@ -1804,11 +1804,78 @@ def _execute_query_gmail(arguments: dict) -> str:
         return json.dumps({"error": str(exc)})
 
 
+_EPISTAXIS_RUNBOOK_PATH = Path.home() / "dev" / "spoke" / "docs" / "epistaxis-git-runbook.md"
+# Session-level flag: set to True once the runbook has been returned
+# as a gate response, so we only block the first attempt per session.
+_epistaxis_runbook_injected = False
+
+
+def _is_epistaxis_git_command(argv: list | None, cwd: str | None) -> bool:
+    """Return True if this looks like a git command targeting the Epistaxis repo."""
+    if not argv or not isinstance(argv, list):
+        return False
+    if str(argv[0]) != "git":
+        return False
+    resolved_cwd = str(cwd or "")
+    # Check cwd or -C argument for epistaxis paths
+    epistaxis_markers = ("epistaxis", "epistaxis-wt")
+    if any(marker in resolved_cwd for marker in epistaxis_markers):
+        return True
+    for i, arg in enumerate(argv):
+        if str(arg) == "-C" and i + 1 < len(argv):
+            target = str(argv[i + 1])
+            if any(marker in target for marker in epistaxis_markers):
+                return True
+    return False
+
+
+def _epistaxis_runbook_gate(argv: list, cwd: str | None) -> str | None:
+    """If this is an Epistaxis git command and the runbook hasn't been
+    injected yet this session, return the runbook content as a blocking
+    response instead of executing the command.  Returns None if the
+    command should proceed normally."""
+    global _epistaxis_runbook_injected
+    if _epistaxis_runbook_injected:
+        return None
+    if not _is_epistaxis_git_command(argv, cwd):
+        return None
+    # Read the runbook
+    try:
+        runbook_text = _EPISTAXIS_RUNBOOK_PATH.read_text(encoding="utf-8")
+    except (FileNotFoundError, PermissionError):
+        return None  # no runbook available, let the command through
+    _epistaxis_runbook_injected = True
+    return json.dumps({
+        "executed": False,
+        "gate": "epistaxis_runbook",
+        "message": (
+            "COMMAND NOT EXECUTED. Before performing git operations in "
+            "the Epistaxis repo, you must read and follow the runbook below. "
+            "The Epistaxis repo has a two-checkout layout with specific "
+            "merge and push conventions. Do not assume you know the correct "
+            "flow. Read the runbook carefully, then rethink your approach "
+            "with the runbook's instructions in mind before retrying."
+        ),
+        "runbook": runbook_text,
+        "retry_hint": (
+            "After reading the runbook, retry your git command. It will "
+            "execute normally on the next attempt."
+        ),
+    })
+
+
 def _execute_run_terminal_command(arguments: dict, *, approval_granted: bool = False) -> str:
     """Execute the bounded terminal command surface and return JSON."""
     argv = arguments.get("argv")
     cwd = arguments.get("cwd")
     timeout_seconds = arguments.get("timeout_seconds", 10)
+
+    # Epistaxis runbook gate: block the first git command targeting
+    # the Epistaxis repo until the assistant has seen the runbook.
+    gate_response = _epistaxis_runbook_gate(argv, cwd)
+    if gate_response is not None:
+        return gate_response
+
     try:
         operator = TerminalOperator()
         return json.dumps(

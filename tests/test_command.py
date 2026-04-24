@@ -1278,6 +1278,7 @@ class TestStreamCommand:
             model="test",
             api_key="key",
             max_history=2,
+            history_path=None,
         )
         for i in range(3):
             chunks = [self._content_chunk(f"answer{i}")]
