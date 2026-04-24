@@ -1702,6 +1702,68 @@ class TestExecuteToolIntegration:
         assert "error" in res4
         assert "Write access denied outside" in res4["error"]
 
+    def test_write_file_requires_personality_readme_before_personality_config_writes(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        import os
+
+        monkeypatch.setattr(os.path, "expanduser", lambda path: str(tmp_path) if path == "~" else path)
+        pointer_path = tmp_path / ".config" / "spoke" / "personality.conf"
+
+        blocked = json.loads(mod.execute_tool(
+            "write_file",
+            {"file_path": str(pointer_path), "content": "dfw.md\n"},
+            personality_readme_loaded=False,
+        ))
+        assert "error" in blocked
+        assert blocked["personality_readme_required"] is True
+        assert str(tmp_path / ".config" / "spoke" / "personalities" / "README.md") in blocked["error"]
+        assert not pointer_path.exists()
+
+        allowed = json.loads(mod.execute_tool(
+            "write_file",
+            {"file_path": str(pointer_path), "content": "dfw.md\n"},
+            personality_readme_loaded=True,
+        ))
+        assert allowed.get("status") == "success"
+        assert pointer_path.read_text(encoding="utf-8") == "dfw.md\n"
+
+    def test_write_file_blocks_repo_local_personality_stub_paths(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        import os
+
+        monkeypatch.setattr(os.path, "expanduser", lambda path: str(tmp_path) if path == "~" else path)
+        wrong_path = tmp_path / "dev" / "spoke" / "personality-stubs" / "dfw.md"
+
+        result = json.loads(mod.execute_tool(
+            "write_file",
+            {"file_path": str(wrong_path), "content": "bad\n"},
+            personality_readme_loaded=True,
+        ))
+
+        assert "error" in result
+        assert "repo-local `personality-stubs/`" in result["error"]
+        assert str(tmp_path / ".config" / "spoke" / "personalities" / "README.md") in result["error"]
+        assert not wrong_path.exists()
+
+    def test_edit_file_requires_personality_readme_before_personality_stub_edits(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        import os
+
+        monkeypatch.setattr(os.path, "expanduser", lambda path: str(tmp_path) if path == "~" else path)
+        stub_path = tmp_path / ".config" / "spoke" / "personalities" / "dfw.md"
+        stub_path.parent.mkdir(parents=True)
+        stub_path.write_text("old\n", encoding="utf-8")
+
+        blocked = json.loads(mod.execute_tool(
+            "edit_file",
+            {"file": str(stub_path), "old_string": "old\n", "new_string": "new\n"},
+            personality_readme_loaded=False,
+        ))
+        assert blocked["status"] == "error"
+        assert blocked["personality_readme_required"] is True
+        assert str(tmp_path / ".config" / "spoke" / "personalities" / "README.md") in blocked["error"]
+        assert stub_path.read_text(encoding="utf-8") == "old\n"
+
     def test_execute_search_file_edge_cases(self):
         mod = _import_tools()
         # Null pattern

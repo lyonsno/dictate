@@ -232,105 +232,39 @@ class TestCommandClient:
         assert "do not itch for tasks" in system_prompt
         assert "run_terminal_command" in system_prompt
 
-    def test_build_messages_omits_personality_authoring_packet_for_ordinary_turns(self, tmp_path, monkeypatch):
-        """Ordinary conversation should not carry the personality authoring guide."""
+    def test_build_messages_injects_personality_skill_pointer_not_authoring_packet(self, tmp_path, monkeypatch):
+        """The prompt should carry only the small on-demand skill pointer."""
         from spoke import command as command_mod
 
         monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
+        readme_path = tmp_path / ".config" / "spoke" / "personalities" / "README.md"
         client = self._make_client()
         system_prompt = client._build_messages("hello world")[0]["content"]
 
         assert "## Active Personality Stub" in system_prompt
+        assert "Personality stubs are an on-demand operator skill" in system_prompt
+        assert str(readme_path) in system_prompt
+        assert "read_file" in system_prompt
         assert "## Personality Stub Authoring" not in system_prompt
-        assert "Read the README" not in system_prompt
+        assert "Personality files live in" not in system_prompt
         assert "with write_file" not in system_prompt
 
-    def test_build_messages_exposes_personality_authoring_packet_for_personality_requests(self, tmp_path, monkeypatch):
-        """Personality-management requests should tell the assistant where files live."""
+    def test_build_messages_keeps_full_authoring_packet_out_of_personality_requests(self, tmp_path, monkeypatch):
+        """Personality requests should still load the full packet through read_file."""
         from spoke import command as command_mod
 
         monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
-        personality_conf = tmp_path / ".config" / "spoke" / "personality.conf"
-        personalities_dir = tmp_path / ".config" / "spoke" / "personalities"
-        readme_path = personalities_dir / "README.md"
-        repo_root = command_mod.Path.cwd()
+        readme_path = tmp_path / ".config" / "spoke" / "personalities" / "README.md"
         client = self._make_client()
         system_prompt = client._build_messages(
             "Make me a David Foster Wallace-ish operator personality stub and load it."
         )[0]["content"]
 
-        assert "## Personality Stub Authoring" in system_prompt
-        assert "When the user asks to create, modify, save, switch, or load" in system_prompt
-        assert "personality stub, use this contract:" in system_prompt
-        assert f"{personalities_dir}/" in system_prompt
-        assert str(personality_conf) in system_prompt
+        assert "Personality stubs are an on-demand operator skill" in system_prompt
         assert str(readme_path) in system_prompt
-        assert "Read the README" in system_prompt
-        assert "with read_file" in system_prompt
-        assert "before creating or editing personality stubs" in system_prompt
-        assert "Use these absolute paths in tool calls" in system_prompt
-        assert "do not rely on shell `~` expansion" in system_prompt
-        assert "Create or edit only the requested stub file" in system_prompt
-        assert "with write_file" in system_prompt
-        assert f"write that stub filename into `{personality_conf}`" in system_prompt
-        assert "filesystem edit, not a chat-side signal" in system_prompt
-        assert "read_file: reads a local file by file_path" in system_prompt
-        assert "write_file: creates or overwrites a local file by file_path and content" in system_prompt
-        assert f"process launch directory (`{repo_root}`)" in system_prompt
-
-    def test_build_messages_exposes_personality_authoring_packet_for_register_requests(self, tmp_path, monkeypatch):
-        """Natural register-change phrasing should still surface the authoring guide."""
-        from spoke import command as command_mod
-
-        monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
-        client = self._make_client()
-        system_prompt = client._build_messages("make me something more conversational")[0]["content"]
-
-        assert "## Personality Stub Authoring" in system_prompt
-        assert "## Active Personality Stub" in system_prompt
-
-    def test_build_messages_exposes_personality_authoring_packet_for_natural_register_verbs(self, tmp_path, monkeypatch):
-        """Casual register-change phrasing should be treated as persistent personality work."""
-        from spoke import command as command_mod
-
-        monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
-        client = self._make_client()
-
-        assert "## Personality Stub Authoring" in client._build_messages("be more casual")[0]["content"]
-        assert "## Personality Stub Authoring" in client._build_messages("stay playful")[0]["content"]
-        assert "## Personality Stub Authoring" in client._build_messages("go back to the default style")[0]["content"]
-
-    def test_build_messages_keeps_authoring_packet_out_of_substring_false_positives(self, tmp_path, monkeypatch):
-        """The authoring gate should not trigger on unrelated substring collisions."""
-        from spoke import command as command_mod
-
-        monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
-        client = self._make_client()
-        system_prompt = client._build_messages(
-            "I like this style because of the stone texture."
-        )[0]["content"]
-
         assert "## Active Personality Stub" in system_prompt
         assert "## Personality Stub Authoring" not in system_prompt
-
-    def test_build_messages_keeps_authoring_packet_for_recent_personality_followups(self, tmp_path, monkeypatch):
-        """Follow-up commands like 'load it' should inherit recent personality context."""
-        from spoke import command as command_mod
-
-        monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
-        client = self._make_client()
-        client._history.append([
-            {
-                "role": "user",
-                "content": "Make me a David Foster Wallace-ish operator personality stub.",
-            },
-            {"role": "assistant", "content": "Drafted dfw.md."},
-        ])
-
-        system_prompt = client._build_messages("load it")[0]["content"]
-
-        assert "## Personality Stub Authoring" in system_prompt
-        assert "## Active Personality Stub" in system_prompt
+        assert "Personality files live in" not in system_prompt
 
     def test_build_messages_reads_personality_at_prompt_assembly_time(self, tmp_path, monkeypatch):
         """Switching personality.conf should affect the next assembled operator prompt."""
