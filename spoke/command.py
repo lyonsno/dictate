@@ -152,14 +152,26 @@ def _terminal_output_preview(
         else:
             body_lines = ["[no output]"]
 
+    truncation_notice = result_mapping.get("truncation_message")
+    if not isinstance(truncation_notice, str):
+        stdout_truncated = bool(result_mapping.get("stdout_truncated"))
+        stderr_truncated = bool(result_mapping.get("stderr_truncated"))
+        if stdout_truncated or stderr_truncated:
+            truncation_notice = "tool output truncated before it reached the assistant"
+
     body_limit = _terminal_preview_body_line_limit(len(body_lines))
     if len(body_lines) > body_limit:
         hidden = len(body_lines) - body_limit
         marker = f"[... {hidden} more lines]"
+        if truncation_notice:
+            marker = f"[... {hidden} more lines; {truncation_notice}]"
         if body_limit <= 1:
             body_lines = [marker]
         else:
             body_lines = body_lines[: body_limit - 1] + [marker]
+        truncation_notice = None
+    if truncation_notice:
+        body_lines.append(f"[{truncation_notice}]")
 
     command_line = "$ " + shlex.join(str(token) for token in argv)
     return "\n".join([command_line, *body_lines])

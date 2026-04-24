@@ -1746,6 +1746,76 @@ class TestTerminalOutputPreview:
             "[... 22 more lines]",
         ]
 
+    def test_terminal_output_preview_surfaces_terminal_truncation_notice(self):
+        from spoke.command import _terminal_output_preview
+
+        preview = _terminal_output_preview(
+            {
+                "executed": True,
+                "exit_code": 0,
+                "stdout": "x" * 4000,
+                "stderr": "",
+                "stdout_truncated": True,
+                "stderr_truncated": False,
+                "truncation_message": (
+                    "tool output truncated before it reached the assistant: "
+                    "stdout truncated to 4000 chars"
+                ),
+            },
+            {"argv": ["git", "branch", "--merged", "main"]},
+        )
+
+        assert preview is not None
+        assert (
+            preview.splitlines()[-1]
+            == "[tool output truncated before it reached the assistant: stdout truncated to 4000 chars]"
+        )
+
+    def test_terminal_output_preview_combines_line_and_terminal_truncation_notices(self):
+        from spoke.command import _terminal_output_preview
+
+        preview = _terminal_output_preview(
+            {
+                "executed": True,
+                "exit_code": 0,
+                "stdout": "\n".join(f"line {i}" for i in range(1, 26)) + "\n",
+                "stderr": "",
+                "stdout_truncated": True,
+                "stderr_truncated": False,
+                "truncation_message": (
+                    "tool output truncated before it reached the assistant: "
+                    "stdout truncated to 4000 chars"
+                ),
+            },
+            {"argv": ["cat", "huge.txt"]},
+        )
+
+        assert preview is not None
+        assert preview.splitlines() == [
+            "$ cat huge.txt",
+            "line 1",
+            "line 2",
+            "[... 22 more lines; tool output truncated before it reached the assistant: stdout truncated to 4000 chars]",
+        ]
+
+    def test_terminal_output_preview_uses_generic_terminal_truncation_fallback(self):
+        from spoke.command import _terminal_output_preview
+
+        preview = _terminal_output_preview(
+            {
+                "executed": True,
+                "exit_code": 0,
+                "stdout": "x" * 191,
+                "stderr": "",
+                "stdout_truncated": True,
+                "stderr_truncated": False,
+            },
+            {"argv": ["git", "branch", "--merged", "main"]},
+        )
+
+        assert preview is not None
+        assert preview.splitlines()[-1] == "[tool output truncated before it reached the assistant]"
+
 
 class TestShiftReleaseRouting:
     """Test that shift-release is detected and routes to command path."""

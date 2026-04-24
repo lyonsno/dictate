@@ -244,8 +244,15 @@ class TerminalOperator:
                     "timed_out": True,
                     "stdout_truncated": stdout_truncated,
                     "stderr_truncated": stderr_truncated,
+                    "output_complete": not (stdout_truncated or stderr_truncated),
                 }
             )
+            truncation_message = self._format_truncation_message(
+                stdout_truncated=stdout_truncated,
+                stderr_truncated=stderr_truncated,
+            )
+            if truncation_message is not None:
+                result["truncation_message"] = truncation_message
             return result
         except OSError as exc:
             raise TerminalOperatorError(
@@ -261,8 +268,15 @@ class TerminalOperator:
                 "stderr": stderr,
                 "stdout_truncated": stdout_truncated,
                 "stderr_truncated": stderr_truncated,
+                "output_complete": not (stdout_truncated or stderr_truncated),
             }
         )
+        truncation_message = self._format_truncation_message(
+            stdout_truncated=stdout_truncated,
+            stderr_truncated=stderr_truncated,
+        )
+        if truncation_message is not None:
+            result["truncation_message"] = truncation_message
         return result
 
     def _format_approval_message(self, argv: Any, cwd: str, reason: str | None) -> str:
@@ -377,6 +391,29 @@ class TerminalOperator:
         if len(text) <= self._max_output_chars:
             return text, False
         return text[: self._max_output_chars], True
+
+    def _format_truncation_message(
+        self,
+        *,
+        stdout_truncated: bool,
+        stderr_truncated: bool,
+    ) -> str | None:
+        if stdout_truncated and stderr_truncated:
+            return (
+                "tool output truncated before it reached the assistant: "
+                f"stdout and stderr truncated to {self._max_output_chars} chars each"
+            )
+        if stdout_truncated:
+            return (
+                "tool output truncated before it reached the assistant: "
+                f"stdout truncated to {self._max_output_chars} chars"
+            )
+        if stderr_truncated:
+            return (
+                "tool output truncated before it reached the assistant: "
+                f"stderr truncated to {self._max_output_chars} chars"
+            )
+        return None
 
     @staticmethod
     def _matches_any_prefix(argv: list[str], prefixes: tuple[tuple[str, ...], ...]) -> bool:

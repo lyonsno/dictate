@@ -276,7 +276,12 @@ class TestTerminalOperator:
         assert result["decision"] == "allow"
         assert result["executed"] is True
         assert len(result["stdout"]) <= 128
+        assert result["output_complete"] is False
         assert result["stdout_truncated"] is True
+        assert (
+            result["truncation_message"]
+            == "tool output truncated before it reached the assistant: stdout truncated to 128 chars"
+        )
 
     def test_execute_reports_timeout_for_allowlisted_command(self, tmp_path):
         from spoke.terminal_operator import TerminalOperator
