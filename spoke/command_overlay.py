@@ -2671,13 +2671,6 @@ class CommandOverlay(NSObject):
     def _update_backdrop_mask(self, width: float, height: float):
         if self._backdrop_layer is None:
             return
-        try:
-            from .overlay import (
-                _fill_field_to_image,
-                _overlay_rounded_rect_sdf,
-            )
-        except Exception:
-            return
 
         overscan = getattr(self, "_backdrop_capture_overscan_points", _command_backdrop_capture_overscan_points())
         scale = getattr(self, "_ridge_scale", 2.0)
@@ -2699,61 +2692,102 @@ class CommandOverlay(NSObject):
         if signature == cached_signature and cached_mask is not None:
             self._backdrop_layer.setMask_(cached_mask)
             return
+        self._desired_backdrop_mask_signature = signature
+        pending = getattr(self, "_pending_backdrop_mask_signature", None)
+        if pending is not None:
+            if pending != signature:
+                self._queued_backdrop_mask_request = (width, height)
+            return
         inner_width = max(width - 2 * overscan, 1.0)
         inner_height = max(height - 2 * overscan, 1.0)
-        try:
-            if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
-                # Use the same rounded-shell SDF as the visible fill and warp
-                # config. A true capsule is only a special case of this shape.
-                import numpy as np
-                pw, ph = max(int(width), 1), max(int(height), 1)
-                xs = np.arange(pw, dtype=np.float32)[None, :] + 0.5 - pw * 0.5
-                ys = np.arange(ph, dtype=np.float32)[:, None] + 0.5 - ph * 0.5
-                inner_half_w = inner_width * 0.5
-                inner_half_h = inner_height * 0.5
-                corner_r = _optical_shell_body_corner_radius(inner_height)
-                capsule_radius = max(min(corner_r, inner_half_h), 1.0)
-                spine_half_x = max(inner_half_w - capsule_radius, 0.0)
-                spine_half_y = max(inner_half_h - capsule_radius, 0.0)
-                spine_dist_x = np.maximum(np.abs(xs) - spine_half_x, 0.0)
-                spine_dist_y = np.maximum(np.abs(ys) - spine_half_y, 0.0)
-                sdf = (np.hypot(spine_dist_x, spine_dist_y) - capsule_radius).astype(np.float32)
-            else:
-                sdf = _overlay_rounded_rect_sdf(
-                    width,
-                    height,
-                    inner_width,
-                    inner_height,
-                    _OVERLAY_CORNER_RADIUS,
-                    scale,
+        self._pending_backdrop_mask_signature = signature
+
+        def build() -> None:
+            try:
+                from .overlay import (
+                    _fill_field_to_image,
+                    _overlay_rounded_rect_sdf,
                 )
-            alpha = _backdrop_mask_alpha(
-                sdf,
-                width=max(
-                    scale,
-                    _command_backdrop_mask_falloff_width(scale)
-                    * (
-                        mask_width_multiplier
-                        / max(_COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER, 1e-6)
+
+                if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+                    # Use the same rounded-shell SDF as the visible fill and warp
+                    # config. A true capsule is only a special case of this shape.
+                    import numpy as np
+                    pw, ph = max(int(width), 1), max(int(height), 1)
+                    xs = np.arange(pw, dtype=np.float32)[None, :] + 0.5 - pw * 0.5
+                    ys = np.arange(ph, dtype=np.float32)[:, None] + 0.5 - ph * 0.5
+                    inner_half_w = inner_width * 0.5
+                    inner_half_h = inner_height * 0.5
+                    corner_r = _optical_shell_body_corner_radius(inner_height)
+                    capsule_radius = max(min(corner_r, inner_half_h), 1.0)
+                    spine_half_x = max(inner_half_w - capsule_radius, 0.0)
+                    spine_half_y = max(inner_half_h - capsule_radius, 0.0)
+                    spine_dist_x = np.maximum(np.abs(xs) - spine_half_x, 0.0)
+                    spine_dist_y = np.maximum(np.abs(ys) - spine_half_y, 0.0)
+                    sdf = (np.hypot(spine_dist_x, spine_dist_y) - capsule_radius).astype(np.float32)
+                else:
+                    sdf = _overlay_rounded_rect_sdf(
+                        width,
+                        height,
+                        inner_width,
+                        inner_height,
+                        _OVERLAY_CORNER_RADIUS,
+                        scale,
+                    )
+                alpha = _backdrop_mask_alpha(
+                    sdf,
+                    width=max(
+                        scale,
+                        _command_backdrop_mask_falloff_width(scale)
+                        * (
+                            mask_width_multiplier
+                            / max(_COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER, 1e-6)
+                        ),
                     ),
-                ),
-            )
-            mask_image, self._backdrop_mask_payload = _fill_field_to_image(
-                alpha,
-                255,
-                255,
-                255,
-            )
-        except Exception:
+                )
+                mask_image, payload = _fill_field_to_image(alpha, 255, 255, 255)
+                result = {
+                    "signature": signature,
+                    "image": mask_image,
+                    "payload": payload,
+                    "width": width,
+                    "height": height,
+                }
+            except Exception as exc:
+                result = {"signature": signature, "error": repr(exc)}
+            _post_overlay_result_to_main(self, "backdropMaskReady:", result)
+
+        _start_overlay_fill_worker(build)
+
+    def backdropMaskReady_(self, payload: dict) -> None:
+        signature = payload.get("signature")
+        if getattr(self, "_pending_backdrop_mask_signature", None) == signature:
+            self._pending_backdrop_mask_signature = None
+        if signature != getattr(self, "_desired_backdrop_mask_signature", None):
+            queued = getattr(self, "_queued_backdrop_mask_request", None)
+            if queued is not None:
+                self._queued_backdrop_mask_request = None
+                self._update_backdrop_mask(*queued)
+            return
+        error = payload.get("error")
+        if error:
+            logger.debug("Command overlay backdrop mask generation failed: %s", error)
+            return
+        if self._backdrop_layer is None:
             return
 
         mask = CALayer.alloc().init()
-        mask.setFrame_(((0, 0), (width, height)))
-        mask.setContents_(mask_image)
+        mask.setFrame_(((0, 0), (payload["width"], payload["height"])))
+        mask.setContents_(payload.get("image"))
         mask.setContentsGravity_("resize")
         self._backdrop_mask_signature = signature
         self._backdrop_mask_layer = mask
+        self._backdrop_mask_payload = payload.get("payload")
         self._backdrop_layer.setMask_(mask)
+        queued = getattr(self, "_queued_backdrop_mask_request", None)
+        if queued is not None:
+            self._queued_backdrop_mask_request = None
+            self._update_backdrop_mask(*queued)
 
     def _install_backdrop_frame_callback(self):
         renderer = getattr(self, "_backdrop_renderer", None)

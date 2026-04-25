@@ -718,6 +718,26 @@ class TestAdaptiveCompositing:
         assert config["ring_amplitude_points"] > 0.0
         assert config["tail_amplitude_points"] > 0.0
 
+    def test_backdrop_mask_generation_is_not_run_synchronously(
+        self, mock_pyobjc, monkeypatch
+    ):
+        """Backdrop mask SDF/image work should sit behind the fill worker seam."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+        queued = []
+
+        import spoke.overlay as ov_mod
+
+        def forbidden_sync_call(*_args):
+            raise AssertionError("backdrop mask generation ran on the caller thread")
+
+        monkeypatch.setattr(ov_mod, "_overlay_rounded_rect_sdf", forbidden_sync_call)
+        monkeypatch.setattr(ov_mod, "_fill_field_to_image", forbidden_sync_call)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: queued.append(work))
+
+        overlay._update_backdrop_mask(680.0, 160.0)
+
+        assert len(queued) == 1
+
     def test_optical_shell_peak_assistant_breath_keeps_fill_light_enough_to_show_backdrop(
         self, mock_pyobjc, monkeypatch
     ):
