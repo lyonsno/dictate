@@ -476,6 +476,42 @@ class TestWindowLayering:
         assert ("scroll_hidden", True) in events
         assert events.index(("scroll_hidden", True)) < events.index(("front", None))
 
+    def test_optical_show_with_initial_transcript_arms_visual_stack_before_fade(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+        events = []
+
+        def _schedule(_interval, _target, selector, _userinfo, _repeats):
+            events.append(("timer", selector))
+            return MagicMock()
+
+        mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_ = MagicMock(
+            side_effect=_schedule
+        )
+        overlay._window.orderFrontRegardless.side_effect = lambda: events.append(
+            ("front", None)
+        )
+        overlay._start_fullscreen_compositor = MagicMock(
+            side_effect=lambda: events.append(("compositor", None))
+        )
+        overlay._refresh_punchthrough_mask_if_needed = MagicMock(
+            side_effect=lambda: events.append(("mask", None))
+        )
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+            initial_response="Assistant response",
+        )
+
+        assert ("compositor", None) in events
+        assert ("mask", None) in events
+        assert ("timer", "visualStart:") not in events
+        assert events.index(("front", None)) < events.index(("compositor", None))
+        assert events.index(("mask", None)) < events.index(("timer", "fadeStep:"))
+
     def test_show_with_initial_transcript_skips_default_shell_fill_build(
         self, mock_pyobjc, monkeypatch
     ):

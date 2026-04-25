@@ -1230,6 +1230,9 @@ class CommandOverlay(NSObject):
         self._visible = True
         self._streaming = True
         has_initial_transcript = bool(initial_utterance or initial_response)
+        known_content_optical_start = (
+            has_initial_transcript and _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+        )
         self._response_text = ""
         self._utterance_text = ""
         self._collapsed_text = ""
@@ -1299,6 +1302,16 @@ class CommandOverlay(NSObject):
             self.set_utterance(initial_utterance)
 
         self._window.orderFrontRegardless()
+        if known_content_optical_start:
+            # Recalled/history content already has its final text.  Arm the
+            # optical compositor while the command window is still alpha-zero
+            # so the user sees one composed entrance, not plain text -> warp ->
+            # punch-through as separate phases.
+            self._start_fullscreen_compositor()
+            self._refresh_punchthrough_mask_if_needed()
+            if getattr(self, "_fullscreen_compositor", None) is None:
+                self._enable_text_punchthrough(False)
+                self._start_backdrop_refresh_timer()
         if not _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
             self._refresh_backdrop_snapshot()
         self._start_brightness_sampling()
@@ -1329,9 +1342,12 @@ class CommandOverlay(NSObject):
         if start_thinking_timer:
             self._start_thinking_timer(reset=not preserve_thinking_timer)
 
-        if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+        if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and not known_content_optical_start:
             self._schedule_visual_start()
-        elif getattr(self, "_fullscreen_compositor", None) is None:
+        elif (
+            not known_content_optical_start
+            and getattr(self, "_fullscreen_compositor", None) is None
+        ):
             self._start_backdrop_refresh_timer()
 
     def set_brightness(self, brightness: float, immediate: bool = False) -> None:
