@@ -1301,6 +1301,25 @@ class TestAdaptiveCompositing:
         overlay._scroll_view.setHidden_.assert_called_with(False)
 
 class TestGeometryCaps:
+    def test_update_layout_hides_live_narrator_when_user_prompt_wraps(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(56.0)
+        overlay._text_view.textContainer.return_value = object()
+        overlay._response_text = ""
+        overlay._narrator_label = MagicMock()
+        overlay._narrator_label.isHidden.return_value = False
+        string_obj = MagicMock()
+        string_obj.length.return_value = 0
+        overlay._text_view.string.return_value = string_obj
+
+        overlay._update_layout()
+
+        overlay._narrator_label.setHidden_.assert_called_with(True)
+
     def test_update_layout_can_grow_assistant_overlay_near_notch(self, mock_pyobjc, monkeypatch):
         overlay, mod = _make_overlay(mock_pyobjc)
         monkeypatch.setattr(mod, "NSMakeRect", _make_rect)

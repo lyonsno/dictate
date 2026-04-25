@@ -93,6 +93,7 @@ _COLOR_VELOCITY_MAX = 1.7  # fastest speed multiplier (transitions)
 _GLOW_COLOR = (0.6, 0.4, 0.9)  # initial color for setup (violet)
 _TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_TEXT_ALPHA_MIN", 0.35)
 _TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_TEXT_ALPHA_MAX", 1.0)
+_NARRATOR_OVERLAP_TEXT_HEIGHT = 30.0
 _USER_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_USER_TEXT_ALPHA_MIN", 0.85)
 _USER_TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_USER_TEXT_ALPHA_MAX", 0.95)
 _ASSISTANT_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_ASSISTANT_TEXT_ALPHA_MIN", 0.85)
@@ -2409,6 +2410,7 @@ class CommandOverlay(NSObject):
         if self._narrator_label is not None:
             self._narrator_label.setStringValue_(summary)
             self._narrator_label.setHidden_(False)
+            self._sync_narrator_visibility()
             self._apply_narrator_theme()
 
     def set_narrator_shimmer(self, active: bool) -> None:
@@ -2462,6 +2464,25 @@ class CommandOverlay(NSObject):
         self._narrator_label.setTextColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, alpha)
         )
+
+    def _sync_narrator_visibility(self, text_height: float | None = None) -> None:
+        """Hide the fixed narrator label before it overlaps transcript text."""
+        if self._narrator_label is None or self._narrator_label.isHidden():
+            return
+        if self._response_text:
+            self._hide_narrator()
+            return
+        if text_height is None and self._text_view is not None:
+            try:
+                layout = self._text_view.layoutManager()
+                container = self._text_view.textContainer()
+                if layout and container:
+                    layout.ensureLayoutForTextContainer_(container)
+                    text_height = layout.usedRectForTextContainer_(container).size.height
+            except Exception:
+                text_height = None
+        if text_height is not None and text_height > _NARRATOR_OVERLAP_TEXT_HEIGHT:
+            self._hide_narrator()
 
     def _hide_narrator(self) -> None:
         """Hide the narrator summary label."""
@@ -3293,12 +3314,7 @@ class CommandOverlay(NSObject):
             max_height = _max_overlay_height(self._screen.frame().size.height)
             new_height = min(max(_OVERLAY_HEIGHT, text_height + 24), max_height)
 
-            # Hide narrator label when response content is streaming —
-            # the fixed-position label would overlap scrolling content.
-            # Don't hide during loading (only collapsed/loading text present).
-            if self._response_text and self._narrator_label is not None:
-                if not self._narrator_label.isHidden():
-                    self._hide_narrator()
+            self._sync_narrator_visibility(text_height)
 
             f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
             win_frame = self._window.frame()
