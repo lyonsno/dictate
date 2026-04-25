@@ -24,6 +24,7 @@ from spoke.command import CommandClient, _extract_xml_tool_calls, _personality_p
 from spoke.tool_dispatch import get_tool_schemas
 
 _FALLBACK_COMMAND_MODEL = "qwen3p5-35B-A3B"
+SMOKE_PATHWAY = "personality-skill-smoke"
 _MODEL_PREFERENCES_PATH = (
     Path.home() / "Library" / "Application Support" / "Spoke" / "model_preferences.json"
 )
@@ -363,7 +364,13 @@ def call_backend(
             max_tokens=max_tokens,
         )
     ).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "X-Spoke-Pathway": SMOKE_PATHWAY,
+        "X-Spoke-Utterance-ID": scenario.id,
+        "X-Spoke-Turn": "0",
+        "X-Spoke-Smoke-Harness": SMOKE_PATHWAY,
+    }
     api_key = os.environ.get("SPOKE_COMMAND_API_KEY") or os.environ.get(
         "OMLX_SERVER_API_KEY",
         "",
