@@ -243,6 +243,11 @@ class TestCommandClient:
 
         assert "## Active Personality Stub" in system_prompt
         assert "Personality stubs are an on-demand operator skill" in system_prompt
+        assert "default vibe/register going forward" in system_prompt
+        assert "do that" in system_prompt
+        assert "make it active" in system_prompt
+        assert "If the user only asks to draft" in system_prompt
+        assert "don't install" in system_prompt
         assert str(readme_path) in system_prompt
         assert "read_file" in system_prompt
         assert "## Personality Stub Authoring" not in system_prompt

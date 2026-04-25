@@ -27,6 +27,12 @@ def test_default_scenarios_include_contextual_personality_and_negative_controls(
     assert "operator personality" not in scenarios[
         "technical_register_discussion_no_personality_work"
     ].prompt.lower()
+    assert scenarios["implicit_make_this_the_default_vibe"].expect_readme is True
+    assert "default vibe" in scenarios["implicit_make_this_the_default_vibe"].prompt
+    assert scenarios["path_dependent_direct_edit_then_activate"].expect_readme is True
+    assert scenarios["wallace_style_without_named_command_colon"].expect_readme is True
+    assert scenarios["draft_inline_do_not_install"].expect_readme is False
+    assert "don't install" in scenarios["draft_inline_do_not_install"].prompt
 
 
 def test_extract_first_tool_call_accepts_structured_and_xml_tool_calls():

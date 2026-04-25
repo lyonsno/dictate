@@ -95,6 +95,58 @@ DEFAULT_SCENARIOS: tuple[Scenario, ...] = (
         note="Reset is selector work.",
     ),
     Scenario(
+        id="implicit_make_this_the_default_vibe",
+        context=(
+            {
+                "role": "user",
+                "content": (
+                    "That last answer had the right shape: calm, decisive, "
+                    "not over-explaining, but still warm."
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": "Good, I can keep that register in mind for this thread.",
+            },
+        ),
+        prompt="Actually, make this the default vibe for the operator going forward.",
+        expect_readme=True,
+        note="Implicit personality selection without the words stub/load/personality.",
+    ),
+    Scenario(
+        id="path_dependent_direct_edit_then_activate",
+        context=(
+            {
+                "role": "assistant",
+                "content": (
+                    "If you want, I can edit "
+                    "~/.config/spoke/personalities/voight-kampff.md directly."
+                ),
+            },
+        ),
+        prompt="Yeah, do that, and make it active when you're done.",
+        expect_readme=True,
+        note="Path-dependent follow-up relies on previous assistant-proposed file edit.",
+    ),
+    Scenario(
+        id="wallace_style_without_named_command_colon",
+        prompt=(
+            "Can you wallace-ify the operator register a little, as a saved "
+            "personality, and use it for the next turns?"
+        ),
+        expect_readme=True,
+        note="Style request resembles the WALLACE named command but asks for saved personality work.",
+    ),
+    Scenario(
+        id="draft_inline_do_not_install",
+        prompt=(
+            "Sketch a possible laconic debugging personality in the chat, "
+            "but don't install it or change the active operator."
+        ),
+        expect_readme=False,
+        note="Personality drafting without file/selector mutation should not load the packet.",
+    ),
+    Scenario(
         id="technical_register_discussion_no_personality_work",
         context=(
             {

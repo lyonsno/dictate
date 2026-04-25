@@ -192,9 +192,14 @@ def _personality_skill_pointer() -> str:
         "## Personality Skill\n\n"
         "Personality stubs are an on-demand operator skill. If you decide the "
         "user is asking to create, edit, switch, load, reset, or migrate an "
-        "operator personality/register, first read "
+        "operator personality/register, including making a default vibe/register "
+        "going forward or a follow-up like \"do that\" / \"make it active\" "
+        "after personality-file context, first read "
         f"`{readme_path}` with read_file and follow it before writing any "
-        "personality file or personality.conf.\n"
+        "personality file or personality.conf. If the user only asks to draft, "
+        "sketch, discuss, or brainstorm personality text and says don't install "
+        "or don't change the active operator, answer in chat without reading the "
+        "packet.\n"
     )
 
 
