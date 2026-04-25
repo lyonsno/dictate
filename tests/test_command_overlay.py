@@ -22,6 +22,7 @@ def _make_overlay(mock_pyobjc):
     """Create a CommandOverlay with mocked internals."""
     sys.modules.pop("spoke.command_overlay", None)
     mod = importlib.import_module("spoke.command_overlay")
+    mod._start_overlay_fill_worker = lambda work: work()
     overlay = mod.CommandOverlay.__new__(mod.CommandOverlay)
     overlay._window = MagicMock()
     overlay._window.alphaValue.return_value = 1.0
@@ -1150,6 +1151,7 @@ class TestSDFCaching:
             return original(*args, **kwargs)
 
         monkeypatch.setattr(ov_mod, "_overlay_rounded_rect_sdf", counting_sdf)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: work())
 
         # First call — SDF must be computed
         overlay._apply_ridge_masks(600.0, 80.0)
@@ -1162,7 +1164,7 @@ class TestSDFCaching:
 
     def test_same_appearance_reuses_fill_image(self, mock_pyobjc, monkeypatch):
         """Repeated show-time geometry checks should not rebuild the fill bitmap."""
-        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay, mod = _make_overlay(mock_pyobjc)
 
         import spoke.overlay as ov_mod
         call_count = 0
@@ -1173,11 +1175,31 @@ class TestSDFCaching:
             return "fill-image", b"payload"
 
         monkeypatch.setattr(ov_mod, "_fill_field_to_image", counting_fill_image)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: work())
 
         overlay._apply_ridge_masks(600.0, 80.0)
         overlay._apply_ridge_masks(600.0, 80.0)
 
         assert call_count == 1
+
+    def test_fill_generation_is_not_run_synchronously(self, mock_pyobjc, monkeypatch):
+        """The expensive fill bitmap build should happen behind the worker boundary."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+        queued = []
+
+        import spoke.overlay as ov_mod
+
+        def forbidden_sync_call(*_args):
+            raise AssertionError("fill image generation ran on the caller thread")
+
+        monkeypatch.setattr(ov_mod, "_overlay_rounded_rect_sdf", forbidden_sync_call)
+        monkeypatch.setattr(mod, "_stadium_signed_distance_field", forbidden_sync_call)
+        monkeypatch.setattr(ov_mod, "_fill_field_to_image", forbidden_sync_call)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: queued.append(work))
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+
+        assert len(queued) == 1
 
     def test_changed_height_recomputes_sdf(self, mock_pyobjc, monkeypatch):
         """A height change must recompute the SDF."""
@@ -1194,6 +1216,7 @@ class TestSDFCaching:
             return original(*args, **kwargs)
 
         monkeypatch.setattr(ov_mod, "_overlay_rounded_rect_sdf", counting_sdf)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: work())
 
         overlay._apply_ridge_masks(600.0, 80.0)
         assert call_count == 1

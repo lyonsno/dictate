@@ -203,7 +203,9 @@ class _FakeScrollView:
 
 def _import_overlay(mock_pyobjc):
     sys.modules.pop("spoke.overlay", None)
-    return importlib.import_module("spoke.overlay")
+    mod = importlib.import_module("spoke.overlay")
+    mod._start_overlay_fill_worker = lambda work: work()
+    return mod
 
 
 def test_show_resets_stale_scroll_and_document_height(mock_pyobjc, monkeypatch):

@@ -42,7 +42,11 @@ from .backdrop_stream import (
     _debug_shell_grid_ci_image,
     make_backdrop_renderer,
 )
-from .overlay import _OVERLAY_WINDOW_LEVEL
+from .overlay import (
+    _OVERLAY_WINDOW_LEVEL,
+    _post_overlay_result_to_main,
+    _start_overlay_fill_worker,
+)
 
 logger = logging.getLogger(__name__)
 _BACKDROP_DISPLAY_LAYER_CLASS = None
@@ -2425,18 +2429,85 @@ class CommandOverlay(NSObject):
         total_w = width + 2 * f
         total_h = height + 2 * f
 
-        try:
-            from .overlay import _glow_fill_alpha
-            import numpy as np
+        _has_compositor = getattr(self, "_fullscreen_compositor", None) is not None
+        _b = getattr(self, '_brightness', 0.0)
+        _b_rounded = round(_b * 50) / 50  # 0.02 steps
+        geom_key = (width, height, scale, _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED)
+        appearance_key = (
+            round(float(total_w), 3),
+            round(float(total_h), 3),
+            round(float(scale), 3),
+            _b_rounded,
+            bool(_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED),
+            bool(_has_compositor),
+        )
+        self._desired_fill_image_signature = appearance_key
+        if (
+            getattr(self, "_fill_image_signature", None) == appearance_key
+            and getattr(self, "_fill_payload", None) is not None
+            and (
+                getattr(self, "_spring_tint_layer", None) is None
+                or getattr(self, "_spring_tint_mask_signature", None) == appearance_key
+            )
+        ):
+            return
+        pending = getattr(self, "_pending_fill_image_signature", None)
+        if pending is not None:
+            if pending != appearance_key:
+                self._queued_fill_request = (width, height)
+            return
+        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
+            self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
+            if hasattr(self._fill_layer, "setContentsScale_"):
+                self._fill_layer.setContentsScale_(scale)
+        if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
+            self._spring_tint_layer.setFrame_(((0, 0), (total_w, total_h)))
 
-            _has_compositor = getattr(self, "_fullscreen_compositor", None) is not None
+        self._pending_fill_image_signature = appearance_key
+        geom_cache_hit = getattr(self, '_sdf_geom_key', None) == geom_key
+        cached_fallback_alpha = (
+            getattr(self, "_sdf_fallback_alpha", None)
+            if geom_cache_hit
+            else None
+        )
+        cached_raw_interior = (
+            getattr(self, "_sdf_raw_interior", None)
+            if geom_cache_hit
+            else None
+        )
+        cached_edge_ridge = (
+            getattr(self, "_sdf_edge_ridge", None)
+            if geom_cache_hit
+            else None
+        )
+        cached_inside_mask = (
+            getattr(self, "_sdf_inside_mask", None)
+            if geom_cache_hit
+            else None
+        )
+        cached_ext_exterior = (
+            getattr(self, "_sdf_ext_exterior", None)
+            if geom_cache_hit
+            else None
+        )
 
-            # ── Stage 1: geometry cache (SDF + derived fields) ──
-            # Pure function of overlay dimensions — never changes with
-            # brightness.  Only rebuilt on resize.
-            geom_key = (width, height, scale, _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED)
-            if getattr(self, '_sdf_geom_key', None) != geom_key:
-                if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+        def build() -> None:
+            try:
+                from .overlay import _glow_fill_alpha
+                import numpy as np
+
+                fallback_alpha = cached_fallback_alpha
+                raw_interior = cached_raw_interior
+                edge_ridge = cached_edge_ridge
+                inside_mask = cached_inside_mask
+                ext_exterior = cached_ext_exterior
+                if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and (
+                    fallback_alpha is None
+                    or raw_interior is None
+                    or edge_ridge is None
+                    or inside_mask is None
+                    or ext_exterior is None
+                ):
                     sdf = _stadium_signed_distance_field(
                         total_w,
                         total_h,
@@ -2445,127 +2516,133 @@ class CommandOverlay(NSObject):
                         _optical_shell_body_corner_radius(height),
                         scale,
                     )
-
-                    # Pre-compute geometry-derived fields (brightness-independent)
                     inside_d = np.maximum(-sdf, 0.0)
                     edge_ridge = np.exp(-((inside_d / (1.5 * scale)) ** 2.0)).astype(np.float32)
-                    # Raw interior curve (no floor) — `_glow_fill_alpha` with
-                    # floor=0 gives the pure exp(-sqrt) shape we'll rescale.
-                    raw_interior = np.exp(-np.sqrt(
+                    raw_interior = np.exp(np.sqrt(
                         np.abs(sdf) / max(2.0 * scale, 1e-6)
-                    )).astype(np.float32)
+                    ) * -1.0).astype(np.float32)
                     inside_mask = (sdf <= 0.0)
-
                     feather_px = _OPTICAL_SHELL_FEATHER * scale
                     ext_d = np.maximum(sdf, 0.0)
                     sigma = feather_px / 3.0
                     exterior = np.exp(-0.5 * (ext_d / sigma) ** 2.0).astype(np.float32)
                     ext_t = np.clip(ext_d / feather_px, 0.0, 1.0)
                     ext_exterior = (exterior * (0.13 * np.exp(-((ext_t / 0.30) ** 1.5)) + 0.007)).astype(np.float32)
-
-                    # First render and post-stop fallback still need a
-                    # non-compositor fill image before the fullscreen host
-                    # is available again.
-                    self._sdf_fallback_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
-                    self._sdf_raw_interior = raw_interior
-                    self._sdf_edge_ridge = edge_ridge
-                    self._sdf_inside_mask = inside_mask
-                    self._sdf_ext_exterior = ext_exterior
-                else:
+                    fallback_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
+                elif not _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and fallback_alpha is None:
+                    raw_interior = edge_ridge = inside_mask = ext_exterior = None
                     sdf = _overlay_rounded_rect_sdf(
                         total_w, total_h, width, height,
                         _OVERLAY_CORNER_RADIUS, scale,
                     )
-                    # Non-compositor path: fill alpha is brightness-independent
-                    self._sdf_fallback_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
+                    fallback_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)
+                elif not _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
+                    raw_interior = edge_ridge = inside_mask = ext_exterior = None
 
-                self._sdf_geom_key = geom_key
-                # Force appearance rebuild after geometry change
-                self._sdf_appearance_b = -1.0
-
-            # ── Stage 2: appearance (brightness-dependent fill alpha) ──
-            # Cheap scalar ops on cached geometry arrays.  Only rebuilds
-            # when brightness bucket changes (0.02 steps).
-            _b = getattr(self, '_brightness', 0.0)
-            _b_rounded = round(_b * 50) / 50  # 0.02 steps
-            appearance_key = (
-                round(float(total_w), 3),
-                round(float(total_h), 3),
-                round(float(scale), 3),
-                _b_rounded,
-                bool(_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED),
-                bool(_has_compositor),
-            )
-            if (
-                getattr(self, "_fill_image_signature", None) == appearance_key
-                and getattr(self, "_fill_payload", None) is not None
-                and (
-                    getattr(self, "_spring_tint_layer", None) is None
-                    or getattr(self, "_spring_tint_mask_signature", None) == appearance_key
-                )
-            ):
-                return
-            if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _has_compositor:
-                if getattr(self, '_sdf_appearance_b', -1.0) != _b_rounded:
-                    # Interior floor: on light backgrounds the dark fill
-                    # needs to be fully opaque so punch-through text has
-                    # strong contrast.  On dark backgrounds a softer floor
-                    # lets the frosted quality show.  The value here IS
-                    # the alpha written into the image — layer opacity
-                    # multiplies on top of it.
+                cached_fill_alpha = None
+                sdf_appearance_b = -1.0
+                if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _has_compositor:
                     _ifloor = _lerp(0.60, 0.85, _clamp01(_b))
-                    # Rescale raw interior curve to [_ifloor, 1.0] + edge ridge
-                    interior = (_ifloor + (1.0 - _ifloor) * self._sdf_raw_interior)
+                    interior = (_ifloor + (1.0 - _ifloor) * raw_interior)
                     interior = np.clip(
-                        interior + self._sdf_edge_ridge * 0.50,
+                        interior + edge_ridge * 0.50,
                         0.0, 1.0,
                     ).astype(np.float32)
-                    fill_alpha = np.where(self._sdf_inside_mask, interior, self._sdf_ext_exterior)
-                    self._cached_fill_alpha = fill_alpha
-                    self._sdf_appearance_b = _b_rounded
-                fill_alpha = self._cached_fill_alpha
-            elif _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
-                fill_alpha = self._sdf_fallback_alpha
-            else:
-                fill_alpha = getattr(self, '_sdf_fallback_alpha', None)
-                if fill_alpha is None:
-                    return
+                    fill_alpha = np.where(inside_mask, interior, ext_exterior)
+                    cached_fill_alpha = fill_alpha
+                    sdf_appearance_b = _b_rounded
+                else:
+                    fill_alpha = fallback_alpha
 
-            if _has_compositor:
-                bg_r, bg_g, bg_b = _compositor_fill_color_for_brightness(_b)
-            else:
-                bg_r, bg_g, bg_b = _background_color_for_brightness(_b)
-            fill_image, self._fill_payload = _fill_field_to_image(
-                fill_alpha,
-                int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
-            )
-            self._fill_image_signature = appearance_key
-        except (ImportError, Exception):
+                result = {
+                    "signature": appearance_key,
+                    "total_w": total_w,
+                    "total_h": total_h,
+                    "scale": scale,
+                    "geom_key": geom_key,
+                    "fallback_alpha": fallback_alpha,
+                    "raw_interior": raw_interior,
+                    "edge_ridge": edge_ridge,
+                    "inside_mask": inside_mask,
+                    "ext_exterior": ext_exterior,
+                    "cached_fill_alpha": cached_fill_alpha,
+                    "sdf_appearance_b": sdf_appearance_b,
+                    "has_compositor": _has_compositor,
+                }
+                if _has_compositor:
+                    bg_r, bg_g, bg_b = _compositor_fill_color_for_brightness(_b)
+                else:
+                    bg_r, bg_g, bg_b = _background_color_for_brightness(_b)
+                try:
+                    fill_image, payload = _fill_field_to_image(
+                        fill_alpha,
+                        int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
+                    )
+                    result["image"] = fill_image
+                    result["payload"] = payload
+                except Exception as exc:
+                    result["error"] = repr(exc)
+            except Exception as exc:
+                result = {"signature": appearance_key, "error": repr(exc)}
+            _post_overlay_result_to_main(self, "fillImageReady:", result)
+
+        _start_overlay_fill_worker(build)
+
+    def fillImageReady_(self, payload: dict) -> None:
+        signature = payload.get("signature")
+        if getattr(self, "_pending_fill_image_signature", None) == signature:
+            self._pending_fill_image_signature = None
+        if signature != getattr(self, "_desired_fill_image_signature", None):
+            queued = getattr(self, "_queued_fill_request", None)
+            if queued is not None:
+                self._queued_fill_request = None
+                self._apply_ridge_masks(*queued)
             return
+        if "geom_key" in payload:
+            self._sdf_geom_key = payload.get("geom_key")
+            self._sdf_fallback_alpha = payload.get("fallback_alpha")
+            self._sdf_raw_interior = payload.get("raw_interior")
+            self._sdf_edge_ridge = payload.get("edge_ridge")
+            self._sdf_inside_mask = payload.get("inside_mask")
+            self._sdf_ext_exterior = payload.get("ext_exterior")
+            self._cached_fill_alpha = payload.get("cached_fill_alpha")
+            self._sdf_appearance_b = payload.get("sdf_appearance_b", -1.0)
+        error = payload.get("error")
+        if error:
+            logger.debug("Command overlay fill image generation failed: %s", error)
+            return
+        self._fill_payload = payload.get("payload")
+        self._fill_image_signature = signature
 
+        total_w = payload["total_w"]
+        total_h = payload["total_h"]
+        scale = payload.get("scale", getattr(self, "_ridge_scale", 2.0))
+        fill_image = payload.get("image")
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setContents_(fill_image)
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
             if hasattr(self._fill_layer, "setContentsScale_"):
                 self._fill_layer.setContentsScale_(scale)
             if hasattr(self._fill_layer, "setCompositingFilter_"):
-                if getattr(self, "_fullscreen_compositor", None) is not None:
-                    # Graphic mode: normal alpha blending (no additive glow)
+                if payload.get("has_compositor"):
                     self._fill_layer.setCompositingFilter_(None)
                 else:
                     self._fill_layer.setCompositingFilter_(
                         _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
                     )
-        # Keep the spring tint layer's mask in sync with the fill shape
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
             self._spring_tint_layer.setFrame_(((0, 0), (total_w, total_h)))
-            # Use the fill image as a mask so the tint only shows within the overlay
             mask = CALayer.alloc().init()
             mask.setFrame_(((0, 0), (total_w, total_h)))
             mask.setContents_(fill_image)
             mask.setContentsGravity_("resize")
             self._spring_tint_layer.setMask_(mask)
-            self._spring_tint_mask_signature = appearance_key
+            self._spring_tint_mask_signature = signature
+
+        queued = getattr(self, "_queued_fill_request", None)
+        if queued is not None:
+            self._queued_fill_request = None
+            self._apply_ridge_masks(*queued)
 
     def _update_backdrop_capture_geometry(self):
         if self._window is None or self._content_view is None or self._screen is None:
