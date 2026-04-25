@@ -1389,6 +1389,8 @@ class CommandOverlay(NSObject):
     def brightnessResample_(self, timer) -> None:
         if not self._visible:
             return
+        if getattr(self, "_fullscreen_compositor", None) is not None:
+            return
         try:
             self.set_brightness(_sample_screen_brightness_for_overlay(self._screen))
         except Exception:
@@ -2979,6 +2981,7 @@ class CommandOverlay(NSObject):
             )
             if compositor is not None:
                 self._fullscreen_compositor = compositor
+                self._cancel_brightness_sampling()
                 self._brightness_target = shell_config["initial_brightness"]
                 self._brightness_sample_tick = (
                     -_BRIGHTNESS_COMPOSITOR_STARTUP_GRACE_TICKS

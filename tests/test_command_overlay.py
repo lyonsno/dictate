@@ -989,6 +989,21 @@ class TestAdaptiveCompositing:
 
         assert overlay._brightness_target == pytest.approx(0.83)
 
+    def test_brightness_resample_is_ignored_while_compositor_owns_brightness(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._screen = MagicMock()
+        overlay._brightness_target = 0.16
+        overlay._fullscreen_compositor = MagicMock()
+
+        monkeypatch.setattr(mod, "_sample_screen_brightness_for_overlay", lambda _screen: 0.91)
+
+        overlay.brightnessResample_(None)
+
+        assert overlay._brightness_target == pytest.approx(0.16)
+
     def test_brightness_crossing_reaches_contrast_band_in_one_pulse(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")
@@ -1094,6 +1109,27 @@ class TestAdaptiveCompositing:
 
         assert overlay._brightness_sample_tick < 0
         assert overlay._brightness_target == pytest.approx(0.14)
+
+    def test_fullscreen_compositor_start_cancels_legacy_screen_brightness_timer(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        timer = MagicMock()
+        overlay._brightness_timer = timer
+
+        import spoke.fullscreen_compositor as fullscreen_compositor
+
+        monkeypatch.setattr(
+            fullscreen_compositor,
+            "start_overlay_compositor",
+            lambda **_kwargs: MagicMock(),
+        )
+
+        overlay._start_fullscreen_compositor()
+
+        timer.invalidate.assert_called_once()
+        assert overlay._brightness_timer is None
 
     def test_compositor_startup_grace_does_not_resample_seeded_brightness(
         self, mock_pyobjc
