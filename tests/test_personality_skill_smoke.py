@@ -95,3 +95,19 @@ def test_assess_response_checks_for_expected_readme_call():
     assert result.passed is True
     assert result.first_tool_name == "read_file"
     assert result.first_tool_path == readme_path
+
+
+def test_resolve_model_prefers_explicit_env_then_persisted_preference(tmp_path, monkeypatch):
+    mod = _import_smoke_module()
+    prefs_path = tmp_path / "model_preferences.json"
+    prefs_path.write_text(
+        '{"command_model": "Qwen3.6-35B-A3B-oQ8"}',
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("SPOKE_COMMAND_MODEL", raising=False)
+    assert mod.resolve_model(None, preferences_path=prefs_path) == "Qwen3.6-35B-A3B-oQ8"
+
+    monkeypatch.setenv("SPOKE_COMMAND_MODEL", "env-model")
+    assert mod.resolve_model(None, preferences_path=prefs_path) == "env-model"
+    assert mod.resolve_model("explicit-model", preferences_path=prefs_path) == "explicit-model"

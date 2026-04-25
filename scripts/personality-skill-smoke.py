@@ -23,6 +23,11 @@ from urllib.parse import urlparse
 from spoke.command import CommandClient, _extract_xml_tool_calls, _personality_paths
 from spoke.tool_dispatch import get_tool_schemas
 
+_FALLBACK_COMMAND_MODEL = "qwen3p5-35B-A3B"
+_MODEL_PREFERENCES_PATH = (
+    Path.home() / "Library" / "Application Support" / "Spoke" / "model_preferences.json"
+)
+
 
 @dataclass(frozen=True)
 class Scenario:
@@ -236,6 +241,30 @@ def _chat_completions_url(base_url: str) -> str:
     return f"{raw_url}/{suffix}"
 
 
+def _persisted_command_model(preferences_path: Path = _MODEL_PREFERENCES_PATH) -> str | None:
+    try:
+        payload = json.loads(preferences_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    model = payload.get("command_model")
+    return model.strip() if isinstance(model, str) and model.strip() else None
+
+
+def resolve_model(
+    explicit_model: str | None,
+    *,
+    preferences_path: Path = _MODEL_PREFERENCES_PATH,
+) -> str:
+    if explicit_model and explicit_model.strip():
+        return explicit_model.strip()
+    env_model = os.environ.get("SPOKE_COMMAND_MODEL", "").strip()
+    if env_model:
+        return env_model
+    return _persisted_command_model(preferences_path) or _FALLBACK_COMMAND_MODEL
+
+
 def build_messages(scenario: Scenario, *, base_url: str, model: str) -> list[dict[str, str]]:
     client = CommandClient(
         base_url=base_url,
@@ -331,8 +360,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--model",
-        default=os.environ.get("SPOKE_COMMAND_MODEL", "qwen3p5-35B-A3B"),
-        help="Assistant model id",
+        default=None,
+        help=(
+            "Assistant model id. Defaults to SPOKE_COMMAND_MODEL, then Spoke's "
+            "persisted command_model, then a small static fallback."
+        ),
     )
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--max-tokens", type=int, default=256)
@@ -347,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{scenario.id}\t{expectation}\t{scenario.note}")
         return 0
 
+    model = resolve_model(args.model)
     readme_path = str(_personality_paths()[3])
     results: list[SmokeResult] = []
     for scenario in _selected_scenarios(args.scenario):
@@ -354,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
             response = call_backend(
                 scenario,
                 base_url=args.base_url,
-                model=args.model,
+                model=model,
                 timeout=args.timeout,
                 max_tokens=args.max_tokens,
             )
