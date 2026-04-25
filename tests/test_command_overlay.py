@@ -290,6 +290,22 @@ class TestShowFinishHide:
 
         assert overlay._brightness_timer is not None
 
+    def test_show_samples_current_brightness_before_first_theme(self, mock_pyobjc, monkeypatch):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._brightness = 0.05
+        overlay._brightness_target = 0.05
+        observed = []
+        monkeypatch.setattr(mod, "_sample_screen_brightness_for_overlay", lambda _screen: 0.86)
+        overlay._apply_surface_theme = MagicMock(
+            side_effect=lambda: observed.append(overlay._brightness)
+        )
+
+        overlay.show(start_thinking_timer=False)
+
+        assert observed[0] == pytest.approx(0.86)
+        assert overlay._brightness == pytest.approx(0.86)
+        assert overlay._brightness_target == pytest.approx(0.86)
+
     def test_show_defers_pulse_until_entrance_fade_finishes(self, mock_pyobjc):
         overlay, mod = _make_overlay(mock_pyobjc)
 

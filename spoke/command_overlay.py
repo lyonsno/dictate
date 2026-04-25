@@ -1280,6 +1280,7 @@ class CommandOverlay(NSObject):
         self._response_chroma_active = False
         self._tool_mode = False
         self._pulse_timer = None
+        self._seed_brightness_from_screen()
 
         # Reset geometry
         screen_frame = self._screen.frame()
@@ -1377,6 +1378,16 @@ class CommandOverlay(NSObject):
         if immediate:
             self._brightness = self._brightness_target
             self._apply_surface_theme()
+
+    def _seed_brightness_from_screen(self) -> None:
+        """Synchronously seed entrance brightness from the current backing app."""
+        try:
+            brightness = _sample_screen_brightness_for_overlay(self._screen)
+        except Exception:
+            logger.debug("Command overlay brightness seed failed", exc_info=True)
+            return
+        self._brightness_target = _clamp01(brightness)
+        self._brightness = self._brightness_target
 
     def _start_brightness_sampling(self) -> None:
         old_timer = getattr(self, "_brightness_timer", None)
