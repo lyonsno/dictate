@@ -783,9 +783,11 @@ class TestStreamCommand:
             }
 
         request_count = {"n": 0}
+        request_bodies = []
 
         def fake_urlopen(req, timeout=None):
             request_count["n"] += 1
+            request_bodies.append(json.loads(req.data))
             if request_count["n"] == 1:
                 return _make_sse_response(first_chunks)
             if request_count["n"] == 2:
@@ -807,6 +809,7 @@ class TestStreamCommand:
         assert tool_calls[1][0] == "run_terminal_command"
         assert tool_calls[1][1] == {"argv": ["git", "status", "--short"]}
         assert tool_calls[1][2]["approval_granted"] is True
+        assert [body["presence_penalty"] for body in request_bodies] == [1.0, 1.0]
         assert client.history == [("status?", "Done.")]
 
     def test_pending_tool_approval_persists_across_restart_for_overlay_and_resume(self, tmp_path):
@@ -1537,6 +1540,7 @@ class TestStreamCommand:
             body = json.loads(req.data)
             assert body["model"] == "my-model"
             assert body["stream"] is True
+            assert body["presence_penalty"] == 1.0
             assert body["messages"][-1] == {"role": "user", "content": "do something"}
 
     def test_stream_includes_history_in_payload(self):

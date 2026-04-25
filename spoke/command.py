@@ -101,6 +101,7 @@ def _extract_reasoning_tokens(delta: dict[str, Any]) -> list[str]:
 _DEFAULT_COMMAND_URL = "http://localhost:8090"
 _DEFAULT_COMMAND_MODEL = "qwen3p5-35B-A3B"
 _DEFAULT_RING_BUFFER_SIZE = 20
+_ASSISTANT_PRESENCE_PENALTY = 1.0
 _HISTORY_PATH = Path.home() / ".config" / "spoke" / "history.json"
 
 
@@ -967,6 +968,7 @@ class CommandClient:
                 "top_p": 0.95,
                 "top_k": 20,
                 "repetition_penalty": 1.0,
+                "presence_penalty": _ASSISTANT_PRESENCE_PENALTY,
             }
             if self._enable_thinking and self._is_openrouter:
                 body["reasoning"] = {"enabled": True}
@@ -1358,6 +1360,7 @@ class CommandClient:
                 "top_p": 0.95,
                 "top_k": 20,
                 "repetition_penalty": 1.0,
+                "presence_penalty": _ASSISTANT_PRESENCE_PENALTY,
             }
             if self._enable_thinking and self._is_openrouter:
                 body["reasoning"] = {"enabled": True}
