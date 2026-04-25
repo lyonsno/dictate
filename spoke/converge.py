@@ -683,7 +683,7 @@ class TurnCarver:
 
             # Wait for all to complete before checking for more work
             for t in threads:
-                t.join(timeout=120)
+                t.join(timeout=600)
 
     @staticmethod
     def _safe_call(fn, *args) -> None:
