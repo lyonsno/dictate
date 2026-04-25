@@ -1072,6 +1072,69 @@ class TestAdaptiveCompositing:
 
         assert captured["shell_config"]["initial_brightness"] == pytest.approx(0.07)
 
+    def test_fullscreen_compositor_start_arms_brightness_startup_grace(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._brightness = 0.14
+        overlay._brightness_target = 0.21
+        overlay._brightness_sample_tick = 11
+        compositor = MagicMock()
+
+        import spoke.fullscreen_compositor as fullscreen_compositor
+
+        monkeypatch.setattr(
+            fullscreen_compositor,
+            "start_overlay_compositor",
+            lambda **_kwargs: compositor,
+        )
+
+        overlay._start_fullscreen_compositor()
+
+        assert overlay._brightness_sample_tick < 0
+        assert overlay._brightness_target == pytest.approx(0.14)
+
+    def test_compositor_startup_grace_does_not_resample_seeded_brightness(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+        overlay._brightness = 0.08
+        overlay._brightness_target = 0.08
+        overlay._brightness_sample_tick = -2
+        overlay._cancel_spring = 0.0
+        overlay._cancel_spring_target = 0.0
+        overlay._cancel_spring_fired = False
+        overlay._on_cancel_spring_threshold = None
+        overlay._text_punchthrough = False
+        overlay._apply_surface_theme = MagicMock()
+        overlay._apply_backdrop_pulse_style = MagicMock()
+
+        class _UnstableStartupCompositor:
+            def __init__(self):
+                self.refresh_calls = 0
+                self.sample_reads = 0
+
+            def refresh_brightness(self):
+                self.refresh_calls += 1
+
+            @property
+            def sampled_brightness(self):
+                self.sample_reads += 1
+                return 0.92
+
+        compositor = _UnstableStartupCompositor()
+        overlay._fullscreen_compositor = compositor
+
+        overlay._pulseStepInner()
+
+        assert compositor.refresh_calls == 0
+        assert compositor.sample_reads == 0
+        assert overlay._brightness == pytest.approx(0.08)
+        assert overlay._brightness_target == pytest.approx(0.08)
+        assert overlay._brightness_sample_tick == -1
+
     def test_dark_punchthrough_uses_dark_glyph_boost_layer(
         self, mock_pyobjc, monkeypatch
     ):

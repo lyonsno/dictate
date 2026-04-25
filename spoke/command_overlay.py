@@ -118,6 +118,10 @@ _BRIGHTNESS_COMPOSITOR_SAMPLE_TICKS = max(
     1,
     int(round(_env("SPOKE_COMMAND_BRIGHTNESS_COMPOSITOR_SAMPLE_TICKS", 2.0))),
 )
+_BRIGHTNESS_COMPOSITOR_STARTUP_GRACE_TICKS = max(
+    0,
+    int(round(_env("SPOKE_COMMAND_BRIGHTNESS_COMPOSITOR_STARTUP_GRACE_TICKS", 4.0))),
+)
 _BRIGHTNESS_SAMPLE_INTERVAL = 1.0
 _POINTS_PER_CM = 72.0 / 2.54
 _COMMAND_BACKDROP_OVERSCAN_CM = _env("SPOKE_COMMAND_BACKDROP_OVERSCAN_CM", 1.5)
@@ -1874,10 +1878,11 @@ class CommandOverlay(NSObject):
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is not None:
             _b_tick = getattr(self, '_brightness_sample_tick', 0)
-            if _b_tick % _BRIGHTNESS_COMPOSITOR_SAMPLE_TICKS == 0:
-                compositor.refresh_brightness()
+            if _b_tick >= 0:
+                if _b_tick % _BRIGHTNESS_COMPOSITOR_SAMPLE_TICKS == 0:
+                    compositor.refresh_brightness()
+                self._brightness_target = compositor.sampled_brightness
             self._brightness_sample_tick = _b_tick + 1
-            self._brightness_target = compositor.sampled_brightness
         target = getattr(self, "_brightness_target", 0.0)
         current = getattr(self, "_brightness", 0.0)
         if abs(target - current) > 0.001:
@@ -2974,6 +2979,10 @@ class CommandOverlay(NSObject):
             )
             if compositor is not None:
                 self._fullscreen_compositor = compositor
+                self._brightness_target = shell_config["initial_brightness"]
+                self._brightness_sample_tick = (
+                    -_BRIGHTNESS_COMPOSITOR_STARTUP_GRACE_TICKS
+                )
                 # Cancel the old backdrop refresh timer — compositor replaces it.
                 # Don't call stop_live_stream here (can deadlock if SCK callback
                 # is in progress).  The old stream will be stopped when the
