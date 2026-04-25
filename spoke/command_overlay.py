@@ -2910,6 +2910,9 @@ class CommandOverlay(NSObject):
             capsule_cy_metal = screen_frame.size.height - capsule_cy_cocoa
             shell_config["center_x"] = capsule_cx * scale
             shell_config["center_y"] = capsule_cy_metal * scale
+            shell_config["initial_brightness"] = _clamp01(
+                float(getattr(self, "_brightness", 0.0))
+            )
             # Scale content dimensions to pixel space
             for k in ("content_width_points", "content_height_points",
                       "corner_radius_points", "band_width_points",

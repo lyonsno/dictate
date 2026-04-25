@@ -1033,6 +1033,31 @@ class TestAdaptiveCompositing:
 
         assert compositor.refresh_brightness.call_count >= 2
 
+    def test_fullscreen_compositor_receives_current_brightness_seed(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._brightness = 0.07
+        captured = {}
+        compositor = MagicMock()
+
+        import spoke.fullscreen_compositor as fullscreen_compositor
+
+        def fake_start_overlay_compositor(**kwargs):
+            captured.update(kwargs)
+            return compositor
+
+        monkeypatch.setattr(
+            fullscreen_compositor,
+            "start_overlay_compositor",
+            fake_start_overlay_compositor,
+        )
+
+        overlay._start_fullscreen_compositor()
+
+        assert captured["shell_config"]["initial_brightness"] == pytest.approx(0.07)
+
     def test_response_fragment_uses_blurry_colored_underlay_with_crisp_foreground(
         self, mock_pyobjc, monkeypatch
     ):

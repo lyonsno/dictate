@@ -68,6 +68,16 @@ def _normalize_shell_configs(shell_configs) -> list[dict]:
     return configs
 
 
+def _initial_brightness_from_shell_config(config: dict | None, fallback: float) -> float:
+    if config is None:
+        return fallback
+    try:
+        value = float(config.get("initial_brightness", fallback))
+    except (TypeError, ValueError):
+        return fallback
+    return max(0.0, min(1.0, value))
+
+
 class FullScreenCompositor:
     """Full-display capture → Metal warp → full-screen presentation."""
 
@@ -122,6 +132,11 @@ class FullScreenCompositor:
             return True
         try:
             self._shell_configs = _normalize_shell_configs(shell_config)
+            if self._shell_configs:
+                self._sampled_brightness = _initial_brightness_from_shell_config(
+                    self._shell_configs[0],
+                    self._sampled_brightness,
+                )
             # Reset temporal accumulation so the first frame doesn't
             # blend with stale content from a previous compositor session.
             if self._pipeline is not None:
