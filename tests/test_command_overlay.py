@@ -687,6 +687,28 @@ class TestWindowLayering:
         )
         assert appended == "\n\nThought for 4s"
 
+    def test_late_thinking_topic_updates_collapsed_line_after_response_started(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._utterance_text = "User prompt"
+        overlay._collapsed_text = "Thought for 4s"
+        overlay._response_text = "Done."
+        overlay.append_token = MagicMock()
+        _install_fake_attributed_string(monkeypatch)
+
+        overlay.set_thinking_collapsed(" · route planning")
+
+        assert overlay._collapsed_text == "Thought for 4s · route planning"
+        combined = (
+            overlay._text_view.textStorage()
+            .setAttributedString_.call_args[0][0]
+            .text
+        )
+        assert "Thought for 4s · route planning" in combined
+        overlay.append_token.assert_called_once_with("Done.")
+
     def test_append_token_refreshes_punchthrough_mask_after_layout(
         self, mock_pyobjc, monkeypatch
     ):
@@ -1422,7 +1444,7 @@ class TestGeometryCaps:
         overlay, mod = _make_overlay(mock_pyobjc)
         monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
         overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
-        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(56.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(38.0)
         overlay._text_view.textContainer.return_value = object()
         overlay._response_text = ""
         overlay._narrator_label = MagicMock()
@@ -1435,13 +1457,13 @@ class TestGeometryCaps:
 
         overlay._narrator_label.setHidden_.assert_not_called()
 
-    def test_update_layout_hides_live_narrator_when_user_prompt_wraps_tall(
+    def test_update_layout_hides_live_narrator_before_wrapped_prompt_overlap(
         self, mock_pyobjc, monkeypatch
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
         monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
         overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
-        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(96.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(56.0)
         overlay._text_view.textContainer.return_value = object()
         overlay._response_text = ""
         overlay._narrator_label = MagicMock()
