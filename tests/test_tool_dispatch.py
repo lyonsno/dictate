@@ -1761,6 +1761,26 @@ class TestExecuteToolIntegration:
         assert "repo-local `personality-stubs/`" in result["error"]
         assert not (repo_root / "personality-stubs" / "dfw.md").exists()
 
+    def test_write_file_blocks_personalities_dir_selector_path(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        import os
+
+        monkeypatch.setattr(os.path, "expanduser", lambda path: str(tmp_path) if path == "~" else path)
+        wrong_path = tmp_path / ".config" / "spoke" / "personalities" / "personality.conf"
+        right_path = tmp_path / ".config" / "spoke" / "personality.conf"
+
+        result = json.loads(mod.execute_tool(
+            "write_file",
+            {"file_path": str(wrong_path), "content": "voight-kampff.md\n"},
+            personality_readme_loaded=True,
+        ))
+
+        assert "error" in result
+        assert "active personality selector" in result["error"]
+        assert str(right_path) in result["error"]
+        assert result["selector_path"] == str(right_path)
+        assert not wrong_path.exists()
+
     def test_edit_file_requires_personality_readme_before_personality_stub_edits(self, tmp_path, monkeypatch):
         mod = _import_tools()
         import os

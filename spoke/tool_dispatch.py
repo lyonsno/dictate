@@ -918,6 +918,18 @@ def _personality_write_guard(
             "personality_readme_required": True,
             "readme_path": readme_path,
         }
+    misplaced_selector_path = os.path.join(personalities_dir, "personality.conf")
+    if abs_path == misplaced_selector_path:
+        return {
+            "error": (
+                "The active personality selector is "
+                f"`{pointer_path}`, not `{misplaced_selector_path}`. "
+                f"Read the personality README first: {readme_path}"
+            ),
+            "personality_readme_required": True,
+            "readme_path": readme_path,
+            "selector_path": pointer_path,
+        }
     if abs_path == pointer_path or _path_is_equal_or_child(abs_path, personalities_dir):
         if not personality_readme_loaded:
             return {
@@ -1610,12 +1622,7 @@ def _execute_edit_file(
             error=personality_error["error"],
         )
         result.update(
-            {
-                "personality_readme_required": personality_error[
-                    "personality_readme_required"
-                ],
-                "readme_path": personality_error["readme_path"],
-            }
+            {key: value for key, value in personality_error.items() if key != "error"}
         )
         return finish(result)
 
