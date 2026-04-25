@@ -1229,6 +1229,7 @@ class CommandOverlay(NSObject):
         self._cancel_all_timers()
         self._visible = True
         self._streaming = True
+        has_initial_transcript = bool(initial_utterance or initial_response)
         self._response_text = ""
         self._utterance_text = ""
         self._collapsed_text = ""
@@ -1266,7 +1267,8 @@ class CommandOverlay(NSObject):
             NSMakeRect(48, 16, _OVERLAY_WIDTH - 96, _OVERLAY_HEIGHT - 32)
         )
         self._reset_text_geometry(self._scroll_view.frame().size.height)
-        self._apply_ridge_masks(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
+        if not has_initial_transcript:
+            self._apply_ridge_masks(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
         self._fill_image_brightness = self._brightness
         self._apply_surface_theme()
         self._update_backdrop_capture_geometry()
@@ -1308,8 +1310,9 @@ class CommandOverlay(NSObject):
         self._pulse_phase_asst = 0.0
 
         self._pulse_phase_user = _PULSE_PHASE_OFFSET_USER
-        self._color_phase = 0.75  # start at violet, not red
+        self._color_phase = 0.33  # start away from the old purple flash
         self._color_velocity_phase = 0.0
+        self._response_chroma_active = False
         self._tool_mode = False
         self._pulse_timer = None
 
@@ -1672,8 +1675,11 @@ class CommandOverlay(NSObject):
             NSShadowAttributeName,
             NSShadow,
         )
-        blur_r, blur_g, blur_b = self._current_hue_rgb()
         fg_r, fg_g, fg_b = _assistant_foreground_color_for_brightness(self._brightness)
+        if getattr(self, "_response_chroma_active", True):
+            blur_r, blur_g, blur_b = self._current_hue_rgb()
+        else:
+            blur_r, blur_g, blur_b = fg_r, fg_g, fg_b
         frag = NSMutableAttributedString.alloc().initWithString_(token)
         response_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
             fg_r, fg_g, fg_b, _ASSISTANT_TEXT_ALPHA_MAX
@@ -2230,6 +2236,7 @@ class CommandOverlay(NSObject):
 
     def _start_pulse_timer(self) -> None:
         self._cancel_pulse()
+        self._response_chroma_active = True
         self._pulse_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0 / _PULSE_HZ, self, "pulseStep:", None, True
         )
@@ -2467,17 +2474,18 @@ class CommandOverlay(NSObject):
             )
         ):
             return
-        pending = getattr(self, "_pending_fill_image_signature", None)
-        if pending is not None:
-            if pending != appearance_key:
-                self._queued_fill_request = (width, height)
-            return
         if hasattr(self, '_fill_layer') and self._fill_layer is not None:
             self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
             if hasattr(self._fill_layer, "setContentsScale_"):
                 self._fill_layer.setContentsScale_(scale)
         if hasattr(self, '_spring_tint_layer') and self._spring_tint_layer is not None:
             self._spring_tint_layer.setFrame_(((0, 0), (total_w, total_h)))
+
+        pending = getattr(self, "_pending_fill_image_signature", None)
+        if pending is not None:
+            if pending != appearance_key:
+                self._queued_fill_request = (width, height)
+            return
 
         self._pending_fill_image_signature = appearance_key
         geom_cache_hit = getattr(self, '_sdf_geom_key', None) == geom_key

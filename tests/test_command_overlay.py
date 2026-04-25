@@ -434,6 +434,29 @@ class TestWindowLayering:
         assert overlay._response_text == "Assistant response"
         assert events[:2] == ["layout", "front"]
 
+    def test_show_with_initial_transcript_skips_default_shell_fill_build(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(280.0)
+        overlay._text_view.textContainer.return_value = object()
+        string_obj = MagicMock()
+        string_obj.length.return_value = 0
+        overlay._text_view.string.return_value = string_obj
+        calls = []
+        overlay._apply_ridge_masks = MagicMock(side_effect=lambda *args: calls.append(args))
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+            initial_response="Assistant response",
+        )
+
+        assert (mod._OVERLAY_WIDTH, mod._OVERLAY_HEIGHT) not in calls
+        assert calls, "initial transcript should still build the resized shell"
+
     def test_show_rebuilds_default_fill_geometry_before_reuse(self, mock_pyobjc, monkeypatch):
         overlay, mod = _make_overlay(mock_pyobjc)
         monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
@@ -1261,6 +1284,24 @@ class TestSDFCaching:
         overlay._apply_ridge_masks(600.0, 80.0)
 
         assert len(queued) == 1
+
+    def test_pending_fill_generation_still_updates_visible_frame(
+        self, mock_pyobjc, monkeypatch
+    ):
+        """A resize while a fill worker is pending must not leave the old shell size visible."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: None)
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+        overlay._fill_layer.setFrame_.reset_mock()
+        overlay._apply_ridge_masks(600.0, 240.0)
+
+        overlay._fill_layer.setFrame_.assert_called_with(
+            (
+                (0, 0),
+                (600.0 + 2 * mod._OUTER_FEATHER, 240.0 + 2 * mod._OUTER_FEATHER),
+            )
+        )
 
     def test_changed_height_recomputes_sdf(self, mock_pyobjc, monkeypatch):
         """A height change must recompute the SDF."""
