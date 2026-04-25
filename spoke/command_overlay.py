@@ -279,6 +279,10 @@ def _background_color_for_brightness(brightness: float) -> tuple[float, float, f
 # Dark on dark, light on light — the overlay is a surface, not a glow.
 _COMPOSITOR_FILL_DARK = (0.50, 0.51, 0.54)   # light fill on dark backgrounds — faint, translucent
 _COMPOSITOR_FILL_LIGHT = (0.04, 0.04, 0.05)   # dark fill on light backgrounds — vivid, near-black
+_PUNCHTHROUGH_BOOST_DARK = (0.0, 0.0, 0.0)
+_PUNCHTHROUGH_BOOST_LIGHT = (1.0, 1.0, 1.0)
+_PUNCHTHROUGH_BOOST_OPACITY_DARK = 0.42
+_PUNCHTHROUGH_BOOST_OPACITY_LIGHT = 0.75
 
 
 def _compositor_fill_color_for_brightness(brightness: float) -> tuple[float, float, float]:
@@ -291,6 +295,18 @@ def _compositor_fill_color_for_brightness(brightness: float) -> tuple[float, flo
     t = _clamp01((t - 0.45) * 6.0 + 0.5)
     t = t * t * (3.0 - 2.0 * t)  # smoothstep for clean edges
     return _lerp_color(_COMPOSITOR_FILL_DARK, _COMPOSITOR_FILL_LIGHT, t)
+
+
+def _punchthrough_boost_style_for_brightness(
+    brightness: float,
+) -> tuple[tuple[float, float, float], float]:
+    t = _clamp01(brightness)
+    t = _clamp01((t - 0.45) * 6.0 + 0.5)
+    t = t * t * (3.0 - 2.0 * t)
+    return (
+        _lerp_color(_PUNCHTHROUGH_BOOST_DARK, _PUNCHTHROUGH_BOOST_LIGHT, t),
+        _lerp(_PUNCHTHROUGH_BOOST_OPACITY_DARK, _PUNCHTHROUGH_BOOST_OPACITY_LIGHT, t),
+    )
 
 
 def _user_text_color_for_brightness(brightness: float) -> tuple[float, float, float]:
@@ -2195,12 +2211,22 @@ class CommandOverlay(NSObject):
             if getattr(self, '_last_min_brightness', 0.0) > 0.01:
                 compositor.update_shell_config_key("min_brightness", 0.0)
                 self._last_min_brightness = 0.0
-        # Boost layer: white layer masked to text glyphs for extra lift.
+        # Boost layer: glyph-shaped lift/drop behind punch-through text.
         boost_layer = getattr(self, "_boost_layer", None)
         if boost_layer is not None and getattr(self, "_text_punchthrough", False):
-            _bt = _clamp01((t - 0.45) * 6.0 + 0.5)
-            _bt = _bt * _bt * (3.0 - 2.0 * _bt)
-            boost_opacity = _lerp(0.0, 0.75, _bt)
+            boost_rgb, boost_opacity = _punchthrough_boost_style_for_brightness(t)
+            try:
+                from Quartz import CGColorCreateSRGB
+                boost_layer.setBackgroundColor_(
+                    CGColorCreateSRGB(
+                        boost_rgb[0],
+                        boost_rgb[1],
+                        boost_rgb[2],
+                        1.0,
+                    )
+                )
+            except ImportError:
+                pass
             has_mask = getattr(self, "_boost_mask_layer", None) is not None
             if boost_opacity > 0.01 and has_mask:
                 boost_layer.setHidden_(False)

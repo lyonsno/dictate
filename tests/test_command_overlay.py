@@ -964,6 +964,20 @@ class TestAdaptiveCompositing:
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
+    def test_punchthrough_boost_style_is_bidirectional(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            dark_rgb, dark_opacity = mod._punchthrough_boost_style_for_brightness(0.0)
+            light_rgb, light_opacity = mod._punchthrough_boost_style_for_brightness(1.0)
+
+            assert max(dark_rgb) < 0.08
+            assert dark_opacity > 0.25
+            assert min(light_rgb) > 0.92
+            assert light_opacity > dark_opacity
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
     def test_brightness_resample_updates_target_while_visible(self, mock_pyobjc, monkeypatch):
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay._visible = True
@@ -1057,6 +1071,37 @@ class TestAdaptiveCompositing:
         overlay._start_fullscreen_compositor()
 
         assert captured["shell_config"]["initial_brightness"] == pytest.approx(0.07)
+
+    def test_dark_punchthrough_uses_dark_glyph_boost_layer(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+        overlay._brightness = 0.0
+        overlay._brightness_target = 0.0
+        overlay._cancel_spring = 0.0
+        overlay._cancel_spring_target = 0.0
+        overlay._cancel_spring_fired = False
+        overlay._on_cancel_spring_threshold = None
+        overlay._text_punchthrough = True
+        overlay._boost_mask_layer = MagicMock()
+        overlay._apply_surface_theme = MagicMock()
+        overlay._apply_backdrop_pulse_style = MagicMock()
+        overlay._update_punchthrough_mask = MagicMock()
+        overlay._fullscreen_compositor = MagicMock(sampled_brightness=0.0)
+
+        monkeypatch.setattr(
+            sys.modules["Quartz"],
+            "CGColorCreateSRGB",
+            lambda r, g, b, a: (r, g, b, a),
+            raising=False,
+        )
+
+        overlay._pulseStepInner()
+
+        color = overlay._boost_layer.setBackgroundColor_.call_args[0][0]
+        assert max(color[:3]) < 0.08
+        overlay._boost_layer.setHidden_.assert_called_with(False)
 
     def test_response_fragment_uses_blurry_colored_underlay_with_crisp_foreground(
         self, mock_pyobjc, monkeypatch
