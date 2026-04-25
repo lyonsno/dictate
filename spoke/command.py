@@ -127,6 +127,20 @@ the stub under that direction.
 - Keep stubs short: a few paragraphs or bullets, not a replacement system
   prompt.
 
+## Selection Semantics
+
+- Creating or editing a stub does not select it unless the user asks to load,
+  use, activate, select, switch to, or reset the active personality.
+- If the user asks to create a stub and load/use it, write the stub file here,
+  then write only that stub filename plus a trailing newline to
+  `../personality.conf`.
+- To switch to an existing stub, write only its filename plus a trailing
+  newline to `../personality.conf`.
+- To reset, write `default.md` plus a trailing newline to
+  `../personality.conf`.
+- Do not write `personality.conf` inside this directory; the active selector is
+  `../personality.conf`.
+
 ## Constraints
 
 - Do not redefine tools, safety, Epistaxis, file paths, or core system prompt
@@ -207,11 +221,24 @@ def _write_if_missing(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _write_personality_readme_if_stale(path: Path) -> None:
+    try:
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    except OSError:
+        existing = ""
+    if (
+        "## Selection Semantics" in existing
+        and "Do not write `personality.conf` inside this directory" in existing
+    ):
+        return
+    path.write_text(_PERSONALITIES_README, encoding="utf-8")
+
+
 def _ensure_personality_packet() -> tuple[Path, Path]:
     pointer_path, personalities_dir, default_path, readme_path = _personality_paths()
     personalities_dir.mkdir(parents=True, exist_ok=True)
     _write_if_missing(default_path, _DEFAULT_PERSONALITY_STUB)
-    _write_if_missing(readme_path, _PERSONALITIES_README)
+    _write_personality_readme_if_stale(readme_path)
     if not pointer_path.exists() or not pointer_path.read_text(encoding="utf-8").strip():
         pointer_path.write_text(f"{_DEFAULT_PERSONALITY_FILE}\n", encoding="utf-8")
     return pointer_path, personalities_dir

@@ -318,6 +318,38 @@ class TestCommandClient:
         assert "bad stub" in readme_text
         assert "preserve current agent behavior" in system_prompt.lower()
 
+    def test_personality_readme_explains_selection_semantics(self):
+        """The on-demand packet should distinguish authoring from activation."""
+        from spoke import command as command_mod
+
+        readme_text = command_mod._PERSONALITIES_README
+
+        assert "## Selection Semantics" in readme_text
+        assert "Creating or editing a stub does not select it" in readme_text
+        assert "create a stub and load/use it" in readme_text
+        assert "`default.md`" in readme_text
+        assert "Do not write `personality.conf` inside this directory" in readme_text
+
+    def test_build_messages_refreshes_stale_personality_readme_packet(self, tmp_path, monkeypatch):
+        """Existing generated packets should receive new contract language."""
+        from spoke import command as command_mod
+
+        monkeypatch.setattr(command_mod.Path, "home", classmethod(lambda cls: tmp_path))
+        readme_path = tmp_path / ".config" / "spoke" / "personalities" / "README.md"
+        readme_path.parent.mkdir(parents=True)
+        readme_path.write_text(
+            "# Spoke Personality Stubs\n\n"
+            "Legacy packet without the newer selection semantics.\n",
+            encoding="utf-8",
+        )
+
+        client = self._make_client()
+        client._build_messages("hello")
+
+        readme_text = readme_path.read_text(encoding="utf-8")
+        assert "## Selection Semantics" in readme_text
+        assert "Creating or editing a stub does not select it" in readme_text
+
     def test_build_messages_rejects_personality_pointer_escape(self, tmp_path, monkeypatch):
         """personality.conf should not load files outside ~/.config/spoke/personalities."""
         from spoke import command as command_mod
