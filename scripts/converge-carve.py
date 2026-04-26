@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import sys
+import urllib.parse
 import urllib.request
 from datetime import date
 from pathlib import Path
@@ -160,7 +161,17 @@ def _call_model(system: str, user: str) -> str:
         or os.environ.get("OMLX_SERVER_API_KEY", "")
     )
 
-    url = f"{base_url.rstrip('/')}/v1/chat/completions"
+    # Cloud endpoints (e.g. Gemini, OpenRouter) include the version prefix in
+    # the base URL.  Match CommandClient's detection so we don't double /v1.
+    path = urllib.parse.urlparse(base_url).path.rstrip("/")
+    has_version = any(
+        seg.startswith("v") and seg[1:].replace("beta", "").isdigit()
+        for seg in path.split("/") if seg
+    )
+    if has_version:
+        url = f"{base_url.rstrip('/')}/chat/completions"
+    else:
+        url = f"{base_url.rstrip('/')}/v1/chat/completions"
     payload = json.dumps({
         "model": os.environ.get("SPOKE_COMMAND_MODEL", "Qwen3.6-35B-A3B-bf16"),
         "messages": [
