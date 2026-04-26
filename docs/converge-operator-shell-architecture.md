@@ -299,17 +299,86 @@ This is the current operational center of the shell.
 
 ### Layer C: continuity substrate port
 
-This is where Converge lives:
+This is where Converge lives. It operates in two modes:
+
+**Hot path (live carving):** fires after each command turn.
 
 - four-pass carving across attractors, anamnesis, tópoi, and policy
 - beast species-classification filter with pass/kill/reroute verdicts
+- conversational bearing — 2-3 sentence abstract trajectory anchor, updated
+  after each carve event, prepended to every pass's context with an
+  anti-confabulation guardrail
 - recompile-on-write for all surfaces (current-state files, not changelogs)
-- rolling context window (4 turns) with staleness-aware carving cadence
+- rolling context window (configurable, default 4 turns) with staleness-aware
+  carving cadence
 - staggered prefill launches for Apple Silicon Metal contention
+- multi-turn synthesis instructions — each prompt explicitly instructs the
+  model to look across all recent turns for emergent signal, not just the
+  current utterance in isolation
+- anti-confabulation guardrails on all prompts: existing entries and bearing
+  content are shown for dedup/trajectory only, not for the model to riff on
+- agent-vs-witness topos distinction: only carve tópoi for work the operator
+  is the agent of, not work the user mentions doing elsewhere
 - turn embeddings via OMLX /v1/embeddings
 - semantic compaction support (guided mode with attractor-aware retention)
 - prompt-versioned trace logs for observation and eval reproducibility
-- tuned inference parameters (temp 0.6 / top_p 0.95 / top_k 20)
+- tuned inference parameters (temp 0.6 / top_p 0.95 / top_k 20 for carve
+  passes; temp 0.8 for the main assistant command path)
+- max_tokens=4096 on carve calls to prevent reasoning-loop budget exhaustion
+- empty-create guard: skip ops with no content instead of writing empty files
+
+**Cold path (historical migration):** `scripts/converge-migrate.py` processes
+accumulated Grapheus transcript history through the same pipeline.
+
+- reads Grapheus daily logs in date order, deduplicating retries and
+  filtering carve/beast/bearing requests from the transcript
+- `--batch N` overrides cadence and context buffer size for batch-size
+  comparison experiments
+- `--stride N` (with `--batch`) enables sliding-window mode: windows of
+  `--batch` turns advancing by `--stride`, with overlap zone turns seen by
+  multiple carve events. Constructs context directly from log positions,
+  bypassing the hot-path accumulation machinery to avoid double-counting
+- `--stagger N` controls seconds between pass launches within each carve
+  event, limiting peak concurrency for background operation alongside
+  interactive use
+- `--clean` wipes all surface directories for fresh substrate bootstrap
+- `--live` writes to real `~/.config/spoke/` directories instead of temp dirs
+- `--resume` picks up from last saved progress (saves every 10 turns and at
+  end of each log)
+- graceful shutdown on SIGINT/SIGTERM (finishes current carve, saves progress)
+- server-idle heartbeat check every 20 turns (skippable with `--no-idle-check`
+  for OpenRouter or fast iteration)
+- backend switchable via `SPOKE_COMMAND_URL` env var (tested with local OMLX
+  and OpenRouter)
+
+**Batch-size findings from comparison runs (2026-04-26):**
+
+Batch-size comparison across batch 2 (default), batch 4 (with synthesis
+instructions), batch 8 (no overlap), and batch 8 stride 6 against the same
+102-turn Grapheus log revealed:
+
+- Batch 2 produces the most granular output (45 entries) but takes the
+  longest (~50 min) and captures many single-turn observations
+- Batch 4 with synthesis instructions is the best time/quality tradeoff:
+  34 entries in 29 min, with richer per-entry content from multi-turn
+  synthesis. Policy surface recovered from 1 entry (batch 4 without
+  synthesis) to 3 entries
+- Batch 8 no-overlap produces the highest quality per entry with zero beast
+  kills, but fewer total entries (24) — the model is more confident in its
+  routing with more context
+- Batch 8 stride 6 recovers entries that fall between window boundaries
+  (especially tópoi) while maintaining large-context quality. The overlap
+  zone must bypass `on_turn_complete` to avoid double-counting corruption
+
+**Observability tooling:**
+
+- `scripts/demo-carve.py` — feed Grapheus turns through a real TurnCarver
+  pointed at temp directories. Full pipeline: context buffer, cadence, four
+  passes, beast, bearing, file writes. For quick sanity-checking of pipeline
+  changes
+- `scripts/viz-entries.py` — d3 force-directed graph of carved entries,
+  positioned by embedding similarity (Octen-Embedding-8B via OMLX), colored
+  by surface. Hover for full text. For qualitative comparison across runs
 
 Planned next surfaces:
 
@@ -318,6 +387,9 @@ Planned next surfaces:
   Runs manually or nightly, not on the hot path.
 - **Paint Dry reader adaptation** — live terminal observability for the carve
   pipeline, consuming the extracted Paint Dry narrator/sink/reader architecture
+- **WebGPU orbital visualizer** — interactive 3D force simulation with
+  semantic attraction/repulsion from embeddings, replacing the throwaway d3
+  force layout
 - **rough** — a catch-all surface for light-mode operation (2 calls instead
   of 5) where the carver routes to attractor or rough, and periodic beast
   reconciliation promotes rough entries to their correct surfaces
