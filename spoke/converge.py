@@ -77,6 +77,12 @@ The user speaks via voice dictation with transcription artifacts. Read through
 them to the intent. "Tractor" is almost certainly "attractor." "Epístaxis"
 is correct Greek, not a typo.
 
+Look across ALL recent turns together, not just the current utterance in
+isolation. If the user's concern evolved across multiple turns — started
+with one framing and refined it — carve the mature form, not each step.
+If the arc across turns reveals something that no single turn states
+explicitly, that emergent signal is the most valuable thing to carve.
+
 You will be given EXISTING personal attractors. These are shown so you can
 avoid duplicates and reinforce existing entries when appropriate. Do NOT
 reference the content of existing entries in new candidates — carve ONLY
@@ -140,6 +146,11 @@ Anamnesis IS:
 - Relational knowledge: what connects to what, what depends on what
 - Operational knowledge: things learned from incidents or debugging
 
+Look across ALL recent turns together. A fact may only become clear from
+the combination of multiple turns — the user says one thing, the assistant
+responds, and the user's correction or elaboration reveals the real fact.
+Carve the synthesized observation, not each fragment.
+
 You will be given EXISTING anamnesis entries. These are shown so you can
 avoid duplicates — do NOT reference the content of existing entries in new
 candidates. Carve ONLY from what appears in the current utterance and recent
@@ -182,6 +193,10 @@ Tópoi ARE:
 - "Waiting for subagent result on attractor search"
 - "Creating a spoke worktree off remote main"
 
+Look across ALL recent turns together. Work state often evolves across
+turns — the user starts something, hits a problem, pivots. Carve the
+current state after the arc, not each intermediate step.
+
 You will be given EXISTING tópoi. These are shown so you can avoid duplicates
 and update existing entries — do NOT reference the content of existing entries
 in new candidates. Carve ONLY from what appears in the current utterance and
@@ -223,6 +238,13 @@ Policy IS:
 - "Development should always happen in worktrees" (never done, always enforced)
 - "Four parallel passes are better than one multi-routing pass"
 - "The satisfaction condition test should distinguish action-shaped from state-shaped"
+
+Policy often emerges across multiple turns of reasoning — the user
+proposes something, tests it, refines it, and the mature principle is only
+visible from the full arc. Look across ALL recent turns for reasoning that
+converged on a principle, not just single-turn declarations. The most
+valuable policy carves are ones where the user arrived at a standing rule
+through a multi-turn discussion that no single turn captures alone.
 
 You will be given EXISTING policy observations. These are shown so you can
 avoid duplicates — do NOT reference the content of existing entries in new
@@ -608,6 +630,7 @@ class TurnCarver:
         self._anamnesis_io_lock = threading.Lock()  # serialize anamnesis file mutations
         self._topoi_io_lock = threading.Lock()  # serialize topoi file mutations
         self._policy_io_lock = threading.Lock()  # serialize policy file mutations
+        self._bearing_io_lock = threading.Lock()  # serialize bearing read-update-write
         _ATTRACTORS_DIR.mkdir(parents=True, exist_ok=True)
         _ANAMNESIS_DIR.mkdir(parents=True, exist_ok=True)
         _TOPOI_DIR.mkdir(parents=True, exist_ok=True)
@@ -771,6 +794,7 @@ class TurnCarver:
             "top_p": 0.95,
             "top_k": 20,
             "repetition_penalty": 1.0,
+            "max_tokens": 4096,
         }).encode("utf-8")
 
         headers = {"Content-Type": "application/json"}
@@ -875,46 +899,47 @@ class TurnCarver:
         if not context:
             return
 
-        # Load current bearing
-        current_bearing = ""
-        if _BEARING_PATH.exists():
+        with self._bearing_io_lock:
+            # Load current bearing
+            current_bearing = ""
+            if _BEARING_PATH.exists():
+                try:
+                    current_bearing = _BEARING_PATH.read_text(encoding="utf-8").strip()
+                except OSError:
+                    pass
+
+            # Build the recent turns block
+            turn_lines = []
+            for c in context:
+                turn_lines.append(f"User: {c['user']}")
+                if c.get("assistant"):
+                    turn_lines.append(f"Assistant: {c['assistant']}")
+
+            user_prompt = ""
+            if current_bearing:
+                user_prompt += f"Current bearing:\n\n{current_bearing}\n\n"
+            else:
+                user_prompt += "Current bearing: (none — this is the start of the conversation)\n\n"
+            user_prompt += (
+                "New exchange(s):\n\n"
+                + "\n".join(turn_lines)
+                + "\n\nUpdate the bearing."
+            )
+
             try:
-                current_bearing = _BEARING_PATH.read_text(encoding="utf-8").strip()
-            except OSError:
-                pass
-
-        # Build the recent turns block
-        turn_lines = []
-        for c in context:
-            turn_lines.append(f"User: {c['user']}")
-            if c.get("assistant"):
-                turn_lines.append(f"Assistant: {c['assistant']}")
-
-        user_prompt = ""
-        if current_bearing:
-            user_prompt += f"Current bearing:\n\n{current_bearing}\n\n"
-        else:
-            user_prompt += "Current bearing: (none — this is the start of the conversation)\n\n"
-        user_prompt += (
-            "New exchange(s):\n\n"
-            + "\n".join(turn_lines)
-            + "\n\nUpdate the bearing."
-        )
-
-        try:
-            result, elapsed = self._call_model_for_carve(_BEARING_SYSTEM_PROMPT, user_prompt)
-            content = result.strip()
-            if content.startswith("```"):
-                content = re.sub(r"^```(?:markdown|md)?\s*", "", content)
-                content = re.sub(r"\s*```$", "", content)
-            # Atomic write
-            tmp = _BEARING_PATH.with_suffix(".tmp")
-            tmp.write_text(content, encoding="utf-8")
-            tmp.replace(_BEARING_PATH)
-            self._trace("bearing_update", elapsed=round(elapsed, 2), length=len(content))
-            logger.debug("Converge: bearing updated (%.1fs, %d chars)", elapsed, len(content))
-        except Exception:
-            logger.debug("Converge: bearing update failed", exc_info=True)
+                result, elapsed = self._call_model_for_carve(_BEARING_SYSTEM_PROMPT, user_prompt)
+                content = result.strip()
+                if content.startswith("```"):
+                    content = re.sub(r"^```(?:markdown|md)?\s*", "", content)
+                    content = re.sub(r"\s*```$", "", content)
+                # Atomic write
+                tmp = _BEARING_PATH.with_suffix(".tmp")
+                tmp.write_text(content, encoding="utf-8")
+                tmp.replace(_BEARING_PATH)
+                self._trace("bearing_update", elapsed=round(elapsed, 2), length=len(content))
+                logger.debug("Converge: bearing updated (%.1fs, %d chars)", elapsed, len(content))
+            except Exception:
+                logger.debug("Converge: bearing update failed", exc_info=True)
 
     def _carve_single(
         self,
@@ -1226,6 +1251,10 @@ class TurnCarver:
                         elif op_type == "create":
                             title = op.get("title", slug)
                             evidence = op.get("evidence", "")
+                            if not evidence and not path.exists():
+                                logger.debug("Converge: skipping empty attractor create for %s", slug)
+                                actions.append(f"skip_empty:{slug}")
+                                continue
                             if path.exists():
                                 recompiled = self._recompile_entry(path, evidence)
                                 if recompiled:
@@ -1244,6 +1273,10 @@ class TurnCarver:
                     else:
                         # Generic surfaces: create/update
                         content = op.get("content", "")
+                        if not content and op_type == "create":
+                            logger.debug("Converge: skipping empty create for %s/%s", surface_name, slug)
+                            actions.append(f"skip_empty:{slug}")
+                            continue
                         if op_type == "update" and path.exists():
                             recompiled = self._recompile_entry(path, content)
                             if recompiled:

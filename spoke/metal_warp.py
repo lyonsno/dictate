@@ -29,14 +29,11 @@ import time
 
 from .backdrop_stream import (
     _WARP_BLEED_ZONE_FRAC,
-    _WARP_CENTER_FLOOR,
     _WARP_CURVEBOOST_CAP,
     _WARP_CURVEBOOST_MAG_SCALE,
     _WARP_CURVEBOOST_RING_CAP,
     _WARP_CURVEBOOST_RING_DIVISOR,
     _WARP_EXTERIOR_MAG_DECAY,
-    _WARP_EXTERIOR_MAG_STRENGTH,
-    _WARP_FIELD_EXPONENT,
     _WARP_REMAP_BASE_EXP_FLOOR,
     _WARP_REMAP_BASE_EXP_SCALE,
     _WARP_REMAP_RIM_EXP,
@@ -47,7 +44,14 @@ from .backdrop_stream import (
 
 logger = logging.getLogger(__name__)
 
-# Tuning constants — must stay in sync with backdrop_stream.py
+# Metal is the product-authoritative optical-shell renderer during visual tuning.
+# Keep these visual constants local so fallback/backdrop changes do not silently
+# retune the Metal path.
+_WARP_CENTER_FLOOR = 0.94
+_WARP_FIELD_EXPONENT = 0.25
+_WARP_EXTERIOR_MAG_STRENGTH = 0.3
+
+# Metal-only sampling constants.
 _WARP_ALIAS_MIP_BIAS_DEADZONE = 0.12
 _WARP_ALIAS_MIP_BIAS_SCALE = 1.35
 _WARP_ALIAS_MIP_BIAS_MAX = 2.0

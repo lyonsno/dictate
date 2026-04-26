@@ -1,6 +1,7 @@
 """Tests for converge-carve.py history loading with the new format."""
 
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -71,3 +72,40 @@ class TestLoadHistoryUtterances:
     def test_missing_file_returns_empty(self, tmp_path):
         with patch.object(_carve, "_HISTORY_PATH", tmp_path / "missing.json"):
             assert _carve._load_history_utterances() == []
+
+
+class TestCallModelUrl:
+    """Verify _call_model builds the correct URL for local and cloud endpoints."""
+
+    def test_local_url_gets_v1_prefix(self):
+        """Local endpoints without version prefix get /v1 prepended."""
+        import urllib.request
+        with patch.object(urllib.request, "urlopen") as mock_open, \
+             patch.dict(os.environ, {"SPOKE_COMMAND_URL": "http://localhost:8090"}, clear=False):
+            mock_resp = mock_open.return_value.__enter__.return_value
+            mock_resp.read.return_value = b'{"choices":[{"message":{"content":"ok"}}]}'
+            _carve._call_model("sys", "usr")
+            req = mock_open.call_args[0][0]
+            assert req.full_url == "http://localhost:8090/v1/chat/completions"
+
+    def test_cloud_url_with_version_prefix_no_double_v1(self):
+        """Cloud endpoints that already have /v1 in the URL must not get /v1/v1."""
+        import urllib.request
+        with patch.object(urllib.request, "urlopen") as mock_open, \
+             patch.dict(os.environ, {"SPOKE_COMMAND_URL": "https://generativelanguage.googleapis.com/v1beta"}, clear=False):
+            mock_resp = mock_open.return_value.__enter__.return_value
+            mock_resp.read.return_value = b'{"choices":[{"message":{"content":"ok"}}]}'
+            _carve._call_model("sys", "usr")
+            req = mock_open.call_args[0][0]
+            assert req.full_url == "https://generativelanguage.googleapis.com/v1beta/chat/completions"
+
+    def test_openrouter_url_with_v1(self):
+        """OpenRouter-style URLs with /v1 already present."""
+        import urllib.request
+        with patch.object(urllib.request, "urlopen") as mock_open, \
+             patch.dict(os.environ, {"SPOKE_COMMAND_URL": "https://openrouter.ai/api/v1"}, clear=False):
+            mock_resp = mock_open.return_value.__enter__.return_value
+            mock_resp.read.return_value = b'{"choices":[{"message":{"content":"ok"}}]}'
+            _carve._call_model("sys", "usr")
+            req = mock_open.call_args[0][0]
+            assert req.full_url == "https://openrouter.ai/api/v1/chat/completions"

@@ -2,34 +2,18 @@ from spoke import metal_warp
 import pytest
 
 
-def test_metal_and_ci_warp_tuning_constants_stay_in_sync():
+def test_metal_warp_owns_visual_tuning_constants_while_backdrop_is_fallback():
     from spoke import backdrop_stream
 
-    shared_constant_names = [
-        "_WARP_BLEED_ZONE_FRAC",
-        "_WARP_CENTER_FLOOR",
-        "_WARP_FIELD_EXPONENT",
-        "_WARP_REMAP_BASE_EXP_SCALE",
-        "_WARP_REMAP_BASE_EXP_FLOOR",
-        "_WARP_REMAP_RIM_EXP",
-        "_WARP_CURVEBOOST_CAP",
-        "_WARP_CURVEBOOST_MAG_SCALE",
-        "_WARP_CURVEBOOST_RING_DIVISOR",
-        "_WARP_CURVEBOOST_RING_CAP",
-        "_WARP_SPINE_PROXIMITY_BOOST",
-        "_WARP_X_SQUEEZE",
-        "_WARP_Y_SQUEEZE",
-        "_WARP_EXTERIOR_MAG_STRENGTH",
-        "_WARP_EXTERIOR_MAG_DECAY",
-    ]
+    expected_metal_tuning = {
+        "_WARP_CENTER_FLOOR": 0.94,
+        "_WARP_FIELD_EXPONENT": 0.25,
+        "_WARP_EXTERIOR_MAG_STRENGTH": 0.3,
+    }
 
-    mismatches = [
-        name
-        for name in shared_constant_names
-        if getattr(metal_warp, name) != getattr(backdrop_stream, name)
-    ]
-
-    assert mismatches == []
+    for name, expected in expected_metal_tuning.items():
+        assert getattr(metal_warp, name) == pytest.approx(expected)
+        assert getattr(metal_warp, name) != getattr(backdrop_stream, name)
 
 
 def test_warp_alias_mip_bias_stays_zero_for_near_identity_warp():
