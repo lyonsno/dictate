@@ -499,6 +499,25 @@ class TestWindowLayering:
 
         assert command_mod._COMMAND_OVERLAY_WINDOW_LEVEL == overlay_mod._OVERLAY_WINDOW_LEVEL + 1
 
+    def test_setup_logs_command_overlay_created(self, mock_pyobjc, monkeypatch, caplog):
+        sys.modules.pop("spoke.command_overlay", None)
+        command_mod = importlib.import_module("spoke.command_overlay")
+        screen = MagicMock()
+        screen.frame.return_value = _make_rect(0.0, 0.0, 1920.0, 1080.0)
+        screen.backingScaleFactor.return_value = 2.0
+        overlay = command_mod.CommandOverlay.alloc().initWithScreen_(screen)
+        monkeypatch.setattr(overlay, "_apply_ridge_masks", MagicMock())
+        monkeypatch.setattr(overlay, "_install_backdrop_frame_callback", MagicMock())
+        monkeypatch.setattr(overlay, "_install_backdrop_sample_buffer_callback", MagicMock())
+        monkeypatch.setattr(overlay, "_apply_surface_theme", MagicMock())
+        monkeypatch.setattr(overlay, "_set_overlay_scale", MagicMock())
+        monkeypatch.setattr(overlay, "_update_backdrop_capture_geometry", MagicMock())
+
+        with caplog.at_level("INFO", logger="spoke.command_overlay"):
+            overlay.setup()
+
+        assert "Command overlay created" in caplog.text
+
     def test_hide_clears_visible_and_streaming(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._visible = True

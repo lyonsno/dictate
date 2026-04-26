@@ -765,6 +765,7 @@ class CommandOverlay(NSObject):
         self._apply_surface_theme()
         self._set_overlay_scale(1.0)
         self._update_backdrop_capture_geometry()
+        logger.info("Command overlay created")
 
     def _choose_backdrop_layer_class(self):
         if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_VISUALIZE:
@@ -780,8 +781,6 @@ class CommandOverlay(NSObject):
             except Exception:
                 logger.debug("Command backdrop renderer sample-buffer capability check failed", exc_info=True)
         return CALayer
-
-        logger.info("Command overlay created")
 
     def _backdrop_layer_uses_sample_buffers(self) -> bool:
         return bool(getattr(self, "_backdrop_layer_is_sample_buffer_display", False))

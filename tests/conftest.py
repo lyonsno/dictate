@@ -138,6 +138,9 @@ def _make_fake_appkit():
     a.NSWindowCollectionBehaviorCanJoinAllSpaces = 1 << 0
     a.NSWindowCollectionBehaviorFullScreenAuxiliary = 1 << 8
     a.NSWindowCollectionBehaviorStationary = 1 << 4
+    a.NSTextAlignmentLeft = 0
+    a.NSTextAlignmentRight = 1
+    a.NSLineBreakByTruncatingTail = 4
     return a
 
 
