@@ -42,6 +42,15 @@ class TestOverlayTiming:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
+    def test_preview_fade_in_is_fast_enough_to_feel_immediate(self, mock_pyobjc):
+        """Preview overlay entrance should not read as a slow materialization."""
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            assert mod._FADE_IN_S == pytest.approx(0.4)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
     def test_typewriter_starts_with_faster_interval_for_quick_preview_updates(
         self, mock_pyobjc
     ):
@@ -171,6 +180,7 @@ class TestAdaptiveOverlayCompositing:
     """Overlay bg/text cross-fades between dark and light with brightness."""
 
     def _make_overlay(self, mod):
+        mod._start_overlay_fill_worker = lambda work: work()
         overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
         overlay._visible = True
         overlay._text_view = MagicMock()
@@ -324,6 +334,50 @@ class TestAdaptiveOverlayCompositing:
         try:
             overlay = self._make_overlay(mod)
             assert overlay._brightness == pytest.approx(0.0)
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_same_appearance_reuses_fill_image(self, mock_pyobjc, monkeypatch):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay._fill_layer = MagicMock()
+            call_count = 0
+
+            def counting_fill_image(*_args):
+                nonlocal call_count
+                call_count += 1
+                return "fill-image", b"payload"
+
+            monkeypatch.setattr(mod, "_fill_field_to_image", counting_fill_image)
+            monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: work())
+
+            overlay._apply_ridge_masks(600.0, 80.0)
+            overlay._apply_ridge_masks(600.0, 80.0)
+
+            assert call_count == 1
+        finally:
+            sys.modules.pop("spoke.overlay", None)
+
+    def test_fill_generation_is_not_run_synchronously(self, mock_pyobjc, monkeypatch):
+        sys.modules.pop("spoke.overlay", None)
+        mod = importlib.import_module("spoke.overlay")
+        try:
+            overlay = self._make_overlay(mod)
+            overlay._fill_layer = MagicMock()
+            queued = []
+
+            def forbidden_sync_call(*_args):
+                raise AssertionError("fill image generation ran on the caller thread")
+
+            monkeypatch.setattr(mod, "_overlay_rounded_rect_sdf", forbidden_sync_call)
+            monkeypatch.setattr(mod, "_fill_field_to_image", forbidden_sync_call)
+            monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: queued.append(work))
+
+            overlay._apply_ridge_masks(600.0, 80.0)
+
+            assert len(queued) == 1
         finally:
             sys.modules.pop("spoke.overlay", None)
 

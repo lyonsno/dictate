@@ -950,9 +950,11 @@ class TestStreamCommand:
             }
 
         request_count = {"n": 0}
+        request_bodies = []
 
         def fake_urlopen(req, timeout=None):
             request_count["n"] += 1
+            request_bodies.append(json.loads(req.data))
             if request_count["n"] == 1:
                 return _make_sse_response(first_chunks)
             if request_count["n"] == 2:
@@ -974,6 +976,7 @@ class TestStreamCommand:
         assert tool_calls[1][0] == "run_terminal_command"
         assert tool_calls[1][1] == {"argv": ["git", "status", "--short"]}
         assert tool_calls[1][2]["approval_granted"] is True
+        assert [body["presence_penalty"] for body in request_bodies] == [1.0, 1.0]
         assert client.history == [("status?", "Done.")]
 
     def test_pending_tool_approval_persists_across_restart_for_overlay_and_resume(self, tmp_path):
@@ -1550,6 +1553,129 @@ class TestStreamCommand:
             for msg in second_messages[:-1]
         )
 
+    def test_stale_break_after_tool_result_commits_interrupted_turn_before_next_request(self):
+        """A stale command loop must not roll history back past completed tool work."""
+        from spoke.command import CommandClient
+        from spoke.tool_dispatch import get_tool_schemas
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+            max_history=5,
+            history_path=None,
+        )
+
+        cancel_first = threading.Event()
+        captured_bodies: list[dict] = []
+        first_tool_round_chunks = [
+            self._content_chunk("Let me check. "),
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "capture_context", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"scope":"active_window"}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        second_user_chunks = [self._content_chunk("Second answer.")]
+        ignored_chunk = self._content_chunk("ignored")
+
+        class _CancelBeforeContentResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def close(self):
+                return None
+
+            def __iter__(self):
+                cancel_first.set()
+                yield f"data: {json.dumps(ignored_chunk)}\n\n".encode()
+
+        responses = [
+            _make_sse_response(first_tool_round_chunks),
+            _CancelBeforeContentResponse(),
+            _make_sse_response(second_user_chunks),
+        ]
+
+        def fake_urlopen(req, timeout=None):
+            body = json.loads(req.data.decode("utf-8"))
+            captured_bodies.append(body)
+            return responses.pop(0)
+
+        def consume_like_delegate(utterance: str):
+            for _event in client.stream_command_events(
+                utterance,
+                tools=get_tool_schemas(),
+                tool_executor=lambda **kwargs: '{"ok": true}',
+                cancel_check=lambda: cancel_first.is_set(),
+            ):
+                if cancel_first.is_set():
+                    break
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            consume_like_delegate("first")
+            list(client.stream_command_events(
+                "second",
+                tools=get_tool_schemas(),
+                tool_executor=lambda **kwargs: '{"ok": true}',
+            ))
+
+        assert len(captured_bodies) == 3
+        second_messages = captured_bodies[2]["messages"]
+        assert second_messages[-1] == {"role": "user", "content": "second"}
+        assert any(
+            msg == {"role": "user", "content": "first"}
+            for msg in second_messages[:-1]
+        )
+        assert any(
+            msg.get("role") == "tool" and msg.get("content") == '{"ok": true}'
+            for msg in second_messages[:-1]
+        )
+
+    def test_assistant_final_is_committed_before_consumer_can_stop(self):
+        """Seeing assistant_final means the finished turn is already durable."""
+        from spoke.command import CommandClient
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test",
+            api_key="key",
+            max_history=5,
+            history_path=None,
+        )
+        captured_bodies: list[dict] = []
+        responses = [
+            _make_sse_response([self._content_chunk("first answer")]),
+            _make_sse_response([self._content_chunk("second answer")]),
+        ]
+
+        def fake_urlopen(req, timeout=None):
+            captured_bodies.append(json.loads(req.data.decode("utf-8")))
+            return responses.pop(0)
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            for event in client.stream_command_events("first"):
+                if event.kind == "assistant_final":
+                    break
+            list(client.stream_command_events("second"))
+
+        assert len(captured_bodies) == 2
+        second_messages = captured_bodies[1]["messages"]
+        assert second_messages[-1] == {"role": "user", "content": "second"}
+        assert any(
+            msg == {"role": "user", "content": "first"}
+            for msg in second_messages[:-1]
+        )
+        assert any(
+            msg == {"role": "assistant", "content": "first answer"}
+            for msg in second_messages[:-1]
+        )
+
     def test_stream_sends_auth_header(self):
         """Request should include Authorization header when API key is set."""
         from spoke.command import CommandClient
@@ -1581,6 +1707,7 @@ class TestStreamCommand:
             body = json.loads(req.data)
             assert body["model"] == "my-model"
             assert body["stream"] is True
+            assert body["presence_penalty"] == 1.0
             assert body["messages"][-1] == {"role": "user", "content": "do something"}
 
     def test_stream_includes_history_in_payload(self):

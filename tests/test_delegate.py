@@ -1108,7 +1108,7 @@ class TestDualModelConfiguration:
             "selected": "qwen3p5-35B-A3B",
             "models": [
                 ("qwen3p5-35B-A3B", "qwen3p5-35B-A3B", True),
-                ("qwen3-14b", "qwen3-14b", True),
+                ("qwen3-14b", "qwen3-14b", False),
             ],
         }
 
@@ -2386,6 +2386,54 @@ class TestDualModelConfiguration:
         MockCommand.assert_called_once_with(
             base_url=main_module._DEFAULT_COMMAND_URL,
             model="qwen3-14b",
+        )
+        assert "SPOKE_RELAUNCH_COMMAND_MODEL" not in os.environ
+
+    def test_init_consumes_relaunch_command_model_in_cloud_backend(
+        self, main_module, monkeypatch
+    ):
+        """A cloud relaunch must not leave a stale one-shot local override in the env."""
+        monkeypatch.setenv("SPOKE_RELAUNCH_COMMAND_MODEL", "gemini-2.5-pro")
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "cloud",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_provider_preference",
+            lambda self: "google",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_model_preference",
+            lambda self, provider=None: "gemini-2.5-pro",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_resolve_command_cloud_api_key",
+            lambda self, command_url, provider=None: "test-key",
+            raising=False,
+        )
+
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            MockCommand.return_value = MagicMock()
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[("gemini-2.5-pro", "gemini-2.5-pro", True)],
+            ):
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
+
+        assert result is not None
+        MockCommand.assert_called_once_with(
+            base_url=main_module._DEFAULT_CLOUD_URL,
+            model="gemini-2.5-pro",
+            api_key="test-key",
         )
         assert "SPOKE_RELAUNCH_COMMAND_MODEL" not in os.environ
 
@@ -3697,7 +3745,7 @@ class TestCommandCallbacks:
         d.commandUtteranceReady_({"token": 1, "utterance": "open file"})
 
         d._overlay.hide.assert_called()
-        d._command_overlay.show.assert_called()
+        d._command_overlay.show.assert_called_once()
         d._command_overlay.set_utterance.assert_called_with("open file")
 
     def test_command_utterance_ready_primes_command_overlay_brightness(
@@ -3830,7 +3878,9 @@ class TestCommandCallbacks:
         assert d._detector.command_overlay_active is True
         d._command_overlay.set_tool_active.assert_called_once_with(False)
         d._command_overlay.set_response_text.assert_called_once_with(
-            "Approval needed\n\ngit commit -m x"
+            "Approval needed\n"
+            "Enter to run  ·  Delete to cancel  ·  speak or type to revise\n\n"
+            "git commit -m x"
         )
         d._command_overlay.finish.assert_called_once_with()
         d._menubar.set_status_text.assert_called_once_with("Approval needed")
@@ -3858,7 +3908,10 @@ class TestCommandCallbacks:
         )
 
         d._command_overlay.set_response_text.assert_called_once_with(
-            "Let me check.\n[calling read_file…]\n\nApproval needed\n\ngit commit -m x"
+            "Let me check.\n[calling read_file…]\n\n"
+            "Approval needed\n"
+            "Enter to run  ·  Delete to cancel  ·  speak or type to revise\n\n"
+            "git commit -m x"
         )
 
     def test_approve_pending_command_collapses_pending_card_to_approved_marker_before_resume(
@@ -4231,9 +4284,33 @@ class TestCommandCallbacks:
         d._recallLastResponse_({"token": 1})
 
         assert d._transcribing is False
-        d._command_overlay.show.assert_called()
-        d._command_overlay.set_utterance.assert_called_with("what time is it")
+        d._command_overlay.show.assert_called_once_with(
+            start_thinking_timer=False,
+            initial_utterance="what time is it",
+            initial_response="It's 3pm",
+        )
+        d._command_overlay.set_utterance.assert_not_called()
         d._command_overlay.finish.assert_called()
+
+    def test_recall_last_response_sets_history_in_one_bounded_render(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        long_response = "\n".join(f"line {idx}" for idx in range(240))
+        d._command_client.history = [("summarize", long_response)]
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+
+        d._recallLastResponse_({"token": 1})
+
+        d._command_overlay.append_token.assert_not_called()
+        d._command_overlay.set_response_text.assert_not_called()
+        rendered = d._command_overlay.show.call_args.kwargs["initial_response"]
+        assert rendered != long_response
+        assert "showing recent assistant overlay history" in rendered
+        assert "line 239" in rendered
+        assert "line 0" not in rendered
 
     def test_recall_no_history(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
@@ -4261,8 +4338,12 @@ class TestCommandCallbacks:
 
         d._recallLastResponse_({"token": 1})
 
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.set_utterance.assert_called_once_with("what time is it")
+        d._command_overlay.show.assert_called_once_with(
+            start_thinking_timer=False,
+            initial_utterance="what time is it",
+            initial_response="couldn't reach the model — try again in a moment",
+        )
+        d._command_overlay.set_utterance.assert_not_called()
         d._command_overlay.finish.assert_called_once()
 
 
@@ -4294,10 +4375,33 @@ class TestCommandOverlayToggle:
 
         d._toggle_command_overlay()
 
-        d._command_overlay.show.assert_called_once_with(preserve_thinking_timer=True)
-        d._command_overlay.set_utterance.assert_called_once_with("open file")
-        d._command_overlay.set_response_text.assert_called_once_with("still working")
+        d._command_overlay.show.assert_called_once_with(
+            preserve_thinking_timer=True,
+            initial_utterance="open file",
+            initial_response="still working",
+        )
+        d._command_overlay.set_utterance.assert_not_called()
+        d._command_overlay.set_response_text.assert_not_called()
         d._command_overlay.invert_thinking_timer.assert_called_once()
+
+    def test_toggle_command_overlay_bounds_recalled_history_render(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_client = MagicMock()
+        long_response = "\n".join(f"tool line {idx}" for idx in range(240))
+        d._command_client.history = [("inspect logs", long_response)]
+        d._command_overlay = MagicMock(_visible=False)
+
+        d._toggle_command_overlay()
+
+        d._command_overlay.append_token.assert_not_called()
+        d._command_overlay.set_response_text.assert_not_called()
+        rendered = d._command_overlay.show.call_args.kwargs["initial_response"]
+        assert rendered != long_response
+        assert "showing recent assistant overlay history" in rendered
+        assert "tool line 239" in rendered
+        assert "tool line 0" not in rendered
 
     def test_toggle_command_overlay_re_shows_live_pending_approval_instead_of_stale_history(
         self, main_module, monkeypatch
@@ -4315,11 +4419,18 @@ class TestCommandOverlayToggle:
 
         d._toggle_command_overlay()
 
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.set_utterance.assert_called_once_with("new question")
-        d._command_overlay.set_response_text.assert_called_once_with(
-            "Let me check.\n[calling read_file…]\n\nApproval needed\n\ngit commit -m x"
+        d._command_overlay.show.assert_called_once_with(
+            start_thinking_timer=False,
+            initial_utterance="new question",
+            initial_response=(
+            "Let me check.\n[calling read_file…]\n\n"
+            "Approval needed\n"
+            "Enter to run  ·  Delete to cancel  ·  speak or type to revise\n\n"
+            "git commit -m x"
+            ),
         )
+        d._command_overlay.set_utterance.assert_not_called()
+        d._command_overlay.set_response_text.assert_not_called()
         d._command_overlay.append_token.assert_not_called()
         d._command_overlay.finish.assert_called_once()
 
@@ -4346,11 +4457,18 @@ class TestCommandOverlayToggle:
         }
         assert d._last_command_utterance == "push it"
         assert d._command_streaming_text == "Checking. \n[calling run_terminal_command…]\n"
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.set_utterance.assert_called_once_with("push it")
-        d._command_overlay.set_response_text.assert_called_once_with(
-            "Checking. \n[calling run_terminal_command…]\n\nApproval needed\n\ngit push -u origin feat/x"
+        d._command_overlay.show.assert_called_once_with(
+            start_thinking_timer=False,
+            initial_utterance="push it",
+            initial_response=(
+            "Checking. \n[calling run_terminal_command…]\n\n"
+            "Approval needed\n"
+            "Enter to run  ·  Delete to cancel  ·  speak or type to revise\n\n"
+            "git push -u origin feat/x"
+            ),
         )
+        d._command_overlay.set_utterance.assert_not_called()
+        d._command_overlay.set_response_text.assert_not_called()
         d._command_overlay.finish.assert_called_once()
         d._command_overlay.append_token.assert_not_called()
 

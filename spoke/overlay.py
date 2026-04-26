@@ -12,6 +12,7 @@ import colorsys
 import logging
 import math
 import os
+import threading
 
 import objc
 from AppKit import (
@@ -39,6 +40,20 @@ from .dedup import ontology_term_spans
 
 logger = logging.getLogger(__name__)
 
+
+def _start_overlay_fill_worker(work):
+    thread = threading.Thread(target=work, name="spoke-overlay-fill", daemon=True)
+    thread.start()
+    return thread
+
+
+def _post_overlay_result_to_main(target, selector: str, payload: dict) -> None:
+    poster = getattr(target, "performSelectorOnMainThread_withObject_waitUntilDone_", None)
+    if callable(poster):
+        poster(selector, payload, False)
+        return
+    getattr(target, selector.replace(":", "_"))(payload)
+
 def _env(name: str, default: float) -> float:
     v = os.environ.get(name)
     return float(v) if v is not None else default
@@ -60,7 +75,7 @@ _OVERLAY_MAX_HEIGHT = _env("SPOKE_PREVIEW_OVERLAY_MAX_HEIGHT", 300.0)
 _COMMAND_OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 300.0)
 _EXPAND_UPWARD = _env_bool("SPOKE_PREVIEW_EXPAND_UPWARD", True)
 _FONT_SIZE = 16.0
-_FADE_IN_S = 0.75  # slow ease-in — overlay materializes gradually
+_FADE_IN_S = 0.4  # fast ease-in so the overlay feels ready as soon as it appears
 _FADE_OUT_S = 0.315  # 75% longer fade keeps the preview legible through fast handoff
 _FADE_STEPS = 12  # number of steps for manual fade animation
 _TYPEWRITER_INTERVAL = 0.02  # seconds between characters (~50 chars/sec)
@@ -917,61 +932,121 @@ class TranscriptionOverlay(NSObject):
         total_w = width + 2 * f
         total_h = height + 2 * f
 
-        try:
-            cache_key = (width, height, scale)
-            if getattr(self, '_sdf_cache_key', None) != cache_key:
-                sdf = _overlay_rounded_rect_sdf(
-                    total_w, total_h, width, height,
-                    _OVERLAY_CORNER_RADIUS, scale,
-                )
-                self._fill_sdf = sdf
-                self._fill_scale = scale
-                self._sdf_cache_key = cache_key
-        except (ImportError, Exception):
-            return  # numpy or Quartz not available (test environment)
+        geom_key = (width, height, scale)
+        brightness = getattr(self, "_brightness", 0.0)
+        fill_override_rgb = getattr(self, "_fill_override_rgb", None)
+        appearance_key = (
+            round(float(total_w), 3),
+            round(float(total_h), 3),
+            round(float(scale), 3),
+            round(float(brightness) * 50.0) / 50.0,
+            fill_override_rgb,
+        )
+        self._desired_fill_image_signature = appearance_key
+        if (
+            getattr(self, "_fill_image_signature", None) == appearance_key
+            and getattr(self, "_fill_payload", None) is not None
+        ):
+            return
+        pending = getattr(self, "_pending_fill_image_signature", None)
+        if pending is not None:
+            if pending != appearance_key:
+                self._queued_fill_request = (width, height)
+            return
+        if hasattr(self, "_fill_layer") and self._fill_layer is not None:
+            self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
 
-        # Build and apply the colored fill image
-        self._update_fill_image(total_w, total_h)
+        self._pending_fill_image_signature = appearance_key
+        cached_sdf = (
+            getattr(self, "_fill_sdf", None)
+            if getattr(self, "_sdf_cache_key", None) == geom_key
+            else None
+        )
+
+        def build() -> None:
+            try:
+                sdf = cached_sdf
+                if sdf is None:
+                    sdf = _overlay_rounded_rect_sdf(
+                        total_w, total_h, width, height,
+                        _OVERLAY_CORNER_RADIUS, scale,
+                    )
+                floor = _lerp(0.55, 0.775, brightness)
+                fill_alpha = _glow_fill_alpha(
+                    sdf, width=2.5 * scale, interior_floor=floor
+                )
+                if fill_override_rgb is None:
+                    bg_r, bg_g, bg_b = _lerp_color(
+                        _BG_COLOR_DARK, _BG_COLOR_LIGHT, brightness
+                    )
+                else:
+                    bg_r, bg_g, bg_b = fill_override_rgb
+                result = {
+                    "signature": appearance_key,
+                    "sdf": sdf,
+                    "geom_key": geom_key,
+                    "scale": scale,
+                    "total_w": total_w,
+                    "total_h": total_h,
+                    "fill_override_rgb": fill_override_rgb,
+                }
+                try:
+                    fill_image, payload = _fill_field_to_image(
+                        fill_alpha,
+                        int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
+                    )
+                    result["image"] = fill_image
+                    result["payload"] = payload
+                except Exception as exc:
+                    result["error"] = repr(exc)
+            except Exception as exc:
+                result = {"signature": appearance_key, "error": repr(exc)}
+            _post_overlay_result_to_main(self, "fillImageReady:", result)
+
+        _start_overlay_fill_worker(build)
 
     def _update_fill_image(self, total_w: float, total_h: float) -> None:
         """Rebuild the colored fill image from the stashed SDF and current fill color."""
-        if not hasattr(self, '_fill_sdf') or self._fill_sdf is None:
-            return
-        if not hasattr(self, '_fill_layer') or self._fill_layer is None:
-            return
-        try:
-            scale = getattr(self, '_fill_scale', 2.0)
-            # Stretched-exponential fill: knife-edge cusp, heavy tails.
-            # Width 2.5 = very aggressive initial drop from peak.
-            # Interior floor varies with brightness: low on dark backgrounds
-            # (more contrast between peak and interior), high on light
-            # backgrounds (more uniform/material).
-            t = getattr(self, '_brightness', 0.0)
-            floor = _lerp(0.55, 0.775, t)
-            fill_alpha = _glow_fill_alpha(self._fill_sdf, width=2.5 * scale, interior_floor=floor)
+        content_width = max(total_w - 2 * _OUTER_FEATHER, 1.0)
+        content_height = max(total_h - 2 * _OUTER_FEATHER, 1.0)
+        self._apply_ridge_masks(content_width, content_height)
 
-            fill_override_rgb = getattr(self, "_fill_override_rgb", None)
-            if fill_override_rgb is None:
-                t = getattr(self, '_brightness', 0.0)
-                bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
-            else:
-                bg_r, bg_g, bg_b = fill_override_rgb
-            # Scale color to 0-255
-            fill_image, self._fill_payload = _fill_field_to_image(
-                fill_alpha,
-                int(bg_r * 255), int(bg_g * 255), int(bg_b * 255),
+    def fillImageReady_(self, payload: dict) -> None:
+        signature = payload.get("signature")
+        if getattr(self, "_pending_fill_image_signature", None) == signature:
+            self._pending_fill_image_signature = None
+        if signature != getattr(self, "_desired_fill_image_signature", None):
+            queued = getattr(self, "_queued_fill_request", None)
+            if queued is not None:
+                self._queued_fill_request = None
+                self._apply_ridge_masks(*queued)
+            return
+        if "geom_key" in payload:
+            self._fill_sdf = payload.get("sdf")
+            self._fill_scale = payload.get("scale", getattr(self, "_fill_scale", 2.0))
+            self._sdf_cache_key = payload.get("geom_key")
+        error = payload.get("error")
+        if error:
+            logger.debug("Overlay fill image generation failed: %s", error)
+            return
+        if not hasattr(self, "_fill_layer") or self._fill_layer is None:
+            return
+        self._fill_payload = payload.get("payload")
+        self._fill_layer.setContents_(payload.get("image"))
+        self._fill_layer.setFrame_(((0, 0), (payload["total_w"], payload["total_h"])))
+        self._fill_image_signature = signature
+        if hasattr(self._fill_layer, "setCompositingFilter_"):
+            fill_override_rgb = payload.get("fill_override_rgb")
+            filter_name = (
+                None
+                if fill_override_rgb is not None
+                else _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
             )
-            self._fill_layer.setContents_(fill_image)
-            self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
-            if hasattr(self._fill_layer, "setCompositingFilter_"):
-                filter_name = (
-                    None
-                    if fill_override_rgb is not None
-                    else _fill_compositing_filter_for_brightness(getattr(self, "_brightness", 0.0))
-                )
-                self._fill_layer.setCompositingFilter_(filter_name)
-        except (ImportError, Exception):
-            pass
+            self._fill_layer.setCompositingFilter_(filter_name)
+        queued = getattr(self, "_queued_fill_request", None)
+        if queued is not None:
+            self._queued_fill_request = None
+            self._apply_ridge_masks(*queued)
 
     def _reset_overlay_chrome_geometry(self, visible_height: float) -> None:
         """Keep height-dependent overlay layers in sync with the current overlay size."""

@@ -6,11 +6,14 @@ All tests use mocked PyObjC — no GUI runtime required.
 """
 
 import importlib
+import inspect
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+
+from spoke.optical_shell_metrics import OpticalShellMetrics
 
 def _make_rect(x, y, width, height):
     return SimpleNamespace(
@@ -22,14 +25,18 @@ def _make_overlay(mock_pyobjc):
     """Create a CommandOverlay with mocked internals."""
     sys.modules.pop("spoke.command_overlay", None)
     mod = importlib.import_module("spoke.command_overlay")
+    mod._start_overlay_fill_worker = lambda work: work()
     overlay = mod.CommandOverlay.__new__(mod.CommandOverlay)
     overlay._window = MagicMock()
     overlay._window.alphaValue.return_value = 1.0
+    overlay._window.frame.return_value = _make_rect(620.0, 260.0, 680.0, 160.0)
     overlay._wrapper_view = MagicMock()
     overlay._wrapper_view.layer.return_value = MagicMock()
     overlay._content_view = MagicMock()
     overlay._content_view.layer.return_value = MagicMock()
+    overlay._content_view.frame.return_value = _make_rect(28.0, 28.0, 624.0, 104.0)
     overlay._scroll_view = MagicMock()
+    overlay._scroll_view.frame.return_value = _make_rect(48.0, 16.0, 528.0, 72.0)
     overlay._text_view = MagicMock()
     overlay._text_view.textStorage.return_value = MagicMock()
     overlay._text_view.textStorage.return_value.length.return_value = 0
@@ -40,6 +47,7 @@ def _make_overlay(mock_pyobjc):
     overlay._screen.frame.return_value = MagicMock(
         size=MagicMock(width=1920, height=1080)
     )
+    overlay._screen.backingScaleFactor.return_value = 2.0
     overlay._visible = False
     overlay._streaming = False
     overlay._response_text = ""
@@ -64,9 +72,25 @@ def _make_overlay(mock_pyobjc):
     overlay._tool_mode = False
     overlay._brightness = 0.0
     overlay._brightness_target = 0.0
+    overlay._metrics = OpticalShellMetrics()
+    overlay._brightness_timer = None
+    overlay._backdrop_renderer = MagicMock()
+    overlay._backdrop_capture_rect = _make_rect(0.0, 0.0, 680.0, 160.0)
+    overlay._backdrop_base_blur_radius_points = 5.4
+    overlay._backdrop_blur_radius_points = 5.4
+    overlay._backdrop_base_mask_width_multiplier = 9.0
+    overlay._backdrop_mask_width_multiplier = 9.0
+    overlay._backdrop_timer = None
+    overlay._backdrop_layer = MagicMock()
     overlay._fill_layer = MagicMock()
-    overlay._cancel_step = 0
-    overlay._cancel_phase = ""
+    overlay._boost_layer = MagicMock()
+    overlay._spring_tint_layer = MagicMock()
+    overlay._fullscreen_compositor = None
+    overlay._pop_timer = None
+    overlay._cancel_spring = 0.0
+    overlay._cancel_spring_target = 0.0
+    overlay._cancel_spring_fired = False
+    overlay._on_cancel_spring_threshold = None
     overlay._narrator_label = None
     overlay._narrator_typewriter_timer = None
     overlay._narrator_full_text = ""
@@ -106,6 +130,80 @@ def _install_fake_attributed_string(monkeypatch):
         _Alloc(),
         raising=False,
     )
+
+
+def test_quartz_backdrop_renderer_blurs_snapshot_before_render(mock_pyobjc, monkeypatch):
+    sys.modules.pop("spoke.command_overlay", None)
+    mod = importlib.import_module("spoke.command_overlay")
+    quartz = sys.modules["Quartz"]
+
+    captured = {}
+
+    class FakeImage:
+        def __init__(self, label):
+            self.label = label
+            self._extent = _make_rect(0.0, 0.0, 680.0, 160.0)
+
+        def extent(self):
+            return self._extent
+
+        def imageByClampingToExtent(self):
+            captured["clamped"] = self.label
+            return self
+
+        def imageByCroppingToRect_(self, rect):
+            captured["cropped"] = rect
+            return self
+
+    class FakeCIImage:
+        @staticmethod
+        def imageWithCGImage_(image):
+            captured["input_image"] = image
+            return FakeImage("ci-snapshot")
+
+    class FakeBlurFilter:
+        def __init__(self):
+            self.values = {}
+
+        def setDefaults(self):
+            captured["defaults"] = True
+
+        def setValue_forKey_(self, value, key):
+            self.values[key] = value
+
+        def valueForKey_(self, key):
+            assert key == "outputImage"
+            captured["blurred_radius"] = self.values["inputRadius"]
+            captured["blurred_input"] = self.values["inputImage"].label
+            return self.values["inputImage"]
+
+    class FakeCIFilter:
+        @staticmethod
+        def filterWithName_(name):
+            captured["filter"] = name
+            return FakeBlurFilter()
+
+    quartz.CGWindowListCreateImage = MagicMock(return_value="sharp-snapshot")
+    quartz.kCGWindowListOptionOnScreenBelowWindow = 2
+    quartz.CIImage = FakeCIImage
+    quartz.CIFilter = FakeCIFilter
+
+    renderer = mod._QuartzBackdropRenderer()
+    context = MagicMock()
+    context.createCGImage_fromRect_.return_value = "blurred-snapshot"
+    renderer._context = MagicMock(return_value=context)
+
+    image = renderer.capture_blurred_image(
+        window_number=17,
+        capture_rect=_make_rect(100.0, 200.0, 680.0, 160.0),
+        blur_radius_points=5.4,
+    )
+
+    assert image == "blurred-snapshot"
+    assert captured["filter"] == "CIGaussianBlur"
+    assert captured["blurred_radius"] == pytest.approx(5.4)
+    assert captured["blurred_input"] == "ci-snapshot"
+    context.createCGImage_fromRect_.assert_called_once()
 
 
 class _FakeLayoutManager:
@@ -242,6 +340,14 @@ class TestDismissAnimation:
 class TestShowFinishHide:
     """Test overlay lifecycle state transitions."""
 
+    def test_init_initializes_collapsed_thinking_state(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+
+        overlay = mod.CommandOverlay.alloc().initWithScreen_(None)
+
+        assert overlay._collapsed_text == ""
+
     def test_show_sets_visible_and_streaming(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay.show()
@@ -263,6 +369,54 @@ class TestShowFinishHide:
         overlay.show()
 
         assert overlay._brightness_timer is not None
+
+    def test_pulse_step_records_display_and_presented_ticks(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+
+        overlay.pulseStep_(None)
+
+        snapshot = overlay._metrics.snapshot()
+        assert snapshot["display_link_ticks"] == 1
+        assert snapshot["presented_frames"] == 1
+
+    def test_show_samples_current_brightness_before_first_theme(self, mock_pyobjc, monkeypatch):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._brightness = 0.05
+        overlay._brightness_target = 0.05
+        observed = []
+        monkeypatch.setattr(mod, "_sample_screen_brightness_for_overlay", lambda _screen: 0.86)
+        overlay._apply_surface_theme = MagicMock(
+            side_effect=lambda: observed.append(overlay._brightness)
+        )
+
+        overlay.show(start_thinking_timer=False)
+
+        assert observed[0] == pytest.approx(0.86)
+        assert overlay._brightness == pytest.approx(0.86)
+        assert overlay._brightness_target == pytest.approx(0.86)
+
+    def test_show_defers_pulse_until_entrance_fade_finishes(self, mock_pyobjc):
+        overlay, mod = _make_overlay(mock_pyobjc)
+
+        overlay.show()
+
+        assert overlay._fade_timer is not None
+        assert overlay._pulse_timer is None
+
+        for _ in range(mod._FADE_STEPS):
+            overlay.fadeStep_(overlay._fade_timer)
+
+        assert overlay._pulse_timer is not None
+
+    def test_show_fade_in_is_fast_enough_to_feel_immediate(self, mock_pyobjc):
+        _, mod = _make_overlay(mock_pyobjc)
+
+        assert mod._FADE_IN_S <= 0.17
+
+    def test_visual_start_waits_until_after_entrance_fade(self, mock_pyobjc):
+        _, mod = _make_overlay(mock_pyobjc)
+
+        assert mod._COMMAND_VISUAL_START_DELAY_S >= mod._FADE_IN_S + 0.1
 
     def test_show_can_resume_thinking_timer_without_resetting_elapsed_state(
         self, mock_pyobjc
@@ -322,6 +476,7 @@ class TestWindowLayering:
         overlay = mod.CommandOverlay.alloc().initWithScreen_(None)
         overlay._screen = MagicMock()
         overlay._screen.frame.return_value = _make_rect(0.0, 0.0, 1920.0, 1080.0)
+        overlay._screen.backingScaleFactor.return_value = 2.0
 
         overlay.setup()
 
@@ -330,6 +485,16 @@ class TestWindowLayering:
         assert narrator_frame.size.height == pytest.approx(45.0)
         assert narrator_frame.origin.y >= 0.0
         assert narrator_frame.origin.y + narrator_frame.size.height <= mod._OVERLAY_HEIGHT
+
+    def test_setup_owns_command_overlay_created_log(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+
+        setup_source = inspect.getsource(mod.CommandOverlay.setup)
+        layer_choice_source = inspect.getsource(mod.CommandOverlay._choose_backdrop_layer_class)
+
+        assert "Command overlay created" in setup_source
+        assert "Command overlay created" not in layer_choice_source
 
     def test_hide_clears_visible_and_streaming(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
@@ -344,10 +509,12 @@ class TestWindowLayering:
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._response_text = "old response"
         overlay._utterance_text = "old utterance"
+        overlay._collapsed_text = "Thought for 2s"
 
         overlay.show()
         assert overlay._response_text == ""
         assert overlay._utterance_text == ""
+        assert overlay._collapsed_text == ""
 
     def test_show_clears_attributed_text_storage_before_reuse(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
@@ -355,6 +522,133 @@ class TestWindowLayering:
         overlay.show()
 
         overlay._text_view.textStorage().setAttributedString_.assert_called_once()
+
+    def test_show_can_skip_thinking_timer_for_recalled_history(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._start_thinking_timer = MagicMock()
+
+        overlay.show(start_thinking_timer=False)
+
+        overlay._start_thinking_timer.assert_not_called()
+
+    def test_show_with_initial_transcript_lays_out_before_ordering_front(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        events = []
+        overlay._update_layout = MagicMock(side_effect=lambda: events.append("layout"))
+        overlay._window.orderFrontRegardless.side_effect = lambda: events.append("front")
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+            initial_response="Assistant response",
+        )
+
+        assert overlay._utterance_text == "User prompt"
+        assert overlay._response_text == "Assistant response"
+        assert events[:2] == ["layout", "front"]
+
+    def test_show_with_initial_transcript_builds_response_before_chroma_pulse(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        chroma_states = []
+
+        def _fragment(_token):
+            chroma_states.append(getattr(overlay, "_response_chroma_active", None))
+            return _FakeAttributedString("")
+
+        overlay._make_response_fragment = MagicMock(side_effect=_fragment)
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+            initial_response="Assistant response",
+        )
+
+        assert chroma_states == [False]
+
+    def test_optical_show_with_initial_transcript_hides_plain_text_before_front(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, _ = _make_overlay(mock_pyobjc)
+        events = []
+        overlay._scroll_view.setHidden_.side_effect = (
+            lambda hidden: events.append(("scroll_hidden", hidden))
+        )
+        overlay._window.orderFrontRegardless.side_effect = lambda: events.append(
+            ("front", None)
+        )
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+            initial_response="Assistant response",
+        )
+
+        assert ("scroll_hidden", True) in events
+        assert events.index(("scroll_hidden", True)) < events.index(("front", None))
+
+    def test_optical_show_with_initial_transcript_arms_visual_stack_before_fade(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+        events = []
+
+        def _schedule(_interval, _target, selector, _userinfo, _repeats):
+            events.append(("timer", selector))
+            return MagicMock()
+
+        mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_ = MagicMock(
+            side_effect=_schedule
+        )
+        overlay._window.orderFrontRegardless.side_effect = lambda: events.append(
+            ("front", None)
+        )
+        overlay._start_fullscreen_compositor = MagicMock(
+            side_effect=lambda: events.append(("compositor", None))
+        )
+        overlay._refresh_punchthrough_mask_if_needed = MagicMock(
+            side_effect=lambda: events.append(("mask", None))
+        )
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+            initial_response="Assistant response",
+        )
+
+        assert ("compositor", None) in events
+        assert ("mask", None) in events
+        assert ("timer", "visualStart:") not in events
+        assert events.index(("front", None)) < events.index(("compositor", None))
+        assert events.index(("mask", None)) < events.index(("timer", "fadeStep:"))
+
+    def test_show_with_initial_transcript_skips_default_shell_fill_build(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(280.0)
+        overlay._text_view.textContainer.return_value = object()
+        string_obj = MagicMock()
+        string_obj.length.return_value = 0
+        overlay._text_view.string.return_value = string_obj
+        calls = []
+        overlay._apply_ridge_masks = MagicMock(side_effect=lambda *args: calls.append(args))
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+            initial_response="Assistant response",
+        )
+
+        assert (mod._OVERLAY_WIDTH, mod._OVERLAY_HEIGHT) not in calls
+        assert calls, "initial transcript should still build the resized shell"
 
     def test_show_rebuilds_default_fill_geometry_before_reuse(self, mock_pyobjc, monkeypatch):
         overlay, mod = _make_overlay(mock_pyobjc)
@@ -368,6 +662,23 @@ class TestWindowLayering:
             mod._OVERLAY_WIDTH,
             mod._OVERLAY_HEIGHT,
         )
+
+    def test_optical_show_defers_heavy_backdrop_startup_until_after_first_paint(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._refresh_backdrop_snapshot = MagicMock()
+        overlay._start_fullscreen_compositor = MagicMock()
+        overlay._start_backdrop_refresh_timer = MagicMock()
+
+        overlay.show()
+
+        overlay._window.orderFrontRegardless.assert_called_once()
+        overlay._refresh_backdrop_snapshot.assert_not_called()
+        overlay._start_fullscreen_compositor.assert_not_called()
+        overlay._start_backdrop_refresh_timer.assert_not_called()
+        assert overlay._visual_start_timer is not None
 
     def test_show_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
@@ -431,7 +742,7 @@ class TestWindowLayering:
         assert "User prompt\n\nThought for 2s" in combined
         assert "User prompt\nThought for 2s" not in combined
 
-    def test_append_token_uses_tighter_gap_after_collapsed_thinking(
+    def test_append_token_keeps_breathing_room_after_collapsed_thinking(
         self, mock_pyobjc, monkeypatch
     ):
         overlay, _ = _make_overlay(mock_pyobjc)
@@ -455,7 +766,85 @@ class TestWindowLayering:
             .appendAttributedString_.call_args_list[0][0][0]
             .text
         )
-        assert first_append == "\n"
+        assert first_append == "\n\n"
+
+    def test_set_thinking_collapsed_starts_below_utterance(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._utterance_text = "A wrapped user prompt that needs breathing room."
+        overlay._update_layout = MagicMock()
+        _install_fake_attributed_string(monkeypatch)
+
+        overlay.set_thinking_collapsed("Thought for 4s")
+
+        appended = (
+            overlay._text_view.textStorage()
+            .appendAttributedString_.call_args[0][0]
+            .text
+        )
+        assert appended == "\n\nThought for 4s"
+
+    def test_late_thinking_topic_updates_collapsed_line_after_response_started(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._utterance_text = "User prompt"
+        overlay._collapsed_text = "Thought for 4s"
+        overlay._response_text = "Done."
+        overlay.append_token = MagicMock()
+        _install_fake_attributed_string(monkeypatch)
+
+        overlay.set_thinking_collapsed(" · route planning")
+
+        assert overlay._collapsed_text == "Thought for 4s · route planning"
+        combined = (
+            overlay._text_view.textStorage()
+            .setAttributedString_.call_args[0][0]
+            .text
+        )
+        assert "Thought for 4s · route planning" in combined
+        overlay.append_token.assert_called_once_with("Done.")
+
+    def test_append_token_refreshes_punchthrough_mask_after_layout(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._utterance_text = "User prompt"
+        overlay._response_text = ""
+        overlay._text_punchthrough = True
+        overlay._update_layout = MagicMock()
+        overlay._update_punchthrough_mask = MagicMock()
+        _install_fake_attributed_string(monkeypatch)
+        overlay._make_response_fragment = MagicMock(
+            side_effect=lambda token: _FakeAttributedString(token)
+        )
+
+        overlay.append_token("Done.")
+
+        overlay._update_layout.assert_called_once()
+        overlay._update_punchthrough_mask.assert_called_once()
+
+    def test_append_token_renders_tool_indicator_without_monkeypatch(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._response_text = "Already streaming"
+        overlay._update_layout = MagicMock()
+        _install_fake_attributed_string(monkeypatch)
+
+        overlay.append_token("[calling search_file…]")
+
+        appended = (
+            overlay._text_view.textStorage()
+            .appendAttributedString_.call_args[0][0]
+            .text
+        )
+        assert appended == "[calling search_file…]"
 
     def test_hide_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
@@ -471,7 +860,7 @@ class TestTimerCancellation:
         # Start all timers
         overlay.show()
         assert overlay._fade_timer is not None
-        assert overlay._pulse_timer is not None
+        assert overlay._pulse_timer is None
         assert overlay._thinking_timer is not None
         assert overlay._brightness_timer is not None
 
@@ -585,6 +974,68 @@ class TestAdaptiveCompositing:
         overlay._apply_surface_theme()
         overlay._fill_layer.setCompositingFilter_.assert_called_with(None)
 
+    def test_apply_backdrop_pulse_style_pushes_optical_shell_config_when_enabled(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._backdrop_renderer.set_live_blur_radius_points = MagicMock()
+        overlay._backdrop_renderer.set_live_optical_shell_config = MagicMock()
+        overlay._update_backdrop_mask = MagicMock()
+
+        overlay._apply_backdrop_pulse_style(1.0)
+
+        config = overlay._backdrop_renderer.set_live_optical_shell_config.call_args[0][0]
+        assert config["enabled"] is True
+        assert config["content_width_points"] > mod._OVERLAY_WIDTH
+        assert config["content_height_points"] > mod._OVERLAY_HEIGHT
+        assert config["ring_amplitude_points"] > 0.0
+        assert config["tail_amplitude_points"] > 0.0
+
+    def test_backdrop_mask_generation_is_not_run_synchronously(
+        self, mock_pyobjc, monkeypatch
+    ):
+        """Backdrop mask SDF/image work should sit behind the fill worker seam."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+        queued = []
+
+        import spoke.overlay as ov_mod
+
+        def forbidden_sync_call(*_args):
+            raise AssertionError("backdrop mask generation ran on the caller thread")
+
+        monkeypatch.setattr(ov_mod, "_overlay_rounded_rect_sdf", forbidden_sync_call)
+        monkeypatch.setattr(ov_mod, "_fill_field_to_image", forbidden_sync_call)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: queued.append(work))
+
+        overlay._update_backdrop_mask(680.0, 160.0)
+
+        assert len(queued) == 1
+
+    def test_optical_shell_peak_assistant_breath_keeps_fill_light_enough_to_show_backdrop(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._brightness = 1.0
+        overlay._brightness_target = 1.0
+        overlay._fill_image_brightness = 1.0
+        overlay._pulse_phase_asst = 0.0
+        overlay._pulse_phase_user = 0.0
+        overlay._tts_active = False
+        overlay._tts_blend = 0.0
+        overlay._cancel_spring = 0.0
+        overlay._cancel_spring_target = 0.0
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+
+        overlay._pulseStepInner()
+
+        fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
+        assert fill_opacity <= 0.45, (
+            "Optical-shell mode should keep the fill translucent enough for the warped backdrop to read."
+        )
+
     def test_assistant_text_alpha_floor_and_ceiling_breathe_within_legible_band(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")
@@ -650,6 +1101,20 @@ class TestAdaptiveCompositing:
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
+    def test_punchthrough_boost_style_is_bidirectional(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            dark_rgb, dark_opacity = mod._punchthrough_boost_style_for_brightness(0.0)
+            light_rgb, light_opacity = mod._punchthrough_boost_style_for_brightness(1.0)
+
+            assert max(dark_rgb) < 0.08
+            assert dark_opacity > 0.25
+            assert min(light_rgb) > 0.92
+            assert light_opacity > dark_opacity
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
     def test_brightness_resample_updates_target_while_visible(self, mock_pyobjc, monkeypatch):
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay._visible = True
@@ -660,6 +1125,230 @@ class TestAdaptiveCompositing:
         overlay.brightnessResample_(None)
 
         assert overlay._brightness_target == pytest.approx(0.83)
+
+    def test_brightness_resample_records_sample_count(self, mock_pyobjc, monkeypatch):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._screen = MagicMock()
+        monkeypatch.setattr(mod, "_sample_screen_brightness_for_overlay", lambda _screen: 0.83)
+
+        overlay.brightnessResample_(None)
+
+        snapshot = overlay._metrics.snapshot()
+        assert snapshot["brightness_samples"] == 1
+
+    def test_brightness_resample_is_ignored_while_compositor_owns_brightness(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._screen = MagicMock()
+        overlay._brightness_target = 0.16
+        overlay._fullscreen_compositor = MagicMock()
+
+        monkeypatch.setattr(mod, "_sample_screen_brightness_for_overlay", lambda _screen: 0.91)
+
+        overlay.brightnessResample_(None)
+
+        assert overlay._brightness_target == pytest.approx(0.16)
+
+    def test_brightness_crossing_reaches_contrast_band_in_one_pulse(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            assert mod._advance_command_brightness(0.0, 1.0) > 0.56
+            assert mod._advance_command_brightness(1.0, 0.0) < 0.44
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_brightness_crossing_nearly_settles_in_two_pulses(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            up = mod._advance_command_brightness(
+                mod._advance_command_brightness(0.0, 1.0),
+                1.0,
+            )
+            down = mod._advance_command_brightness(
+                mod._advance_command_brightness(1.0, 0.0),
+                0.0,
+            )
+
+            assert up > 0.92
+            assert down < 0.08
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_compositor_brightness_samples_at_least_every_other_pulse(
+        self, mock_pyobjc
+    ):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            assert mod._BRIGHTNESS_COMPOSITOR_SAMPLE_TICKS <= 2
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_compositor_brightness_resamples_without_half_second_lag(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+        overlay._brightness = 0.0
+        overlay._brightness_target = 0.0
+        overlay._cancel_spring = 0.0
+        overlay._cancel_spring_target = 0.0
+        overlay._cancel_spring_fired = False
+        overlay._on_cancel_spring_threshold = None
+        overlay._text_punchthrough = False
+        overlay._apply_surface_theme = MagicMock()
+        overlay._apply_backdrop_pulse_style = MagicMock()
+        compositor = MagicMock()
+        compositor.sampled_brightness = 1.0
+        overlay._fullscreen_compositor = compositor
+
+        for _ in range(7):
+            overlay._pulseStepInner()
+
+        assert compositor.refresh_brightness.call_count >= 2
+
+    def test_fullscreen_compositor_receives_current_brightness_seed(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._brightness = 0.07
+        captured = {}
+        compositor = MagicMock()
+
+        import spoke.fullscreen_compositor as fullscreen_compositor
+
+        def fake_start_overlay_compositor(**kwargs):
+            captured.update(kwargs)
+            return compositor
+
+        monkeypatch.setattr(
+            fullscreen_compositor,
+            "start_overlay_compositor",
+            fake_start_overlay_compositor,
+        )
+
+        overlay._start_fullscreen_compositor()
+
+        assert captured["shell_config"]["initial_brightness"] == pytest.approx(0.07)
+
+    def test_fullscreen_compositor_start_arms_brightness_startup_grace(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._brightness = 0.14
+        overlay._brightness_target = 0.21
+        overlay._brightness_sample_tick = 11
+        compositor = MagicMock()
+
+        import spoke.fullscreen_compositor as fullscreen_compositor
+
+        monkeypatch.setattr(
+            fullscreen_compositor,
+            "start_overlay_compositor",
+            lambda **_kwargs: compositor,
+        )
+
+        overlay._start_fullscreen_compositor()
+
+        assert overlay._brightness_sample_tick < 0
+        assert overlay._brightness_target == pytest.approx(0.14)
+
+    def test_fullscreen_compositor_start_cancels_legacy_screen_brightness_timer(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        timer = MagicMock()
+        overlay._brightness_timer = timer
+
+        import spoke.fullscreen_compositor as fullscreen_compositor
+
+        monkeypatch.setattr(
+            fullscreen_compositor,
+            "start_overlay_compositor",
+            lambda **_kwargs: MagicMock(),
+        )
+
+        overlay._start_fullscreen_compositor()
+
+        timer.invalidate.assert_called_once()
+        assert overlay._brightness_timer is None
+
+    def test_compositor_startup_grace_does_not_resample_seeded_brightness(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+        overlay._brightness = 0.08
+        overlay._brightness_target = 0.08
+        overlay._brightness_sample_tick = -2
+        overlay._cancel_spring = 0.0
+        overlay._cancel_spring_target = 0.0
+        overlay._cancel_spring_fired = False
+        overlay._on_cancel_spring_threshold = None
+        overlay._text_punchthrough = False
+        overlay._apply_surface_theme = MagicMock()
+        overlay._apply_backdrop_pulse_style = MagicMock()
+
+        class _UnstableStartupCompositor:
+            def __init__(self):
+                self.refresh_calls = 0
+                self.sample_reads = 0
+
+            def refresh_brightness(self):
+                self.refresh_calls += 1
+
+            @property
+            def sampled_brightness(self):
+                self.sample_reads += 1
+                return 0.92
+
+        compositor = _UnstableStartupCompositor()
+        overlay._fullscreen_compositor = compositor
+
+        overlay._pulseStepInner()
+
+        assert compositor.refresh_calls == 0
+        assert compositor.sample_reads == 0
+        assert overlay._brightness == pytest.approx(0.08)
+        assert overlay._brightness_target == pytest.approx(0.08)
+        assert overlay._brightness_sample_tick == -1
+
+    def test_dark_punchthrough_uses_dark_glyph_boost_layer(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+        overlay._brightness = 0.0
+        overlay._brightness_target = 0.0
+        overlay._cancel_spring = 0.0
+        overlay._cancel_spring_target = 0.0
+        overlay._cancel_spring_fired = False
+        overlay._on_cancel_spring_threshold = None
+        overlay._text_punchthrough = True
+        overlay._boost_mask_layer = MagicMock()
+        overlay._apply_surface_theme = MagicMock()
+        overlay._apply_backdrop_pulse_style = MagicMock()
+        overlay._update_punchthrough_mask = MagicMock()
+        overlay._fullscreen_compositor = MagicMock(sampled_brightness=0.0)
+
+        monkeypatch.setattr(
+            sys.modules["Quartz"],
+            "CGColorCreateSRGB",
+            lambda r, g, b, a: (r, g, b, a),
+            raising=False,
+        )
+
+        overlay._pulseStepInner()
+
+        color = overlay._boost_layer.setBackgroundColor_.call_args[0][0]
+        assert max(color[:3]) < 0.08
+        overlay._boost_layer.setHidden_.assert_called_with(False)
 
     def test_response_fragment_uses_blurry_colored_underlay_with_crisp_foreground(
         self, mock_pyobjc, monkeypatch
@@ -734,7 +1423,169 @@ class TestAdaptiveCompositing:
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
+    def test_pulse_preserves_crisp_response_foreground_contrast(
+        self, mock_pyobjc, monkeypatch
+    ):
+        sys.modules.pop("spoke.command_overlay", None)
+        try:
+            mod = importlib.import_module("spoke.command_overlay")
+
+            class _FakeTextStorage:
+                def __init__(self, text):
+                    self.text = text
+                    self.attrs = []
+
+                def length(self):
+                    return len(self.text)
+
+                def addAttribute_value_range_(self, name, value, rng):
+                    self.attrs.append((name, value, rng))
+
+            monkeypatch.setattr(
+                sys.modules["AppKit"].NSColor,
+                "colorWithSRGBRed_green_blue_alpha_",
+                staticmethod(lambda r, g, b, a: (r, g, b, a)),
+                raising=False,
+            )
+
+            overlay, _ = _make_overlay(mock_pyobjc)
+            overlay._text_view = MagicMock()
+            storage = _FakeTextStorage("Prompt\n\nAnswer")
+            overlay._text_view.textStorage.return_value = storage
+            overlay._brightness = 0.0
+            overlay._brightness_target = 0.0
+            overlay._utterance_text = "Prompt"
+            overlay._response_text = "Answer"
+            overlay._cancel_spring = 0.0
+            overlay._cancel_spring_target = 0.0
+            overlay._cancel_spring_fired = False
+            overlay._on_cancel_spring_threshold = None
+            overlay._text_punchthrough = False
+            overlay._fullscreen_compositor = None
+            overlay._apply_surface_theme = MagicMock()
+            overlay._apply_backdrop_pulse_style = MagicMock()
+
+            overlay._pulseStepInner()
+
+            response_start = len("Prompt\n\n")
+            response_colors = [
+                value
+                for name, value, rng in storage.attrs
+                if name == "NSForegroundColor" and rng[0] >= response_start
+            ]
+
+            assert response_colors
+            assert min(response_colors[-1][:3]) >= min(mod._ASSISTANT_TEXT_COLOR_DARK)
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_pulse_batches_long_response_styling(self, mock_pyobjc, monkeypatch):
+        monkeypatch.setenv("SPOKE_COMMAND_RESPONSE_ANIMATION_CHAR_LIMIT", "8")
+        sys.modules.pop("spoke.command_overlay", None)
+        try:
+            mod = importlib.import_module("spoke.command_overlay")
+
+            class _FakeTextStorage:
+                def __init__(self, text):
+                    self.text = text
+                    self.attrs = []
+
+                def length(self):
+                    return len(self.text)
+
+                def addAttribute_value_range_(self, name, value, rng):
+                    self.attrs.append((name, value, rng))
+
+            monkeypatch.setattr(
+                sys.modules["AppKit"].NSColor,
+                "colorWithSRGBRed_green_blue_alpha_",
+                staticmethod(lambda r, g, b, a: (r, g, b, a)),
+                raising=False,
+            )
+
+            overlay, _ = _make_overlay(mock_pyobjc)
+            overlay._text_view = MagicMock()
+            response = "A long answer that should not restyle every character"
+            storage = _FakeTextStorage("Prompt\n\n" + response)
+            overlay._text_view.textStorage.return_value = storage
+            overlay._brightness = 0.0
+            overlay._brightness_target = 0.0
+            overlay._utterance_text = "Prompt"
+            overlay._response_text = response
+            overlay._cancel_spring = 0.0
+            overlay._cancel_spring_target = 0.0
+            overlay._cancel_spring_fired = False
+            overlay._on_cancel_spring_threshold = None
+            overlay._text_punchthrough = False
+            overlay._fullscreen_compositor = None
+            overlay._apply_surface_theme = MagicMock()
+            overlay._apply_backdrop_pulse_style = MagicMock()
+
+            overlay._pulseStepInner()
+
+            response_start = len("Prompt\n\n")
+            response_attrs = [
+                rng
+                for _name, _value, rng in storage.attrs
+                if rng[0] >= response_start
+            ]
+            assert response_attrs
+            assert len(response_attrs) <= 4
+            assert any(rng == (response_start, len(response)) for rng in response_attrs)
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
+    def test_punchthrough_hides_live_scroll_text_layer(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+
+        overlay._enable_text_punchthrough(True)
+
+        assert overlay._text_punchthrough is True
+        overlay._scroll_view.setHidden_.assert_called_once_with(True)
+
+        overlay._enable_text_punchthrough(False)
+
+        overlay._scroll_view.setHidden_.assert_called_with(False)
+
 class TestGeometryCaps:
+    def test_update_layout_keeps_live_narrator_for_moderate_user_prompt(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(38.0)
+        overlay._text_view.textContainer.return_value = object()
+        overlay._response_text = ""
+        overlay._narrator_label = MagicMock()
+        overlay._narrator_label.isHidden.return_value = False
+        string_obj = MagicMock()
+        string_obj.length.return_value = 0
+        overlay._text_view.string.return_value = string_obj
+
+        overlay._update_layout()
+
+        overlay._narrator_label.setHidden_.assert_not_called()
+
+    def test_update_layout_hides_live_narrator_before_wrapped_prompt_overlap(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(56.0)
+        overlay._text_view.textContainer.return_value = object()
+        overlay._response_text = ""
+        overlay._narrator_label = MagicMock()
+        overlay._narrator_label.isHidden.return_value = False
+        string_obj = MagicMock()
+        string_obj.length.return_value = 0
+        overlay._text_view.string.return_value = string_obj
+
+        overlay._update_layout()
+
+        overlay._narrator_label.setHidden_.assert_called_with(True)
+
     def test_update_layout_can_grow_assistant_overlay_near_notch(self, mock_pyobjc, monkeypatch):
         overlay, mod = _make_overlay(mock_pyobjc)
         monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
@@ -845,6 +1696,7 @@ class TestSDFCaching:
             return original(*args, **kwargs)
 
         monkeypatch.setattr(ov_mod, "_overlay_rounded_rect_sdf", counting_sdf)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: work())
 
         # First call — SDF must be computed
         overlay._apply_ridge_masks(600.0, 80.0)
@@ -854,6 +1706,63 @@ class TestSDFCaching:
         overlay._brightness = 0.5
         overlay._apply_ridge_masks(600.0, 80.0)
         assert call_count == 1, "SDF was recomputed despite identical geometry"
+
+    def test_same_appearance_reuses_fill_image(self, mock_pyobjc, monkeypatch):
+        """Repeated show-time geometry checks should not rebuild the fill bitmap."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+
+        import spoke.overlay as ov_mod
+        call_count = 0
+
+        def counting_fill_image(*_args):
+            nonlocal call_count
+            call_count += 1
+            return "fill-image", b"payload"
+
+        monkeypatch.setattr(ov_mod, "_fill_field_to_image", counting_fill_image)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: work())
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+        overlay._apply_ridge_masks(600.0, 80.0)
+
+        assert call_count == 1
+
+    def test_fill_generation_is_not_run_synchronously(self, mock_pyobjc, monkeypatch):
+        """The expensive fill bitmap build should happen behind the worker boundary."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+        queued = []
+
+        import spoke.overlay as ov_mod
+
+        def forbidden_sync_call(*_args):
+            raise AssertionError("fill image generation ran on the caller thread")
+
+        monkeypatch.setattr(ov_mod, "_overlay_rounded_rect_sdf", forbidden_sync_call)
+        monkeypatch.setattr(mod, "_stadium_signed_distance_field", forbidden_sync_call)
+        monkeypatch.setattr(ov_mod, "_fill_field_to_image", forbidden_sync_call)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: queued.append(work))
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+
+        assert len(queued) == 1
+
+    def test_pending_fill_generation_still_updates_visible_frame(
+        self, mock_pyobjc, monkeypatch
+    ):
+        """A resize while a fill worker is pending must not leave the old shell size visible."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: None)
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+        overlay._fill_layer.setFrame_.reset_mock()
+        overlay._apply_ridge_masks(600.0, 240.0)
+
+        overlay._fill_layer.setFrame_.assert_called_with(
+            (
+                (0, 0),
+                (600.0 + 2 * mod._OUTER_FEATHER, 240.0 + 2 * mod._OUTER_FEATHER),
+            )
+        )
 
     def test_changed_height_recomputes_sdf(self, mock_pyobjc, monkeypatch):
         """A height change must recompute the SDF."""
@@ -870,9 +1779,39 @@ class TestSDFCaching:
             return original(*args, **kwargs)
 
         monkeypatch.setattr(ov_mod, "_overlay_rounded_rect_sdf", counting_sdf)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: work())
 
         overlay._apply_ridge_masks(600.0, 80.0)
         assert call_count == 1
 
         overlay._apply_ridge_masks(600.0, 200.0)
         assert call_count == 2, "SDF was not recomputed after height change"
+
+    def test_fill_sdf_uses_command_overlay_corner_radius(self, mock_pyobjc, monkeypatch):
+        """The command shell fill should honor the command overlay radius override."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._spring_tint_layer = None
+
+        import numpy as np
+        import spoke.overlay as ov_mod
+
+        radii = []
+
+        def capture_sdf(total_w, total_h, width, height, corner_radius, scale):
+            radii.append(corner_radius)
+            return np.zeros((4, 4), dtype=np.float32)
+
+        monkeypatch.setattr(mod, "_OVERLAY_CORNER_RADIUS", 32.0)
+        monkeypatch.setattr(ov_mod, "_OVERLAY_CORNER_RADIUS", 16.0)
+        monkeypatch.setattr(ov_mod, "_overlay_rounded_rect_sdf", capture_sdf)
+        monkeypatch.setattr(
+            ov_mod,
+            "_glow_fill_alpha",
+            lambda *_args, **_kwargs: np.ones((4, 4), dtype=np.float32),
+        )
+        monkeypatch.setattr(ov_mod, "_fill_field_to_image", lambda *_args: ("image", b"payload"))
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: work())
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+
+        assert radii == [32.0]

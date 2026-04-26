@@ -148,6 +148,7 @@ from .handsfree import (
     match_voice_command,
 )
 from .scene_capture import SceneCaptureCache
+from .optical_shell_metrics import OpticalShellMetrics
 from .subagents import SubagentManager, run_search_subagent_query
 from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas, get_tool_schemas
 from .glow import GlowOverlay
@@ -197,6 +198,43 @@ _DEFAULT_TTS_SIDECAR_URL = "http://MacBook-Pro-2.local:9001"
 _DEFAULT_WHISPER_SIDECAR_URL = ""
 _DEFAULT_WHISPER_CLOUD_URL = "https://api.openai.com"
 _DEFAULT_WHISPER_CLOUD_MODEL = "whisper-1"
+_COMMAND_OVERLAY_RECALL_MAX_CHARS = int(
+    os.environ.get("SPOKE_COMMAND_OVERLAY_RECALL_MAX_CHARS", "4000")
+)
+_COMMAND_OVERLAY_RECALL_MAX_LINES = int(
+    os.environ.get("SPOKE_COMMAND_OVERLAY_RECALL_MAX_LINES", "80")
+)
+
+
+def _command_overlay_recall_preview(text: str) -> str:
+    """Return a bounded user-visible recall body without altering model history."""
+    text = text if isinstance(text, str) else str(text)
+    max_chars = max(200, _COMMAND_OVERLAY_RECALL_MAX_CHARS)
+    max_lines = max(8, _COMMAND_OVERLAY_RECALL_MAX_LINES)
+    lines = text.splitlines(keepends=True)
+    visible = text
+    truncated = False
+
+    if len(lines) > max_lines:
+        visible = "".join(lines[-max_lines:])
+        truncated = True
+
+    if len(visible) > max_chars:
+        visible = visible[-max_chars:]
+        if "\n" in visible:
+            visible = visible.split("\n", 1)[1]
+        truncated = True
+
+    if not truncated:
+        return text
+
+    visible = visible.lstrip("\n")
+    omitted = max(0, len(text) - len(visible))
+    return (
+        "[showing recent assistant overlay history; "
+        f"full transcript remains in command history; omitted ~{omitted} chars]\n\n"
+        f"{visible}"
+    )
 
 
 def _url_host(url: str) -> str:
@@ -902,7 +940,8 @@ class SpokeAppDelegate(NSObject):
         if self._preview_backend == "cloud":
             self._preview_model_id = self._whisper_cloud_model
         self._client_cache: dict[tuple[str, str], object] = {}
-        self._capture = AudioCapture()
+        self._optical_shell_metrics = OpticalShellMetrics()
+        self._capture = AudioCapture(metrics=self._optical_shell_metrics)
         self._capture.warmup()
         self._local_mode = not bool(transcription_url) and not bool(preview_url)
         (
@@ -968,6 +1007,9 @@ class SpokeAppDelegate(NSObject):
         if command_url:
             self._command_backend = command_backend
             self._command_url = command_url
+            relaunch_command_model = (
+                os.environ.pop("SPOKE_RELAUNCH_COMMAND_MODEL", "").strip() or None
+            )
             if command_backend == "sidecar":
                 self._command_sidecar_url = command_url
             cloud_api_key = None
@@ -983,9 +1025,6 @@ class SpokeAppDelegate(NSObject):
                     self._command_cloud_provider,
                 )
             else:
-                relaunch_command_model = (
-                    os.environ.pop("SPOKE_RELAUNCH_COMMAND_MODEL", "").strip() or None
-                )
                 env_command_model = os.environ.get("SPOKE_COMMAND_MODEL")
                 persisted_command_model = self._load_command_model_preference()
                 local_model_dir = Path(
@@ -1188,7 +1227,12 @@ class SpokeAppDelegate(NSObject):
         )
         self._menubar.setup()
 
-        self._glow = GlowOverlay.alloc().initWithScreen_(None)
+        if not hasattr(self, "_optical_shell_metrics"):
+            self._optical_shell_metrics = OpticalShellMetrics()
+
+        self._glow = GlowOverlay.alloc().initWithScreen_(
+            None, metrics=self._optical_shell_metrics
+        )
         self._glow.setup()
 
         self._overlay = TranscriptionOverlay.alloc().initWithScreen_(None)
@@ -1197,7 +1241,9 @@ class SpokeAppDelegate(NSObject):
         # Command output overlay — separate surface for command responses
         if self._command_client is not None:
             from .command_overlay import CommandOverlay
-            self._command_overlay = CommandOverlay.alloc().initWithScreen_(None)
+            self._command_overlay = CommandOverlay.alloc().initWithScreen_(
+                None, metrics=self._optical_shell_metrics
+            )
             self._command_overlay.setup()
             self._command_overlay._on_cancel_spring_threshold = self._on_cancel_spring_threshold
             self._refresh_command_model_options_async()
@@ -2762,7 +2808,7 @@ class SpokeAppDelegate(NSObject):
                     and isinstance(pending_base, str)
                     and isinstance(approval_request, dict)
                 ):
-                    message = approval_request.get("message", "Approval needed")
+                    message = self._approval_overlay_message(approval_request)
                     overlay_response = (
                         f"{pending_base}\n\n{message}"
                         if pending_base and message
@@ -2811,6 +2857,21 @@ class SpokeAppDelegate(NSObject):
             return streaming
         return getattr(self, "_last_command_response", "")
 
+    def _approval_overlay_message(self, request: dict) -> str:
+        """Return a user-facing approval card with the current key contract."""
+        hint = "Enter to run  ·  Delete to cancel  ·  speak or type to revise"
+        raw_message = request.get("message", "Approval needed")
+        message = raw_message if isinstance(raw_message, str) else str(raw_message)
+        if "Enter to run" in message and "Delete to cancel" in message:
+            return message
+        if not message:
+            return f"Approval needed\n{hint}"
+
+        lines = message.splitlines()
+        if lines and lines[0].strip() == "Approval needed":
+            return "\n".join([lines[0], hint, *lines[1:]])
+        return f"{message.rstrip()}\n{hint}"
+
     def _compose_pending_approval_overlay_body(self, *, approved: bool = False) -> str:
         """Layer approval state over the live command transcript without replacing it."""
         base = self._current_command_overlay_body()
@@ -2818,7 +2879,7 @@ class SpokeAppDelegate(NSObject):
             marker = "[approved]"
         else:
             request = getattr(self, "_pending_command_approval_request", None) or {}
-            marker = request.get("message", "Approval needed")
+            marker = self._approval_overlay_message(request)
         if base and marker:
             body = f"{base.rstrip('\n')}\n\n{marker}"
             if approved:
@@ -2842,10 +2903,11 @@ class SpokeAppDelegate(NSObject):
             logger.info("Recalling last response: %r", last_utterance[:50])
             if self._command_overlay is not None:
                 self._sync_command_overlay_brightness(immediate=True)
-                self._command_overlay.show()
-                self._command_overlay.set_utterance(last_utterance)
-                for ch in last_response:
-                    self._command_overlay.append_token(ch)
+                self._command_overlay.show(
+                    start_thinking_timer=False,
+                    initial_utterance=last_utterance,
+                    initial_response=_command_overlay_recall_preview(last_response),
+                )
                 self._command_overlay.finish()
                 self._detector.command_overlay_active = True
                 logger.info("command_overlay_active -> True (shift recall)")
@@ -3115,9 +3177,11 @@ class SpokeAppDelegate(NSObject):
             logger.info("Double-tap Enter — re-showing pending approval overlay")
             try:
                 self._sync_command_overlay_brightness(immediate=True)
-                self._command_overlay.show()
-                self._command_overlay.set_utterance(utterance)
-                self._command_overlay.set_response_text(pending_body)
+                self._command_overlay.show(
+                    start_thinking_timer=False,
+                    initial_utterance=utterance,
+                    initial_response=pending_body,
+                )
                 self._command_overlay.finish()
                 self._detector.command_overlay_active = True
             except Exception:
@@ -3132,10 +3196,11 @@ class SpokeAppDelegate(NSObject):
             )
             try:
                 self._sync_command_overlay_brightness(immediate=True)
-                self._command_overlay.show(preserve_thinking_timer=True)
-                self._command_overlay.set_utterance(utterance)
-                if streaming:
-                    self._command_overlay.set_response_text(streaming)
+                self._command_overlay.show(
+                    preserve_thinking_timer=True,
+                    initial_utterance=utterance,
+                    initial_response=streaming,
+                )
                 self._command_overlay.invert_thinking_timer()
                 self._detector.command_overlay_active = True
             except Exception:
@@ -3163,10 +3228,10 @@ class SpokeAppDelegate(NSObject):
                 logger.info("Double-tap Enter — restoring durable pending approval overlay")
                 try:
                     self._sync_command_overlay_brightness(immediate=True)
-                    self._command_overlay.show()
-                    self._command_overlay.set_utterance(utterance)
-                    self._command_overlay.set_response_text(
-                        self._compose_pending_approval_overlay_body()
+                    self._command_overlay.show(
+                        start_thinking_timer=False,
+                        initial_utterance=utterance,
+                        initial_response=self._compose_pending_approval_overlay_body(),
                     )
                     self._command_overlay.finish()
                     self._detector.approval_active = True
@@ -3181,9 +3246,11 @@ class SpokeAppDelegate(NSObject):
                 if self._command_overlay is not None:
                     try:
                         self._sync_command_overlay_brightness(immediate=True)
-                        self._command_overlay.show()
-                        self._command_overlay.set_utterance(last_utterance)
-                        self._command_overlay.append_token(last_response)
+                        self._command_overlay.show(
+                            start_thinking_timer=False,
+                            initial_utterance=last_utterance,
+                            initial_response=_command_overlay_recall_preview(last_response),
+                        )
                         self._command_overlay.finish()
                         self._detector.command_overlay_active = True
                     except Exception:
@@ -4266,8 +4333,8 @@ class SpokeAppDelegate(NSObject):
                         []
                         if server_unreachable
                         else [
-                            (model_id, label, True)
-                            for model_id, label, _selected in self._command_model_options
+                            (model_id, label, selected)
+                            for model_id, label, selected in self._command_model_options
                         ]
                     ),
                 }

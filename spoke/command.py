@@ -101,6 +101,7 @@ def _extract_reasoning_tokens(delta: dict[str, Any]) -> list[str]:
 _DEFAULT_COMMAND_URL = "http://localhost:8090"
 _DEFAULT_COMMAND_MODEL = "qwen3p5-35B-A3B"
 _DEFAULT_RING_BUFFER_SIZE = 20
+_ASSISTANT_PRESENCE_PENALTY = 1.0
 _HISTORY_PATH = Path.home() / ".config" / "spoke" / "history.json"
 _PERSONALITY_CONF_NAME = "personality.conf"
 _PERSONALITIES_DIR_NAME = "personalities"
@@ -1159,6 +1160,7 @@ class CommandClient:
         turn_start_idx = len(messages) - 1  # points to the user message
         full_response = ""
         visible_response = ""
+        history_committed = False
 
         # Safety cap on tool call round-trips.  With cancel_check wired
         # up the user can bail out at any time, so this is just a backstop
@@ -1177,6 +1179,7 @@ class CommandClient:
                 "top_p": 0.95,
                 "top_k": 20,
                 "repetition_penalty": 1.0,
+                "presence_penalty": _ASSISTANT_PRESENCE_PENALTY,
             }
             if self._enable_thinking and self._is_openrouter:
                 body["reasoning"] = {"enabled": True}
@@ -1218,6 +1221,7 @@ class CommandClient:
             # Content accumulated during this round only (may be
             # intermediate text during a tool-call turn)
             round_content = ""
+            round_cancelled = False
             # Thinking token state machine for <think>...</think> tags.
             # States: "detect" (haven't seen anything yet),
             #         "thinking" (inside <think> block),
@@ -1231,6 +1235,7 @@ class CommandClient:
                         # Cancel check between SSE chunks
                         if cancel_check is not None and cancel_check():
                             logger.info("Cancel requested during SSE stream — breaking")
+                            round_cancelled = True
                             resp.close()
                             break
                         line = raw_line.decode("utf-8", errors="replace").strip()
@@ -1432,6 +1437,11 @@ class CommandClient:
                 )
                 full_response = visible_response or round_content
                 messages.append({"role": "assistant", "content": full_response or None})
+                self.append_history_turn(
+                    messages[turn_start_idx:],
+                    overlay_response=visible_response or full_response,
+                )
+                history_committed = True
                 yield CommandStreamEvent(kind="assistant_final", text=full_response)
                 break
 
@@ -1482,15 +1492,23 @@ class CommandClient:
             # No tool calls — this round's content is the final response
             full_response = round_content
             messages.append({"role": "assistant", "content": full_response or None})
+            # The caller may stop consuming after assistant_final. Commit before
+            # yielding it so final text and completed tool work are durable.
+            self.append_history_turn(
+                messages[turn_start_idx:],
+                overlay_response=visible_response or full_response,
+            )
+            history_committed = True
             yield CommandStreamEvent(kind="assistant_final", text=full_response)
             break
 
         # Add to ring buffer — only this turn's messages (from the user
         # utterance onward), preserving tool calls and results.
-        self.append_history_turn(
-            messages[turn_start_idx:],
-            overlay_response=visible_response or full_response,
-        )
+        if not history_committed:
+            self.append_history_turn(
+                messages[turn_start_idx:],
+                overlay_response=visible_response or full_response,
+            )
 
         return full_response
 
@@ -1527,6 +1545,7 @@ class CommandClient:
         self._clear_pending_tool_approval_persistence()
         messages = list(pending.messages)
         completed_calls = [pending.call, *pending.remaining_calls]
+        history_committed = False
         messages, visible_response, paused_for_approval = yield from self._execute_tool_calls(
             utterance=pending.utterance,
             messages=messages,
@@ -1552,6 +1571,7 @@ class CommandClient:
                 "top_p": 0.95,
                 "top_k": 20,
                 "repetition_penalty": 1.0,
+                "presence_penalty": _ASSISTANT_PRESENCE_PENALTY,
             }
             if self._enable_thinking and self._is_openrouter:
                 body["reasoning"] = {"enabled": True}
@@ -1579,12 +1599,14 @@ class CommandClient:
             emitted_tool_call_indices: set[int] = set()
             finish_reason = None
             round_content = ""
+            round_cancelled = False
             thinking_state = "detect"
             thinking_tag_buf = ""
 
             with urllib.request.urlopen(req, timeout=120) as resp:
                 for raw_line in resp:
                     if cancel_check is not None and cancel_check():
+                        round_cancelled = True
                         resp.close()
                         break
                     line = raw_line.decode("utf-8", errors="replace").strip()
@@ -1687,6 +1709,11 @@ class CommandClient:
             if has_tool_calls and cancel_check is not None and cancel_check():
                 full_response = visible_response or round_content
                 messages.append({"role": "assistant", "content": full_response or None})
+                self.append_history_turn(
+                    messages[pending.turn_start_idx:],
+                    overlay_response=visible_response or full_response,
+                )
+                history_committed = True
                 yield CommandStreamEvent(kind="assistant_final", text=full_response)
                 break
             if has_tool_calls:
@@ -1722,13 +1749,19 @@ class CommandClient:
 
             full_response = round_content
             messages.append({"role": "assistant", "content": full_response or None})
+            self.append_history_turn(
+                messages[pending.turn_start_idx:],
+                overlay_response=visible_response or full_response,
+            )
+            history_committed = True
             yield CommandStreamEvent(kind="assistant_final", text=full_response)
             break
 
-        self.append_history_turn(
-            messages[pending.turn_start_idx:],
-            overlay_response=visible_response or full_response,
-        )
+        if not history_committed:
+            self.append_history_turn(
+                messages[pending.turn_start_idx:],
+                overlay_response=visible_response or full_response,
+            )
         return full_response
 
     def cancel_pending_tool_call(self) -> None:
