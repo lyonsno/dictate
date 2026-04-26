@@ -55,6 +55,7 @@ _EDIT_FILE_TELEMETRY_COUNTER_KEYS = (
     "malformed_request",
     "normalization_assisted",
 )
+_TOOL_MANAGEMENT_TOOL = "manage_tools"
 
 
 def _is_local_omnivoice_cold_tts(tts_client: Any) -> bool:
@@ -418,9 +419,35 @@ _COMPACT_HISTORY_SCHEMA = {
     },
 }
 
+_MANAGE_TOOLS_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": _TOOL_MANAGEMENT_TOOL,
+        "description": (
+            "List, enable, or disable the assistant's own tool surface for "
+            "future turns. This tool remains available even when other tools "
+            "are disabled."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "enable", "disable"],
+                    "description": "Whether to list current tools, enable one tool, or disable one tool.",
+                },
+                "tool_name": {
+                    "type": "string",
+                    "description": "Tool to enable or disable. Omit for action=list.",
+                },
+            },
+            "required": ["action"],
+        },
+    },
+}
 
-def get_tool_schemas() -> list[dict]:
-    """Return the tool schemas for the assistant."""
+
+def _base_tool_schemas() -> list[dict]:
     return [
         _CAPTURE_CONTEXT_SCHEMA,
         _READ_ALOUD_SCHEMA,
@@ -439,6 +466,104 @@ def get_tool_schemas() -> list[dict]:
         _GET_SUBAGENT_RESULT_SCHEMA,
         _CANCEL_SUBAGENT_SCHEMA,
         _COMPACT_HISTORY_SCHEMA,
+    ]
+
+
+def _tool_name(schema: dict[str, Any]) -> str:
+    function = schema.get("function")
+    if not isinstance(function, dict):
+        return ""
+    name = function.get("name")
+    return name if isinstance(name, str) else ""
+
+
+def _known_tool_names() -> set[str]:
+    return {_tool_name(schema) for schema in _base_tool_schemas()} | {_TOOL_MANAGEMENT_TOOL}
+
+
+def _tool_config_path() -> Path:
+    return Path.home() / ".config" / "spoke" / "tools.json"
+
+
+def _read_disabled_tools() -> set[str]:
+    try:
+        payload = json.loads(_tool_config_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    if not isinstance(payload, dict):
+        return set()
+    disabled = payload.get("disabled")
+    if not isinstance(disabled, list):
+        return set()
+    return {
+        name
+        for name in disabled
+        if isinstance(name, str)
+        and name in _known_tool_names()
+        and name != _TOOL_MANAGEMENT_TOOL
+    }
+
+
+def _write_disabled_tools(disabled: set[str]) -> None:
+    path = _tool_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"disabled": sorted(disabled)}
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _tool_statuses(disabled: set[str]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": name,
+            "enabled": name not in disabled,
+            "manageable": name != _TOOL_MANAGEMENT_TOOL,
+        }
+        for name in sorted(_known_tool_names())
+    ]
+
+
+def _execute_manage_tools(arguments: dict[str, Any]) -> dict[str, Any]:
+    action = arguments.get("action")
+    if action not in {"list", "enable", "disable"}:
+        return {"error": "action must be one of: list, enable, disable"}
+
+    disabled = _read_disabled_tools()
+    changed = False
+    tool_name = arguments.get("tool_name")
+
+    if action in {"enable", "disable"}:
+        if not isinstance(tool_name, str) or not tool_name:
+            return {"error": "tool_name is required for enable/disable"}
+        if tool_name == _TOOL_MANAGEMENT_TOOL and action == "disable":
+            return {"error": "manage_tools cannot disable itself"}
+        if tool_name not in _known_tool_names():
+            return {"error": f"Unknown tool: {tool_name}"}
+        if action == "disable":
+            changed = tool_name not in disabled
+            disabled.add(tool_name)
+        else:
+            changed = tool_name in disabled
+            disabled.discard(tool_name)
+        _write_disabled_tools(disabled)
+
+    return {
+        "action": action,
+        "changed": changed,
+        "disabled_tools": sorted(disabled),
+        "tools": _tool_statuses(disabled),
+    }
+
+
+def get_tool_schemas() -> list[dict]:
+    """Return the enabled tool schemas for the assistant."""
+    disabled = _read_disabled_tools()
+    return [
+        *[
+            schema
+            for schema in _base_tool_schemas()
+            if _tool_name(schema) not in disabled
+        ],
+        _MANAGE_TOOLS_SCHEMA,
     ]
 
 
@@ -2169,5 +2294,7 @@ def execute_tool(
         if history_compactor is None:
             return json.dumps({"error": "History compactor unavailable"})
         return history_compactor(arguments)
+    elif name == _TOOL_MANAGEMENT_TOOL:
+        return json.dumps(_execute_manage_tools(arguments))
     else:
         return json.dumps({"error": f"Unknown tool: {name}"})

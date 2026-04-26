@@ -204,6 +204,18 @@ def _personality_skill_pointer() -> str:
     )
 
 
+def _tool_management_skill_pointer() -> str:
+    return (
+        "## Tool Management Skill\n\n"
+        "Tool management is an on-demand operator skill. If the user asks what "
+        "tools you have, or asks to list, enable, or disable tools, call "
+        "`manage_tools` instead of guessing from memory. Use action `list` to "
+        "inspect the current enabled/disabled surface, action `disable` to hide "
+        "a tool from future model turns, and action `enable` to restore one; "
+        "always leave manage_tools enabled so the tool surface can recover.\n"
+    )
+
+
 def _path_matches_personality_readme(path: str) -> bool:
     try:
         candidate = Path(path).expanduser().resolve()
@@ -277,7 +289,11 @@ def _inject_active_personality_stub(system_prompt: str) -> str:
     stub = _active_personality_stub()
     if not stub:
         stub = _DEFAULT_PERSONALITY_STUB.strip()
-    return f"{system_prompt}\n\n{_personality_skill_pointer()}\n## Active Personality Stub\n\n{stub}"
+    return (
+        f"{system_prompt}\n\n{_personality_skill_pointer()}"
+        f"\n{_tool_management_skill_pointer()}"
+        f"\n## Active Personality Stub\n\n{stub}"
+    )
 
 
 def _terminal_preview_body_line_limit(body_line_count: int) -> int:

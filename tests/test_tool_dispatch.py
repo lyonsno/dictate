@@ -120,6 +120,56 @@ class TestToolSchemas:
         names = {s["function"]["name"] for s in schemas}
         assert "run_epistaxis_ops" not in names
 
+    def test_manage_tools_schema_is_always_exposed(self):
+        mod = _import_tools()
+        schemas = mod.get_tool_schemas()
+        names = {s["function"]["name"] for s in schemas}
+        assert "manage_tools" in names
+
+        schema = next(s for s in schemas if s["function"]["name"] == "manage_tools")
+        params = schema["function"]["parameters"]
+        assert set(params["properties"]["action"]["enum"]) == {"list", "enable", "disable"}
+        assert "tool_name" in params["properties"]
+
+    def test_manage_tools_disables_and_reenables_tool_schemas(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        monkeypatch.setattr(mod.Path, "home", classmethod(lambda cls: tmp_path))
+
+        disabled = mod.execute_tool(
+            "manage_tools",
+            {"action": "disable", "tool_name": "search_web"},
+        )
+        disabled_payload = json.loads(disabled)
+        assert disabled_payload["changed"] is True
+        assert "search_web" in disabled_payload["disabled_tools"]
+
+        names_after_disable = {s["function"]["name"] for s in mod.get_tool_schemas()}
+        assert "manage_tools" in names_after_disable
+        assert "search_web" not in names_after_disable
+
+        enabled = mod.execute_tool(
+            "manage_tools",
+            {"action": "enable", "tool_name": "search_web"},
+        )
+        enabled_payload = json.loads(enabled)
+        assert enabled_payload["changed"] is True
+        assert "search_web" not in enabled_payload["disabled_tools"]
+        assert "search_web" in {s["function"]["name"] for s in mod.get_tool_schemas()}
+
+    def test_manage_tools_rejects_disabling_itself(self, tmp_path, monkeypatch):
+        mod = _import_tools()
+        monkeypatch.setattr(mod.Path, "home", classmethod(lambda cls: tmp_path))
+
+        result = json.loads(
+            mod.execute_tool(
+                "manage_tools",
+                {"action": "disable", "tool_name": "manage_tools"},
+            )
+        )
+
+        assert result["error"] == "manage_tools cannot disable itself"
+        assert "manage_tools" in {s["function"]["name"] for s in mod.get_tool_schemas()}
+
 
     def test_list_directory_schema(self):
         mod = _import_tools()

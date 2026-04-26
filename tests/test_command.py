@@ -254,6 +254,16 @@ class TestCommandClient:
         assert "Personality files live in" not in system_prompt
         assert "with write_file" not in system_prompt
 
+    def test_build_messages_injects_tool_management_skill_pointer(self):
+        """The prompt should tell the operator how to manage its active tool surface."""
+        client = self._make_client()
+        system_prompt = client._build_messages("what tools can you turn off?")[0]["content"]
+
+        assert "Tool management is an on-demand operator skill" in system_prompt
+        assert "manage_tools" in system_prompt
+        assert "list, enable, or disable" in system_prompt
+        assert "always leave manage_tools enabled" in system_prompt
+
     def test_build_messages_keeps_full_authoring_packet_out_of_personality_requests(self, tmp_path, monkeypatch):
         """Personality requests should still load the full packet through read_file."""
         from spoke import command as command_mod
