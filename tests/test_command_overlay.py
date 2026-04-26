@@ -132,6 +132,80 @@ def _install_fake_attributed_string(monkeypatch):
     )
 
 
+def test_quartz_backdrop_renderer_blurs_snapshot_before_render(mock_pyobjc, monkeypatch):
+    sys.modules.pop("spoke.command_overlay", None)
+    mod = importlib.import_module("spoke.command_overlay")
+    quartz = sys.modules["Quartz"]
+
+    captured = {}
+
+    class FakeImage:
+        def __init__(self, label):
+            self.label = label
+            self._extent = _make_rect(0.0, 0.0, 680.0, 160.0)
+
+        def extent(self):
+            return self._extent
+
+        def imageByClampingToExtent(self):
+            captured["clamped"] = self.label
+            return self
+
+        def imageByCroppingToRect_(self, rect):
+            captured["cropped"] = rect
+            return self
+
+    class FakeCIImage:
+        @staticmethod
+        def imageWithCGImage_(image):
+            captured["input_image"] = image
+            return FakeImage("ci-snapshot")
+
+    class FakeBlurFilter:
+        def __init__(self):
+            self.values = {}
+
+        def setDefaults(self):
+            captured["defaults"] = True
+
+        def setValue_forKey_(self, value, key):
+            self.values[key] = value
+
+        def valueForKey_(self, key):
+            assert key == "outputImage"
+            captured["blurred_radius"] = self.values["inputRadius"]
+            captured["blurred_input"] = self.values["inputImage"].label
+            return self.values["inputImage"]
+
+    class FakeCIFilter:
+        @staticmethod
+        def filterWithName_(name):
+            captured["filter"] = name
+            return FakeBlurFilter()
+
+    quartz.CGWindowListCreateImage = MagicMock(return_value="sharp-snapshot")
+    quartz.kCGWindowListOptionOnScreenBelowWindow = 2
+    quartz.CIImage = FakeCIImage
+    quartz.CIFilter = FakeCIFilter
+
+    renderer = mod._QuartzBackdropRenderer()
+    context = MagicMock()
+    context.createCGImage_fromRect_.return_value = "blurred-snapshot"
+    renderer._context = MagicMock(return_value=context)
+
+    image = renderer.capture_blurred_image(
+        window_number=17,
+        capture_rect=_make_rect(100.0, 200.0, 680.0, 160.0),
+        blur_radius_points=5.4,
+    )
+
+    assert image == "blurred-snapshot"
+    assert captured["filter"] == "CIGaussianBlur"
+    assert captured["blurred_radius"] == pytest.approx(5.4)
+    assert captured["blurred_input"] == "ci-snapshot"
+    context.createCGImage_fromRect_.assert_called_once()
+
+
 class _FakeLayoutManager:
     def __init__(self, height):
         self.height = height

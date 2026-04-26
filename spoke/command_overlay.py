@@ -703,7 +703,7 @@ class _QuartzBackdropRenderer:
             return image
 
         try:
-            from Quartz import CIImage
+            from Quartz import CIFilter, CIImage
         except Exception:
             return image
 
@@ -718,6 +718,25 @@ class _QuartzBackdropRenderer:
             if extent is None:
                 return image
             output = ci_image
+            blur_radius_points = max(float(blur_radius_points), 0.0)
+            if blur_radius_points > 0.0:
+                blur = CIFilter.filterWithName_("CIGaussianBlur")
+                if blur is not None:
+                    blur.setDefaults()
+                    blur_input = (
+                        output.imageByClampingToExtent()
+                        if hasattr(output, "imageByClampingToExtent")
+                        else output
+                    )
+                    blur.setValue_forKey_(blur_input, "inputImage")
+                    blur.setValue_forKey_(blur_radius_points, "inputRadius")
+                    blurred = blur.valueForKey_("outputImage")
+                    if blurred is not None:
+                        output = (
+                            blurred.imageByCroppingToRect_(extent)
+                            if hasattr(blurred, "imageByCroppingToRect_")
+                            else blurred
+                        )
 
             # Apply optical shell warp to the real backdrop capture.
             if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:

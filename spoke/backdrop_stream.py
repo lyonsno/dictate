@@ -1963,6 +1963,11 @@ class _ScreenCaptureKitBackdropRenderer:
                     error = args[0] if args else None
                     if error is not None:
                         logger.info("SCK: startCapture failed: %r", error)
+                        self._stream = None
+                        self._stream_output = None
+                        self._stream_started = False
+                        self._applied_signature = None
+                        self._window_number = None
                         return
                     logger.info("SCK: startCapture succeeded — stream is live")
                     self._stream_started = True

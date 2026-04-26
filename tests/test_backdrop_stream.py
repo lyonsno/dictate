@@ -947,6 +947,100 @@ def test_request_stream_start_passes_dedicated_sample_handler_queue(monkeypatch)
     assert renderer._stream_handler_queue is sentinel_queue
 
 
+def test_request_stream_start_clears_failed_start_so_later_refresh_can_retry(monkeypatch):
+    mod = _import_module()
+
+    class FakeDisplay:
+        def frame(self):
+            return _make_rect(0.0, 0.0, 1728.0, 1117.0)
+
+    fake_display = FakeDisplay()
+
+    class FakeContent:
+        def displays(self):
+            return [fake_display]
+
+        def windows(self):
+            return []
+
+    fake_content = FakeContent()
+
+    class FakeStream:
+        def addStreamOutput_type_sampleHandlerQueue_error_(self, output, output_type, queue, error):
+            return True, None
+
+        def startCaptureWithCompletionHandler_(self, callback):
+            callback("screen-capture-denied")
+
+    fake_stream = FakeStream()
+
+    class FakeSCStream:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithFilter_configuration_delegate_(self, content_filter, config, delegate):
+            return fake_stream
+
+    class FakeSCShareableContent:
+        @staticmethod
+        def getShareableContentWithCompletionHandler_(callback):
+            callback(fake_content)
+
+    class FakeOutput:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithRenderer_(self, renderer):
+            return self
+
+    monkeypatch.setattr(
+        mod,
+        "_load_screencapturekit_bridge",
+        lambda: {
+            "SCShareableContent": FakeSCShareableContent,
+            "SCStream": FakeSCStream,
+            "SCStreamOutputTypeScreen": 7,
+        },
+    )
+    monkeypatch.setattr(mod, "_ScreenCaptureKitStreamOutput", FakeOutput)
+
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
+    renderer._screen = object()
+    renderer._fallback_factory = lambda: None
+    renderer._fallback = None
+    renderer._stream = None
+    renderer._stream_output = None
+    renderer._stream_started = False
+    renderer._startup_requested = False
+    renderer._pending_signature = None
+    renderer._applied_signature = None
+    renderer._latest_image = None
+    renderer._frame_callback = None
+    renderer._sample_buffer_callback = None
+    renderer._blur_radius_points = 0.0
+    renderer._current_display = None
+    renderer._current_display_frame = None
+    renderer._current_content = None
+    renderer._window_number = None
+    renderer._lock = mod.threading.Lock()
+    renderer._ci_context = None
+    renderer._stream_handler_queue = None
+    renderer._match_display = lambda content: fake_display
+    renderer._build_filter = lambda content, display, window_number: "filter"
+    renderer._build_configuration = lambda content_filter, capture_rect: "config"
+    renderer._current_backing_scale = lambda: 2.0
+    renderer._signature_for = lambda window_number, capture_rect, backing_scale: ("sig",)
+
+    renderer._request_stream_start(window_number=99, capture_rect=_make_rect(100.0, 200.0, 680.0, 160.0))
+
+    assert renderer._stream is None
+    assert renderer._stream_output is None
+    assert renderer._stream_started is False
+    assert renderer._applied_signature is None
+
+
 def test_capture_blurred_image_seeds_direct_debug_grid_when_visualize_enabled(monkeypatch):
     mod = _import_module()
     renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(mod._ScreenCaptureKitBackdropRenderer)
