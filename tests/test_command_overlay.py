@@ -6,6 +6,7 @@ All tests use mocked PyObjC — no GUI runtime required.
 """
 
 import importlib
+import inspect
 import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -410,6 +411,16 @@ class TestWindowLayering:
         assert narrator_frame.size.height == pytest.approx(45.0)
         assert narrator_frame.origin.y >= 0.0
         assert narrator_frame.origin.y + narrator_frame.size.height <= mod._OVERLAY_HEIGHT
+
+    def test_setup_owns_command_overlay_created_log(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+
+        setup_source = inspect.getsource(mod.CommandOverlay.setup)
+        layer_choice_source = inspect.getsource(mod.CommandOverlay._choose_backdrop_layer_class)
+
+        assert "Command overlay created" in setup_source
+        assert "Command overlay created" not in layer_choice_source
 
     def test_hide_clears_visible_and_streaming(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
@@ -1701,3 +1712,32 @@ class TestSDFCaching:
 
         overlay._apply_ridge_masks(600.0, 200.0)
         assert call_count == 2, "SDF was not recomputed after height change"
+
+    def test_fill_sdf_uses_command_overlay_corner_radius(self, mock_pyobjc, monkeypatch):
+        """The command shell fill should honor the command overlay radius override."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._spring_tint_layer = None
+
+        import numpy as np
+        import spoke.overlay as ov_mod
+
+        radii = []
+
+        def capture_sdf(total_w, total_h, width, height, corner_radius, scale):
+            radii.append(corner_radius)
+            return np.zeros((4, 4), dtype=np.float32)
+
+        monkeypatch.setattr(mod, "_OVERLAY_CORNER_RADIUS", 32.0)
+        monkeypatch.setattr(ov_mod, "_OVERLAY_CORNER_RADIUS", 16.0)
+        monkeypatch.setattr(ov_mod, "_overlay_rounded_rect_sdf", capture_sdf)
+        monkeypatch.setattr(
+            ov_mod,
+            "_glow_fill_alpha",
+            lambda *_args, **_kwargs: np.ones((4, 4), dtype=np.float32),
+        )
+        monkeypatch.setattr(ov_mod, "_fill_field_to_image", lambda *_args: ("image", b"payload"))
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: work())
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+
+        assert radii == [32.0]

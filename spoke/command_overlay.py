@@ -1111,6 +1111,7 @@ class CommandOverlay(NSObject):
         self._apply_surface_theme()
         self._set_overlay_scale(1.0)
         self._update_backdrop_capture_geometry()
+        logger.info("Command overlay created")
 
     def _choose_backdrop_layer_class(self):
         if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
@@ -1136,8 +1137,6 @@ class CommandOverlay(NSObject):
             except Exception:
                 logger.debug("Command backdrop renderer sample-buffer capability check failed", exc_info=True)
         return CALayer
-
-        logger.info("Command overlay created")
 
     def _backdrop_layer_uses_sample_buffers(self) -> bool:
         return bool(getattr(self, "_backdrop_layer_is_sample_buffer_display", False))
@@ -2564,7 +2563,7 @@ class CommandOverlay(NSObject):
         numpy SDF computation and just rebuild the colored image.
         """
         from .overlay import (
-            _RIDGE_FALLOFF, _RIDGE_POWER, _OVERLAY_CORNER_RADIUS,
+            _RIDGE_FALLOFF, _RIDGE_POWER,
             _overlay_rounded_rect_sdf, _ridge_alpha, _interior_fill_alpha,
             _fill_field_to_image, _BG_COLOR_DARK,
         )

@@ -1007,6 +1007,9 @@ class SpokeAppDelegate(NSObject):
         if command_url:
             self._command_backend = command_backend
             self._command_url = command_url
+            relaunch_command_model = (
+                os.environ.pop("SPOKE_RELAUNCH_COMMAND_MODEL", "").strip() or None
+            )
             if command_backend == "sidecar":
                 self._command_sidecar_url = command_url
             cloud_api_key = None
@@ -1022,9 +1025,6 @@ class SpokeAppDelegate(NSObject):
                     self._command_cloud_provider,
                 )
             else:
-                relaunch_command_model = (
-                    os.environ.pop("SPOKE_RELAUNCH_COMMAND_MODEL", "").strip() or None
-                )
                 env_command_model = os.environ.get("SPOKE_COMMAND_MODEL")
                 persisted_command_model = self._load_command_model_preference()
                 local_model_dir = Path(

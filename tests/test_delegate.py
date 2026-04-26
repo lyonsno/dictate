@@ -2389,6 +2389,54 @@ class TestDualModelConfiguration:
         )
         assert "SPOKE_RELAUNCH_COMMAND_MODEL" not in os.environ
 
+    def test_init_consumes_relaunch_command_model_in_cloud_backend(
+        self, main_module, monkeypatch
+    ):
+        """A cloud relaunch must not leave a stale one-shot local override in the env."""
+        monkeypatch.setenv("SPOKE_RELAUNCH_COMMAND_MODEL", "gemini-2.5-pro")
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_command_backend_preference",
+            lambda self: "cloud",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_provider_preference",
+            lambda self: "google",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_load_cloud_model_preference",
+            lambda self, provider=None: "gemini-2.5-pro",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            main_module.SpokeAppDelegate,
+            "_resolve_command_cloud_api_key",
+            lambda self, command_url, provider=None: "test-key",
+            raising=False,
+        )
+
+        with patch.object(main_module, "CommandClient") as MockCommand:
+            MockCommand.return_value = MagicMock()
+            with patch.object(
+                main_module.SpokeAppDelegate,
+                "_seed_command_model_options",
+                return_value=[("gemini-2.5-pro", "gemini-2.5-pro", True)],
+            ):
+                d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+                result = d.init()
+
+        assert result is not None
+        MockCommand.assert_called_once_with(
+            base_url=main_module._DEFAULT_CLOUD_URL,
+            model="gemini-2.5-pro",
+            api_key="test-key",
+        )
+        assert "SPOKE_RELAUNCH_COMMAND_MODEL" not in os.environ
+
     def test_init_seeds_command_model_options_without_sync_discovery(
         self, main_module, monkeypatch
     ):
