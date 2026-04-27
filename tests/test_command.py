@@ -2647,3 +2647,66 @@ class TestXMLToolCallFallback:
             event.text for event in events if event.kind == "assistant_delta"
         )
         assert assistant_text == "Checking <function=not_closed but this is still visible."
+
+    def test_xml_tool_call_preserves_trailing_text_in_followup_round(self):
+        from spoke.command import CommandClient
+
+        client = CommandClient(
+            base_url="http://localhost:9999",
+            model="test-model",
+            api_key="key",
+            history_path=None,
+        )
+        first_round = [
+            {"choices": [{"index": 0, "delta": {"content": "First.\n"}}]},
+            {"choices": [{"index": 0, "delta": {"content": (
+                "<function=list_directory>"
+                "<parameter=dir_path>/tmp</parameter>"
+                "</function>"
+            )}}]},
+        ]
+        followup_round = [
+            {"choices": [{"index": 0, "delta": {"content": "Second.\n"}}]},
+            {"choices": [{"index": 0, "delta": {"content": (
+                "<function=list_directory>"
+                "<parameter=dir_path>/var</parameter>"
+                "</function>"
+                " Follow-up tail."
+            )}}]},
+        ]
+        final_round = [
+            {"choices": [{"index": 0, "delta": {"content": "Done."}}]},
+        ]
+        responses = [
+            _make_sse_response(first_round),
+            _make_sse_response(followup_round),
+            _make_sse_response(final_round),
+        ]
+        tool_calls = []
+
+        def fake_urlopen(req, timeout=None):
+            return responses.pop(0)
+
+        def tool_executor(name, arguments, **kwargs):
+            tool_calls.append((name, arguments))
+            return '{"entries":[{"name":"alpha.txt"}]}'
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            events = list(
+                client.stream_command_events(
+                    "list tmp",
+                    tools=[{"type": "function", "function": {"name": "list_directory"}}],
+                    tool_executor=tool_executor,
+                )
+            )
+
+        assistant_text = "".join(
+            event.text for event in events if event.kind == "assistant_delta"
+        )
+        assert "Second." in assistant_text
+        assert "Follow-up tail." in assistant_text
+        assert "<function=" not in assistant_text
+        assert tool_calls == [
+            ("list_directory", {"dir_path": "/tmp"}),
+            ("list_directory", {"dir_path": "/var"}),
+        ]

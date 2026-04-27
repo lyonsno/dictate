@@ -1041,6 +1041,7 @@ class CommandClient:
             # Content accumulated during this round only (may be
             # intermediate text during a tool-call turn)
             round_content = ""
+            round_visible_text = ""
             suppress_xml_content = False
             xml_marker_pending = ""
             xml_visible_prefix = None
@@ -1181,8 +1182,9 @@ class CommandClient:
                                         text_to_process,
                                     )
                                     if not was_suppressing_xml and suppress_xml_content:
-                                        xml_visible_prefix = visible_response + visible_text
+                                        xml_visible_prefix = round_visible_text + visible_text
                             if visible_text:
+                                round_visible_text += visible_text
                                 visible_response += visible_text
                                 yield CommandStreamEvent(
                                     kind="assistant_delta",
@@ -1239,6 +1241,7 @@ class CommandClient:
                 ):
                     missing_visible_text = round_content[len(xml_visible_prefix):]
                     if missing_visible_text:
+                        round_visible_text += missing_visible_text
                         visible_response += missing_visible_text
                         yield CommandStreamEvent(
                             kind="assistant_delta",
@@ -1273,6 +1276,7 @@ class CommandClient:
                             len(xml_visible_prefix):
                         ]
                         if missing_visible_text:
+                            round_visible_text += missing_visible_text
                             visible_response += missing_visible_text
                             yield CommandStreamEvent(
                                 kind="assistant_delta",
