@@ -1926,8 +1926,6 @@ class SpokeAppDelegate(NSObject):
             getattr(self._overlay, "_visible", False) if self._overlay is not None else False,
         )
         # Manual holds take precedence over any live hands-free audio path.
-        self._suspend_handsfree_for_hold()
-
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
@@ -1950,6 +1948,8 @@ class SpokeAppDelegate(NSObject):
                     immediate=True,
                 )
             self._overlay.show()
+
+        self._suspend_handsfree_for_hold()
 
         try:
             def on_vad_state(is_speech: bool):

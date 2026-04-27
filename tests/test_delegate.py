@@ -108,7 +108,7 @@ class TestHoldCallbacks:
         )
         assert d._preview_active is False
 
-    def test_hold_start_suspends_wakeword_listener_before_capture_start(
+    def test_hold_start_shows_preview_before_suspending_wakeword_listener(
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
@@ -116,6 +116,8 @@ class TestHoldCallbacks:
         d._handsfree.state = main_module.HandsFreeState.LISTENING
         d._handsfree.is_dictating = False
         call_order: list[str] = []
+        d._glow.show.side_effect = lambda: call_order.append("glow")
+        d._overlay.show.side_effect = lambda: call_order.append("overlay")
         d._handsfree.disable.side_effect = lambda **kwargs: call_order.append(
             f"disable:{kwargs.get('reason')}"
         )
@@ -123,7 +125,12 @@ class TestHoldCallbacks:
 
         d._on_hold_start()
 
-        assert call_order[:2] == ["disable:manual hold suspend", "capture"]
+        assert call_order[:4] == [
+            "glow",
+            "overlay",
+            "disable:manual hold suspend",
+            "capture",
+        ]
         assert d._handsfree_resume_state_for_hold == main_module.HandsFreeState.LISTENING
 
     def test_toggle_handsfree_disables_with_reason(self, main_module, monkeypatch):
