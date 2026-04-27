@@ -176,6 +176,24 @@ class TestHoldCallbacks:
         assert d._transcribing is True
         assert d._preview_cancelled_on_release is True
 
+    def test_hold_end_starts_release_ui_before_capture_stop(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b"fake-wav"
+        call_order: list[str] = []
+        d._glow.hide.side_effect = lambda: call_order.append("glow.hide")
+        d._menubar.set_recording.side_effect = lambda value: call_order.append(
+            f"recording.{value}"
+        )
+        d._capture.stop.side_effect = lambda: call_order.append("capture.stop") or b"fake-wav"
+
+        with patch.object(main_module.threading, "Thread"):
+            d._on_hold_end()
+
+        assert call_order.index("glow.hide") < call_order.index("capture.stop")
+        assert call_order.index("recording.False") < call_order.index("capture.stop")
+
     def test_hold_end_with_empty_audio_skips_transcription(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._capture.stop.return_value = b""

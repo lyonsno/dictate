@@ -2331,6 +2331,15 @@ class SpokeAppDelegate(NSObject):
         else:
             self._pre_stop_tail_wav = None
             self._pre_stop_segment_count = 0
+
+        # Start visible release feedback before synchronous capture teardown
+        # and WAV assembly. Even small stop/encode hiccups are felt as a
+        # frozen release if the animation is queued afterward.
+        if not shift_held and not enter_held and self._glow is not None:
+            self._glow.hide()
+        if self._menubar is not None:
+            self._menubar.set_vad_state(False, False)
+            self._menubar.set_recording(False)
         wav_bytes = self._capture.stop()
 
         if wav_bytes and getattr(self, "_pending_command_approval_active", False):
@@ -2341,13 +2350,6 @@ class SpokeAppDelegate(NSObject):
         if shift_held and elapsed < 0.8:
             logger.info("Short shift-hold (%.0fms) — recalling into tray", elapsed * 1000)
             wav_bytes = b""  # force the empty-audio path
-
-        # Glow/dimmer: hide immediately for text insertion
-        if not shift_held and not enter_held and self._glow is not None:
-            self._glow.hide()
-        if self._menubar is not None:
-            self._menubar.set_vad_state(False, False)
-            self._menubar.set_recording(False)
 
         if not wav_bytes:
             logger.info(
