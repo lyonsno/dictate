@@ -4674,14 +4674,39 @@ class TestHoldStartDuringTranscription:
 
         d._command_overlay.set_recording_load_shed.assert_called_once_with(True)
 
-    def test_hold_end_resumes_command_overlay_after_recording(
+    def test_hold_end_keeps_command_overlay_shed_until_preview_fade_finishes(
         self, main_module, monkeypatch
     ):
         d = _make_delegate(main_module, monkeypatch)
         d._command_overlay = MagicMock(_visible=True)
         d._capture.stop.return_value = b""
+        scheduled: dict[str, object] = {}
+
+        class FakeTimer:
+            @classmethod
+            def scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                cls, interval, target, selector, user_info, repeats
+            ):
+                scheduled.update(
+                    {
+                        "interval": interval,
+                        "target": target,
+                        "selector": selector,
+                        "repeats": repeats,
+                    }
+                )
+                return MagicMock()
+
+        monkeypatch.setattr(main_module, "NSTimer", FakeTimer)
 
         d._on_hold_end()
+
+        d._overlay.hide.assert_called_once_with()
+        d._command_overlay.set_recording_load_shed.assert_not_called()
+        assert scheduled["selector"] == "releaseCommandOverlayRecordingLoadShed:"
+        assert scheduled["repeats"] is False
+
+        d.releaseCommandOverlayRecordingLoadShed_(None)
 
         d._command_overlay.set_recording_load_shed.assert_called_once_with(False)
 

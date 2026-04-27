@@ -38,10 +38,11 @@ from AppKit import (
     NSApplicationActivationPolicyAccessory,
     NSTextField,
 )
-from Foundation import NSMakeRect, NSObject
+from Foundation import NSMakeRect, NSObject, NSTimer
 
 _NS_COMMAND_KEY_MASK = 1 << 20
 _NS_KEY_DOWN_MASK = 1 << 10
+_RECORDING_LOAD_SHED_RELEASE_DELAY_S = 0.36
 
 # Keep _PastableTextField as an alias so existing alloc() calls don't break.
 _PastableTextField = NSTextField
@@ -1913,8 +1914,8 @@ class SpokeAppDelegate(NSObject):
         )
         self._detector.command_overlay_active = overlay_visible
         logger.info("command_overlay_active -> %s (hold start)", overlay_visible)
-        if overlay_visible and hasattr(command_overlay, "set_recording_load_shed"):
-            command_overlay.set_recording_load_shed(True)
+        if overlay_visible:
+            self._set_command_overlay_recording_load_shed(True)
         # Note: if command overlay is visible but finished, leave it up.
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
@@ -1994,6 +1995,7 @@ class SpokeAppDelegate(NSObject):
         except Exception:
             logger.exception("Audio capture failed to start")
             self._manual_hold_active = False
+            self._release_command_overlay_recording_load_shed()
             if self._glow is not None:
                 self._glow.hide()
             if self._overlay is not None:
@@ -2363,18 +2365,12 @@ class SpokeAppDelegate(NSObject):
                 self._approve_pending_command()
             return
 
-        command_overlay = getattr(self, "_command_overlay", None)
-        if (
-            command_overlay is not None
-            and hasattr(command_overlay, "set_recording_load_shed")
-        ):
-            command_overlay.set_recording_load_shed(False)
-
         # ── Tray intercept ──
         # When the tray is active, gestures route through the tray handler.
         tray_active = getattr(self, "_tray_active", False)
         recovery_active = getattr(self, "_recovery_text", None) is not None
         if tray_active or recovery_active or getattr(self, "_recovery_hold_active", False):
+            self._release_command_overlay_recording_load_shed()
             self._recovery_hold_active = False
             if shift_held:
                 # Shift held + release spacebar from tray = navigate down (older)
@@ -2398,6 +2394,9 @@ class SpokeAppDelegate(NSObject):
         self._manual_hold_active = False
         self._preview_active = False
         self._preview_cancelled_on_release = True
+        self._release_command_overlay_recording_load_shed(
+            delay=_RECORDING_LOAD_SHED_RELEASE_DELAY_S
+        )
         # Capture the tail buffer BEFORE stop() clears segment state.
         # After stop(), get_tail_buffer() falls through to get_buffer() (the
         # entire recording) because _segment_cb is None — causing the final
@@ -3014,6 +3013,42 @@ class SpokeAppDelegate(NSObject):
             getattr(self._glow, "_brightness", 0.0),
             immediate=immediate,
         )
+
+    def _set_command_overlay_recording_load_shed(self, active: bool) -> None:
+        command_overlay = getattr(self, "_command_overlay", None)
+        if (
+            command_overlay is None
+            or not hasattr(command_overlay, "set_recording_load_shed")
+        ):
+            return
+        if active:
+            timer = getattr(self, "_command_overlay_load_shed_release_timer", None)
+            if timer is not None:
+                timer.invalidate()
+                self._command_overlay_load_shed_release_timer = None
+        command_overlay.set_recording_load_shed(active)
+
+    def _release_command_overlay_recording_load_shed(self, delay: float = 0.0) -> None:
+        timer = getattr(self, "_command_overlay_load_shed_release_timer", None)
+        if timer is not None:
+            timer.invalidate()
+            self._command_overlay_load_shed_release_timer = None
+        if delay <= 0:
+            self._set_command_overlay_recording_load_shed(False)
+            return
+        self._command_overlay_load_shed_release_timer = (
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                delay,
+                self,
+                "releaseCommandOverlayRecordingLoadShed:",
+                None,
+                False,
+            )
+        )
+
+    def releaseCommandOverlayRecordingLoadShed_(self, timer) -> None:
+        self._command_overlay_load_shed_release_timer = None
+        self._set_command_overlay_recording_load_shed(False)
 
     def _resetStatusAfterCancel_(self, timer) -> None:
         """Reset menubar status after a cancel."""
