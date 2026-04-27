@@ -6,14 +6,12 @@ class TestNoiseFloorAdaptation:
 
     def _simulate_updates(self, rms_values):
         """Simulate the noise floor adaptation logic and return (floor, signal) pairs."""
+        from spoke.glow import _update_noise_floor
+
         noise_floor = 0.0
         results = []
         for rms in rms_values:
-            if rms < noise_floor or noise_floor == 0.0:
-                noise_floor += (rms - noise_floor) * 0.05
-            else:
-                noise_floor += (rms - noise_floor) * 0.002
-            signal = max(rms - noise_floor, 0.0)
+            noise_floor, signal = _update_noise_floor(noise_floor, rms)
             results.append((noise_floor, signal))
         return results
 

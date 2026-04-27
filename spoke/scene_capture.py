@@ -365,8 +365,10 @@ def _pick_target_window(
 
     def _reasonable(win) -> bool:
         bounds = win.get("kCGWindowBounds")
+        layer = win.get("kCGWindowLayer")
         return bool(
             bounds
+            and layer in (None, 0)
             and bounds.get("Height", 0) > 50
             and bounds.get("Width", 0) > 50
         )

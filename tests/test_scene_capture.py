@@ -250,6 +250,35 @@ class TestDownsampleSize:
 
 
 class TestPickTargetWindow:
+    def test_ignores_nonzero_layer_windows_before_normal_windows(self):
+        mod = _import_module()
+        windows = [
+            {
+                "kCGWindowOwnerPID": 202,
+                "kCGWindowOwnerName": "Safari",
+                "kCGWindowName": "Heads Up Overlay",
+                "kCGWindowLayer": 25,
+                "kCGWindowBounds": {"Width": 1400, "Height": 900},
+            },
+            {
+                "kCGWindowOwnerPID": 202,
+                "kCGWindowOwnerName": "Safari",
+                "kCGWindowName": "GitHub - Avatar",
+                "kCGWindowLayer": 0,
+                "kCGWindowBounds": {"Width": 1400, "Height": 900},
+            },
+        ]
+
+        picked = mod._pick_target_window(
+            windows,
+            preferred_pid=202,
+            preferred_title=None,
+            fallback_pid=None,
+            my_pid=999,
+        )
+
+        assert picked is windows[1]
+
     def test_prefers_ax_focused_pid_over_workspace_pid(self):
         mod = _import_module()
         windows = [
