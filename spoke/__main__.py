@@ -186,6 +186,7 @@ _DEFAULT_TRANSCRIPTION_MODEL = "mlx-community/whisper-medium.en-mlx-8bit"
 _DEFAULT_LOCAL_WHISPER_DECODE_TIMEOUT = 30.0
 _DEFAULT_LOCAL_WHISPER_EAGER_EVAL = False
 _LOCAL_TRANSCRIPTION_RECOVERY_TIMEOUT = 8.0
+_COMMAND_OVERLAY_LOCAL_PREVIEW_BACKOFF_S = 0.75
 _DEFAULT_COMMAND_BACKEND = "local"
 _DEFAULT_COMMAND_MODEL_DIR = Path.home() / ".lmstudio" / "models"
 _DEFAULT_COMMAND_SIDECAR_URL = ""
@@ -2165,6 +2166,14 @@ class SpokeAppDelegate(NSObject):
             return (0.75, 0.3)
         return (0.2, 0.15)
 
+    def _should_defer_local_batch_preview_for_command_overlay(self) -> bool:
+        if getattr(self, "_preview_backend", "local") != "local":
+            return False
+        command_overlay = getattr(self, "_command_overlay", None)
+        return command_overlay is not None and bool(
+            getattr(command_overlay, "_visible", False)
+        )
+
     def _preview_loop_batch(self, token: int | None = None) -> None:
         """Batch preview: re-transcribe the full buffer each tick.
 
@@ -2180,6 +2189,10 @@ class SpokeAppDelegate(NSObject):
 
             while self._preview_active:
                 loop_start = time.monotonic()
+
+                if self._should_defer_local_batch_preview_for_command_overlay():
+                    time.sleep(_COMMAND_OVERLAY_LOCAL_PREVIEW_BACKOFF_S)
+                    continue
 
                 acc = getattr(self, "_segment_accumulator", None)
                 use_segments = acc is not None and acc.count > 0

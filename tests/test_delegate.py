@@ -792,6 +792,32 @@ class TestConcurrencyContract:
 
         assert sleeps[:2] == [0.15, 0.2]
 
+    def test_preview_loop_batch_defers_local_inference_while_command_overlay_visible(
+        self, main_module, monkeypatch
+    ):
+        """Dual-overlay recording should not hammer local preview inference."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_backend = "local"
+        d._preview_active = True
+        d._command_overlay = MagicMock(_visible=True)
+        d._capture.get_buffer.return_value = b"wav"
+        d._preview_done = MagicMock()
+        sleeps = []
+
+        def _sleep(seconds):
+            sleeps.append(seconds)
+            if len(sleeps) > 1:
+                d._preview_active = False
+
+        with patch.object(main_module.time, "sleep", side_effect=_sleep):
+            d._preview_loop_batch()
+
+        d._preview_client.transcribe.assert_not_called()
+        d._capture.get_buffer.assert_not_called()
+        d._preview_done.set.assert_called_once_with()
+        assert sleeps[0] == 0.15
+        assert sleeps[1] == main_module._COMMAND_OVERLAY_LOCAL_PREVIEW_BACKOFF_S
+
     def test_preview_loop_batch_uses_local_inference_lock_and_signals_done(
         self, main_module, monkeypatch
     ):
