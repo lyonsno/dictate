@@ -331,6 +331,99 @@ class TestEventTapCallback:
         Quartz.CGEventTapEnable.assert_called_once_with(det._tap, True)
         assert result is event
 
+    def test_timeout_disable_recovers_recording_if_space_is_already_up(
+        self, input_tap_module
+    ):
+        """If the tap times out after missing keyUp, recover the recording hold."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        on_start = MagicMock()
+        on_end = MagicMock()
+        det = mod.SpacebarHoldDetector.__new__(mod.SpacebarHoldDetector)
+        det._on_hold_start = on_start
+        det._on_hold_end = on_end
+        det._hold_s = 0.4
+        det._state = mod._State.IDLE
+        det._hold_timer = None
+        det._safety_timer = None
+        det._repeat_watchdog_timer = None
+        det._last_space_keydown_monotonic = 0.0
+        det._forwarding = False
+        det._forwarding_timer = None
+        det._awaiting_space_release = False
+        det._shift_latched = False
+        det._enter_held = False
+        det._enter_latched = False
+        det._tap = MagicMock()
+        mod._active_detector = det
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)
+        assert det._state == mod._State.RECORDING
+
+        Quartz.CGEventSourceKeyState.side_effect = lambda src, keycode: False
+
+        event = MagicMock()
+        result = mod._event_tap_callback(
+            None,
+            Quartz.kCGEventTapDisabledByTimeout,
+            event,
+            None,
+        )
+
+        assert result is event
+        Quartz.CGEventTapEnable.assert_called_with(det._tap, True)
+        assert det._state == mod._State.IDLE
+        assert det._awaiting_space_release is False
+        on_start.assert_called_once()
+        on_end.assert_called_once_with(shift_held=False, enter_held=False)
+
+    def test_timeout_disable_does_not_recover_recording_while_space_is_down(
+        self, input_tap_module
+    ):
+        """Tap timeout re-enable must not cut off a real still-held recording."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        on_start = MagicMock()
+        on_end = MagicMock()
+        det = mod.SpacebarHoldDetector.__new__(mod.SpacebarHoldDetector)
+        det._on_hold_start = on_start
+        det._on_hold_end = on_end
+        det._hold_s = 0.4
+        det._state = mod._State.IDLE
+        det._hold_timer = None
+        det._safety_timer = None
+        det._repeat_watchdog_timer = None
+        det._last_space_keydown_monotonic = 0.0
+        det._forwarding = False
+        det._forwarding_timer = None
+        det._awaiting_space_release = False
+        det._shift_latched = False
+        det._enter_held = False
+        det._enter_latched = False
+        det._tap = MagicMock()
+        mod._active_detector = det
+
+        det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)
+        det.holdTimerFired_(None)
+        Quartz.CGEventSourceKeyState.side_effect = lambda src, keycode: True
+
+        event = MagicMock()
+        result = mod._event_tap_callback(
+            None,
+            Quartz.kCGEventTapDisabledByTimeout,
+            event,
+            None,
+        )
+
+        assert result is event
+        Quartz.CGEventTapEnable.assert_called_with(det._tap, True)
+        assert det._state == mod._State.RECORDING
+        on_start.assert_called_once()
+        on_end.assert_not_called()
+
 
 class TestForwardingRecovery:
     """Test that _forwarding recovers via timeout if synthetic events are lost."""

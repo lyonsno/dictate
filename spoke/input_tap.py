@@ -586,22 +586,38 @@ class SpacebarHoldDetector(NSObject):
         is_space_down = _current_space_key_state()
         if is_space_down is not False:
             return
-        logger.warning("Repeat watchdog recovered a missed spacebar keyUp")
+        self._recover_missed_space_release("repeat watchdog")
+
+    def _recover_missed_space_release(self, reason: str) -> bool:
+        """End an active hold after Quartz confirms Space is physically up."""
+        if self._state not in (_State.RECORDING, _State.LATCHED):
+            return False
+        is_space_down = _current_space_key_state()
+        if is_space_down is not False:
+            return False
+
+        logger.warning("%s recovered a missed spacebar keyUp", reason)
+        source_state = self._state
         self._cancel_safety_timer()
+        self._cancel_repeat_watchdog()
         self._state = _State.IDLE
-        # Unlike force_end(), this path already has Quartz confirmation that
-        # the physical key is up. Requiring one more release would swallow the
-        # user's first fresh press behind a phantom trailing keyUp.
+        # Quartz confirmed the physical key is up. Requiring another release
+        # would swallow the user's next fresh press behind a phantom keyUp.
         self._awaiting_space_release = False
         # Query Quartz for the real Enter state — _enter_held may be stale if
         # the Enter keyUp was also lost during this chord.
         actual_enter = _current_enter_key_state()
         if actual_enter is not None:
             self._enter_held = actual_enter
+        enter_held = getattr(self, "_enter_held", False) or (
+            source_state == _State.LATCHED
+            and getattr(self, "_enter_latched", False)
+        )
         self._on_hold_end(
             shift_held=self._shift_latched,
-            enter_held=getattr(self, "_enter_held", False),
+            enter_held=enter_held,
         )
+        return True
 
     # ── synthetic space forwarding ──────────────────────────
 
@@ -702,6 +718,9 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         if getattr(det, "_tap", None) is not None:
             CGEventTapEnable(det._tap, True)
             logger.warning("CGEventTap disabled by timeout — re-enabled")
+        recover = getattr(det, "_recover_missed_space_release", None)
+        if callable(recover):
+            recover("event tap timeout")
         return event
 
     if event_type == kCGEventTapDisabledByUserInput:
