@@ -153,7 +153,7 @@ class TestSearchRunner:
         )
         assert result == "Only deltas here."
 
-    def test_run_search_subagent_honors_cancel_check(self):
+    def test_run_search_subagent_passes_cancel_check_to_stream(self):
         stream_events = [
             CommandStreamEvent(
                 kind="assistant_final",
@@ -164,7 +164,7 @@ class TestSearchRunner:
         fake_client.stream_command_events.return_value = iter(stream_events)
         fake_factory = MagicMock(return_value=fake_client)
 
-        cancel_check = MagicMock(return_value=True)
+        cancel_check = MagicMock(return_value=False)
         sub_mod.run_search_subagent_query(
             "find command history handling",
             base_url="http://localhost:8090",
@@ -177,3 +177,19 @@ class TestSearchRunner:
 
         stream_kwargs = fake_client.stream_command_events.call_args.kwargs
         assert stream_kwargs["cancel_check"] is cancel_check
+
+    def test_run_search_subagent_skips_client_when_already_cancelled(self):
+        fake_factory = MagicMock()
+
+        result = sub_mod.run_search_subagent_query(
+            "find command history handling",
+            base_url="http://localhost:8090",
+            model="qwen-test",
+            tools=[{"function": {"name": "find_file"}}],
+            tool_executor=MagicMock(return_value='{"matches": []}'),
+            command_client_factory=fake_factory,
+            cancel_check=lambda: True,
+        )
+
+        assert result == ""
+        fake_factory.assert_not_called()
