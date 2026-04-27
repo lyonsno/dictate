@@ -7,8 +7,10 @@ sounddevice and numpy, and we mock sounddevice at the function level.
 import io
 import queue
 import struct
+import sys
 import threading
 import time
+import types
 import wave
 from unittest.mock import MagicMock, patch
 
@@ -17,6 +19,12 @@ import pytest
 
 from spoke.capture import AudioCapture, SAMPLE_RATE, CHANNELS, SILERO_CHUNK
 from spoke.optical_shell_metrics import OpticalShellMetrics
+
+
+def _decode_wav_samples(wav_bytes: bytes) -> np.ndarray:
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        raw = wf.readframes(wf.getnframes())
+    return np.frombuffer(raw, dtype=np.int16)
 
 
 class _FakeSileroVAD:
@@ -37,6 +45,30 @@ def _mock_silero_vad(monkeypatch):
     """Patch AudioCapture to use a fake Silero model for all tests."""
     import torch
     original_init = AudioCapture.__init__
+    capture_globals = original_init.__globals__
+
+    class _CaptureModuleProxy(types.ModuleType):
+        def __getattr__(self, name):
+            try:
+                return capture_globals[name]
+            except KeyError as exc:
+                raise AttributeError(name) from exc
+
+        def __setattr__(self, name, value):
+            if name.startswith("__"):
+                super().__setattr__(name, value)
+            else:
+                capture_globals[name] = value
+                super().__setattr__(name, value)
+
+    proxy = _CaptureModuleProxy("spoke.capture")
+    proxy.__dict__.update(capture_globals)
+    proxy.__package__ = "spoke"
+    monkeypatch.setitem(sys.modules, "spoke.capture", proxy)
+    spoke_pkg = sys.modules.get("spoke")
+    if spoke_pkg is not None:
+        monkeypatch.setattr(spoke_pkg, "capture", proxy, raising=False)
+    monkeypatch.setitem(capture_globals, "_load_silero_vad", lambda: (None, None))
 
     def patched_init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
@@ -645,12 +677,33 @@ class TestVADSlicing:
             
         wav_bytes = cap.stop()
         
-        # Check the length of the WAV to ensure silence was stripped
-        # 10 speech chunks + PRE_SPEECH_MARGIN (6) = 16 chunks total
-        # 16 * 1024 floats = 16384 samples. Each sample is 2 bytes (int16).
-        # 16384 * 2 = 32768 bytes of audio data + 44 bytes header = 32812 bytes
-        # The test verifies we didn't include the 70 frames of pure silence.
-        assert len(wav_bytes) == 51244
+        # Check the length of the WAV to ensure silence was stripped.
+        # 10 speech chunks * 1024 samples * 2 bytes + 44-byte WAV header.
+        assert len(wav_bytes) == 20524
+
+    @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
+    @patch("spoke.capture.sd")
+    def test_vad_final_wav_has_no_silent_boundary_chunks(self, mock_sd):
+        """The returned final WAV should not preserve leading/trailing VAD silence."""
+        cap = AudioCapture()
+        cap.start(segment_callback=MagicMock())
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+
+        silence_chunk = np.zeros((1024, 1), dtype=np.float32)
+        speech_chunk = np.full((1024, 1), 0.5, dtype=np.float32)
+        for _ in range(50):
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+        for _ in range(10):
+            cap._audio_callback(speech_chunk, 1024, None, 0)
+        for _ in range(20):
+            cap._audio_callback(silence_chunk, 1024, None, 0)
+
+        samples = _decode_wav_samples(cap.stop())
+
+        assert samples.size > 0
+        assert np.any(samples[:1024] != 0)
+        assert np.any(samples[-1024:] != 0)
 
     @patch("spoke.capture.sd")
     def test_vad_grace_period_does_not_misclassify_silence_as_speech(self, mock_sd):

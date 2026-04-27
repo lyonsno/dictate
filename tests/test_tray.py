@@ -183,8 +183,8 @@ class TestTrayStack:
 
         assert d._tray_index == 2
 
-    def test_navigate_up_past_top_dismisses(self, main_module, monkeypatch):
-        """Navigating up past the most recent entry should dismiss the tray."""
+    def test_navigate_up_at_top_stays_on_current_entry(self, main_module, monkeypatch):
+        """Navigating up at the most recent entry should clamp at the top."""
         d = _make_delegate(main_module, monkeypatch, command_client=True)
         d._tray_stack = ["old", "newest"]
         d._tray_index = 1
@@ -192,7 +192,9 @@ class TestTrayStack:
 
         d._tray_navigate_up()
 
-        assert d._tray_active is False
+        assert d._tray_active is True
+        assert d._tray_index == 1
+        d._overlay.show_tray.assert_not_called()
 
     def test_navigate_down_stops_at_bottom(self, main_module, monkeypatch):
         """Navigating down past the oldest entry should stop (no wrap)."""

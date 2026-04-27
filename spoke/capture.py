@@ -108,6 +108,7 @@ class AudioCapture:
         self._silence_trigger_count: int = 0
         self._current_segment_chunks: list[np.ndarray] = []
         self._ring_buffer: deque[np.ndarray] = deque(maxlen=PRE_SPEECH_MARGIN)
+        self._speech_ring_buffer: deque[tuple[np.ndarray, bool]] = deque(maxlen=PRE_SPEECH_MARGIN)
         self._grace_chunks_remaining: int = 0
 
         # Silero VAD model (loaded once, reused across recordings)
@@ -266,6 +267,7 @@ class AudioCapture:
         self._current_segment_chunks = []
         self._speech_chunks = []
         self._ring_buffer.clear()
+        self._speech_ring_buffer.clear()
         self._flushed_segment_count = 0
         self._grace_chunks_remaining = int(VAD_GRACE_PERIOD_SECS * SAMPLE_RATE / BLOCKSIZE)
         if self._silero_model is not None:
@@ -364,6 +366,7 @@ class AudioCapture:
             self._stop_callback_dispatch()
             self._current_segment_chunks = []
             self._ring_buffer.clear()
+            self._speech_ring_buffer.clear()
 
             self._segment_cb = None
 
@@ -392,6 +395,7 @@ class AudioCapture:
         self._stop_callback_dispatch()
         self._current_segment_chunks = []
         self._ring_buffer.clear()
+        self._speech_ring_buffer.clear()
         
         return b""
 
@@ -555,6 +559,7 @@ class AudioCapture:
 
         if not self._is_speech:
             self._ring_buffer.append(chunk)
+            self._speech_ring_buffer.append((chunk, is_speech_now))
             if is_speech_now:
                 self._speech_trigger_count += 1
                 if self._speech_trigger_count >= MIN_SPEECH_FRAMES:
@@ -562,13 +567,19 @@ class AudioCapture:
                     if self._vad_cb is not None:
                         self._queue_callback_event("vad", True)
                     self._current_segment_chunks.extend(self._ring_buffer)
-                    self._speech_chunks.extend(self._ring_buffer)
+                    self._speech_chunks.extend(
+                        ring_chunk
+                        for ring_chunk, was_speech in self._speech_ring_buffer
+                        if was_speech
+                    )
                     self._ring_buffer.clear()
+                    self._speech_ring_buffer.clear()
             else:
                 self._speech_trigger_count = 0
         else:
             self._current_segment_chunks.append(chunk)
-            self._speech_chunks.append(chunk)
+            if is_speech_now:
+                self._speech_chunks.append(chunk)
 
             force_slice = len(self._current_segment_chunks) >= MAX_SEGMENT_CHUNKS
 
