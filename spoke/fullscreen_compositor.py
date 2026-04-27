@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import os
 import struct
 import threading
 import time
@@ -28,6 +29,8 @@ if hasattr(objc, "ObjCPointerWarning"):
     warnings.filterwarnings("ignore", category=objc.ObjCPointerWarning)
 
 _shared_overlay_hosts: dict[tuple[str, int], "_SharedOverlayHost"] = {}
+_SCK_TARGET_FPS = max(1, int(float(os.environ.get("SPOKE_FULLSCREEN_COMPOSITOR_FPS", "30"))))
+_SCK_FRAME_INTERVAL = (1, _SCK_TARGET_FPS, 0, 0)
 
 
 def _load_screencapturekit_bridge():
@@ -80,6 +83,11 @@ def _initial_brightness_from_shell_config(config: dict | None, fallback: float) 
     except (TypeError, ValueError):
         return fallback
     return max(0.0, min(1.0, value))
+
+
+def _configure_stream_frame_interval(config) -> None:
+    if hasattr(config, "setMinimumFrameInterval_"):
+        config.setMinimumFrameInterval_(_SCK_FRAME_INTERVAL)
 
 
 class FullScreenCompositor:
@@ -210,14 +218,19 @@ class FullScreenCompositor:
 
     def update_shell_configs(self, shell_configs) -> None:
         """Replace the active shell-config set."""
+        normalized = _normalize_shell_configs(shell_configs)
         with self._lock:
-            self._shell_configs = _normalize_shell_configs(shell_configs)
+            if normalized == self._shell_configs:
+                return
+            self._shell_configs = normalized
             self._config_generation += 1
 
     def update_shell_config_key(self, key: str, value) -> None:
         """Update a single key in the shell config without replacing."""
         with self._lock:
             if self._shell_configs:
+                if self._shell_configs[0].get(key) == value:
+                    return
                 self._shell_configs[0][key] = value
                 self._config_generation += 1
 
@@ -460,7 +473,7 @@ class FullScreenCompositor:
         config.setQueueDepth_(8)
         config.setShowsCursor_(False)  # real cursor is visible; baked-in cursor ghosts
         config.setPixelFormat_(1111970369)  # kCVPixelFormatType_32BGRA
-        # Don't set minimumFrameInterval — let SCK deliver at max rate
+        _configure_stream_frame_interval(config)
         if hasattr(config, "setContentScale_"):
             config.setContentScale_(scale)
 

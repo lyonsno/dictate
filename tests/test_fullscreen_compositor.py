@@ -152,3 +152,34 @@ def test_fullscreen_compositor_renders_when_config_changes_without_new_frame():
     assert len(pipeline_calls) == 1
     assert compositor._rendered_frame_generation == 1
     assert compositor._rendered_config_generation == 2
+
+
+def test_fullscreen_compositor_configures_bounded_sck_frame_interval():
+    from spoke.fullscreen_compositor import _configure_stream_frame_interval
+
+    class Config:
+        def __init__(self):
+            self.frame_intervals = []
+
+        def setMinimumFrameInterval_(self, value):
+            self.frame_intervals.append(value)
+
+    config = Config()
+
+    _configure_stream_frame_interval(config)
+
+    assert config.frame_intervals == [(1, 30, 0, 0)]
+
+
+def test_fullscreen_compositor_ignores_duplicate_shell_config_updates():
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._lock = threading.Lock()
+    compositor._shell_configs = [{"center_x": 12.0, "min_brightness": 0.25}]
+    compositor._config_generation = 3
+
+    compositor.update_shell_configs([{"center_x": 12.0, "min_brightness": 0.25}])
+    compositor.update_shell_config_key("min_brightness", 0.25)
+
+    assert compositor._config_generation == 3
