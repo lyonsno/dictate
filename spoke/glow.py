@@ -259,6 +259,16 @@ def _glow_style_for_brightness(brightness: float) -> tuple[tuple[float, float, f
     return color, base_opacity, peak_target
 
 
+def _update_noise_floor(noise_floor: float, rms: float) -> tuple[float, float]:
+    """Advance adaptive ambient floor and return (floor, signal_above_floor)."""
+    if rms < noise_floor or noise_floor == 0.0:
+        noise_floor += (rms - noise_floor) * 0.05
+    else:
+        noise_floor += (rms - noise_floor) * 0.002
+    signal = max(rms - noise_floor, 0.0)
+    return noise_floor, signal
+
+
 def _edge_mix_for_brightness(brightness: float) -> tuple[float, float]:
     """Keep dark scenes purely additive, then fade in the vignette only on light backgrounds."""
     t = min(max(brightness, 0.0), 1.0)
@@ -1335,13 +1345,7 @@ class GlowOverlay(NSObject):
         # Adaptive noise floor — slowly tracks ambient noise level.
         # Rises slowly (adapts to fan noise), falls slowly (doesn't
         # drop to zero between words).
-        if rms < self._noise_floor or self._noise_floor == 0.0:
-            self._noise_floor += (rms - self._noise_floor) * 0.05  # fast adapt down
-        else:
-            self._noise_floor += (rms - self._noise_floor) * 0.002  # slow adapt up
-
-        # Subtract floor — only signal above ambient triggers the glow
-        signal = max(rms - self._noise_floor, 0.0)
+        self._noise_floor, signal = _update_noise_floor(self._noise_floor, rms)
 
         # Smooth: rise fast, decay slow
         if signal > self._smoothed_amplitude:

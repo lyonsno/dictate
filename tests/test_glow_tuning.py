@@ -36,7 +36,7 @@ class TestGlowTuning:
         glow._metrics = None
         return glow
 
-    def test_screen_dim_fade_durations_are_shortened_for_dev_patch(self):
+    def test_screen_dim_fade_durations_are_shortened_for_dev_patch(self, mock_pyobjc):
         """The temporary dimmer patch should keep fade timings short enough to avoid overlap."""
         sys.modules.pop("spoke.glow", None)
         mod = importlib.import_module("spoke.glow")
