@@ -1667,6 +1667,12 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is None:
             return
 
+        if (
+            getattr(self, "_manual_hold_active", False)
+            and state in (HandsFreeState.DORMANT, HandsFreeState.LISTENING)
+        ):
+            return
+
         if state == HandsFreeState.DORMANT:
             self._menubar.set_status_text("Ready — hold spacebar")
             self._menubar.set_recording(False)
@@ -1704,6 +1710,30 @@ class SpokeAppDelegate(NSObject):
             hf._set_state(HandsFreeState.LISTENING)
             self._handsfree_paused_for_hold = True
             self._handsfree_resume_state_for_hold = HandsFreeState.DICTATING
+
+    def _suspend_handsfree_for_hold_async(self) -> None:
+        """Clear wake-word listening without blocking first paint/capture start."""
+        self._handsfree_resume_state_for_hold = None
+        self._handsfree_paused_for_hold = False
+        hf = getattr(self, "_handsfree", None)
+        if hf is None:
+            return
+
+        state = getattr(hf, "state", None)
+        if state == HandsFreeState.LISTENING:
+            self._handsfree_resume_state_for_hold = HandsFreeState.LISTENING
+
+            def disable_wakeword() -> None:
+                logger.info("Suspending wake-word listener for spacebar hold")
+                hf.disable(reason="manual hold suspend")
+                if not getattr(self, "_manual_hold_active", False):
+                    self._resume_handsfree_after_hold()
+
+            threading.Thread(target=disable_wakeword, daemon=True).start()
+            return
+
+        if getattr(hf, "is_dictating", False):
+            self._suspend_handsfree_for_hold()
 
     def _resume_handsfree_after_hold(self) -> bool:
         """Restore hands-free after a manual hold completes."""
@@ -1926,6 +1956,7 @@ class SpokeAppDelegate(NSObject):
             getattr(self._overlay, "_visible", False) if self._overlay is not None else False,
         )
         # Manual holds take precedence over any live hands-free audio path.
+        self._manual_hold_active = True
         if self._menubar is not None:
             self._menubar.set_recording(True)
             self._menubar.set_status_text("Recording…")
@@ -1949,8 +1980,6 @@ class SpokeAppDelegate(NSObject):
                 )
             self._overlay.show()
 
-        self._suspend_handsfree_for_hold()
-
         try:
             def on_vad_state(is_speech: bool):
                 if self._menubar is not None:
@@ -1964,6 +1993,7 @@ class SpokeAppDelegate(NSObject):
             )
         except Exception:
             logger.exception("Audio capture failed to start")
+            self._manual_hold_active = False
             if self._glow is not None:
                 self._glow.hide()
             if self._overlay is not None:
@@ -1980,6 +2010,7 @@ class SpokeAppDelegate(NSObject):
                 )
             self._resume_handsfree_after_hold()
             return
+        self._suspend_handsfree_for_hold_async()
         self._record_start_time = time.monotonic()
         self._cap_fired = False
         self._last_preview_text = ""
@@ -2364,6 +2395,7 @@ class SpokeAppDelegate(NSObject):
 
         # ── Normal recording end ──
         logger.info("Hold ended — shift=%s enter=%s", shift_held, enter_held)
+        self._manual_hold_active = False
         self._preview_active = False
         self._preview_cancelled_on_release = True
         # Capture the tail buffer BEFORE stop() clears segment state.

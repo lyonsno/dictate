@@ -123,15 +123,68 @@ class TestHoldCallbacks:
         )
         d._capture.start.side_effect = lambda **kwargs: call_order.append("capture")
 
-        d._on_hold_start()
+        class ImmediateThread:
+            def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+                self._target = target
+                self._args = args
+                self._kwargs = kwargs or {}
+
+            def start(self):
+                if self._target is not None and self._target.__name__ == "disable_wakeword":
+                    self._target(*self._args, **self._kwargs)
+
+        with patch.object(main_module.threading, "Thread", ImmediateThread):
+            d._on_hold_start()
 
         assert call_order[:4] == [
             "glow",
             "overlay",
-            "disable:manual hold suspend",
             "capture",
+            "disable:manual hold suspend",
         ]
         assert d._handsfree_resume_state_for_hold == main_module.HandsFreeState.LISTENING
+
+    def test_handsfree_state_change_does_not_hide_manual_hold_ui(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._manual_hold_active = True
+
+        d._on_handsfree_state_change(main_module.HandsFreeState.DORMANT)
+
+        d._glow.hide.assert_not_called()
+        d._menubar.set_recording.assert_not_called()
+        d._menubar.set_status_text.assert_not_called()
+
+    def test_async_wakeword_suspend_restores_if_hold_ends_before_disable_returns(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._handsfree = MagicMock()
+        d._handsfree.state = main_module.HandsFreeState.LISTENING
+        d._manual_hold_active = True
+
+        def disable(**_kwargs):
+            d._manual_hold_active = False
+
+        d._handsfree.disable.side_effect = disable
+
+        class ImmediateThread:
+            def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+                self._target = target
+                self._args = args
+                self._kwargs = kwargs or {}
+
+            def start(self):
+                if self._target is not None:
+                    self._target(*self._args, **self._kwargs)
+
+        with patch.object(main_module.threading, "Thread", ImmediateThread):
+            d._suspend_handsfree_for_hold_async()
+
+        d._handsfree.disable.assert_called_once_with(reason="manual hold suspend")
+        d._handsfree.enable.assert_called_once_with()
+        assert d._handsfree_resume_state_for_hold is None
 
     def test_toggle_handsfree_disables_with_reason(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
