@@ -25,6 +25,8 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
+_XML_TOOL_CALL_PATTERN = r"(?:<tool_call>\s*)?<function=(\w+)>(.*?)</function>(?:\s*</tool_call>)?"
+
 
 def _extract_xml_tool_calls(text: str) -> tuple[str, list[dict]] | None:
     """Extract bare XML tool calls from content text.
@@ -39,9 +41,7 @@ def _extract_xml_tool_calls(text: str) -> tuple[str, list[dict]] | None:
 
     Returns (cleaned_text, tool_calls) or None if no XML tool calls found.
     """
-    # Match <function=name>...</function> with or without <tool_call> wrapper
-    pattern = r"(?:<tool_call>\s*)?<function=(\w+)>(.*?)</function>(?:\s*</tool_call>)?"
-    matches = list(re.finditer(pattern, text, re.DOTALL))
+    matches = list(re.finditer(_XML_TOOL_CALL_PATTERN, text, re.DOTALL))
     if not matches:
         return None
 
@@ -69,8 +69,12 @@ def _extract_xml_tool_calls(text: str) -> tuple[str, list[dict]] | None:
         })
 
     # Remove matched XML from content text
-    cleaned = re.sub(pattern, "", text, flags=re.DOTALL).strip()
+    cleaned = _strip_xml_tool_call_content(text).strip()
     return cleaned, tool_calls
+
+
+def _strip_xml_tool_call_content(text: str) -> str:
+    return re.sub(_XML_TOOL_CALL_PATTERN, "", text, flags=re.DOTALL)
 
 
 def _extract_reasoning_tokens(delta: dict[str, Any]) -> list[str]:
@@ -1039,6 +1043,7 @@ class CommandClient:
             round_content = ""
             suppress_xml_content = False
             xml_marker_pending = ""
+            xml_visible_prefix = None
             round_cancelled = False
             # Thinking token state machine for <think>...</think> tags.
             # States: "detect" (haven't seen anything yet),
@@ -1166,6 +1171,7 @@ class CommandClient:
                                 if suppress_xml_content:
                                     visible_text = ""
                                 else:
+                                    was_suppressing_xml = suppress_xml_content
                                     (
                                         visible_text,
                                         xml_marker_pending,
@@ -1174,6 +1180,8 @@ class CommandClient:
                                         xml_marker_pending,
                                         text_to_process,
                                     )
+                                    if not was_suppressing_xml and suppress_xml_content:
+                                        xml_visible_prefix = visible_response + visible_text
                             if visible_text:
                                 visible_response += visible_text
                                 yield CommandStreamEvent(
@@ -1232,19 +1240,25 @@ class CommandClient:
                         ", ".join(c["function"]["name"] for c in xml_calls),
                     )
                     round_content = cleaned_text
+                    display_cleaned_text = _strip_xml_tool_call_content(
+                        original_round_content
+                    )
                     if (
                         original_round_content
                         and visible_response.endswith(original_round_content)
                     ):
                         visible_response = (
-                            visible_response[: -len(original_round_content)] + cleaned_text
+                            visible_response[: -len(original_round_content)]
+                            + display_cleaned_text
                         )
                     elif (
                         suppress_xml_content
-                        and cleaned_text
-                        and cleaned_text.startswith(visible_response.rstrip())
+                        and xml_visible_prefix is not None
+                        and display_cleaned_text.startswith(xml_visible_prefix)
                     ):
-                        missing_visible_text = cleaned_text[len(visible_response.rstrip()):]
+                        missing_visible_text = display_cleaned_text[
+                            len(xml_visible_prefix):
+                        ]
                         if missing_visible_text:
                             visible_response += missing_visible_text
                             yield CommandStreamEvent(
