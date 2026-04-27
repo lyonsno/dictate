@@ -1010,6 +1010,7 @@ class CommandClient:
             # Content accumulated during this round only (may be
             # intermediate text during a tool-call turn)
             round_content = ""
+            suppress_xml_content = False
             round_cancelled = False
             # Thinking token state machine for <think>...</think> tags.
             # States: "detect" (haven't seen anything yet),
@@ -1132,11 +1133,28 @@ class CommandClient:
                                 logger.info("First content token on round %d: %r", _round, text_to_process[:50] if len(text_to_process) > 50 else text_to_process)
                                 first_token_logged = True
                             round_content += text_to_process
-                            visible_response += text_to_process
-                            yield CommandStreamEvent(
-                                kind="assistant_delta",
-                                text=text_to_process,
-                            )
+                            visible_text = text_to_process
+                            if tool_executor is not None:
+                                if suppress_xml_content:
+                                    visible_text = ""
+                                else:
+                                    marker_positions = [
+                                        pos for pos in (
+                                            text_to_process.find("<function="),
+                                            text_to_process.find("<tool_call>"),
+                                        )
+                                        if pos >= 0
+                                    ]
+                                    if marker_positions:
+                                        marker_pos = min(marker_positions)
+                                        visible_text = text_to_process[:marker_pos]
+                                        suppress_xml_content = True
+                            if visible_text:
+                                visible_response += visible_text
+                                yield CommandStreamEvent(
+                                    kind="assistant_delta",
+                                    text=visible_text,
+                                )
 
                         # Tool call deltas — yield name indicators and accumulate
                         tool_calls_delta = delta.get("tool_calls")
