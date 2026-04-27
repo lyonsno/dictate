@@ -2682,6 +2682,8 @@ class SpokeAppDelegate(NSObject):
         )
 
     _INSERT_GRACE_S = 0.35  # grace window before auto-insert after transcription
+    _INSERT_OVERLAY_FADE_OUT_S = 0.12
+    _POST_OVERLAY_REFOCUS_DELAY_S = 0.05
 
     def transcriptionComplete_(self, payload: dict) -> None:
         """Main thread: inject transcribed text at cursor (with grace window)."""
@@ -6379,22 +6381,19 @@ class SpokeAppDelegate(NSObject):
         return lock
 
     def _inject_result_text(self, text: str, status_text: str) -> None:
-        # Remove the overlay from screen so it doesn't appear in the
-        # verification screenshot or mask the focused element.
+        # Fade the preview overlay first, then order it out just before the
+        # paste setup so screenshots/focus checks never capture it.
         if self._overlay is not None:
-            self._overlay.order_out()
+            self._overlay.hide(fade_duration=self._INSERT_OVERLAY_FADE_OUT_S)
 
-        # Save clipboard state before inject_text overwrites it, in case we
-        # need to enter recovery mode after OCR verification.
-        self._pre_paste_clipboard = save_pasteboard()
-        self._verify_paste_preexisting_match = focused_text_contains(text)
-        self._start_verify_snapshot_capture()
-        # Give the target app a brief moment to refocus after the overlay
-        # disappears before we synthesize Cmd+V.
         self._result_pending_inject = (text, status_text)
         from Foundation import NSTimer
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            0.05, self, "resultInjectDelayed:", None, False
+            self._INSERT_OVERLAY_FADE_OUT_S + self._POST_OVERLAY_REFOCUS_DELAY_S,
+            self,
+            "resultInjectDelayed:",
+            None,
+            False,
         )
 
     def _start_verify_snapshot_capture(self) -> None:
@@ -6436,6 +6435,16 @@ class SpokeAppDelegate(NSObject):
         if pending is None:
             return
         text, status_text = pending
+
+        # Ensure the overlay is fully gone before focus checks, screenshots,
+        # and synthetic paste. The visible path has already faded it.
+        if self._overlay is not None:
+            self._overlay.order_out()
+        # Save clipboard state before inject_text overwrites it, in case we
+        # need to enter recovery mode after OCR verification.
+        self._pre_paste_clipboard = save_pasteboard()
+        self._verify_paste_preexisting_match = focused_text_contains(text)
+        self._start_verify_snapshot_capture()
 
         def _on_clipboard_restored():
             if self._menubar is not None:

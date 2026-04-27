@@ -55,7 +55,7 @@ class TestRecoveryFlowBranching:
     """_inject_result_text should branch on has_focused_text_input."""
 
     def test_normal_paste_when_text_field_focused(self, main_module, monkeypatch):
-        """When a text field is focused, stage the normal inject after order_out."""
+        """When a text field is focused, stage the normal inject after preview fade."""
         Foundation = __import__("Foundation")
         Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
         d = _make_delegate(main_module, monkeypatch)
@@ -67,10 +67,14 @@ class TestRecoveryFlowBranching:
         mock_inject.assert_not_called()
         assert d._result_pending_inject == ("hello world", "Pasted!")
         call_args = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
-        assert call_args[0][0] == 0.05
+        assert call_args[0][0] == (
+            d._INSERT_OVERLAY_FADE_OUT_S + d._POST_OVERLAY_REFOCUS_DELAY_S
+        )
         assert call_args[0][2] == "resultInjectDelayed:"
-        # Overlay should be ordered out before the focus check
-        d._overlay.order_out.assert_called()
+        d._overlay.hide.assert_called_once_with(
+            fade_duration=d._INSERT_OVERLAY_FADE_OUT_S
+        )
+        d._overlay.order_out.assert_not_called()
 
     def test_always_attempts_paste(self, main_module, monkeypatch):
         """Normal paste should wait briefly for focus to settle after order_out."""
@@ -86,7 +90,9 @@ class TestRecoveryFlowBranching:
         assert d._result_pending_inject == ("hello world", "Pasted!")
         Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.assert_called_once()
         call_args = Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.call_args
-        assert call_args[0][0] == 0.05
+        assert call_args[0][0] == (
+            d._INSERT_OVERLAY_FADE_OUT_S + d._POST_OVERLAY_REFOCUS_DELAY_S
+        )
         assert call_args[0][2] == "resultInjectDelayed:"
 
     def test_schedules_ocr_verification(self, main_module, monkeypatch):
@@ -129,8 +135,24 @@ class TestRecoveryFlowBranching:
         assert d._verify_paste_preexisting_match is True
         assert d._verify_paste_preexisting_snapshot == "snapshot"
 
-    def test_starts_snapshot_capture_during_refocus_delay(self, main_module, monkeypatch):
-        """Normal insert should start snapshot capture before the delayed inject fires."""
+    def test_normal_insert_fades_overlay_before_instant_order_out(
+        self, main_module, monkeypatch
+    ):
+        """Normal insert should not yank the preview overlay offscreen before the fade."""
+        d = _make_delegate(main_module, monkeypatch)
+
+        with patch("spoke.__main__.save_pasteboard", return_value=None), \
+             patch("spoke.__main__.focused_text_contains", return_value=True), \
+             patch("spoke.__main__.inject_text"):
+            d._inject_result_text("hello world", "Pasted!")
+
+        d._overlay.hide.assert_called_once_with(
+            fade_duration=d._INSERT_OVERLAY_FADE_OUT_S
+        )
+        d._overlay.order_out.assert_not_called()
+
+    def test_starts_snapshot_capture_after_preview_fade(self, main_module, monkeypatch):
+        """Normal insert should snapshot after the preview has faded away."""
         Foundation = __import__("Foundation")
         Foundation.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_.reset_mock()
         d = _make_delegate(main_module, monkeypatch)
@@ -147,10 +169,10 @@ class TestRecoveryFlowBranching:
              patch("spoke.__main__.focused_text_contains", return_value=True), \
              patch("spoke.__main__.threading.Thread", side_effect=lambda *args, **kwargs: _ImmediateThread(**kwargs)), \
              patch("spoke.paste_verify.capture_verification_snapshot", return_value="snapshot") as mock_capture, \
-             patch("spoke.__main__.inject_text") as mock_inject:
+            patch("spoke.__main__.inject_text") as mock_inject:
             d._inject_result_text("hello world", "Pasted!")
 
-            assert mock_capture.call_count == 1
+            assert mock_capture.call_count == 0
             mock_inject.assert_not_called()
 
             d.resultInjectDelayed_(None)
@@ -695,13 +717,14 @@ class TestOCRVerifyRetry:
         with patch("spoke.__main__.save_pasteboard", return_value=None), \
              patch("spoke.__main__.focused_text_contains", return_value=True), \
              patch("spoke.__main__.threading.Thread", side_effect=_make_thread), \
-             patch("spoke.paste_verify.capture_verification_snapshot", side_effect=lambda: capture_release.append(True) or "snapshot"), \
+            patch("spoke.paste_verify.capture_verification_snapshot", side_effect=lambda: capture_release.append(True) or "snapshot"), \
              patch("spoke.__main__.inject_text") as mock_inject:
             d._inject_result_text("hello world", "Pasted!")
 
-            assert capture_started == [True]
+            assert capture_started == []
             d.resultInjectDelayed_(None)
 
+            assert capture_started == [True]
             mock_inject.assert_called_once()
             assert d._verify_paste_preexisting_match is True
             assert d._verify_paste_preexisting_snapshot is None
