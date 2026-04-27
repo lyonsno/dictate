@@ -3597,6 +3597,29 @@ class TestRecordingCap:
 
         d._command_overlay.set_brightness.assert_called_with(0.61, immediate=False)
 
+    def test_amplitude_updates_coalesce_to_latest_main_thread_sample(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        self._setup_glow_mock(d)
+
+        d._on_amplitude(0.1)
+        d._on_amplitude(0.2)
+        d._on_amplitude(0.3)
+
+        d.performSelectorOnMainThread_withObject_waitUntilDone_.assert_called_once_with(
+            "amplitudeUpdate:", None, False
+        )
+
+        d.amplitudeUpdate_(None)
+
+        d._glow.update_amplitude.assert_called_once_with(0.3)
+        assert d._amplitude_update_pending is False
+
+        d._on_amplitude(0.4)
+
+        assert d.performSelectorOnMainThread_withObject_waitUntilDone_.call_count == 2
+
 
 class TestCommandTranscribeWorker:
     """Test _command_transcribe_worker branching and dispatch."""
@@ -4405,16 +4428,23 @@ class TestCommandCallbacks:
 class TestResultInjection:
     """Test timing of the post-injection overlay cleanup."""
 
-    def test_inject_result_text_orders_out_overlay_before_delayed_inject(
+    def test_inject_result_text_fades_overlay_before_delayed_inject(
         self, main_module, monkeypatch
     ):
-        """Overlay should be ordered out before the delayed paste fires."""
+        """Overlay should fade first and order out from the delayed paste path."""
         d = _make_delegate(main_module, monkeypatch)
 
         with patch.object(main_module, "inject_text"):
             d._inject_result_text("hello", "Ready")
 
-        d._overlay.order_out.assert_called()
+        d._overlay.hide.assert_called_once_with(
+            fade_duration=d._INSERT_OVERLAY_FADE_OUT_S
+        )
+        d._overlay.order_out.assert_not_called()
+
+        d.resultInjectDelayed_(None)
+
+        d._overlay.order_out.assert_called_once()
 
 
 class TestCommandOverlayToggle:

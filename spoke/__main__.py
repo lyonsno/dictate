@@ -1997,10 +1997,24 @@ class SpokeAppDelegate(NSObject):
         self._preview_thread.start()
 
     def _on_amplitude(self, rms: float) -> None:
-        """Called from PortAudio thread — marshal to main thread."""
-        from Foundation import NSNumber
+        """Called from PortAudio thread — coalesce and marshal to main thread."""
+        lock = getattr(self, "_amplitude_update_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._amplitude_update_lock = lock
+
+        should_schedule = False
+        with lock:
+            self._latest_amplitude_rms = float(rms)
+            if not getattr(self, "_amplitude_update_pending", False):
+                self._amplitude_update_pending = True
+                should_schedule = True
+
+        if not should_schedule:
+            return
+
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
-            "amplitudeUpdate:", NSNumber.numberWithFloat_(rms), False
+            "amplitudeUpdate:", None, False
         )
 
     def updateVadState_(self, is_speech_number) -> None:
@@ -2017,7 +2031,21 @@ class SpokeAppDelegate(NSObject):
 
     def amplitudeUpdate_(self, rms_number) -> None:
         """Main thread: forward amplitude to glow and overlay text."""
-        rms = float(rms_number)
+        lock = getattr(self, "_amplitude_update_lock", None)
+        if lock is not None:
+            with lock:
+                rms = getattr(self, "_latest_amplitude_rms", None)
+                self._latest_amplitude_rms = None
+                self._amplitude_update_pending = False
+        else:
+            rms = getattr(self, "_latest_amplitude_rms", None)
+            self._latest_amplitude_rms = None
+            self._amplitude_update_pending = False
+
+        if rms is None:
+            rms = float(rms_number)
+        else:
+            rms = float(rms)
 
         # Visibility guard: skip all overlay state updates when nothing is
         # shown. At 20-50 Hz this saves 5-6 CA/attribute ops per tick.
