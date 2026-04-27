@@ -897,6 +897,7 @@ class CommandOverlay(NSObject):
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
         self._brightness_target = 0.0
+        self._brightness_seeded_externally = False  # True once set_brightness() is called
         self._backdrop_base_blur_radius_points = _COMMAND_BACKDROP_BLUR_RADIUS
         self._backdrop_blur_radius_points = _COMMAND_BACKDROP_BLUR_RADIUS
         self._backdrop_base_mask_width_multiplier = _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER
@@ -1425,27 +1426,41 @@ class CommandOverlay(NSObject):
     def set_brightness(self, brightness: float, immediate: bool = False) -> None:
         """Set screen brightness (0.0 dark – 1.0 bright) for adaptive compositing."""
         self._brightness_target = _clamp01(brightness)
+        self._brightness_seeded_externally = True
         if immediate:
             self._brightness = self._brightness_target
             self._apply_surface_theme()
 
     def _seed_brightness_from_screen(self) -> None:
-        """Synchronously seed entrance brightness from the current backing app."""
-        try:
-            brightness = _sample_screen_brightness_for_overlay(self._screen)
-        except Exception:
-            logger.debug("Command overlay brightness seed failed", exc_info=True)
+        """Seed entrance brightness, preferring GlowOverlay's cached value.
+
+        GlowOverlay samples screen brightness at 1 Hz and pushes it here via
+        set_brightness() before every show() call in __main__.py.  When that
+        has happened, _brightness_seeded_externally is True and we commit the
+        already-held _brightness_target directly — no Quartz capture needed.
+
+        On first-ever show (before any glow sample), fall back to neutral 0.5.
+        The next amplitude tick will push the real value via set_brightness().
+        """
+        if getattr(self, "_brightness_seeded_externally", False):
+            # Brightness already set by set_brightness(); commit it in-place.
+            self._brightness = self._brightness_target
             return
-        self._brightness_target = _clamp01(brightness)
-        self._brightness = self._brightness_target
+        # First-ever show: no cached glow brightness yet.  Use neutral default;
+        # the next amplitude tick will push the real value via set_brightness().
+        self._brightness_target = 0.5
+        self._brightness = 0.5
 
     def _start_brightness_sampling(self) -> None:
+        # Brightness is sampled by GlowOverlay (1 Hz) and pushed here via
+        # set_brightness() on every amplitude tick from __main__.py
+        # (_sync_command_overlay_brightness).  Running a second independent
+        # Quartz screen-capture timer here doubles the capture cost with no
+        # benefit.  No-op; cancel any leftover timer from prior sessions.
         old_timer = getattr(self, "_brightness_timer", None)
         if old_timer is not None:
             old_timer.invalidate()
-        self._brightness_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            _BRIGHTNESS_SAMPLE_INTERVAL, self, "brightnessResample:", None, True
-        )
+            self._brightness_timer = None
 
     def brightnessResample_(self, timer) -> None:
         if not self._visible:
