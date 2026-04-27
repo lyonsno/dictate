@@ -1,5 +1,8 @@
+import ast
 import tomllib
 from pathlib import Path
+
+import pytest
 
 
 README = Path(__file__).resolve().parents[1] / "README.md"
@@ -17,6 +20,22 @@ def load_manifest() -> dict:
         return tomllib.load(fh)
 
 
+CAPABILITY_CASES = tuple(load_manifest()["capabilities"].items())
+
+
+def test_manifest_capability_contract_tests_are_manifest_driven():
+    manifest_capability_ids = set(load_manifest()["capabilities"])
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    hard_coded_ids: set[str] = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value in manifest_capability_ids:
+                hard_coded_ids.add(node.value)
+
+    assert hard_coded_ids == set()
+
+
 def canonical_surface_path(canonical_surface: str) -> Path:
     surface_path = (REPO_ROOT / canonical_surface).resolve()
     repo_root = REPO_ROOT.resolve()
@@ -30,48 +49,39 @@ def test_canonical_surface_paths_are_repo_relative():
     assert canonical_surface_path("docs/local-smoke-runbook.md") == DOCS / "local-smoke-runbook.md"
 
 
-def test_topothesia_manifest_routes_non_public_spoke_capabilities():
-    manifest = load_manifest()
-    capabilities = manifest["capabilities"]
+@pytest.mark.parametrize(
+    ("capability_id", "capability"),
+    CAPABILITY_CASES,
+    ids=[capability_id for capability_id, _ in CAPABILITY_CASES],
+)
+def test_topothesia_manifest_routes_capabilities_to_declared_surfaces(capability_id, capability):
+    assert capability_id
+    assert capability["audience"] in {"developer", "operator", "public"}
+    assert capability["public_readme"] in {"omit", "include"}
+    assert capability["reason"]
+    assert capability["revisit_when"]
+    assert capability["canonical_markers"]
+    assert canonical_surface_path(capability["canonical_surface"]).is_file()
 
-    repair = capabilities["bounded_post_transcription_repair_pass"]
-    assert repair["canonical_surface"] == "docs/developer-operator-surfaces.md"
-    assert repair["public_readme"] == "omit"
-    assert "Bounded Post-Transcription Repair Pass" in repair["canonical_markers"]
-    assert "Bounded Post-Transcription Repair Pass" in repair["public_readme_absent_markers"]
 
-    smoke = capabilities["smoke_surface_runtime_affordances"]
-    assert smoke["canonical_surface"] == "docs/local-smoke-runbook.md"
-    assert smoke["public_readme"] == "omit"
-    assert "Terror Form" in smoke["public_readme_absent_markers"]
-
-
-def test_omitted_capabilities_live_off_readme_in_their_canonical_surfaces():
+@pytest.mark.parametrize(
+    ("capability_id", "capability"),
+    CAPABILITY_CASES,
+    ids=[capability_id for capability_id, _ in CAPABILITY_CASES],
+)
+def test_capabilities_live_on_their_routed_documentation_surfaces(capability_id, capability):
+    assert capability_id
     text = read_readme()
-    manifest = load_manifest()
-
-    repair_surface = canonical_surface_path(
-        manifest["capabilities"]["bounded_post_transcription_repair_pass"]["canonical_surface"]
+    surface_text = canonical_surface_path(capability["canonical_surface"]).read_text(
+        encoding="utf-8"
     )
-    smoke_surface = canonical_surface_path(
-        manifest["capabilities"]["smoke_surface_runtime_affordances"]["canonical_surface"]
-    )
-    assert repair_surface.is_file()
-    assert smoke_surface.is_file()
 
-    assert "bounded post-transcription repair pass" not in text.lower()
-    assert "launch-target switching" not in text
-    assert "source/branch visibility" not in text
-    assert "Terror Form" not in text
+    for marker in capability["canonical_markers"]:
+        assert marker in surface_text
 
-    repair_text = repair_surface.read_text(encoding="utf-8")
-    assert "Bounded Post-Transcription Repair Pass" in repair_text
-    assert "project-specific vocabulary" in repair_text
-
-    smoke_text = smoke_surface.read_text(encoding="utf-8")
-    assert "launch-target switching" in smoke_text
-    assert "source/branch visibility" in smoke_text
-    assert "Terror Form" in smoke_text
+    if capability["public_readme"] == "omit":
+        for marker in capability.get("public_readme_absent_markers", []):
+            assert marker not in text
 
 
 def test_readme_mentions_current_public_assistant_capabilities():

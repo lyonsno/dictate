@@ -48,6 +48,9 @@ def run_search_subagent_query(
     cancel_check: Callable[[], bool] | None = None,
 ) -> str:
     """Run a bounded background search query against the same OMLX endpoint."""
+    if cancel_check is not None and cancel_check():
+        return ""
+
     client = command_client_factory(
         base_url=base_url,
         model=model,
