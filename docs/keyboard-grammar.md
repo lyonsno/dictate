@@ -1,23 +1,20 @@
 # Keyboard Grammar
 
-Internal reference for Spoke's input gesture design. Three physical keys —
-spacebar, shift, enter — plus timing and modifier state.
+Internal reference for Spoke's input gesture design.
 
 ## Design principle
 
 Clean means you never need to move your hand, use the mouse, or look at the
-keyboard. One hand resting on the desk near spacebar, shift, and enter —
+keyboard. One hand resting on the desk near spacebar, shift, enter, `]` —
 that's the entire physical interface. Spacebar and shift are the primary
-surface (adjacent keys, one hand, never leaves typing position). Enter is the
-third key, used only in deliberate contexts: when the tray is up and you're
-reviewing text, or held during recording for a confident send. You're already
-in a decision-making posture when Enter becomes relevant, so reaching one key
-over is not a flow break.
+surface (adjacent keys, one hand, never leaves typing position). Enter and `]`
+are the secondary surface, one key over — reachable without shifting hand
+position.
 
 If a gesture requires reaching for escape, tab, or any key outside the
-spacebar/shift/enter cluster, it has left the interaction surface. The only
-exception is features that inherently require a full keyboard (like text
-editing), which can use additional keys because you're already there.
+spacebar/shift/enter/`]` cluster, it has left the interaction surface. The
+exceptions are route keys (number row, used during recording for destination
+selection) and the tray's editable mode (full keyboard for typing).
 
 ## Key identity
 
@@ -26,7 +23,11 @@ Each key has a consistent identity across the entire grammar:
 - **Spacebar** = go, do the thing, commit. Tap to insert, hold to record.
 - **Shift** = not the default thing, navigate, review, back out. Enter the
   tray, scrub through history, dismiss, delete.
-- **Enter** = send to assistant. The universal "submit" key.
+- **Enter** = submit, confirm. Part of the send chord. Confirms terminal
+  approvals.
+- **`]`** = route to destination. Tap during recording to select where the
+  utterance goes. Part of the send chord. The assistant is the default
+  destination; other destinations are bound via route keys.
 
 ## Core gestures
 
@@ -34,9 +35,10 @@ Each key has a consistent identity across the entire grammar:
 |---|---|
 | Spacebar tap (< 200ms, no shift) | Normal space character (forwarded to app) |
 | Spacebar hold (≥ 200ms), clean release | **Text pathway** — record, transcribe, paste at cursor |
-| Spacebar hold, shift held at release | **Enter tray** — record, transcribe, stage for review |
-| Spacebar hold, enter held at release | **Send to assistant** — record, transcribe, stream to assistant |
-| Spacebar hold, tap shift, then release spacebar | **Latched recording** — keep recording hands-free until explicit tray or assistant exit |
+| Spacebar hold, shift held at release | **Enter tray** — record, transcribe, stage for editing |
+| Spacebar hold, tap `]` during recording | **Route to assistant** — on release, utterance goes to assistant |
+| Spacebar hold, tap route key during recording | **Route to destination** — on release, utterance goes to that route's destination |
+| Spacebar hold, tap shift, then release spacebar | **Latched recording** — keep recording hands-free until explicit exit |
 | Short spacebar hold (< 800ms), shift at release | **Recall** — enter tray with last tray entry (no recording) |
 
 The hold threshold defaults to 200ms (configurable via `SPOKE_HOLD_MS`, which
@@ -51,28 +53,29 @@ the middle of an active hold:
 |---|---|
 | Shift tap while idle | Toggle TTS audibility |
 | Double-tap Shift while idle | Toggle Terror Form HUD |
-| Enter during `WAITING` (before the hold threshold fires) | Toggle assistant overlay visibility |
-
-These are secondary controls, not part of the core text/tray/assistant routing
-surface. They still stay inside the same three-key cluster, which keeps them
-compatible with the overall physical grammar.
+| Space + Delete (while assistant overlay is visible) | **Cancel generation / end assistant turn.** Stops the current streamed response and dismisses or freezes the command overlay. |
 
 ## Disposition at release
 
-For the ordinary recording path, utterance disposition is decided when capture
-ends, not when recording starts. You hold spacebar, speak, and at the moment
-capture ends you decide what the utterance becomes:
+For the ordinary recording path, utterance disposition is decided by route key
+state when capture ends, not when recording starts. You hold spacebar, speak,
+optionally tap a route key to select a destination, and release:
 
-- **Clean release** → text insertion (dictation)
-- **Shift held at first release** → tray (review before committing)
-- **Enter released first while space is still down** → assistant path
-- **Space released first while enter is still down** → toggle assistant overlay visibility
+- **Clean release, no route key selected** → text insertion (dictation)
+- **Shift held at release** → tray (edit before committing)
+- **Route key selected (e.g. `]`)** → route to that destination on release
 
-Shift and enter can be pressed at any point during the hold — shift is latched
-via `kCGEventFlagsChanged`, so pressing shift after you start speaking still
-routes to the tray. For ordinary enter chords, first release wins: enter-up
-before space-up takes the assistant path, while space-up before enter-up is the
-overlay-toggle gesture.
+Shift can be pressed at any point during the hold — it is latched via
+`kCGEventFlagsChanged`, so pressing shift after you start speaking still
+routes to the tray.
+
+Route keys can also be pressed at any point during the hold. Tapping a route
+key selects it; tapping the same key again deselects it. Only one route key
+is active at a time.
+
+If both shift and a route key are active at release, shift wins — the
+utterance enters the tray with the route key's destination pre-selected, so
+the send chord (Enter + `]`) will honor the pre-selected route.
 
 ## Modifier blocking
 
@@ -105,7 +108,8 @@ Latched recording adds one more state on top of the base hold detector:
 
 - **LATCHED**: recording remains active after spacebar is released.
 - **Shift tap during RECORDING** enters **LATCHED**.
-- **Enter** exits **LATCHED** to the assistant pathway.
+- **`]`** or route key selection + release exits **LATCHED** to the selected
+  destination.
 - **Shift + spacebar release** exits **LATCHED** to the tray.
 
 Synthetic space forwarding on early release uses a 100ms auto-clear timeout in
@@ -118,21 +122,18 @@ case the forwarded events are lost.
 3. Text is injected at the cursor via paste.
 4. If no focused text field is detected → enters **tray** automatically.
 
-## Command pathway (enter held at release)
+## Command pathway (`]` route key selected)
 
 1. Audio capture stops.
 2. Audio is transcribed to text (the "utterance").
-3. Utterance is streamed through the command client (assistant).
+3. Utterance is streamed through the command client (assistant or hot route).
 4. Command overlay shows the utterance and the streamed response.
-
-This is the fast path for confident sends — you know before you finish
-speaking that this is a command. Hold enter, release spacebar, done.
 
 ## Latched recording
 
 Latched recording is a mid-capture state transition, not a change in
-end-of-recording intent. The utterance's disposition is still chosen only
-when capture ends.
+end-of-recording intent. The utterance's disposition is still chosen by
+route key state when capture ends.
 
 ### Entry
 
@@ -149,61 +150,85 @@ recording even after spacebar comes up."
 
 | Gesture | Result |
 |---|---|
-| Enter | Stop capture, transcribe, send to assistant |
-| Hold shift + press spacebar, then release spacebar | Stop capture, transcribe, enter tray |
+| Clean release (no shift, no route key) | Stop capture, transcribe, paste at cursor |
+| Shift held + spacebar release | Stop capture, transcribe, enter tray |
+| Route key selected + release | Stop capture, transcribe, route to destination |
 
-Latched recording is intentionally not a second direct-text pathway. Clean
-release text insertion remains the ordinary pre-latch route. Once a recording
-has been latched, it exits through tray or assistant.
+Latched recording exits follow the same disposition rules as ordinary
+recording. The latch only changes *when* capture ends, not *where* the
+utterance goes.
 
 ### Relationship to the tray
 
 Tray entry does not change. From the tray, spacebar hold (≥ 200ms) still
-starts a new recording and pushes the current tray text down in the stack.
-If that new recording should continue hands-free, tap shift during the
-recording to latch it.
+starts a new recording. The transcription appends at the cursor position in
+the tray's editable text. If that new recording should continue hands-free,
+tap shift during the recording to latch it.
 
 ## The tray
 
-The tray is a speech-native stacked clipboard. It holds recent transcriptions
-for review, insertion, sending to the assistant, or later retrieval. It is the
-central interaction surface between recording and committing.
+The tray is an editable speech-native stacked buffer. It holds recent
+transcriptions for editing, insertion, sending to a destination, or later
+retrieval. It is the central interaction surface between recording and
+committing.
 
 ### Why the tray exists
 
-1. **Preview before commit.** See what was transcribed before it goes anywhere.
-2. **Cancel path.** Shift+release enters the tray instead of pasting. Dismiss
+1. **Edit before commit.** See and modify what was transcribed before it goes
+   anywhere. Fix whisper errors, restructure, add context.
+2. **General input buffer.** Type into it, paste into it, dictate into it. The
+   tray is the way to get any text — spoken or typed or pasted — to the
+   assistant or any other route destination.
+3. **Cancel path.** Shift+release enters the tray instead of pasting. Dismiss
    from the tray to cancel. No audio wasted on a bad paste or accidental send.
-3. **History.** Every transcription that enters the tray is stacked. Scrub back
+4. **History.** Every transcription that enters the tray is stacked. Scrub back
    through recent transcriptions with two keys.
-4. **Speech-native clipboard.** The assistant can add arbitrary content to the
+5. **Speech-native clipboard.** The assistant can add arbitrary content to the
    tray via tool calls. Combined with voice commands, this is a full clipboard
-   manager operated entirely by speech and three keys.
-5. **Recovery unification.** Paste failure (no focused text field) enters the
+   manager operated entirely by speech and a few keys.
+6. **Recovery unification.** Paste failure (no focused text field) enters the
    tray automatically rather than being a separate "recovery mode" state.
 
 ### Tray entry
 
 | Context | Gesture | Result |
 |---|---|---|
-| Recording | Shift held + release spacebar | Enter tray with transcription |
+| Recording | Shift held + release spacebar | Enter tray with transcription at cursor |
 | Recording (short, < 800ms) | Shift held + release spacebar | Recall last tray entry (no recording) |
 | Paste failure | *(automatic)* | Enter tray with transcribed text |
+
+### Editable tray
+
+When the tray is up, it is editable by default. The keyboard types into the
+tray text — spacebar types spaces, shift and enter have their standard typing
+roles, all keys pass through to the tray's text field. The cursor is in the
+tray.
+
+This is the critical difference from the old read-only tray: you can fix
+transcription errors, type new text, and paste from the system clipboard
+(Cmd+V). The tray is no longer just a display case for transcriptions — it is
+a workspace.
+
+Recording from within the tray still works: spacebar hold (≥ 200ms) starts a
+new recording, and the transcription appends at the cursor position in the
+tray when it lands. This requires the 200ms hold threshold to distinguish
+"typing a space" from "starting a recording." The threshold is the same as
+the global one.
 
 ### Tray gestures
 
 | Gesture | Result |
 |---|---|
-| Spacebar tap (~150ms) | Insert tray text at cursor |
-| Spacebar hold (≥ 200ms) | Start new recording (pushes current text down in stack) |
-| Enter | Send tray text to assistant |
+| Spacebar tap | Type a space character in the tray |
+| Spacebar hold (≥ 200ms) | Start new recording (transcription appends at cursor in tray) |
+| Enter + `]` | **Send** — send tray text to the hot route destination |
 | Shift + release spacebar | Navigate up (more recent item; dismiss at top) |
 | Spacebar + tap shift | Navigate down (older item) |
 | Shift held + double-tap spacebar | Delete current tray entry |
 
-The gesture vocabulary uses three keys with consistent identity: spacebar
-commits (insert, record), shift navigates and manages (up, down, delete),
-enter sends.
+The send chord is **Enter + `]`** — the same two keys, regardless of whether
+sticky routing is active or not. `]` specifies the destination, enter confirms
+the send.
 
 The delete gesture requires a double-tap of spacebar while shift is held
 (two taps within ~300ms). The first tap navigates up as normal; the second
@@ -227,12 +252,14 @@ navigate.
 
 ### Tray stack lifecycle
 
-- **New recording from tray** (spacebar hold ≥ 200ms) pushes the current tray
-  text down in the stack and starts recording. The new transcription becomes
-  the top of the stack when it lands.
-- **Insert** (spacebar tap) consumes the current entry — it is removed from
-  the stack after successful paste.
-- **Send to assistant** (Enter) consumes the current entry.
+- **New recording from tray** (spacebar hold ≥ 200ms) appends the
+  transcription at the cursor position in the current tray entry.
+- **Send** (Enter + `]`) consumes the current entry — it is removed from the
+  stack after delivery.
+- **Insert at cursor** requires leaving the tray (dismiss, then dictate with
+  clean release as normal). The tray is for editing and sending, not for
+  direct cursor insertion. To insert tray text into an app, copy it
+  (Cmd+C while editing in the tray) and paste it (Cmd+V after dismissing).
 - **Delete** (shift held + tap spacebar) removes the current entry.
 - **Dismiss** (navigate up past top) hides the tray but preserves the stack.
   Re-entering the tray (shift+release from a short hold, or paste failure)
@@ -255,13 +282,13 @@ by both" color.
 
 **Ownership rules:**
 
-- **User-created entries** (dictation via shift+release, paste failure) appear
-  in user color immediately and permanently.
+- **User-created entries** (dictation via shift+release, paste failure, typed)
+  appear in user color immediately and permanently.
 - **Assistant-created entries** (placed via tool call) appear in assistant
   color when they arrive.
 - **Ownership transfer is automatic and monotonic.** An assistant-created entry
   transitions to user color after one interaction turn — once the user has
-  navigated to it, inserted it, or otherwise acknowledged it. Once an entry
+  navigated to it, edited it, or otherwise acknowledged it. Once an entry
   is in user color, it stays in user color. There is no reverse transition.
 - **Assistant modifications to existing entries** re-paint the entry in
   assistant color for one turn, then it returns to user color on
@@ -287,14 +314,11 @@ like pulling against a spring). Maximum displacement is small (~8–10pt over
 to happen if you keep holding."
 
 If shift is released, the overlay eases back to resting position (spring
-relaxing). The spring is a visual cue, not a commit mechanism — it no longer
-triggers a send. The confident send path is Enter, not shift hold-through.
+relaxing). The spring is a visual cue, not a commit mechanism.
 
-The upward flick animation plays on Enter (send to assistant) — the overlay
-flicks up as the text departs for the command overlay. This is the universal
-"sent to assistant" visual signature. A shorter, sharper pullback-and-flick
-(~100ms) plays on Enter from the tray. The hold-through from recording
-(Enter held at release) plays a longer version with the same visual shape.
+The upward flick animation plays on send (Enter + `]`) — the overlay flicks
+up as the text departs for the command overlay. This is the universal "sent"
+visual signature.
 
 **Why the flick works (accidental illusion).** The current command pathway
 already produces a convincing illusion of continuous upward motion even though
@@ -311,25 +335,6 @@ same perceptual moment as the flick's apex. The animation that the user
 "sees" never actually exists as a single coordinated motion — it is two
 unrelated transitions that rhyme.
 
-### Migration from current command pathway
-
-| Flow | Before tray | After tray |
-|---|---|---|
-| Fast command | shift+release → assistant | enter-up before space-up → assistant |
-| Deliberate command | *(same as fast)* | shift+release → tray → Enter → assistant |
-| Cancel recording | *(no clean path)* | shift+release → tray → navigate up past top → dismissed |
-| Preview before paste | *(no path)* | shift+release → tray → spacebar tap → paste |
-| Recall history | shift+short-hold → command overlay | shift+short-hold → tray with last entry |
-| Clipboard management | *(no path)* | tray stack + navigation + delete |
-
-The fast command path moves from shift to enter. The accidental-send problem
-(shift held by mistake) goes away entirely — shift now means "review," never
-"send."
-
-For assistant recall, first-release semantics still apply inside the chord:
-enter-up before space-up takes the assistant path, while space-up before
-enter-up toggles the assistant overlay instead of falling back to tray recall.
-
 ### Relationship to recovery mode
 
 Recovery mode becomes tray entered automatically when paste verification
@@ -337,13 +342,173 @@ fails. The overlay, gestures, and stack lifecycle are identical. The only
 difference is the entry trigger: manual (shift+release) vs automatic (OCR
 failure).
 
-### Text editing in tray (future)
+## Route keys
 
-A separate hotkey (TBD — acceptable per the design principle, since text
-editing inherently requires a keyboard) could switch the overlay to editable
-mode where the keyboard types into the tray text. In editable mode, spacebar
-types spaces rather than triggering insert, and shift/enter revert to their
-standard typing roles. The exit gesture from editable mode is TBD.
+Route keys replace timing-based destination selection with explicit,
+visible, toggleable selection made during recording. You choose where
+your utterance goes while you're still speaking, with visual confirmation,
+and you can change your mind before release.
+
+### Physical surface
+
+Two surfaces:
+
+**`]` — the assistant route key.** Sits under the right hand's middle/ring
+finger at rest, one key over from enter. The most reachable non-spacebar key
+after enter and delete. This is the primary and most common route key. It
+routes to the assistant by default, or to whatever destination is bound to
+it.
+
+**The number row** from the right side of the keyboard, reachable without
+moving the right hand:
+
+```
+6  7  8  9  0  -  =
+```
+
+Seven keys. Each can be bound to a different destination: operator shell
+modes, Epistaxis interaction, read-aloud, web research, or user-defined
+shortcuts. Modifiers (shift, etc.) could extend the surface later.
+
+### Visual presentation
+
+While recording (spacebar held or latched), a row of small ghost indicators
+appears above the user preview overlay — one per route key, all lined up.
+They render very faint by default: present but quiet, like watermarks. Each
+ghost shows its key label and possibly a tiny icon or abbreviation for what
+it routes to.
+
+The assistant route key `]` renders as a faint vertical pill to the right of
+the user preview overlay, separate from the number row ghosts. It is the most
+common non-default destination and deserves a distinct visual presence.
+
+When you tap a route key, its ghost sharpens — becomes noticeably more legible,
+stands out from the others. You are now routed to that key's destination.
+Tap the same key again and it goes faint — you're back to the default route
+(cursor insertion / text pathway).
+
+Only one route key is active at a time. Tapping a different key deactivates
+the previous one and activates the new one.
+
+The ghosts are not buttons. They are not clickable. They exist only as a
+visual readout of current routing state. The input surface is the physical
+keyboard, not the overlay.
+
+### Lifecycle
+
+Route keys are only active during recording — while spacebar is held or
+while in latched recording. On release, the utterance goes to whatever
+destination is currently selected (default text pathway if nothing is
+selected). After release, the route key state resets — unless sticky routing
+is active.
+
+### Route flavors
+
+Not all route keys behave the same way after the utterance is delivered.
+Three flavors:
+
+1. **Persistent.** Activates a mode that stays on after release. The mode
+   persists across subsequent recordings until explicitly deactivated (tap
+   the route key again during a future recording, or the mode times out, or
+   an exit command is spoken). Example: entering Epistaxis interaction mode,
+   read-aloud mode, web research mode.
+
+2. **Contingent.** Activates silently for the current utterance and continues
+   if the context suggests continuation, but backs off if the model senses
+   you're not interested in continuing. Ghost continuation — the mode is warm
+   but will cool on its own. Example: a follow-up question that might or
+   might not become a multi-turn thread.
+
+3. **One-shot.** Routes the current utterance once, then deactivates. No
+   persistent mode, no continuation. Example: a single command dispatch, a
+   quick lookup.
+
+The flavor is a property of the route key's binding, not of the gesture.
+The user always does the same thing (tap to select, release to send). The
+route key's configuration determines what happens after delivery.
+
+### Mappability
+
+Route key bindings are configurable. The initial set will be opinionated
+(specific modes and destinations wired to specific keys), but the mapping
+should be a data structure, not hardcoded routing logic. Future operator
+shell modes, Epistaxis verbs, or user-defined shortcuts can be bound to
+route keys without changing the grammar machinery.
+
+### The send chord: Enter + `]`
+
+**Enter + `]`** sends text to the hot route destination. This chord works
+everywhere text can be sent:
+
+- From the tray: sends the current tray entry to the route destination.
+- The `]` key specifies *where*. Enter specifies *go*. Together they are
+  unambiguous and cannot fire by accident.
+
+If a different route key is active (sticky routed to an Epistaxis mode, for
+example), Enter + that route key sends to that destination instead. The
+pattern is always **Enter + route key = send to that route**.
+
+The flick animation plays on send — the tray text flicks upward toward the
+command overlay.
+
+### Sticky routing toggle: Space + Enter + `]`
+
+Normally, route key selection resets after each recording. The sticky toggle
+locks the current routing so it persists across recordings — every subsequent
+utterance goes to the selected destination on release without re-tapping the
+route key each time.
+
+The chord is **Space + Enter + `]`** — all under the right hand at rest.
+Press it once to lock; press it again to unlock and return to per-recording
+selection.
+
+Sticky routing captures the keyboard. While locked, typing goes to the hot
+route — keystrokes are intercepted by Spoke and delivered to whatever
+destination is currently locked, not to the frontmost app. This is the
+full keyboard capture mode: if you're sticky-routed to the assistant,
+typing goes to the assistant. If you're sticky-routed to an Epistaxis
+mode, typing goes to the Epistaxis interaction surface.
+
+This means sticky routing is a deliberate mode shift. You are choosing
+to give Spoke the keyboard. The toggle chord (Space + Enter + `]` again)
+gives it back. The visual distinction between sticky and non-sticky must
+be strong enough that you always know which state you're in.
+
+Sticky routing works with any route key, not just `]`. Lock the assistant
+route with Space + Enter + `]`. Lock a number-row mode route with
+Space + Enter + that number key. The pattern is always
+**Space + Enter + route key = lock that route**.
+
+Visual feedback: when sticky routing is active, the selected route key's
+ghost (or the assistant pill) renders with a persistent glow or underline
+rather than the transient sharpening that fades after release. The visual
+distinction between "selected for this recording" and "locked across
+recordings" should be immediately legible.
+
+Sticky routing has no special send semantics. Sending from the tray is
+always Enter + `]` (or Enter + the relevant route key), whether sticky
+routing is active or not. Sticky routing only affects where dictations go
+on release — it does not change the tray's send chord.
+
+### Relationship to the tray
+
+Route keys and the tray are complementary, not competing. Route keys select
+a destination before release. The tray is a post-release editing surface.
+A natural flow: tap `]` to select the assistant, but then shift at release
+to enter the tray anyway — edit the text, then send from the tray with
+Enter + `]`. The route key pre-selects the destination; the tray provides the
+editing and review step.
+
+### Relationship to operator modes
+
+Route keys can activate operator modes, but they are not the only way to
+enter a mode. A voice command ("enter Epistaxis mode") can also activate a
+mode. Route keys are a physical shortcut into mode activation — faster and
+more reliable than voice for known, frequent destinations.
+
+Once a persistent mode is active, subsequent recordings may route through
+that mode's logic regardless of route key state. The mode is the authority;
+the route key was the entry gesture.
 
 ## Recording cap
 
@@ -356,10 +521,11 @@ recording force-stops. No cap in sidecar mode.
 | State | Overlay | Glow | Menu icon |
 |---|---|---|---|
 | Idle | hidden | off | unfilled mic |
-| Recording | live preview (typewriter) | amplitude-reactive border | filled mic |
+| Recording | live preview (typewriter) + route key ghosts | amplitude-reactive border | filled mic |
 | Transcribing | preview holds | fading | filled mic |
-| Tray | tray overlay (entry in owner color — user or assistant) | off | unfilled mic |
+| Tray | editable tray overlay (entry in owner color) | off | unfilled mic |
 | Command streaming | command overlay (slow full-spectrum hue rotation, pulsing) | off | filled mic |
+| Sticky routing | persistent route key glow + keyboard captured | off | filled mic (or distinct icon TBD) |
 
 ## Key source files
 
