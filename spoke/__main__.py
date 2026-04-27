@@ -1883,6 +1883,8 @@ class SpokeAppDelegate(NSObject):
         )
         self._detector.command_overlay_active = overlay_visible
         logger.info("command_overlay_active -> %s (hold start)", overlay_visible)
+        if overlay_visible and hasattr(command_overlay, "set_recording_load_shed"):
+            command_overlay.set_recording_load_shed(True)
         # Note: if command overlay is visible but finished, leave it up.
         # It will be dismissed if the user says nothing (empty recording)
         # or replaced if they send a new command.
@@ -2329,6 +2331,13 @@ class SpokeAppDelegate(NSObject):
             else:
                 self._approve_pending_command()
             return
+
+        command_overlay = getattr(self, "_command_overlay", None)
+        if (
+            command_overlay is not None
+            and hasattr(command_overlay, "set_recording_load_shed")
+        ):
+            command_overlay.set_recording_load_shed(False)
 
         # ── Tray intercept ──
         # When the tray is active, gestures route through the tray handler.

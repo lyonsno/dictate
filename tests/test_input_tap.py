@@ -1,5 +1,6 @@
 """Tests for the CGEventTap spacebar hold detection state machine."""
 
+import logging
 from unittest.mock import MagicMock, call, patch
 
 
@@ -320,6 +321,29 @@ class TestEventTapCallback:
         det._cancel_forwarding_timer.assert_called_once_with()
         det._start_repeat_watchdog.assert_called_once_with()
         assert det._state == mod._State.RECORDING
+
+    def test_recording_space_repeats_do_not_info_log_in_event_tap(
+        self, input_tap_module, caplog
+    ):
+        """The hot suppression path must not do per-repeat INFO logging."""
+        mod = input_tap_module
+        Quartz = __import__("Quartz")
+
+        det, _on_start, _on_end = TestSpacebarStateMachine()._make_detector(mod)
+        det._state = mod._State.RECORDING
+        det._start_repeat_watchdog = MagicMock()
+        mod._active_detector = det
+
+        Quartz.CGEventGetIntegerValueField.return_value = mod.SPACEBAR_KEYCODE
+        Quartz.CGEventGetFlags.return_value = 0
+
+        with caplog.at_level(logging.INFO, logger="spoke.input_tap"):
+            result = mod._event_tap_callback(
+                None, Quartz.kCGEventKeyDown, MagicMock(), None
+            )
+
+        assert result is None
+        assert "keyDown space" not in caplog.text
 
     def test_forwarding_cleared_on_space_keyup(self, input_tap_module):
         """_forwarding flag should be cleared after forwarded space keyUp."""

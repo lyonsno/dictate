@@ -536,6 +536,50 @@ class TestWindowLayering:
         assert overlay._visible is False
         assert overlay._streaming is False
 
+    def test_hide_cancels_pulse_before_fade_for_heavy_text(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._streaming = True
+        pulse_timer = MagicMock()
+        overlay._pulse_timer = pulse_timer
+
+        overlay.hide()
+
+        pulse_timer.invalidate.assert_called_once()
+        assert overlay._pulse_timer is None
+
+    def test_recording_load_shed_freezes_and_resumes_pulse(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        pulse_timer = MagicMock()
+        overlay._pulse_timer = pulse_timer
+        overlay._start_pulse_timer = MagicMock()
+
+        overlay.set_recording_load_shed(True)
+
+        pulse_timer.invalidate.assert_called_once()
+        assert overlay._pulse_timer is None
+        assert overlay._recording_load_shed is True
+
+        overlay.set_recording_load_shed(False)
+
+        assert overlay._recording_load_shed is False
+        overlay._start_pulse_timer.assert_called_once()
+
+    def test_fade_in_defers_pulse_while_recording_load_shed_active(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._recording_load_shed = True
+        overlay._fade_direction = 1
+        overlay._fade_step = mod._FADE_STEPS - 1
+        overlay._start_pulse_timer = MagicMock()
+
+        overlay.fadeStep_(None)
+
+        overlay._start_pulse_timer.assert_not_called()
+
     def test_show_resets_text(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._response_text = "old response"
@@ -1611,6 +1655,56 @@ class TestAdaptiveCompositing:
         overlay._enable_text_punchthrough(False)
 
         overlay._scroll_view.setHidden_.assert_called_with(False)
+
+    def test_pulse_skips_response_text_restyle_when_punchthrough_renders_text(
+        self, mock_pyobjc, monkeypatch
+    ):
+        sys.modules.pop("spoke.command_overlay", None)
+        try:
+            mod = importlib.import_module("spoke.command_overlay")
+
+            class _FakeTextStorage:
+                def __init__(self, text):
+                    self.text = text
+                    self.attrs = []
+
+                def length(self):
+                    return len(self.text)
+
+                def addAttribute_value_range_(self, name, value, rng):
+                    self.attrs.append((name, value, rng))
+
+            overlay, _ = _make_overlay(mock_pyobjc)
+            overlay._text_view = MagicMock()
+            response = "A full paragraph of assistant text that punch-through renders"
+            storage = _FakeTextStorage("Prompt\n\n" + response)
+            overlay._text_view.textStorage.return_value = storage
+            overlay._brightness = 0.0
+            overlay._brightness_target = 0.0
+            overlay._utterance_text = "Prompt"
+            overlay._response_text = response
+            overlay._cancel_spring = 0.0
+            overlay._cancel_spring_target = 0.0
+            overlay._cancel_spring_fired = False
+            overlay._on_cancel_spring_threshold = None
+            overlay._text_punchthrough = True
+            overlay._punchthrough_mask_dirty = False
+            overlay._fullscreen_compositor = MagicMock(sampled_brightness=0.0)
+            overlay._apply_surface_theme = MagicMock()
+            overlay._apply_backdrop_pulse_style = MagicMock()
+            overlay._update_punchthrough_mask = MagicMock()
+
+            overlay._pulseStepInner()
+
+            response_start = len("Prompt\n\n")
+            response_attrs = [
+                rng
+                for _name, _value, rng in storage.attrs
+                if rng[0] >= response_start
+            ]
+            assert response_attrs == []
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
 
 class TestGeometryCaps:
     def test_update_layout_keeps_live_narrator_for_moderate_user_prompt(

@@ -1529,16 +1529,47 @@ class CommandOverlay(NSObject):
             self._cancel_pulse()
 
     def hide(self) -> None:
-        """Fade out — pulse continues during fade for visual continuity."""
+        """Fade out without competing pulse work during the dismiss animation."""
         if self._window is None:
             return
         self._visible = False
         self._streaming = False
         self._cancel_linger()
         self._cancel_visual_start()
-        # Don't cancel pulse here — let it continue during fade-out.
-        # It will be cancelled when the fade completes (window ordered out).
+        # Freeze the assistant surface while fading.  Pulse ticks restyle large
+        # response ranges and may rebuild optical masks/backdrop state; doing
+        # that during dismiss competes with the fade and preview overlay.
+        self._cancel_pulse()
         self._start_fade_out()
+
+    def set_recording_load_shed(self, active: bool) -> None:
+        """Freeze expensive assistant animation while the user is recording."""
+        active = bool(active)
+        if active:
+            if getattr(self, "_recording_load_shed", False):
+                return
+            self._recording_load_shed = True
+            self._recording_load_shed_resume_pulse = bool(
+                getattr(self, "_visible", False)
+            )
+            self._cancel_pulse()
+            return
+
+        if not getattr(self, "_recording_load_shed", False):
+            return
+        self._recording_load_shed = False
+        should_resume = bool(getattr(self, "_recording_load_shed_resume_pulse", False))
+        self._recording_load_shed_resume_pulse = False
+        if (
+            should_resume
+            and getattr(self, "_visible", False)
+            and getattr(self, "_pulse_timer", None) is None
+            and not (
+                getattr(self, "_fade_timer", None) is not None
+                and getattr(self, "_fade_direction", 0) == 1
+            )
+        ):
+            self._start_pulse_timer()
 
     def set_cancel_spring(self, target: float) -> None:
         """Set the cancel spring target (0.0 = idle, 1.0 = winding up).
@@ -1929,7 +1960,8 @@ class CommandOverlay(NSObject):
         if self._fade_step >= _FADE_STEPS:
             self._cancel_fade()
             if self._fade_direction == 1:
-                self._start_pulse_timer()
+                if not getattr(self, "_recording_load_shed", False):
+                    self._start_pulse_timer()
             elif self._fade_direction == -1:
                 self._window.setAlphaValue_(0.0)
                 self._reset_backdrop_layer()
@@ -2152,11 +2184,14 @@ class CommandOverlay(NSObject):
                     pass
                 # Response text has two visual layers per character:
                 # a crisp adaptive foreground for legibility, plus a colored
-                # blurred shadow that carries the chromatic identity.
+                # blurred shadow that carries the chromatic identity. In
+                # punch-through mode the live NSTextView is hidden and only
+                # supplies the mask source, so per-tick restyling is invisible
+                # main-thread work.
                 resp_start = utt_len + 2
                 resp_len = total_len - resp_start
                 _punchthrough = getattr(self, "_text_punchthrough", False)
-                if resp_start < total_len and resp_len > 0:
+                if resp_start < total_len and resp_len > 0 and not _punchthrough:
                     from AppKit import (
                         NSShadowAttributeName as _SH_pulse,
                         NSShadow,
@@ -2168,77 +2203,65 @@ class CommandOverlay(NSObject):
                         _FONT_SIZE, -0.2  # medium-light weight — thicker punch-through
                     )
                     try:
-                        if _punchthrough:
-                            # Punch-through mode: uniform white at full alpha.
-                            # Text glyphs are the mask — alpha 1.0 erases
-                            # the fill via CISourceOutCompositing.
-                            ts.addAttribute_value_range_(
-                                _FG_pulse,
+                        # Bulk span path: 3 coarse spans (edges, mid, center)
+                        # instead of per-character iteration. The gradient
+                        # approximation is sufficient for the 2-5s breathing
+                        # animation on this fallback rendering path.
+                        # Foreground and font are uniform across the full range.
+                        ts.addAttribute_value_range_(
+                            _FG_pulse,
+                            NSColor.colorWithSRGBRed_green_blue_alpha_(
+                                response_r,
+                                response_g,
+                                response_b,
+                                _ASSISTANT_TEXT_ALPHA_MAX,
+                            ),
+                            (resp_start, resp_len),
+                        )
+                        ts.addAttribute_value_range_(
+                            _FN_pulse, light_font, (resp_start, resp_len)
+                        )
+                        if resp_len <= 3:
+                            # Too short for span splits; single shadow pass.
+                            lum = 0.299 * r + 0.587 * g + 0.114 * b
+                            shadow = NSShadow.alloc().init()
+                            shadow.setShadowColor_(
                                 NSColor.colorWithSRGBRed_green_blue_alpha_(
-                                    1.0, 1.0, 1.0, 1.0
-                                ),
-                                (resp_start, resp_len),
+                                    r, g, b, 0.7 + 0.3 * lum
+                                )
+                            )
+                            shadow.setShadowOffset_((0, 0))
+                            shadow.setShadowBlurRadius_(5.0 + lum * 14.0)
+                            ts.addAttribute_value_range_(
+                                _SH_pulse, shadow, (resp_start, resp_len)
                             )
                         else:
-                            # Bulk span path: 3 coarse spans (edges, mid, center)
-                            # instead of per-character iteration. The gradient
-                            # approximation is sufficient for the 2-5s breathing
-                            # animation on this fallback rendering path.
-                            # Foreground and font are uniform across the full range.
-                            ts.addAttribute_value_range_(
-                                _FG_pulse,
-                                NSColor.colorWithSRGBRed_green_blue_alpha_(
-                                    response_r,
-                                    response_g,
-                                    response_b,
-                                    _ASSISTANT_TEXT_ALPHA_MAX,
-                                ),
-                                (resp_start, resp_len),
-                            )
-                            ts.addAttribute_value_range_(
-                                _FN_pulse, light_font, (resp_start, resp_len)
-                            )
-                            if resp_len <= 3:
-                                # Too short for span splits; single shadow pass.
-                                lum = 0.299 * r + 0.587 * g + 0.114 * b
+                            # Three spans: edge (0..e), mid (e..m), center (m..end)
+                            edge = max(1, resp_len // 4)
+                            mid = max(edge + 1, resp_len * 3 // 4)
+                            spans = [
+                                (resp_start,        edge,           0.0),   # edges: main color
+                                (resp_start + edge, mid - edge,     0.5),   # mid: blend
+                                (resp_start + mid,  resp_len - mid, 1.0),   # center: alt color
+                            ]
+                            for span_start, span_len, weight in spans:
+                                if span_len <= 0:
+                                    continue
+                                cr = _lerp(r, alt_r, weight)
+                                cg = _lerp(g, alt_g, weight)
+                                cb = _lerp(b, alt_b, weight)
+                                lum = 0.299 * cr + 0.587 * cg + 0.114 * cb
                                 shadow = NSShadow.alloc().init()
                                 shadow.setShadowColor_(
                                     NSColor.colorWithSRGBRed_green_blue_alpha_(
-                                        r, g, b, 0.7 + 0.3 * lum
+                                        cr, cg, cb, 0.7 + 0.3 * lum
                                     )
                                 )
                                 shadow.setShadowOffset_((0, 0))
                                 shadow.setShadowBlurRadius_(5.0 + lum * 14.0)
                                 ts.addAttribute_value_range_(
-                                    _SH_pulse, shadow, (resp_start, resp_len)
+                                    _SH_pulse, shadow, (span_start, span_len)
                                 )
-                            else:
-                                # Three spans: edge (0..e), mid (e..m), center (m..end)
-                                edge = max(1, resp_len // 4)
-                                mid = max(edge + 1, resp_len * 3 // 4)
-                                spans = [
-                                    (resp_start,        edge,           0.0),   # edges: main color
-                                    (resp_start + edge, mid - edge,     0.5),   # mid: blend
-                                    (resp_start + mid,  resp_len - mid, 1.0),   # center: alt color
-                                ]
-                                for span_start, span_len, weight in spans:
-                                    if span_len <= 0:
-                                        continue
-                                    cr = _lerp(r, alt_r, weight)
-                                    cg = _lerp(g, alt_g, weight)
-                                    cb = _lerp(b, alt_b, weight)
-                                    lum = 0.299 * cr + 0.587 * cg + 0.114 * cb
-                                    shadow = NSShadow.alloc().init()
-                                    shadow.setShadowColor_(
-                                        NSColor.colorWithSRGBRed_green_blue_alpha_(
-                                            cr, cg, cb, 0.7 + 0.3 * lum
-                                        )
-                                    )
-                                    shadow.setShadowOffset_((0, 0))
-                                    shadow.setShadowBlurRadius_(5.0 + lum * 14.0)
-                                    ts.addAttribute_value_range_(
-                                        _SH_pulse, shadow, (span_start, span_len)
-                                    )
                     except Exception:
                         pass
             elif total_len > 0:

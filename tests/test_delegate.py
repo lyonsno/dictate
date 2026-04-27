@@ -4603,6 +4603,28 @@ class TestHoldStartDuringTranscription:
         d._command_overlay.hide.assert_not_called()
         assert d._detector.command_overlay_active is True
 
+    def test_hold_start_load_sheds_visible_command_overlay(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._models_ready = True
+        d._command_overlay = MagicMock(_visible=True)
+
+        d._on_hold_start()
+
+        d._command_overlay.set_recording_load_shed.assert_called_once_with(True)
+
+    def test_hold_end_resumes_command_overlay_after_recording(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock(_visible=True)
+        d._capture.stop.return_value = b""
+
+        d._on_hold_end()
+
+        d._command_overlay.set_recording_load_shed.assert_called_once_with(False)
+
     def test_plain_dictation_during_pending_approval_does_not_cancel_approval(
         self, main_module, monkeypatch
     ):

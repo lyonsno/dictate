@@ -809,8 +809,8 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:
-            logger.info("keyDown space: flags=%#x shift=%s state=%s",
-                        flags, bool(flags & kCGEventFlagMaskShift), det._state)
+            logger.debug("keyDown space: flags=%#x shift=%s state=%s",
+                         flags, bool(flags & kCGEventFlagMaskShift), det._state)
             if det._state == _State.IDLE:
                 actual_enter_held = _current_enter_key_state()
                 if actual_enter_held is not None:
@@ -900,8 +900,8 @@ def _event_tap_callback(proxy, event_type, event, refcon):
         if det._state == _State.IDLE and getattr(det, '_idle_shift_down', False):
             det._idle_shift_interrupted = True
         if keycode == SPACEBAR_KEYCODE:
-            logger.info("keyUp space: flags=%#x shift=%s state=%s",
-                        flags, bool(flags & kCGEventFlagMaskShift), det._state)
+            logger.debug("keyUp space: flags=%#x shift=%s state=%s",
+                         flags, bool(flags & kCGEventFlagMaskShift), det._state)
             det._space_keydown_timestamp_ns = None
         if det.handle_key_up(keycode, flags=flags):
             return None  # suppress
