@@ -107,12 +107,17 @@ def _make_overlay(mock_pyobjc):
 class _FakeAttributedString:
     def __init__(self, text):
         self.text = text
+        self.attributes = []
 
-    def addAttribute_value_range_(self, *_args):
+    def addAttribute_value_range_(self, *args):
+        self.attributes.append(args)
         return None
 
     def appendAttributedString_(self, other):
+        offset = len(self.text)
         self.text += other.text
+        for name, value, (start, length) in getattr(other, "attributes", []):
+            self.attributes.append((name, value, (start + offset, length)))
 
 
 def _install_fake_attributed_string(monkeypatch):
@@ -783,6 +788,27 @@ class TestWindowLayering:
             mod._OVERLAY_HEIGHT,
         )
 
+    def test_show_invalidates_stale_fill_brightness_before_first_theme(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._brightness = 0.86
+        overlay._brightness_target = 0.86
+        overlay._brightness_seeded_externally = True
+        overlay._fill_image_brightness = 0.12
+        observed = []
+        overlay._apply_surface_theme = MagicMock(
+            side_effect=lambda: observed.append(overlay._fill_image_brightness)
+        )
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+            initial_response="Assistant response",
+        )
+
+        assert observed[0] == -1.0
+
     def test_optical_show_defers_heavy_backdrop_startup_until_after_first_paint(
         self, mock_pyobjc, monkeypatch
     ):
@@ -965,6 +991,41 @@ class TestWindowLayering:
             .text
         )
         assert appended == "[calling search_file…]"
+
+    def test_response_fragment_styles_approval_card_sections(
+        self, mock_pyobjc, monkeypatch
+    ):
+        _install_fake_attributed_string(monkeypatch)
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._brightness = 0.2
+        appkit = sys.modules["AppKit"]
+        appkit.NSFont.systemFontOfSize_weight_.side_effect = (
+            lambda size, weight: ("system", size, weight)
+        )
+        appkit.NSFont.monospacedSystemFontOfSize_weight_.side_effect = (
+            lambda size, weight: ("mono", size, weight)
+        )
+        text = (
+            "Approval needed\n"
+            "Enter to run  ·  Delete to cancel  ·  speak or type to revise\n\n"
+            "git commit -m x\n\n"
+            "reason: command requires approval\n"
+            "cwd: /tmp/repo"
+        )
+
+        frag = overlay._make_response_fragment(text)
+        attrs_by_range = {
+            attr_range: value
+            for name, value, attr_range in frag.attributes
+            if name == "NSFont"
+        }
+
+        ranges = mod._approval_card_ranges(text)
+        assert attrs_by_range[ranges["header"]] == ("system", 15.0, 0.22)
+        assert attrs_by_range[ranges["action"]] == ("system", 12.0, 0.0)
+        assert attrs_by_range[ranges["command"]] == ("mono", 16.0, 0.12)
+        assert attrs_by_range[ranges["reason"]] == ("system", 12.5, -0.05)
+        assert attrs_by_range[ranges["cwd"]] == ("system", 12.0, -0.05)
 
     def test_hide_with_no_window_is_noop(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)

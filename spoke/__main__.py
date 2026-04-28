@@ -22,6 +22,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import threading
@@ -2938,15 +2939,52 @@ class SpokeAppDelegate(NSObject):
         hint = "Enter to run  ·  Delete to cancel  ·  speak or type to revise"
         raw_message = request.get("message", "Approval needed")
         message = raw_message if isinstance(raw_message, str) else str(raw_message)
-        if "Enter to run" in message and "Delete to cancel" in message:
-            return message
         if not message:
             return f"Approval needed\n{hint}"
 
-        lines = message.splitlines()
-        if lines and lines[0].strip() == "Approval needed":
-            return "\n".join([lines[0], hint, *lines[1:]])
-        return f"{message.rstrip()}\n{hint}"
+        reason = request.get("reason")
+        reason = reason.strip() if isinstance(reason, str) else None
+        cwd = request.get("cwd")
+        cwd = cwd.strip() if isinstance(cwd, str) else None
+
+        argv = request.get("argv")
+        command = ""
+        if isinstance(argv, list) and all(isinstance(part, str) for part in argv):
+            command = shlex.join(argv)
+
+        for line in message.splitlines():
+            stripped = line.strip()
+            if (
+                not stripped
+                or stripped == "Approval needed"
+                or ("Enter to run" in stripped and "Delete to cancel" in stripped)
+            ):
+                continue
+            if stripped.startswith("reason:"):
+                if reason is None:
+                    reason = stripped.removeprefix("reason:").strip()
+                continue
+            if stripped.startswith("cwd:"):
+                if cwd is None:
+                    cwd = stripped.removeprefix("cwd:").strip()
+                continue
+            if not command:
+                command = stripped
+
+        if not command and message.strip() != "Approval needed":
+            command = message.strip()
+
+        lines = ["Approval needed", hint]
+        if command:
+            lines.extend(["", command])
+        metadata = []
+        if reason:
+            metadata.append(f"reason: {reason}")
+        if cwd:
+            metadata.append(f"cwd: {cwd}")
+        if metadata:
+            lines.extend(["", *metadata])
+        return "\n".join(lines)
 
     def _compose_pending_approval_overlay_body(self, *, approved: bool = False) -> str:
         """Layer approval state over the live command transcript without replacing it."""

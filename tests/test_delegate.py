@@ -4018,7 +4018,9 @@ class TestCommandCallbacks:
         d._command_overlay.set_response_text.assert_called_once_with(
             "Approval needed\n"
             "Enter to run  ·  Delete to cancel  ·  speak or type to revise\n\n"
-            "git commit -m x"
+            "git commit -m x\n\n"
+            "reason: command requires approval: git commit -m\n"
+            "cwd: /tmp/repo"
         )
         d._command_overlay.finish.assert_called_once_with()
         d._menubar.set_status_text.assert_called_once_with("Approval needed")
@@ -4049,7 +4051,9 @@ class TestCommandCallbacks:
             "Let me check.\n[calling read_file…]\n\n"
             "Approval needed\n"
             "Enter to run  ·  Delete to cancel  ·  speak or type to revise\n\n"
-            "git commit -m x"
+            "git commit -m x\n\n"
+            "reason: command requires approval: git commit -m\n"
+            "cwd: /tmp/repo"
         )
 
     def test_approve_pending_command_collapses_pending_card_to_approved_marker_before_resume(

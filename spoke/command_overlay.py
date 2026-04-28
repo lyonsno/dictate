@@ -71,6 +71,8 @@ _OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 300.0)
 _OVERLAY_TOP_MARGIN = _env("SPOKE_COMMAND_OVERLAY_TOP_MARGIN", 140.0)
 _OVERLAY_CORNER_RADIUS = _env("SPOKE_COMMAND_OVERLAY_CORNER_RADIUS", 16.0)
 _FONT_SIZE = 15.5
+_APPROVAL_HEADER_TEXT = "Approval needed"
+_APPROVAL_ACTION_TEXT = "Enter to run  ·  Delete to cancel  ·  speak or type to revise"
 _FADE_IN_S = 0.16
 _ENTRANCE_POP_SCALE = 1.015  # ~1mm overshoot on a 600px overlay
 _ENTRANCE_POP_S = 0.15
@@ -85,6 +87,39 @@ _DISMISS_END_SCALE = 0.94
 
 def _max_overlay_height(screen_height: float) -> float:
     return max(_OVERLAY_HEIGHT, screen_height - _OVERLAY_BOTTOM_MARGIN - _OVERLAY_TOP_MARGIN)
+
+
+def _approval_card_ranges(text: str) -> dict[str, tuple[int, int]]:
+    """Return semantic ranges for a pending approval card embedded in text."""
+    start = text.find(_APPROVAL_HEADER_TEXT)
+    if start < 0:
+        return {}
+
+    ranges: dict[str, tuple[int, int]] = {}
+    command_seen = False
+    cursor = start
+    for raw_line in text[start:].splitlines(True):
+        content = raw_line[:-1] if raw_line.endswith("\n") else raw_line
+        stripped = content.strip()
+        if stripped:
+            leading = len(content) - len(content.lstrip())
+            rng = (cursor + leading, len(stripped))
+            if stripped == _APPROVAL_HEADER_TEXT:
+                ranges.setdefault("header", rng)
+            elif (
+                stripped == _APPROVAL_ACTION_TEXT
+                or ("Enter to run" in stripped and "Delete to cancel" in stripped)
+            ):
+                ranges.setdefault("action", rng)
+            elif stripped.startswith("reason:"):
+                ranges.setdefault("reason", rng)
+            elif stripped.startswith("cwd:"):
+                ranges.setdefault("cwd", rng)
+            elif not command_seen:
+                ranges.setdefault("command", rng)
+                command_seen = True
+        cursor += len(raw_line)
+    return ranges
 
 # Assistant glow: full spectrum rotation with velocity undulation
 _COLOR_CYCLE_PERIOD = _env("SPOKE_COMMAND_COLOR_PERIOD", 6.0)  # seconds per full hue rotation
@@ -1352,7 +1387,13 @@ class CommandOverlay(NSObject):
         self._reset_text_geometry(self._scroll_view.frame().size.height)
         if not has_initial_transcript:
             self._apply_ridge_masks(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
-        self._fill_image_brightness = self._brightness
+            self._fill_image_brightness = self._brightness
+        else:
+            # Do not let an old fill image masquerade as current during entrance.
+            # show() may reuse the same geometry across very different background
+            # brightness values; force the first theme pass to publish the current
+            # material before the window fades in.
+            self._fill_image_brightness = -1.0
         self._apply_surface_theme()
         self._update_backdrop_capture_geometry()
         self._apply_backdrop_pulse_style(1.0)
@@ -1660,6 +1701,72 @@ class CommandOverlay(NSObject):
         )
         return attr
 
+    def _approval_command_font(self):
+        mono_font = getattr(NSFont, "monospacedSystemFontOfSize_weight_", None)
+        if callable(mono_font):
+            return mono_font(16.0, 0.12)
+        return NSFont.systemFontOfSize_weight_(16.0, 0.12)
+
+    def _apply_approval_card_style(self, attr, text: str) -> None:
+        """Layer approval-card hierarchy over the normal response styling."""
+        ranges = _approval_card_ranges(text)
+        if not ranges:
+            return
+        from AppKit import NSForegroundColorAttributeName, NSFontAttributeName
+
+        fg_r, fg_g, fg_b = _assistant_foreground_color_for_brightness(self._brightness)
+        header_color = NSColor.colorWithSRGBRed_green_blue_alpha_(0.58, 0.68, 0.73, 0.88)
+        action_color = NSColor.colorWithSRGBRed_green_blue_alpha_(fg_r, fg_g, fg_b, 0.68)
+        metadata_color = NSColor.colorWithSRGBRed_green_blue_alpha_(fg_r, fg_g, fg_b, 0.76)
+
+        if "header" in ranges:
+            attr.addAttribute_value_range_(
+                NSForegroundColorAttributeName, header_color, ranges["header"]
+            )
+            attr.addAttribute_value_range_(
+                NSFontAttributeName,
+                NSFont.systemFontOfSize_weight_(15.0, 0.22),
+                ranges["header"],
+            )
+        if "action" in ranges:
+            attr.addAttribute_value_range_(
+                NSForegroundColorAttributeName, action_color, ranges["action"]
+            )
+            attr.addAttribute_value_range_(
+                NSFontAttributeName,
+                NSFont.systemFontOfSize_weight_(12.0, 0.0),
+                ranges["action"],
+            )
+        if "command" in ranges:
+            attr.addAttribute_value_range_(
+                NSForegroundColorAttributeName,
+                NSColor.colorWithSRGBRed_green_blue_alpha_(fg_r, fg_g, fg_b, 0.94),
+                ranges["command"],
+            )
+            attr.addAttribute_value_range_(
+                NSFontAttributeName,
+                self._approval_command_font(),
+                ranges["command"],
+            )
+        if "reason" in ranges:
+            attr.addAttribute_value_range_(
+                NSForegroundColorAttributeName, metadata_color, ranges["reason"]
+            )
+            attr.addAttribute_value_range_(
+                NSFontAttributeName,
+                NSFont.systemFontOfSize_weight_(12.5, -0.05),
+                ranges["reason"],
+            )
+        if "cwd" in ranges:
+            attr.addAttribute_value_range_(
+                NSForegroundColorAttributeName, metadata_color, ranges["cwd"]
+            )
+            attr.addAttribute_value_range_(
+                NSFontAttributeName,
+                NSFont.systemFontOfSize_weight_(12.0, -0.05),
+                ranges["cwd"],
+            )
+
     def _leading_response_separator(self) -> str:
         """Return the visible break before the first streamed response token.
 
@@ -1866,6 +1973,7 @@ class CommandOverlay(NSObject):
         frag.addAttribute_value_range_(
             NSShadowAttributeName, glow, (0, len(token))
         )
+        self._apply_approval_card_style(frag, token)
         return frag
 
     def set_tool_active(self, active: bool) -> None:
