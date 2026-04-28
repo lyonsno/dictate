@@ -13,22 +13,27 @@ The implementation currently lives in [`spoke/dedup.py`](../spoke/dedup.py),
 and README omission is intentional unless the repair pass becomes a visible
 user-facing control or configuration surface.
 
-## SDK-Backed Agent Sessions
+## Modal Agent Shell Sessions
 
-`spoke` exposes operator-owned SDK coding-agent sessions through the command
-tool surface:
+`spoke` carries SDK-backed coding-agent transport for Claude Agent SDK and
+Codex SDK, but those providers are not generic tools for the default assistant
+to call. The operator-facing contract is **Agent Shell**: a modal route
+destination where ordinary input goes to the selected Claude/Codex session,
+while Spoke-owned control input and Epistaxis-shaped verbs remain under the
+operator shell.
 
-- `launch_agent_session`
-- `list_agent_sessions`
-- `get_agent_session_result`
-- `cancel_agent_session`
+The menubar exposes an `Agent Shell` provider selector (`Off`, `Claude Agent
+SDK`, `Codex SDK`). This is intentionally separate from `Assistant Backend`:
+the local assistant remains the fuzzy-intent resolver and router, while
+Claude/Codex are modal worker shells selected by route/mode state.
 
-The provider contract currently recognizes `claude` for Claude Agent SDK and
-`codex` for Codex SDK. Sessions are asynchronous, keep Spoke-owned ids distinct
-from provider session/thread ids, carry the requested working directory, and
-surface SDK-unavailable failures as operator-visible state rather than as raw
-terminal-command failures.
+The lower-level provider contract recognizes `claude` for Claude Agent SDK and
+`codex` for Codex SDK. Provider sessions are asynchronous, keep Spoke-owned ids
+distinct from provider session/thread ids, carry the requested working
+directory, and surface SDK-unavailable failures as operator-visible state
+rather than as raw terminal-command failures.
 
 Provider SDK packages are optional runtime dependencies. The command shell can
-boot without them; launching a provider whose SDK is absent produces a clear
-failed session with `sdk_unavailable=true`.
+boot without them; activating a provider whose SDK is absent should produce a
+clear failed session with `sdk_unavailable=true` once the provider launch path
+is connected to the modal router.

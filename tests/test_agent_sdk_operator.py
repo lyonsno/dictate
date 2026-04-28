@@ -155,35 +155,21 @@ class TestAgentSDKManager:
 
 
 class TestAgentSDKToolDispatch:
-    def test_tool_schemas_expose_sdk_agent_session_controls(self):
+    def test_generic_tool_schemas_do_not_expose_raw_sdk_agent_controls(self):
         from spoke import tool_dispatch
 
         schemas = tool_dispatch.get_tool_schemas()
         names = {schema["function"]["name"] for schema in schemas}
 
-        assert "launch_agent_session" in names
-        assert "list_agent_sessions" in names
-        assert "get_agent_session_result" in names
-        assert "cancel_agent_session" in names
+        assert "launch_agent_session" not in names
+        assert "list_agent_sessions" not in names
+        assert "get_agent_session_result" not in names
+        assert "cancel_agent_session" not in names
 
-        launch = next(
-            schema for schema in schemas if schema["function"]["name"] == "launch_agent_session"
-        )
-        params = launch["function"]["parameters"]
-        assert params["properties"]["provider"]["enum"] == ["claude", "codex"]
-        assert "cwd" in params["properties"]
-        assert "resume_id" in params["properties"]
-
-    def test_execute_launch_agent_session_uses_injected_manager(self):
+    def test_execute_tool_does_not_launch_sdk_sessions_from_generic_surface(self):
         from spoke import tool_dispatch
 
         fake_manager = MagicMock()
-        fake_manager.launch.return_value = {
-            "id": "sdk-agent-codex-1",
-            "provider": "codex",
-            "state": "queued",
-        }
-
         result = tool_dispatch.execute_tool(
             "launch_agent_session",
             {
@@ -195,30 +181,15 @@ class TestAgentSDKToolDispatch:
             agent_sdk_manager=fake_manager,
         )
 
-        assert json.loads(result)["id"] == "sdk-agent-codex-1"
-        fake_manager.launch.assert_called_once_with(
-            provider="codex",
-            prompt="make a plan",
-            cwd="/tmp/project",
-            resume_id="thread-1",
-        )
+        assert json.loads(result) == {"error": "Unknown tool: launch_agent_session"}
+        fake_manager.launch.assert_not_called()
 
-    def test_execute_agent_session_tools_return_clear_unavailable_errors(self):
-        from spoke import tool_dispatch
-
-        result = tool_dispatch.execute_tool(
-            "launch_agent_session",
-            {"provider": "claude", "prompt": "hello", "cwd": "/tmp/project"},
-        )
-
-        assert json.loads(result) == {"error": "Agent SDK manager unavailable"}
-
-    def test_operator_prompt_names_sdk_agent_tools(self):
+    def test_operator_prompt_does_not_present_sdk_sessions_as_generic_tools(self):
         import spoke.command as command
 
-        assert "launch_agent_session" in command.COMMAND_SYSTEM_PROMPT
-        assert "Claude Agent SDK" in command.COMMAND_SYSTEM_PROMPT
-        assert "Codex SDK" in command.COMMAND_SYSTEM_PROMPT
+        assert "launch_agent_session" not in command.COMMAND_SYSTEM_PROMPT
+        assert "Claude Agent SDK" not in command.COMMAND_SYSTEM_PROMPT
+        assert "Codex SDK" not in command.COMMAND_SYSTEM_PROMPT
 
     def test_dispatch_module_does_not_import_claude_or_codex_sdk_directly(self):
         module_path = Path(__file__).resolve().parents[1] / "spoke" / "tool_dispatch.py"
@@ -226,3 +197,117 @@ class TestAgentSDKToolDispatch:
 
         assert "claude_agent_sdk" not in text
         assert "codex_app_server" not in text
+
+
+class TestAgentShellRouting:
+    def test_active_agent_shell_routes_ordinary_input_to_selected_provider(self):
+        from spoke.agent_shell import AgentShellState, route_agent_shell_input
+
+        state = AgentShellState(
+            active=True,
+            provider="codex",
+            spoke_session_id="sdk-agent-codex-1",
+            provider_session_id="thread-abc",
+            cwd="/tmp/project",
+        )
+
+        decision = route_agent_shell_input(
+            "inspect the failing test and propose the smallest fix",
+            state,
+        )
+
+        assert decision.kind == "provider_message"
+        assert decision.provider == "codex"
+        assert decision.spoke_session_id == "sdk-agent-codex-1"
+        assert decision.provider_session_id == "thread-abc"
+        assert decision.cwd == "/tmp/project"
+        assert decision.text == "inspect the failing test and propose the smallest fix"
+
+    @pytest.mark.parametrize(
+        "utterance",
+        [
+            "epistaxis zetesis how fares the tyrant state",
+            "zetesis is there incoherence between these lanes",
+            "how fares the tyrant state",
+        ],
+    )
+    def test_active_agent_shell_routes_epistaxis_verbs_away_from_provider(self, utterance):
+        from spoke.agent_shell import AgentShellState, route_agent_shell_input
+
+        state = AgentShellState(
+            active=True,
+            provider="claude",
+            spoke_session_id="sdk-agent-claude-1",
+            provider_session_id="session-xyz",
+            cwd="/tmp/project",
+        )
+
+        decision = route_agent_shell_input(utterance, state)
+
+        assert decision.kind == "epistaxis_verb"
+        assert decision.provider is None
+        assert decision.epistaxis_text == utterance
+
+    def test_active_agent_shell_routes_provider_switch_as_mode_control(self):
+        from spoke.agent_shell import AgentShellState, route_agent_shell_input
+
+        state = AgentShellState(active=True, provider="claude", cwd="/tmp/project")
+
+        decision = route_agent_shell_input("switch to codex", state)
+
+        assert decision.kind == "mode_control"
+        assert decision.control_action == "switch_provider"
+        assert decision.provider == "codex"
+
+    def test_inactive_agent_shell_leaves_input_for_normal_assistant(self):
+        from spoke.agent_shell import AgentShellState, route_agent_shell_input
+
+        state = AgentShellState(active=False, provider=None, cwd="/tmp/project")
+
+        decision = route_agent_shell_input("inspect the failing test", state)
+
+        assert decision.kind == "normal_assistant"
+        assert decision.text == "inspect the failing test"
+
+
+class TestAgentShellMenuState:
+    def test_delegate_exposes_agent_shell_provider_menu_without_backend_replacement(
+        self, monkeypatch
+    ):
+        import spoke.__main__ as main_module
+
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._command_client = MagicMock()
+        delegate._command_backend = "local"
+        delegate._command_model_id = "qwen-test"
+        delegate._command_model_options = [("qwen-test", "qwen-test", True)]
+        delegate._command_server_unreachable = False
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_sdk_manager = MagicMock()
+        delegate._load_cloud_provider_preference = MagicMock(return_value="google")
+        delegate._load_preference = MagicMock(return_value=None)
+        delegate._select_model = MagicMock(return_value=[])
+        delegate._sanitize_model_ids = MagicMock(side_effect=lambda a, b: (a, b))
+        delegate._default_transcription_model = MagicMock(return_value="whisper-base")
+        delegate._launch_target_menu_state = MagicMock(return_value=None)
+        delegate._local_whisper_controls_available = MagicMock(return_value=False)
+        delegate._tts_client = None
+        delegate._tts_backend = "local"
+        delegate._tts_sidecar_url = ""
+        delegate._whisper_backend = "local"
+        delegate._preview_backend = "local"
+        delegate._whisper_sidecar_url = ""
+        delegate._whisper_cloud_url = ""
+        delegate._whisper_cloud_api_key = ""
+
+        state = delegate._handle_model_menu_action(None)
+
+        assert state["assistant_backend"]["items"][0][1] == "Local OMLX"
+        assert state["agent_shell"] == {
+            "title": "Agent Shell",
+            "items": [
+                ("off", "Off", False, True),
+                ("claude", "Claude Agent SDK", False, True),
+                ("codex", "Codex SDK", True, True),
+            ],
+        }

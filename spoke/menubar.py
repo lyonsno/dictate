@@ -212,6 +212,7 @@ class MenuBarIcon(NSObject):
                 launch_target = model_state.get("launch_target")
                 assistant = model_state.get("assistant")
                 assistant_backend = model_state.get("assistant_backend")
+                agent_shell = model_state.get("agent_shell")
                 transcription = model_state.get("transcription")
                 preview = model_state.get("preview")
                 if assistant:
@@ -230,6 +231,15 @@ class MenuBarIcon(NSObject):
                             assistant_backend["title"],
                             "assistant_backend",
                             assistant_backend["items"],
+                        )
+                    )
+                    added_menu_section = True
+                if agent_shell:
+                    menu.addItem_(
+                        self._build_toggle_submenu_item(
+                            agent_shell["title"],
+                            "agent_shell",
+                            agent_shell["items"],
                         )
                     )
                     added_menu_section = True

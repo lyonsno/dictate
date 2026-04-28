@@ -1088,6 +1088,7 @@ class SpokeAppDelegate(NSObject):
                 )
             )
             self._agent_sdk_manager = AgentSDKManager()
+            self._agent_shell_provider = self._load_preference("agent_shell_provider") or "off"
             # Converge: per-turn attractor carver (same model, OMLX batch parallel)
             self._turn_carver = TurnCarver(
                 base_url=command_url,
@@ -1146,6 +1147,7 @@ class SpokeAppDelegate(NSObject):
             self._tool_schemas = None
             self._subagent_manager = None
             self._agent_sdk_manager = None
+            self._agent_shell_provider = "off"
 
         # Heartbeat — zombie sweep runs before us, this starts the writer.
         self._heartbeat = HeartbeatManager()
@@ -4404,6 +4406,7 @@ class SpokeAppDelegate(NSObject):
                         ("configure_cloud_openrouter", "Set OpenRouter Endpoint…", False, True),
                     ],
                 }
+                state["agent_shell"] = self._agent_shell_menu_state()
             tts_client = getattr(self, "_tts_client", None)
             tts_backend = getattr(self, "_tts_backend", "local")
             tts_sidecar_url = getattr(self, "_tts_sidecar_url", "")
@@ -4649,6 +4652,9 @@ class SpokeAppDelegate(NSObject):
         if role == "assistant_backend":
             self._apply_command_backend_selection(model_id)
             return
+        if role == "agent_shell":
+            self._apply_agent_shell_selection(model_id)
+            return
         if role == "launch_target":
             self._apply_launch_target_selection(model_id)
             return
@@ -4713,6 +4719,27 @@ class SpokeAppDelegate(NSObject):
                 (target["id"], target["label"], target["enabled"]) for target in targets
             ],
         }
+
+    def _agent_shell_menu_state(self) -> dict:
+        selected = getattr(self, "_agent_shell_provider", "off") or "off"
+        if selected not in {"off", "claude", "codex"}:
+            selected = "off"
+        return {
+            "title": "Agent Shell",
+            "items": [
+                ("off", "Off", selected == "off", True),
+                ("claude", "Claude Agent SDK", selected == "claude", True),
+                ("codex", "Codex SDK", selected == "codex", True),
+            ],
+        }
+
+    def _apply_agent_shell_selection(self, provider: str) -> None:
+        provider = provider if provider in {"off", "claude", "codex"} else "off"
+        self._agent_shell_provider = provider
+        self._save_preference("agent_shell_provider", provider)
+        if self._menubar is not None:
+            label = "off" if provider == "off" else provider.title()
+            self._menubar.set_status_text(f"Agent Shell: {label}")
 
     def _persist_launch_target_selection(self, target_id: str) -> bool:
         return save_selected_launch_target(target_id)
