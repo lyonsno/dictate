@@ -211,6 +211,37 @@ def test_brightness_sampling_uses_requesting_client_snapshot(monkeypatch):
     assert _FakeFullScreenCompositor.instances[0].sampled_configs[-1]["client_id"] == "preview.transcription"
 
 
+@pytest.mark.xfail(
+    reason=(
+        "brightness-material witness: refresh_brightness still delegates to the "
+        "compositor-global first-config sampler until host-contract-hardening "
+        "settles the per-client refresh hook shape"
+    ),
+    strict=True,
+)
+def test_refresh_brightness_uses_requesting_client_snapshot(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
+    assistant = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(405),
+        content_view=object(),
+    )
+    preview = host.register_client(
+        _identity("preview.transcription", host.display_id, "preview"),
+        window=_FakeWindow(406),
+        content_view=object(),
+    )
+    assistant.publish(_snapshot("assistant.command", brightness=0.17))
+    preview.publish(_snapshot("preview.transcription", role="preview", brightness=0.83))
+
+    preview.refresh_brightness()
+
+    compositor = _FakeFullScreenCompositor.instances[0]
+    assert compositor.sampled_configs
+    assert compositor.sampled_configs[-1]["client_id"] == "preview.transcription"
+
+
 def test_client_reports_shared_compositor_presented_count(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
     host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
