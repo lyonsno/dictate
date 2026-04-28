@@ -151,6 +151,7 @@ from .handsfree import (
 )
 from .scene_capture import SceneCaptureCache
 from .optical_shell_metrics import OpticalShellMetrics
+from .agent_sdk_operator import AgentSDKManager
 from .subagents import SubagentManager, run_search_subagent_query
 from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas, get_tool_schemas
 from .glow import GlowOverlay
@@ -1086,6 +1087,7 @@ class SpokeAppDelegate(NSObject):
                     cancel_check=cancel_check,
                 )
             )
+            self._agent_sdk_manager = AgentSDKManager()
             # Converge: per-turn attractor carver (same model, OMLX batch parallel)
             self._turn_carver = TurnCarver(
                 base_url=command_url,
@@ -1143,6 +1145,7 @@ class SpokeAppDelegate(NSObject):
             self._scene_cache = None
             self._tool_schemas = None
             self._subagent_manager = None
+            self._agent_sdk_manager = None
 
         # Heartbeat — zombie sweep runs before us, this starts the writer.
         self._heartbeat = HeartbeatManager()
@@ -3725,6 +3728,7 @@ class SpokeAppDelegate(NSObject):
                 tts_client=_tool_tts_client(name),
                 tray_writer=self._add_assistant_content_to_tray,
                 subagent_manager=getattr(self, "_subagent_manager", None),
+                agent_sdk_manager=getattr(self, "_agent_sdk_manager", None),
                 history_compactor=_compact_history,
                 **kwargs,
             )

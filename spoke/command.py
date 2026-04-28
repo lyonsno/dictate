@@ -256,6 +256,12 @@ _SYSTEM_PROMPT = (
     "asynchronous. After launch, do not spin on get_subagent_result in a "
     "tight loop. If a job is queued or running, continue the main conversation "
     "and check again later only when useful or when the user asks.\n\n"
+    "You also have launch_agent_session, list_agent_sessions, "
+    "get_agent_session_result, and cancel_agent_session for SDK-backed coding "
+    "agent sessions. Use provider='claude' for Claude Agent SDK and "
+    "provider='codex' for Codex SDK. These sessions are operator-owned, "
+    "asynchronous, and must keep their returned session/thread ids visible for "
+    "resume instead of being treated as raw terminal commands.\n\n"
     "You also have compact_history to reduce context size. Modes: "
     "drop_tool_results (strip tool call/result messages from the oldest N "
     "turns while keeping user and assistant text), summarize (replace the "
@@ -303,6 +309,8 @@ _SYSTEM_PROMPT = (
     "but nobody says.\n"
     "  IMPORTANT: Do NOT respond with text. You MUST call the tools."
 )
+
+COMMAND_SYSTEM_PROMPT = _SYSTEM_PROMPT
 
 
 @dataclass(frozen=True)

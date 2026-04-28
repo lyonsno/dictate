@@ -357,6 +357,89 @@ _CANCEL_SUBAGENT_SCHEMA = {
         },
     },
 }
+_LAUNCH_AGENT_SESSION_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "launch_agent_session",
+        "description": (
+            "Launch an operator-owned SDK coding-agent session via Claude Agent SDK "
+            "or Codex SDK. Use this for bounded coding-agent work that needs its own "
+            "session/thread identity instead of a raw terminal command."
+        ),
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "enum": ["claude", "codex"],
+                    "description": "SDK provider to use for this agent session.",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "Concrete task prompt for the SDK agent.",
+                },
+                "cwd": {
+                    "type": "string",
+                    "description": "Working directory the SDK agent should operate in.",
+                },
+                "resume_id": {
+                    "type": "string",
+                    "description": "Optional provider session/thread id to resume.",
+                },
+            },
+            "required": ["provider", "prompt", "cwd"],
+        },
+    },
+}
+_LIST_AGENT_SESSIONS_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "list_agent_sessions",
+        "description": "List SDK agent sessions and their current states.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {},
+        },
+    },
+}
+_GET_AGENT_SESSION_RESULT_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "get_agent_session_result",
+        "description": "Fetch status or final output for a specific SDK agent session.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "The session id returned by launch_agent_session.",
+                },
+            },
+            "required": ["session_id"],
+        },
+    },
+}
+_CANCEL_AGENT_SESSION_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "cancel_agent_session",
+        "description": "Request cancellation for a running SDK agent session.",
+        "parameters": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "session_id": {
+                    "type": "string",
+                    "description": "The session id returned by launch_agent_session.",
+                },
+            },
+            "required": ["session_id"],
+        },
+    },
+}
 _COMPACT_HISTORY_SCHEMA = {
     "type": "function",
     "function": {
@@ -438,6 +521,10 @@ def get_tool_schemas() -> list[dict]:
         _LIST_SUBAGENTS_SCHEMA,
         _GET_SUBAGENT_RESULT_SCHEMA,
         _CANCEL_SUBAGENT_SCHEMA,
+        _LAUNCH_AGENT_SESSION_SCHEMA,
+        _LIST_AGENT_SESSIONS_SCHEMA,
+        _GET_AGENT_SESSION_RESULT_SCHEMA,
+        _CANCEL_AGENT_SESSION_SCHEMA,
         _COMPACT_HISTORY_SCHEMA,
     ]
 
@@ -1960,6 +2047,55 @@ def _execute_cancel_subagent(
     return subagent_manager.cancel(subagent_id)
 
 
+def _execute_launch_agent_session(
+    arguments: dict,
+    agent_sdk_manager: Any | None = None,
+) -> dict[str, Any]:
+    if agent_sdk_manager is None:
+        return {"error": "Agent SDK manager unavailable"}
+    try:
+        return agent_sdk_manager.launch(
+            provider=arguments.get("provider", ""),
+            prompt=arguments.get("prompt", ""),
+            cwd=arguments.get("cwd", ""),
+            resume_id=arguments.get("resume_id"),
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+
+
+def _execute_list_agent_sessions(
+    agent_sdk_manager: Any | None = None,
+) -> dict[str, Any]:
+    if agent_sdk_manager is None:
+        return {"error": "Agent SDK manager unavailable"}
+    return {"sessions": agent_sdk_manager.list_sessions()}
+
+
+def _execute_get_agent_session_result(
+    arguments: dict,
+    agent_sdk_manager: Any | None = None,
+) -> dict[str, Any]:
+    if agent_sdk_manager is None:
+        return {"error": "Agent SDK manager unavailable"}
+    session_id = arguments.get("session_id", "")
+    if not session_id:
+        return {"error": "session_id is required"}
+    return agent_sdk_manager.get_session(session_id)
+
+
+def _execute_cancel_agent_session(
+    arguments: dict,
+    agent_sdk_manager: Any | None = None,
+) -> dict[str, Any]:
+    if agent_sdk_manager is None:
+        return {"error": "Agent SDK manager unavailable"}
+    session_id = arguments.get("session_id", "")
+    if not session_id:
+        return {"error": "session_id is required"}
+    return agent_sdk_manager.cancel(session_id)
+
+
 
 def execute_tool(
     name: str,
@@ -1972,6 +2108,7 @@ def execute_tool(
     tool_output_mode: str = "text",
     approval_granted: bool = False,
     subagent_manager: Any | None = None,
+    agent_sdk_manager: Any | None = None,
     history_compactor: Callable[[dict], str] | None = None,
 ) -> Any:
     """Execute a tool by name and return the result as a JSON string.
@@ -2077,6 +2214,31 @@ def execute_tool(
             _execute_cancel_subagent(
                 arguments,
                 subagent_manager=subagent_manager,
+            )
+        )
+    elif name == "launch_agent_session":
+        return json.dumps(
+            _execute_launch_agent_session(
+                arguments,
+                agent_sdk_manager=agent_sdk_manager,
+            )
+        )
+    elif name == "list_agent_sessions":
+        return json.dumps(
+            _execute_list_agent_sessions(agent_sdk_manager=agent_sdk_manager)
+        )
+    elif name == "get_agent_session_result":
+        return json.dumps(
+            _execute_get_agent_session_result(
+                arguments,
+                agent_sdk_manager=agent_sdk_manager,
+            )
+        )
+    elif name == "cancel_agent_session":
+        return json.dumps(
+            _execute_cancel_agent_session(
+                arguments,
+                agent_sdk_manager=agent_sdk_manager,
             )
         )
     elif name == "compact_history":
