@@ -3883,8 +3883,22 @@ class TestCommandCallbacks:
         d.commandUtteranceReady_({"token": 1, "utterance": "open file"})
 
         d._overlay.hide.assert_called()
-        d._command_overlay.show.assert_called_once()
-        d._command_overlay.set_utterance.assert_called_with("open file")
+        d._command_overlay.show.assert_called_once_with(initial_utterance="open file")
+        d._command_overlay.set_utterance.assert_not_called()
+
+    def test_command_utterance_ready_composes_utterance_before_first_paint(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock()
+        d._transcription_token = 1
+
+        d.commandUtteranceReady_({"token": 1, "utterance": "interrupt approval"})
+
+        d._command_overlay.show.assert_called_once_with(
+            initial_utterance="interrupt approval"
+        )
+        d._command_overlay.set_utterance.assert_not_called()
 
     def test_command_utterance_ready_primes_command_overlay_brightness(
         self, main_module, monkeypatch
@@ -3898,8 +3912,7 @@ class TestCommandCallbacks:
 
         assert d._command_overlay.method_calls[:3] == [
             call.set_brightness(0.73, immediate=True),
-            call.show(),
-            call.set_utterance("open file"),
+            call.show(initial_utterance="open file"),
         ]
 
     def test_command_utterance_ready_stale_token_ignored(self, main_module, monkeypatch):

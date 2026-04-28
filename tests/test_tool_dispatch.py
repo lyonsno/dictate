@@ -330,6 +330,38 @@ class TestExecuteTool:
         parsed = json.loads(result)
         assert "model_image" not in parsed
 
+    def test_execute_capture_context_marks_empty_text_extraction(self):
+        """A successful screenshot with no OCR/AX text must not look fully valid."""
+        mod = _import_tools()
+        sc_mod = importlib.import_module("spoke.scene_capture")
+        cache = sc_mod.SceneCaptureCache(max_captures=5)
+
+        fake_capture = sc_mod.SceneCapture(
+            scene_ref="scene-empty",
+            created_at=time.time(),
+            scope="active_window",
+            app_name="WezTerm",
+            bundle_id="com.github.wez.wezterm",
+            window_title="spoke",
+            image_path="/tmp/test.png",
+            image_size=(2560, 1440),
+            model_image_size=(853, 480),
+            ocr_text="",
+            ocr_blocks=[],
+            ax_hints=[],
+        )
+
+        with patch("spoke.scene_capture.capture_context", return_value=fake_capture):
+            result = mod.execute_tool(
+                name="capture_context",
+                arguments={"scope": "active_window"},
+                scene_cache=cache,
+            )
+
+        parsed = json.loads(result)
+        assert parsed["text_extraction"]["status"] == "empty"
+        assert "captured an image" in parsed["text_extraction"]["warning"]
+
     def test_execute_capture_context_multimodal_without_image_request_omits_image_part(
         self, tmp_path
     ):

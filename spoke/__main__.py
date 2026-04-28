@@ -3930,8 +3930,7 @@ class SpokeAppDelegate(NSObject):
         # Show the command overlay with the utterance as context
         if self._command_overlay is not None:
             self._sync_command_overlay_brightness(immediate=True)
-            self._command_overlay.show()
-            self._command_overlay.set_utterance(utterance)
+            self._command_overlay.show(initial_utterance=utterance)
             self._detector.command_overlay_active = True
             logger.info("command_overlay_active -> True (command started)")
         self._command_first_token = True

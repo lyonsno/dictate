@@ -335,6 +335,30 @@ class TestLaunchTargetSecretsEnvLoading:
         )
 
 
+class TestLauncherPythonOverride:
+    """Both launcher paths must honor per-worktree Python overrides.
+
+    Smoke worktrees can set SPOKE_VENV_PYTHON in .spoke-smoke-env when their
+    fresh .venv is absent or still bootstrapping. The primary launcher and the
+    explicit target launcher must therefore choose Python from the same child
+    environment after secrets/worktree overrides have been applied.
+    """
+
+    def test_launch_main_honors_spoke_venv_python_override(self):
+        text = _main_script_text()
+        assert 'child_env.get("SPOKE_VENV_PYTHON"' in text, (
+            "launch-main.sh must honor SPOKE_VENV_PYTHON from .spoke-smoke-env "
+            "before falling back to the target worktree .venv"
+        )
+
+    def test_launch_target_honors_spoke_venv_python_override(self):
+        text = _target_script_text()
+        assert 'child_env.get("SPOKE_VENV_PYTHON"' in text, (
+            "launch-target.sh must honor SPOKE_VENV_PYTHON from .spoke-smoke-env "
+            "before falling back to the target worktree .venv"
+        )
+
+
 class TestSecretsEnvExampleTemplate:
     """A committed .example template documents the expected shape without
     leaking real values. This is the discoverability contract on new boxes."""

@@ -550,6 +550,20 @@ def _capture_context_result_dict(
             for h in capture.ax_hints
         ],
     }
+    if (
+        not result["ocr_blocks"]
+        and not result["ax_hints"]
+        and not str(getattr(capture, "ocr_text", "") or "").strip()
+    ):
+        result["text_extraction"] = {
+            "status": "empty",
+            "warning": (
+                "capture_context captured an image but extracted no OCR blocks "
+                "or AX hints; treat this as text-unreadable rather than empty. "
+                "Try scope='screen' or request include_image=true if visual "
+                "inspection is available."
+            ),
+        }
     if include_image and getattr(capture, "model_image_path", None):
         result["model_image"] = {
             "path": capture.model_image_path,

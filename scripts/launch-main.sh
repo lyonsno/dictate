@@ -186,7 +186,9 @@ with log_file.open("a", encoding="utf-8") as log:
             log.write("WARNING: using fallback — registry target was missing or invalid\n")
         log.flush()
 
-        python_exe = repo_root / ".venv" / "bin" / "python"
+        python_exe = Path(
+            child_env.get("SPOKE_VENV_PYTHON", str(repo_root / ".venv" / "bin" / "python"))
+        )
         if python_exe.is_file():
             command = [str(python_exe), "-m", "spoke"]
         elif uv_bin is not None:
