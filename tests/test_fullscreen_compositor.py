@@ -36,6 +36,15 @@ class _FakeFullScreenCompositor:
         self.sampled_configs = []
         self.sampled_brightness = 0.55
         self.presented_count = 0
+        self.diagnostics = {
+            "capture_fps": 30.0,
+            "display_link_ticks": 7,
+            "presented_frames": 5,
+            "duplicate_frames": 1,
+            "skipped_frames": 2,
+            "brightness_samples": 3,
+            "avg_warp_to_drawable_ms": 0.4,
+        }
         _FakeFullScreenCompositor.instances.append(self)
 
     def start(self, shell_config):
@@ -57,6 +66,9 @@ class _FakeFullScreenCompositor:
 
     def stop(self):
         self.stop_calls += 1
+
+    def diagnostics_snapshot(self):
+        return dict(self.diagnostics)
 
 
 def _reset_fake_compositor(monkeypatch):
@@ -226,6 +238,30 @@ def test_client_reports_shared_compositor_presented_count(monkeypatch):
 
     assert host.presented_count == 3
     assert assistant.presented_count == 3
+
+
+def test_shared_host_and_client_expose_residency_diagnostics(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
+    assistant = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(421),
+        content_view=object(),
+    )
+    assert assistant.publish(_snapshot("assistant.command", brightness=0.17))
+
+    diagnostics = host.diagnostics_snapshot()
+    client_diagnostics = assistant.diagnostics_snapshot()
+
+    assert diagnostics["capture_fps"] == pytest.approx(30.0)
+    assert diagnostics["display_link_ticks"] == 7
+    assert diagnostics["presented_frames"] == 5
+    assert diagnostics["duplicate_frames"] == 1
+    assert diagnostics["skipped_frames"] == 2
+    assert diagnostics["brightness_samples"] == 3
+    assert diagnostics["avg_warp_to_drawable_ms"] == pytest.approx(0.4)
+    assert client_diagnostics == diagnostics
+    assert host.debug_snapshot()["diagnostics"] == diagnostics
 
 
 def test_duplicate_client_id_on_same_display_replaces_snapshot_without_second_host(monkeypatch):
@@ -432,3 +468,86 @@ def test_fullscreen_compositor_ignores_duplicate_shell_config_updates():
     compositor.update_shell_config_key("min_brightness", 0.25)
 
     assert compositor._config_generation == 3
+
+
+def test_fullscreen_compositor_records_residency_diagnostics(monkeypatch):
+    import spoke.fullscreen_compositor as fullscreen_compositor
+
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    class Layer:
+        def __init__(self):
+            self.drawable_calls = 0
+            self.drawable_size = None
+
+        def setDrawableSize_(self, size):
+            self.drawable_size = size
+
+        def nextDrawable(self):
+            self.drawable_calls += 1
+            return object()
+
+    class Pipeline:
+        def __init__(self):
+            self.warp_calls = 0
+
+        def warp_to_drawable(self, *args, **kwargs):
+            self.warp_calls += 1
+            return True
+
+    now = [1.0]
+
+    def monotonic():
+        now[0] += 0.01
+        return now[0]
+
+    monkeypatch.setattr(fullscreen_compositor.time, "monotonic", monotonic)
+
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._running = True
+    compositor._lock = threading.Lock()
+    compositor._latest_iosurface = None
+    compositor._latest_pixel_buffer = None
+    compositor._latest_width = 0
+    compositor._latest_height = 0
+    compositor._latest_frame_generation = 0
+    compositor._shell_configs = [{"content_width_points": 40, "center_x": 20}]
+    compositor._config_generation = 1
+    compositor._rendered_frame_generation = 0
+    compositor._rendered_config_generation = 1
+    compositor._frame_count = 0
+    compositor._interval_frame_count = 0
+    compositor._interval_presented = 0
+    compositor._last_report_time = 0.0
+    compositor._last_drawable_size = (0, 0)
+    compositor._presented_count = 0
+    compositor._sampled_brightness = 0.5
+    compositor._metal_layer = Layer()
+    compositor._pipeline = Pipeline()
+    compositor._sample_iosurface_brightness = (
+        lambda _iosurface, _w, _h, _config: setattr(compositor, "_sampled_brightness", 0.7)
+    )
+
+    compositor.submit_iosurface(object(), width=100, height=50, pixel_buffer=object())
+    compositor._on_display_link()
+    compositor._on_display_link()
+    compositor.submit_iosurface(object(), width=100, height=50, pixel_buffer=object())
+    compositor.submit_iosurface(object(), width=100, height=50, pixel_buffer=object())
+    compositor._on_display_link()
+    assert compositor.sample_brightness_for_config({"initial_brightness": 0.7}) == pytest.approx(0.7)
+
+    diagnostics = compositor.diagnostics_snapshot()
+
+    assert diagnostics["capture_frames"] == 3
+    assert diagnostics["capture_fps"] > 0.0
+    assert diagnostics["display_link_ticks"] == 3
+    assert diagnostics["display_link_fps"] > 0.0
+    assert diagnostics["presented_frames"] == 2
+    assert diagnostics["presented_fps"] > 0.0
+    assert diagnostics["duplicate_frames"] == 1
+    assert diagnostics["skipped_frames"] == 1
+    assert diagnostics["brightness_samples"] == 1
+    assert diagnostics["avg_capture_frame_interval_ms"] > 0.0
+    assert diagnostics["avg_compositor_tick_ms"] > 0.0
+    assert diagnostics["avg_warp_to_drawable_ms"] > 0.0
+    assert diagnostics["avg_brightness_sample_ms"] > 0.0
