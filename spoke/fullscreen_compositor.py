@@ -133,6 +133,18 @@ def _configure_stream_frame_interval(config) -> None:
         config.setMinimumFrameInterval_(_SCK_FRAME_INTERVAL)
 
 
+def _average_ms(total_ms: float, count: int) -> float:
+    if count <= 0:
+        return 0.0
+    return total_ms / count
+
+
+def _fps_from_intervals(count: int, total_interval_ms: float) -> float:
+    if count <= 1 or total_interval_ms <= 0:
+        return 0.0
+    return ((count - 1) * 1000.0) / total_interval_ms
+
+
 class FullScreenCompositor:
     """Full-display capture → Metal warp → full-screen presentation."""
 
@@ -181,6 +193,24 @@ class FullScreenCompositor:
         self._interval_frame_count = 0
         self._interval_presented = 0
         self._last_drawable_size = (0, 0)
+        self._capture_frame_count = 0
+        self._display_link_ticks = 0
+        self._duplicate_frames = 0
+        self._skipped_frames = 0
+        self._brightness_samples = 0
+        self._warp_to_drawable_calls = 0
+        self._total_capture_frame_interval_ms = 0.0
+        self._total_display_link_interval_ms = 0.0
+        self._total_presented_interval_ms = 0.0
+        self._total_brightness_sample_interval_ms = 0.0
+        self._total_compositor_tick_ms = 0.0
+        self._total_presented_frame_ms = 0.0
+        self._total_warp_to_drawable_ms = 0.0
+        self._total_brightness_sample_ms = 0.0
+        self._last_capture_frame_at = None
+        self._last_display_link_at = None
+        self._last_presented_at = None
+        self._last_brightness_sample_at = None
 
         # Brightness sampling from the captured IOSurface
         self._sampled_brightness = 0.5
@@ -287,6 +317,94 @@ class FullScreenCompositor:
         """Number of frames the compositor has successfully presented."""
         return self._presented_count
 
+    def _ensure_diagnostics_fields(self) -> None:
+        defaults = {
+            "_capture_frame_count": 0,
+            "_display_link_ticks": 0,
+            "_duplicate_frames": 0,
+            "_skipped_frames": 0,
+            "_brightness_samples": 0,
+            "_warp_to_drawable_calls": 0,
+            "_total_capture_frame_interval_ms": 0.0,
+            "_total_display_link_interval_ms": 0.0,
+            "_total_presented_interval_ms": 0.0,
+            "_total_brightness_sample_interval_ms": 0.0,
+            "_total_compositor_tick_ms": 0.0,
+            "_total_presented_frame_ms": 0.0,
+            "_total_warp_to_drawable_ms": 0.0,
+            "_total_brightness_sample_ms": 0.0,
+            "_last_capture_frame_at": None,
+            "_last_display_link_at": None,
+            "_last_presented_at": None,
+            "_last_brightness_sample_at": None,
+        }
+        for name, value in defaults.items():
+            if not hasattr(self, name):
+                setattr(self, name, value)
+
+    def diagnostics_snapshot(self) -> dict[str, float | int]:
+        """Return compositor residency counters and cheap timing proxies."""
+        self._ensure_diagnostics_fields()
+        with self._lock:
+            capture_frames = int(self._capture_frame_count)
+            display_ticks = int(self._display_link_ticks)
+            presented_frames = int(self._presented_count)
+            brightness_samples = int(self._brightness_samples)
+            warp_calls = int(self._warp_to_drawable_calls)
+            capture_interval_ms = float(self._total_capture_frame_interval_ms)
+            display_interval_ms = float(self._total_display_link_interval_ms)
+            presented_interval_ms = float(self._total_presented_interval_ms)
+            brightness_interval_ms = float(self._total_brightness_sample_interval_ms)
+            total_compositor_tick_ms = float(self._total_compositor_tick_ms)
+            total_presented_frame_ms = float(self._total_presented_frame_ms)
+            total_warp_to_drawable_ms = float(self._total_warp_to_drawable_ms)
+            total_brightness_sample_ms = float(self._total_brightness_sample_ms)
+            duplicate_frames = int(self._duplicate_frames)
+            skipped_frames = int(self._skipped_frames)
+        return {
+            "capture_frames": capture_frames,
+            "capture_fps": _fps_from_intervals(capture_frames, capture_interval_ms),
+            "display_link_ticks": display_ticks,
+            "display_link_fps": _fps_from_intervals(display_ticks, display_interval_ms),
+            "presented_frames": presented_frames,
+            "presented_fps": _fps_from_intervals(presented_frames, presented_interval_ms),
+            "skipped_frames": skipped_frames,
+            "duplicate_frames": duplicate_frames,
+            "brightness_samples": brightness_samples,
+            "avg_capture_frame_interval_ms": _average_ms(
+                capture_interval_ms,
+                max(capture_frames - 1, 0),
+            ),
+            "avg_display_link_interval_ms": _average_ms(
+                display_interval_ms,
+                max(display_ticks - 1, 0),
+            ),
+            "avg_presented_interval_ms": _average_ms(
+                presented_interval_ms,
+                max(presented_frames - 1, 0),
+            ),
+            "avg_brightness_sample_interval_ms": _average_ms(
+                brightness_interval_ms,
+                max(brightness_samples - 1, 0),
+            ),
+            "avg_compositor_tick_ms": _average_ms(
+                total_compositor_tick_ms,
+                display_ticks,
+            ),
+            "avg_presented_frame_ms": _average_ms(
+                total_presented_frame_ms,
+                presented_frames,
+            ),
+            "avg_warp_to_drawable_ms": _average_ms(
+                total_warp_to_drawable_ms,
+                warp_calls,
+            ),
+            "avg_brightness_sample_ms": _average_ms(
+                total_brightness_sample_ms,
+                brightness_samples,
+            ),
+        }
+
     def refresh_brightness(self) -> None:
         """Re-sample capsule region brightness.  Call from main thread."""
         with self._lock:
@@ -295,7 +413,7 @@ class FullScreenCompositor:
             h = self._latest_height
         if not configs or w <= 0 or h <= 0:
             return
-        self._sample_iosurface_brightness(None, w, h, configs[0])
+        self._sample_brightness_with_diagnostics(None, w, h, configs[0])
 
     def sample_brightness_for_config(self, config: dict) -> float:
         """Sample brightness for a specific shell config."""
@@ -304,8 +422,26 @@ class FullScreenCompositor:
             h = self._latest_height
         if config is None or w <= 0 or h <= 0:
             return self._sampled_brightness
-        self._sample_iosurface_brightness(None, w, h, config)
+        self._sample_brightness_with_diagnostics(None, w, h, config)
         return self._sampled_brightness
+
+    def _sample_brightness_with_diagnostics(self, iosurface, w, h, config) -> None:
+        self._ensure_diagnostics_fields()
+        sample_start = time.monotonic()
+        try:
+            self._sample_iosurface_brightness(iosurface, w, h, config)
+        finally:
+            sample_end = time.monotonic()
+            elapsed_ms = max((sample_end - sample_start) * 1000.0, 0.0)
+            with self._lock:
+                self._brightness_samples += 1
+                self._total_brightness_sample_ms += elapsed_ms
+                if self._last_brightness_sample_at is not None:
+                    self._total_brightness_sample_interval_ms += max(
+                        (sample_end - self._last_brightness_sample_at) * 1000.0,
+                        0.0,
+                    )
+                self._last_brightness_sample_at = sample_end
 
     def _sample_iosurface_brightness(self, iosurface, w, h, config):
         """Sample average luminance of the capsule region.
@@ -679,12 +815,21 @@ class FullScreenCompositor:
         the SCK buffer pool from recycling the IOSurface before the
         display link thread renders it.
         """
+        self._ensure_diagnostics_fields()
+        now = time.monotonic()
         with self._lock:
             self._latest_iosurface = iosurface
             self._latest_pixel_buffer = pixel_buffer  # prevent recycling
             self._latest_width = width
             self._latest_height = height
             self._latest_frame_generation += 1
+            self._capture_frame_count += 1
+            if self._last_capture_frame_at is not None:
+                self._total_capture_frame_interval_ms += max(
+                    (now - self._last_capture_frame_at) * 1000.0,
+                    0.0,
+                )
+            self._last_capture_frame_at = now
 
     # ------------------------------------------------------------------
     # CVDisplayLink render loop
@@ -713,7 +858,16 @@ class FullScreenCompositor:
         if not self._running:
             return
 
+        self._ensure_diagnostics_fields()
+        tick_start = time.monotonic()
         with self._lock:
+            self._display_link_ticks += 1
+            if self._last_display_link_at is not None:
+                self._total_display_link_interval_ms += max(
+                    (tick_start - self._last_display_link_at) * 1000.0,
+                    0.0,
+                )
+            self._last_display_link_at = tick_start
             iosurface = self._latest_iosurface
             w = self._latest_width
             h = self._latest_height
@@ -721,35 +875,42 @@ class FullScreenCompositor:
             frame_generation = self._latest_frame_generation
             config_generation = self._config_generation
 
-        if iosurface is None or w <= 0 or h <= 0 or not configs:
-            return
-        if (
-            frame_generation == self._rendered_frame_generation
-            and config_generation == self._rendered_config_generation
-        ):
-            return
-
-        self._frame_count += 1
-        self._interval_frame_count += 1
-
-        now = time.monotonic()
-        elapsed = now - self._last_report_time
-        if elapsed >= 5.0:
-            fps = self._interval_frame_count / elapsed if elapsed > 0 else 0
-            pfps = self._interval_presented / elapsed if elapsed > 0 else 0
-            logger.info(
-                "Compositor: %d ticks (%.1f fps), %d presented (%.1f fps)",
-                self._interval_frame_count, fps,
-                self._interval_presented, pfps,
-            )
-            self._last_report_time = now
-            self._interval_frame_count = 0
-            self._interval_presented = 0
-
-        if self._metal_layer is None:
-            return
-
         try:
+            if iosurface is None or w <= 0 or h <= 0 or not configs:
+                return
+            if (
+                frame_generation == self._rendered_frame_generation
+                and config_generation == self._rendered_config_generation
+            ):
+                with self._lock:
+                    self._duplicate_frames += 1
+                return
+
+            skipped_frames = max(frame_generation - self._rendered_frame_generation - 1, 0)
+            if skipped_frames:
+                with self._lock:
+                    self._skipped_frames += skipped_frames
+
+            self._frame_count += 1
+            self._interval_frame_count += 1
+
+            now = time.monotonic()
+            elapsed = now - self._last_report_time
+            if elapsed >= 5.0:
+                fps = self._interval_frame_count / elapsed if elapsed > 0 else 0
+                pfps = self._interval_presented / elapsed if elapsed > 0 else 0
+                logger.info(
+                    "Compositor: %d ticks (%.1f fps), %d presented (%.1f fps)",
+                    self._interval_frame_count, fps,
+                    self._interval_presented, pfps,
+                )
+                self._last_report_time = now
+                self._interval_frame_count = 0
+                self._interval_presented = 0
+
+            if self._metal_layer is None:
+                return
+
             # Validate config before acquiring a drawable — an empty or
             # missing config would default to a full-screen warp that
             # flashes the entire display.
@@ -762,19 +923,42 @@ class FullScreenCompositor:
             if self._last_drawable_size != (w, h):
                 self._metal_layer.setDrawableSize_((w, h))
                 self._last_drawable_size = (w, h)
+            present_start = time.monotonic()
             drawable = self._metal_layer.nextDrawable()
             if drawable is None:
                 return
 
-            if self._pipeline.warp_to_drawable(
+            warp_start = time.monotonic()
+            did_present = self._pipeline.warp_to_drawable(
                 iosurface,
                 drawable,
                 width=w,
                 height=h,
                 shell_config=warp_configs if len(warp_configs) > 1 else warp_configs[0],
-            ):
+            )
+            warp_end = time.monotonic()
+            with self._lock:
+                self._warp_to_drawable_calls += 1
+                self._total_warp_to_drawable_ms += max(
+                    (warp_end - warp_start) * 1000.0,
+                    0.0,
+                )
+
+            if did_present:
                 self._presented_count += 1
                 self._interval_presented += 1
+                present_end = time.monotonic()
+                with self._lock:
+                    self._total_presented_frame_ms += max(
+                        (present_end - present_start) * 1000.0,
+                        0.0,
+                    )
+                    if self._last_presented_at is not None:
+                        self._total_presented_interval_ms += max(
+                            (present_end - self._last_presented_at) * 1000.0,
+                            0.0,
+                        )
+                    self._last_presented_at = present_end
                 self._rendered_frame_generation = frame_generation
                 self._rendered_config_generation = config_generation
 
@@ -783,6 +967,13 @@ class FullScreenCompositor:
         except Exception:
             if self._frame_count <= 10:
                 logger.info("Compositor tick[%d] failed", self._frame_count, exc_info=True)
+        finally:
+            tick_end = time.monotonic()
+            with self._lock:
+                self._total_compositor_tick_ms += max(
+                    (tick_end - tick_start) * 1000.0,
+                    0.0,
+                )
 
 
 class _CompositorRendererProxy:
@@ -1091,6 +1282,30 @@ class OverlayCompositorHost:
     def presented_count(self) -> int:
         return int(getattr(self._compositor, "presented_count", 0))
 
+    def diagnostics_snapshot(self) -> dict[str, float | int]:
+        diagnostics = getattr(self._compositor, "diagnostics_snapshot", None)
+        if callable(diagnostics):
+            return dict(diagnostics())
+        return {
+            "capture_frames": 0,
+            "capture_fps": 0.0,
+            "display_link_ticks": 0,
+            "display_link_fps": 0.0,
+            "presented_frames": self.presented_count,
+            "presented_fps": 0.0,
+            "skipped_frames": 0,
+            "duplicate_frames": 0,
+            "brightness_samples": 0,
+            "avg_capture_frame_interval_ms": 0.0,
+            "avg_display_link_interval_ms": 0.0,
+            "avg_presented_interval_ms": 0.0,
+            "avg_brightness_sample_interval_ms": 0.0,
+            "avg_compositor_tick_ms": 0.0,
+            "avg_presented_frame_ms": 0.0,
+            "avg_warp_to_drawable_ms": 0.0,
+            "avg_brightness_sample_ms": 0.0,
+        }
+
     def debug_snapshot(self) -> dict:
         clients = []
         for snapshot in self.render_snapshots():
@@ -1100,6 +1315,7 @@ class OverlayCompositorHost:
         return {
             "client_count": len(clients),
             "clients": clients,
+            "diagnostics": self.diagnostics_snapshot(),
         }
 
     def _window_ids_for_entry(self, entry: dict) -> list[int]:
@@ -1204,6 +1420,14 @@ class OverlayCompositorClient:
             return int(count)
         except (TypeError, ValueError):
             return 0
+
+    def diagnostics_snapshot(self) -> dict[str, float | int]:
+        if self._host is None:
+            return {}
+        diagnostics = getattr(self._host, "diagnostics_snapshot", None)
+        if callable(diagnostics):
+            return dict(diagnostics())
+        return {}
 
     def release(self) -> None:
         self.stop()
