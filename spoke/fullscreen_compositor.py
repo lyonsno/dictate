@@ -1266,7 +1266,13 @@ class OverlayCompositorHost:
         return float(getattr(self._compositor, "sampled_brightness", 0.5))
 
     def refresh_brightness(self, client_id: str) -> None:
-        if client_id not in self._clients:
+        entry = self._clients.get(client_id)
+        if entry is None or entry.get("snapshot") is None:
+            return
+        config = _snapshot_to_shell_config(entry["snapshot"])
+        sampler = getattr(self._compositor, "sample_brightness_for_config", None)
+        if callable(sampler):
+            sampler(config)
             return
         refresher = getattr(self._compositor, "refresh_brightness", None)
         if callable(refresher):

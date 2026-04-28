@@ -23,11 +23,22 @@ def _make_rect(x, y, width, height):
 
 def _make_overlay(mock_pyobjc):
     """Create a CommandOverlay with mocked internals."""
+    # Mixed compositor/overlay runs can leave real PyObjC packages restored
+    # between tests. Re-seat the exact fakes this helper was handed before
+    # importing command_overlay so a real Quartz package cannot leak in.
     for name in list(sys.modules):
-        if name == "Quartz" or name.startswith("Quartz."):
+        if any(
+            name == prefix or name.startswith(f"{prefix}.")
+            for prefix in ("objc", "Quartz", "Foundation", "AppKit", "PyObjCTools")
+        ):
             sys.modules.pop(name, None)
     sys.modules.update(mock_pyobjc)
     sys.modules["Quartz.CoreGraphics"] = mock_pyobjc["Quartz"]
+    assert sys.modules["Quartz"] is mock_pyobjc["Quartz"]
+    assert not hasattr(sys.modules["Quartz"], "__path__")
+    assert hasattr(sys.modules["Quartz"], "CALayer")
+    assert hasattr(sys.modules["Quartz"], "CAShapeLayer")
+    assert hasattr(sys.modules["Quartz"], "CGPathCreateWithRoundedRect")
     sys.modules.pop("spoke.command_overlay", None)
     mod = importlib.import_module("spoke.command_overlay")
     mod._start_overlay_fill_worker = lambda work: work()
