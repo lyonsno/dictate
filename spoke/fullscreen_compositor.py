@@ -1457,8 +1457,9 @@ def start_overlay_compositor(
     shell_config,
     client_id: str = "assistant.command",
     role: str = "assistant",
+    registry: OverlayCompositorRegistry | None = None,
 ):
-    registry = OverlayCompositorRegistry()
+    registry = registry or OverlayCompositorRegistry()
     host = registry.host_for_screen(screen)
     identity = OverlayClientIdentity(
         client_id=client_id,

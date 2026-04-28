@@ -961,10 +961,14 @@ class CommandOverlay(NSObject):
         self._visual_ready_timer: NSTimer | None = None
         self._visual_ready_wait_started_at = 0.0
         self._visual_ready_brightness_synced = False
+        self._compositor_registry = None
         self._fullscreen_compositor = None
         self._force_backdrop_frame_callback = False
 
         return self
+
+    def set_compositor_registry(self, registry) -> None:
+        self._compositor_registry = registry
 
     def setup(self) -> None:
         """Create the command overlay window."""
@@ -3354,6 +3358,7 @@ class CommandOverlay(NSObject):
                 shell_config=shell_config,
                 client_id="assistant.command",
                 role="assistant",
+                registry=getattr(self, "_compositor_registry", None),
             )
             if compositor is not None:
                 self._fullscreen_compositor = compositor

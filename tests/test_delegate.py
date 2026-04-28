@@ -3325,6 +3325,13 @@ class TestRuntimePhaseLogging:
 
         d._refresh_command_model_options_async.assert_called_once_with()
         d._setup_event_tap.assert_called_once_with()
+        overlay.set_compositor_registry.assert_called_once()
+        command_overlay.set_compositor_registry.assert_called_once()
+        assert (
+            overlay.set_compositor_registry.call_args.args[0]
+            is command_overlay.set_compositor_registry.call_args.args[0]
+            is d._overlay_compositor_registry
+        )
 
     def test_refresh_command_model_options_async_spawns_background_thread(
         self, main_module, monkeypatch

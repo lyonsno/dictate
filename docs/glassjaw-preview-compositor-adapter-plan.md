@@ -1,14 +1,15 @@
 # Glassjaw Preview Compositor Adapter Plan
 
-Status: planning and witness surface only. This document does not open the
-preview/tray/recovery migration gate.
+Status: accepted for the first `preview.transcription` shared-compositor
+migration on `cc/glassjaw-integration-carry-0428`. Tray and recovery remain
+overlay-local and are not separate shared-host clients in this slice.
 
 ## Gate
 
-The Glassjaw packet allows the `preview-adapter` lane to plan and write
-fail-first witnesses now. Production migration waits for steward acceptance of
-this plan and must consume the accepted host/client API rather than redefining
-it.
+The Glassjaw packet allowed the `preview-adapter` lane to plan and write
+fail-first witnesses before production migration. The steward accepted the
+adapter plan after the assistant half of Glassjaw smoked clean, so this carry
+now consumes the accepted host/client API rather than redefining it.
 
 ## Target Contract
 
@@ -30,8 +31,7 @@ must not derive display ownership from `windowNumber()` alone.
 
 ## Adapter Shape
 
-Add these methods to `TranscriptionOverlay` when the steward opens the migration
-gate:
+The first migration adds these methods to `TranscriptionOverlay`:
 
 ```python
 def set_compositor_registry(self, registry) -> None: ...
@@ -126,12 +126,13 @@ first gate:
 - existing assistant client state is not mutated by preview publish/hide
 - tray mode stays overlay-local and does not register a shared-host tray client
 
-These witnesses intentionally fail before the migration because
-`TranscriptionOverlay` has no preview compositor adapter yet.
+These witnesses intentionally failed before the migration because
+`TranscriptionOverlay` had no preview compositor adapter yet. On the carry they
+now pass with the adapter in place.
 
 ## Acceptance
 
-The steward can accept the adapter plan when the witnesses fail for the missing
-adapter surface and the packet still has no active incoherence. Production work
-after acceptance should be a narrow implementation against these witnesses, not
-a broader preview/tray/recovery rewrite.
+The adapter plan has been accepted for the first preview transcription slice.
+The implemented scope remains deliberately narrow: one `preview.transcription`
+client, one shared registry/host path, no tray/recovery client split, and no
+assistant command-overlay behavior rewrite.

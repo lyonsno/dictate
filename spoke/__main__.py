@@ -980,6 +980,7 @@ class SpokeAppDelegate(NSObject):
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
+        self._overlay_compositor_registry = None
         self._transcribing = False
         self._transcription_token = 0
         self._parallel_insert_token = 0
@@ -1233,8 +1234,12 @@ class SpokeAppDelegate(NSObject):
         )
         self._glow.setup()
 
+        from .fullscreen_compositor import OverlayCompositorRegistry
+        self._overlay_compositor_registry = OverlayCompositorRegistry()
+
         self._overlay = TranscriptionOverlay.alloc().initWithScreen_(None)
         self._overlay.setup()
+        self._overlay.set_compositor_registry(self._overlay_compositor_registry)
 
         # Command output overlay — separate surface for command responses
         if self._command_client is not None:
@@ -1243,6 +1248,7 @@ class SpokeAppDelegate(NSObject):
                 None, metrics=self._optical_shell_metrics
             )
             self._command_overlay.setup()
+            self._command_overlay.set_compositor_registry(self._overlay_compositor_registry)
             self._command_overlay._on_cancel_spring_threshold = self._on_cancel_spring_threshold
             self._refresh_command_model_options_async()
 

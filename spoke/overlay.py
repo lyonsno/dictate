@@ -123,6 +123,27 @@ _OUTER_GLOW_PEAK_TARGET = 0.35
 _WIDE_OUTER_GLOW_SCALE = 0.56
 _OVERLAY_INNER_SATURATION_SCALE = 0.70
 _OVERLAY_OUTER_SATURATION_SCALE = 1.80
+_POINTS_PER_CM = 72.0 / 2.54
+_PREVIEW_OPTICAL_SHELL_CORE_MAGNIFICATION = _env(
+    "SPOKE_PREVIEW_OPTICAL_SHELL_CORE_MAGNIFICATION", 1.55
+)
+_PREVIEW_OPTICAL_SHELL_BAND_MM = _env(
+    "SPOKE_PREVIEW_OPTICAL_SHELL_BAND_MM", 4.0
+)
+_PREVIEW_OPTICAL_SHELL_TAIL_MM = _env(
+    "SPOKE_PREVIEW_OPTICAL_SHELL_TAIL_MM", 3.0
+)
+_PREVIEW_OPTICAL_SHELL_RING_AMPLITUDE_POINTS = _env(
+    "SPOKE_PREVIEW_OPTICAL_SHELL_RING_AMPLITUDE_POINTS",
+    (_PREVIEW_OPTICAL_SHELL_BAND_MM / 10.0) * _POINTS_PER_CM * 2.6,
+)
+_PREVIEW_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS = _env(
+    "SPOKE_PREVIEW_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS",
+    (_PREVIEW_OPTICAL_SHELL_TAIL_MM / 10.0) * _POINTS_PER_CM * 0.75,
+)
+_PREVIEW_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS = _env(
+    "SPOKE_PREVIEW_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS", 0.75
+)
 
 
 # Recovery mode constants
@@ -374,6 +395,7 @@ class TranscriptionOverlay(NSObject):
         self._fade_step = 0
         self._fade_from = 0.0
         self._fade_direction = 0
+        self._tray_mode = False
 
         # Typewriter state
         self._typewriter_timer: NSTimer | None = None
@@ -388,6 +410,10 @@ class TranscriptionOverlay(NSObject):
         self._brightness_target = 0.0
         self._fill_override_rgb: tuple[float, float, float] | None = None
         self._fill_override_opacity: float | None = None
+        self._compositor_registry = None
+        self._preview_compositor_client = None
+        self._preview_compositor_identity = None
+        self._preview_compositor_generation = 0
 
         # Recovery mode state
         self._recovery_mode = False
@@ -535,6 +561,138 @@ class TranscriptionOverlay(NSObject):
 
         logger.info("Transcription overlay created")
 
+    def set_compositor_registry(self, registry) -> None:
+        """Attach the shared optical compositor registry for preview snapshots."""
+        if registry is not getattr(self, "_compositor_registry", None):
+            self._release_preview_compositor_client()
+        self._compositor_registry = registry
+
+    def _preview_compositor_geometry_snapshot(self):
+        from spoke.fullscreen_compositor import OpticalShellGeometrySnapshot
+
+        scale = (
+            self._screen.backingScaleFactor()
+            if hasattr(self._screen, "backingScaleFactor")
+            else 2.0
+        )
+        screen_frame = self._screen.frame()
+        window_frame = self._window.frame()
+        content_frame = self._content_view.frame()
+
+        screen_origin_x = getattr(getattr(screen_frame, "origin", None), "x", 0.0)
+        screen_origin_y = getattr(getattr(screen_frame, "origin", None), "y", 0.0)
+        screen_height = getattr(getattr(screen_frame, "size", None), "height", 0.0)
+        capsule_cx = (
+            window_frame.origin.x
+            + content_frame.origin.x
+            + content_frame.size.width / 2.0
+            - screen_origin_x
+        )
+        capsule_cy_cocoa = (
+            window_frame.origin.y
+            + content_frame.origin.y
+            + content_frame.size.height / 2.0
+        )
+        capsule_cy_metal = screen_origin_y + screen_height - capsule_cy_cocoa
+        return OpticalShellGeometrySnapshot(
+            center_x=float(capsule_cx) * scale,
+            center_y=float(capsule_cy_metal) * scale,
+            content_width_points=float(content_frame.size.width) * scale,
+            content_height_points=float(content_frame.size.height) * scale,
+            corner_radius_points=float(_OVERLAY_CORNER_RADIUS) * scale,
+            band_width_points=(
+                (_PREVIEW_OPTICAL_SHELL_BAND_MM / 10.0) * _POINTS_PER_CM * scale
+            ),
+            tail_width_points=(
+                (_PREVIEW_OPTICAL_SHELL_TAIL_MM / 10.0) * _POINTS_PER_CM * scale
+            ),
+        )
+
+    def _preview_compositor_material_snapshot(self):
+        from spoke.fullscreen_compositor import OpticalShellMaterialSnapshot
+
+        brightness = min(max(float(getattr(self, "_brightness", 0.0)), 0.0), 1.0)
+        return OpticalShellMaterialSnapshot(
+            initial_brightness=brightness,
+            min_brightness=0.0,
+            core_magnification=_PREVIEW_OPTICAL_SHELL_CORE_MAGNIFICATION,
+            ring_amplitude_points=_PREVIEW_OPTICAL_SHELL_RING_AMPLITUDE_POINTS,
+            tail_amplitude_points=_PREVIEW_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS,
+            cleanup_blur_radius_points=_PREVIEW_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS,
+            debug_visualize=False,
+            debug_grid_spacing_points=18.0,
+        )
+
+    def _preview_compositor_excluded_window_ids(self) -> tuple[int, ...]:
+        try:
+            return (int(self._window.windowNumber()),)
+        except Exception:
+            return ()
+
+    def _ensure_preview_compositor_client(self):
+        registry = getattr(self, "_compositor_registry", None)
+        if registry is None or self._screen is None or self._window is None:
+            return None
+        if getattr(self, "_content_view", None) is None:
+            return None
+        host = registry.host_for_screen(self._screen)
+        from spoke.fullscreen_compositor import OverlayClientIdentity
+
+        identity = OverlayClientIdentity(
+            client_id="preview.transcription",
+            display_id=host.display_id,
+            role="preview",
+        )
+        client = getattr(self, "_preview_compositor_client", None)
+        current_identity = getattr(self, "_preview_compositor_identity", None)
+        if client is None or current_identity != identity:
+            client = host.register_client(
+                identity,
+                window=self._window,
+                content_view=self._content_view,
+            )
+            self._preview_compositor_client = client
+        self._preview_compositor_identity = identity
+        return client
+
+    def _publish_preview_compositor_snapshot(self, *, visible: bool) -> bool:
+        client = self._ensure_preview_compositor_client()
+        identity = getattr(self, "_preview_compositor_identity", None)
+        if client is None or identity is None:
+            return False
+        from spoke.fullscreen_compositor import OverlayRenderSnapshot
+
+        self._preview_compositor_generation += 1
+        snapshot = OverlayRenderSnapshot(
+            identity=identity,
+            generation=self._preview_compositor_generation,
+            visible=bool(visible),
+            geometry=self._preview_compositor_geometry_snapshot(),
+            material=self._preview_compositor_material_snapshot(),
+            excluded_window_ids=self._preview_compositor_excluded_window_ids(),
+            z_index=0,
+        )
+        return bool(client.publish(snapshot))
+
+    def _release_preview_compositor_client(self) -> None:
+        client = getattr(self, "_preview_compositor_client", None)
+        self._preview_compositor_client = None
+        self._preview_compositor_identity = None
+        if client is None:
+            return
+        release = getattr(client, "release", None)
+        if callable(release):
+            release()
+            return
+        stop = getattr(client, "stop", None)
+        if callable(stop):
+            stop()
+
+    def _hide_and_release_preview_compositor_client(self) -> None:
+        if getattr(self, "_preview_compositor_client", None) is not None:
+            self._publish_preview_compositor_snapshot(visible=False)
+        self._release_preview_compositor_client()
+
     def show(self) -> None:
         """Fade the overlay in."""
         if self._window is None:
@@ -554,6 +712,7 @@ class TranscriptionOverlay(NSObject):
         self._cancel_fade()
         self._cancel_typewriter()
         self._visible = True
+        self._tray_mode = False
         self._typewriter_target = ""
         self._typewriter_displayed = ""
         self._typewriter_hwm = 0  # furthest position typewriter has reached
@@ -580,6 +739,7 @@ class TranscriptionOverlay(NSObject):
         self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
         self._reset_text_geometry(_OVERLAY_HEIGHT - 16, scroll_to_top=True)
 
+        self._publish_preview_compositor_snapshot(visible=True)
         self._window.orderFrontRegardless()
 
         # Fade in using stepped timer
@@ -605,7 +765,9 @@ class TranscriptionOverlay(NSObject):
             return
         self._cancel_tray_capture_flash()
         self._visible = False
+        self._tray_mode = False
         self._cancel_typewriter()
+        self._hide_and_release_preview_compositor_client()
         self._start_fade_out(duration=fade_duration)
         logger.info("Overlay hide")
 
@@ -618,9 +780,11 @@ class TranscriptionOverlay(NSObject):
         if self._window is None:
             return
         self._visible = False
+        self._tray_mode = False
         self._cancel_tray_capture_flash()
         self._cancel_fade()
         self._cancel_typewriter()
+        self._hide_and_release_preview_compositor_client()
         self._window.setAlphaValue_(0.0)
         self._window.orderOut_(None)
         logger.info("Overlay ordered out")
@@ -706,7 +870,8 @@ class TranscriptionOverlay(NSObject):
         text_storage = self._text_view.textStorage() if hasattr(self._text_view, "textStorage") else None
         if text_storage is None:
             self._text_view.setString_(text)
-            self._text_view.setTextColor_(self._current_text_color)
+            if hasattr(self._text_view, "setTextColor_"):
+                self._text_view.setTextColor_(self._current_text_color)
             return
 
         # Use cached ontology spans — recompute only when text changed
@@ -1230,6 +1395,12 @@ class TranscriptionOverlay(NSObject):
             self._reset_text_geometry(max(new_height - 16, text_height))
             end = self._text_view.string().length() if hasattr(self._text_view.string(), 'length') else len(self._typewriter_displayed)
             self._text_view.scrollRangeToVisible_((end, 0))
+            if (
+                self._visible
+                and not getattr(self, "_tray_mode", False)
+                and not getattr(self, "_recovery_mode", False)
+            ):
+                self._publish_preview_compositor_snapshot(visible=True)
         except Exception:
             pass
 
@@ -1245,6 +1416,8 @@ class TranscriptionOverlay(NSObject):
         if self._window is None:
             return
         self._cancel_tray_capture_flash()
+        self._hide_and_release_preview_compositor_client()
+        self._tray_mode = True
 
         # Clean up any existing recovery state
         if self._recovery_mode:
@@ -1415,6 +1588,8 @@ class TranscriptionOverlay(NSObject):
         if self._window is None:
             return
         self._cancel_tray_capture_flash()
+        self._hide_and_release_preview_compositor_client()
+        self._tray_mode = False
 
         # Clean up any existing recovery state
         self._teardown_recovery_views()
