@@ -376,6 +376,44 @@ def test_duplicate_client_registration_returns_same_live_handle(monkeypatch):
     assert registry.host_for_screen(screen) is not host
 
 
+def test_legacy_assistant_shell_config_preserves_absent_preview_warp_controls():
+    from spoke.fullscreen_compositor import (
+        OverlayClientIdentity,
+        _snapshot_from_shell_config,
+        _snapshot_to_shell_config,
+    )
+
+    identity = OverlayClientIdentity(
+        client_id="assistant.command",
+        display_id="display-1",
+        role="assistant",
+    )
+    snapshot = _snapshot_from_shell_config(
+        identity,
+        {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 616.0,
+            "content_height_points": 96.0,
+            "corner_radius_points": 16.0,
+            "core_magnification": 1.55,
+            "ring_amplitude_points": 29.48031496063,
+            "tail_amplitude_points": 6.377952755906,
+        },
+        generation=3,
+    )
+
+    round_tripped = _snapshot_to_shell_config(snapshot)
+
+    for key in (
+        "bleed_zone_frac",
+        "exterior_mix_width_points",
+        "x_squeeze",
+        "y_squeeze",
+    ):
+        assert key not in round_tripped
+
+
 def test_overlay_compositor_session_exposes_refresh_brightness():
     from spoke.fullscreen_compositor import _OverlayCompositorSession
 

@@ -274,8 +274,12 @@ def test_preview_adapter_publishes_preview_transcription_snapshot_without_starti
     assert snapshot.excluded_window_ids == (701,)
     assert snapshot.geometry.center_x == pytest.approx(1240.0)
     assert snapshot.geometry.center_y == pytest.approx(1160.0)
-    assert snapshot.geometry.content_width_points == pytest.approx(1264.0)
-    assert snapshot.geometry.content_height_points == pytest.approx(224.0)
+    assert snapshot.geometry.content_width_points == pytest.approx(
+        (600.0 + overlay_module._PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII * 16.0) * 2.0
+    )
+    assert snapshot.geometry.content_height_points == pytest.approx(
+        (80.0 + overlay_module._PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII * 16.0) * 2.0
+    )
     assert snapshot.material.initial_brightness == pytest.approx(0.37)
 
 
@@ -314,16 +318,14 @@ def test_preview_warp_defaults_match_live_tuner_baseline(mock_pyobjc, monkeypatc
 
     tuning = overlay.preview_warp_tuning_snapshot()
 
-    assert tuning["core_magnification"] == pytest.approx(1.55)
-    assert tuning["x_squeeze"] == pytest.approx(2.5)
-    assert tuning["y_squeeze"] == pytest.approx(1.5)
-    assert tuning["inflation_x_radii"] == pytest.approx(2.0)
-    assert tuning["inflation_y_radii"] == pytest.approx(2.0)
-    assert tuning["bleed_zone_frac"] == pytest.approx(0.8)
-    assert tuning["exterior_mix_width_points"] == pytest.approx(20.0)
-    assert tuning["ring_amplitude_points"] == pytest.approx(
-        (4.0 / 10.0) * overlay_module._POINTS_PER_CM
-    )
+    assert tuning["core_magnification"] == pytest.approx(2.5)
+    assert tuning["x_squeeze"] == pytest.approx(3.203601371951)
+    assert tuning["y_squeeze"] == pytest.approx(1.814143483232)
+    assert tuning["inflation_x_radii"] == pytest.approx(1.606088033537)
+    assert tuning["inflation_y_radii"] == pytest.approx(2.297589557927)
+    assert tuning["bleed_zone_frac"] == pytest.approx(0.702946360518)
+    assert tuning["exterior_mix_width_points"] == pytest.approx(26.980754573171)
+    assert tuning["ring_amplitude_points"] == pytest.approx(35.369188262195)
 
 
 def test_preview_adapter_hide_releases_only_preview_client_and_leaves_assistant_state(

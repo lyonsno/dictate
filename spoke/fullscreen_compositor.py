@@ -60,10 +60,10 @@ class OpticalShellMaterialSnapshot:
     core_magnification: float = 1.0
     ring_amplitude_points: float = 0.0
     tail_amplitude_points: float = 0.0
-    bleed_zone_frac: float = 0.0
-    exterior_mix_width_points: float = 0.0
-    x_squeeze: float = 1.0
-    y_squeeze: float = 1.0
+    bleed_zone_frac: float | None = None
+    exterior_mix_width_points: float | None = None
+    x_squeeze: float | None = None
+    y_squeeze: float | None = None
     cleanup_blur_radius_points: float = 0.0
     debug_visualize: bool = False
     debug_grid_spacing_points: float = 18.0
@@ -1091,14 +1091,19 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
         "core_magnification": snapshot.material.core_magnification,
         "ring_amplitude_points": snapshot.material.ring_amplitude_points,
         "tail_amplitude_points": snapshot.material.tail_amplitude_points,
-        "bleed_zone_frac": snapshot.material.bleed_zone_frac,
-        "exterior_mix_width_points": snapshot.material.exterior_mix_width_points,
-        "x_squeeze": snapshot.material.x_squeeze,
-        "y_squeeze": snapshot.material.y_squeeze,
         "cleanup_blur_radius_points": snapshot.material.cleanup_blur_radius_points,
         "debug_visualize": snapshot.material.debug_visualize,
         "debug_grid_spacing_points": snapshot.material.debug_grid_spacing_points,
     }
+    for key in (
+        "bleed_zone_frac",
+        "exterior_mix_width_points",
+        "x_squeeze",
+        "y_squeeze",
+    ):
+        value = getattr(snapshot.material, key)
+        if value is not None:
+            config[key] = value
     if snapshot.excluded_window_ids:
         config["excluded_window_ids"] = tuple(snapshot.excluded_window_ids)
     return config
@@ -1112,6 +1117,12 @@ def _snapshot_from_shell_config(
     excluded_window_ids: tuple[int, ...] = (),
 ) -> OverlayRenderSnapshot:
     config = dict(shell_config)
+
+    def _optional_float(key: str) -> float | None:
+        if key not in config or config[key] is None:
+            return None
+        return float(config[key])
+
     geometry = OpticalShellGeometrySnapshot(
         center_x=float(config.get("center_x", 0.0)),
         center_y=float(config.get("center_y", 0.0)),
@@ -1127,10 +1138,10 @@ def _snapshot_from_shell_config(
         core_magnification=float(config.get("core_magnification", 1.0)),
         ring_amplitude_points=float(config.get("ring_amplitude_points", 0.0)),
         tail_amplitude_points=float(config.get("tail_amplitude_points", 0.0)),
-        bleed_zone_frac=float(config.get("bleed_zone_frac", 0.0)),
-        exterior_mix_width_points=float(config.get("exterior_mix_width_points", 0.0)),
-        x_squeeze=float(config.get("x_squeeze", 1.0)),
-        y_squeeze=float(config.get("y_squeeze", 1.0)),
+        bleed_zone_frac=_optional_float("bleed_zone_frac"),
+        exterior_mix_width_points=_optional_float("exterior_mix_width_points"),
+        x_squeeze=_optional_float("x_squeeze"),
+        y_squeeze=_optional_float("y_squeeze"),
         cleanup_blur_radius_points=float(config.get("cleanup_blur_radius_points", 0.0)),
         debug_visualize=bool(config.get("debug_visualize", False)),
         debug_grid_spacing_points=float(config.get("debug_grid_spacing_points", 18.0)),
