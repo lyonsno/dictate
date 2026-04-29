@@ -46,6 +46,7 @@ _NS_KEY_DOWN_MASK = 1 << 10
 _RECORDING_LOAD_SHED_RELEASE_DELAY_S = 0.36
 _AGENT_SHELL_PROVIDERS = {"codex", "claude-code"}
 _AGENT_SHELL_SELECTABLE_PROVIDERS = {"codex"}
+_AGENT_SHELL_OVERLAY_SNAPSHOTS_PREF = "agent_shell_overlay_snapshots"
 
 # Keep _PastableTextField as an alias so existing alloc() calls don't break.
 _PastableTextField = NSTextField
@@ -1106,7 +1107,9 @@ class SpokeAppDelegate(NSObject):
             )
             self._agent_backend_manager = AgentBackendManager()
             self._agent_shell_provider = self._load_preference("agent_shell_provider") or "off"
-            self._agent_shell_sessions: dict[str, dict[str, str | None]] = {}
+            self._agent_shell_sessions: dict[str, dict[str, str | None]] = (
+                self._load_agent_shell_sessions()
+            )
             self._agent_backend_presentation_states = {}
             # Converge: per-turn attractor carver (same model, OMLX batch parallel)
             self._turn_carver = TurnCarver(
@@ -3318,7 +3321,8 @@ class SpokeAppDelegate(NSObject):
 
     def _toggle_command_overlay(self) -> None:
         """Toggle command overlay visibility."""
-        if self._command_client is None:
+        agent_shell_provider = self._active_agent_shell_provider()
+        if self._command_client is None and agent_shell_provider is None:
             return
         overlay_visible = (
             self._command_overlay is not None
@@ -3366,10 +3370,10 @@ class SpokeAppDelegate(NSObject):
             except Exception:
                 logger.exception("Resume overlay failed")
         elif (
-            self._command_client is not None
-            and self._command_overlay is not None
+            self._command_overlay is not None
+            and (self._command_client is not None or agent_shell_provider is not None)
         ):
-            if self._active_agent_shell_provider() is None:
+            if agent_shell_provider is None and self._command_client is not None:
                 pending_snapshot_getter = getattr(
                     self._command_client, "pending_approval_snapshot", None
                 )
@@ -3609,14 +3613,67 @@ class SpokeAppDelegate(NSObject):
             return None
         return provider
 
+    def _agent_shell_placeholder_snapshot(self, provider: str) -> tuple[str, str]:
+        label = _agent_shell_provider_label(provider)
+        return "", f"{label} Agent Shell selected.\nSend a message to continue with {label}."
+
+    def _load_agent_shell_sessions(self) -> dict[str, dict[str, str | None]]:
+        raw = self._load_preference(_AGENT_SHELL_OVERLAY_SNAPSHOTS_PREF)
+        if not isinstance(raw, dict):
+            return {}
+
+        sessions: dict[str, dict[str, str | None]] = {}
+        for provider, record in raw.items():
+            if provider not in _AGENT_SHELL_PROVIDERS or not isinstance(record, dict):
+                continue
+            sanitized: dict[str, str | None] = {
+                "spoke_session_id": None,
+                "provider_session_id": None,
+                "last_utterance": None,
+                "last_response": None,
+            }
+            for key in ("provider_session_id", "last_utterance", "last_response"):
+                value = record.get(key)
+                if isinstance(value, str) and value:
+                    sanitized[key] = value
+            sessions[provider] = sanitized
+        return sessions
+
+    def _persist_agent_shell_sessions(self) -> None:
+        sessions = getattr(self, "_agent_shell_sessions", None)
+        if not isinstance(sessions, dict):
+            return
+
+        payload: dict[str, dict[str, str]] = {}
+        for provider, record in sessions.items():
+            if provider not in _AGENT_SHELL_PROVIDERS or not isinstance(record, dict):
+                continue
+            stored: dict[str, str] = {}
+            for key in ("provider_session_id", "last_utterance", "last_response"):
+                value = record.get(key)
+                if isinstance(value, str) and value:
+                    stored[key] = value
+            if stored:
+                payload[provider] = stored
+
+        try:
+            self._save_preference(_AGENT_SHELL_OVERLAY_SNAPSHOTS_PREF, payload)
+        except Exception:
+            logger.warning("Failed to save Agent Shell overlay snapshots", exc_info=True)
+
     def _agent_shell_session_record(self, provider: str) -> dict[str, str | None]:
         sessions = getattr(self, "_agent_shell_sessions", None)
         if sessions is None:
-            sessions = {}
+            sessions = self._load_agent_shell_sessions()
             self._agent_shell_sessions = sessions
         record = sessions.get(provider)
         if not isinstance(record, dict):
-            record = {"spoke_session_id": None, "provider_session_id": None}
+            record = {
+                "spoke_session_id": None,
+                "provider_session_id": None,
+                "last_utterance": None,
+                "last_response": None,
+            }
             sessions[provider] = record
         spoke_session_id = record.get("spoke_session_id")
         manager = getattr(self, "_agent_backend_manager", None)
@@ -3634,7 +3691,7 @@ class SpokeAppDelegate(NSObject):
         response = record.get("last_response")
         if isinstance(utterance, str) and utterance and isinstance(response, str) and response:
             return utterance, response
-        return None
+        return self._agent_shell_placeholder_snapshot(provider)
 
     def _remember_agent_shell_overlay_snapshot(
         self,
@@ -3647,6 +3704,7 @@ class SpokeAppDelegate(NSObject):
         record = self._agent_shell_session_record(provider)
         record["last_utterance"] = utterance
         record["last_response"] = response
+        self._persist_agent_shell_sessions()
 
     def _agent_shell_state(self, provider: str) -> AgentShellState:
         record = self._agent_shell_session_record(provider)
@@ -3670,6 +3728,7 @@ class SpokeAppDelegate(NSObject):
             record["spoke_session_id"] = session_id
         if isinstance(provider_session_id, str) and provider_session_id:
             record["provider_session_id"] = provider_session_id
+            self._persist_agent_shell_sessions()
 
     def _agent_backend_presentation_state(
         self,
@@ -5088,6 +5147,27 @@ class SpokeAppDelegate(NSObject):
             ],
         }
 
+    def _repaint_visible_command_overlay_for_current_route(self) -> None:
+        overlay = getattr(self, "_command_overlay", None)
+        if overlay is None or not getattr(overlay, "_visible", False):
+            return
+
+        snapshot = self._last_command_overlay_snapshot()
+        if snapshot is None:
+            return
+
+        utterance, response = snapshot
+        try:
+            self._sync_command_overlay_brightness(immediate=True)
+            overlay.set_utterance(utterance)
+            overlay.set_response_text(_command_overlay_recall_preview(response))
+            overlay.finish()
+            detector = getattr(self, "_detector", None)
+            if detector is not None:
+                detector.command_overlay_active = True
+        except Exception:
+            logger.exception("Repaint command overlay after Agent Shell selection failed")
+
     def _apply_agent_shell_selection(self, provider: str) -> None:
         provider = provider if provider in {"off", "codex"} else "off"
         self._agent_shell_provider = provider
@@ -5095,6 +5175,7 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             label = "off" if provider == "off" else provider.title()
             self._menubar.set_status_text(f"Agent Shell: {label}")
+        self._repaint_visible_command_overlay_for_current_route()
 
     def _persist_launch_target_selection(self, target_id: str) -> bool:
         return save_selected_launch_target(target_id)

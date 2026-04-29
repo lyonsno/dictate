@@ -752,10 +752,12 @@ class TestAgentShellDelegateDispatch:
             }
         ]
         delegate._command_client.stream_command_events.assert_not_called()
-        assert delegate._agent_shell_sessions["codex"] == {
-            "spoke_session_id": "agent-backend-codex-1",
-            "provider_session_id": "codex-provider-session-1",
-        }
+        assert delegate._agent_shell_sessions["codex"]["spoke_session_id"] == (
+            "agent-backend-codex-1"
+        )
+        assert delegate._agent_shell_sessions["codex"]["provider_session_id"] == (
+            "codex-provider-session-1"
+        )
         calls = delegate.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
         assert calls[0].args[0] == "commandUtteranceReady:"
         assert calls[-1].args[0] == "commandComplete:"
