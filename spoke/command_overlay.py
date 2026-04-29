@@ -1084,6 +1084,7 @@ class CommandOverlay(NSObject):
         self._materialization_progress = 1.0
         self._materialization_direction = 1
         self._materialization_final_shell_config: dict | None = None
+        self._deferred_materialization_shell_config: dict | None = None
         self._compositor_registry = None
         self._fullscreen_compositor = None
         self._force_backdrop_frame_callback = False
@@ -2787,6 +2788,7 @@ class CommandOverlay(NSObject):
     def _start_materialization_animation(self, final_shell_config: dict, *, direction: int = 1) -> None:
         """Animate the compositor geometry from/to a pressure slit."""
         self._cancel_materialization_animation()
+        self._deferred_materialization_shell_config = None
         self._materialization_final_shell_config = dict(final_shell_config)
         self._materialization_direction = 1 if direction >= 0 else -1
         self._materialization_progress = 0.0 if self._materialization_direction > 0 else 1.0
@@ -2895,6 +2897,23 @@ class CommandOverlay(NSObject):
         if content is None:
             return
         state = _materialization_fill_state(progress)
+        if getattr(self, "_materialization_direction", 1) < 0:
+            # On dismiss, the local material body should vanish before the
+            # compositor slit closes. Otherwise the shrinking compositor shell
+            # can expose this layer as a dark backing plate.
+            p = _clamp01(progress)
+            if p <= 0.90:
+                remaining = 0.0
+            else:
+                remaining = 1.0 - _smoothstep((1.0 - p) / 0.10)
+            state = {
+                "opacity": remaining,
+                "height_frac": _lerp(
+                    _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
+                    1.0,
+                    remaining,
+                ),
+            }
         try:
             content_frame = content.frame()
             f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
@@ -3203,6 +3222,22 @@ class CommandOverlay(NSObject):
         if fill_layer is not None and hasattr(fill_layer, "setHidden_"):
             fill_layer.setHidden_(False)
         self._fill_hidden_until_signature = None
+        self._start_deferred_materialization_if_ready()
+
+    def _start_deferred_materialization_if_ready(self) -> None:
+        if not self._optical_fill_ready():
+            return
+        if getattr(self, "_pending_fill_image_signature", None) is not None:
+            return
+        if getattr(self, "_materialization_timer", None) is not None:
+            return
+        if getattr(self, "_fullscreen_compositor", None) is None:
+            return
+        shell_config = getattr(self, "_deferred_materialization_shell_config", None)
+        if shell_config is None:
+            return
+        self._deferred_materialization_shell_config = None
+        self._start_materialization_animation(dict(shell_config))
 
     def _apply_ridge_masks(self, width: float, height: float) -> None:
         """Compute SDF and apply ridge mask + build fill image.
@@ -3708,12 +3743,19 @@ class CommandOverlay(NSObject):
                     "_suppress_stale_fill_until_ready",
                     False,
                 )
+                self._materialization_progress = 0.0
+                self._deferred_materialization_shell_config = dict(final_shell_config)
                 self._suppress_stale_fill_until_ready = True
                 try:
                     self._apply_surface_theme()
                 finally:
                     self._suppress_stale_fill_until_ready = suppress_stale_fill
-                self._start_materialization_animation(final_shell_config)
+                self._start_deferred_materialization_if_ready()
+                if getattr(self, "_deferred_materialization_shell_config", None) is not None:
+                    try:
+                        compositor.update_shell_config(start_shell_config)
+                    except Exception:
+                        logger.debug("Failed to hold command materialization slit", exc_info=True)
                 logger.info("Command overlay: full-screen compositor started")
             else:
                 logger.info("Command overlay: full-screen compositor failed to start")

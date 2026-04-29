@@ -728,6 +728,79 @@ class TestOpticalShellMaterialization:
 
         overlay._cancel_pulse.assert_called_once()
 
+    def test_optical_start_defers_materialization_until_fill_image_is_ready(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: None)
+        overlay._fill_hidden_until_signature = ("pending-fill",)
+        overlay._start_materialization_animation = MagicMock()
+
+        import spoke.fullscreen_compositor as fullscreen_compositor
+
+        monkeypatch.setattr(
+            fullscreen_compositor,
+            "start_overlay_compositor",
+            lambda **_kwargs: MagicMock(),
+        )
+
+        overlay._start_fullscreen_compositor()
+
+        overlay._start_materialization_animation.assert_not_called()
+        assert overlay._materialization_progress == pytest.approx(0.0)
+        assert overlay._deferred_materialization_shell_config is not None
+
+    def test_fill_image_ready_starts_deferred_materialization_from_slit(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._deferred_materialization_shell_config = dict(shell_config)
+        overlay._materialization_progress = 0.0
+        overlay._desired_fill_image_signature = ("sig",)
+        overlay._pending_fill_image_signature = ("sig",)
+        overlay._fill_hidden_until_signature = ("sig",)
+        overlay._start_materialization_animation = MagicMock()
+
+        overlay.fillImageReady_(
+            {
+                "signature": ("sig",),
+                "total_w": 680.0,
+                "total_h": 160.0,
+                "scale": 2.0,
+                "image": "fill-image",
+                "payload": b"payload",
+                "has_compositor": True,
+            }
+        )
+
+        overlay._start_materialization_animation.assert_called_once_with(shell_config)
+        assert overlay._deferred_materialization_shell_config is None
+
+    def test_reverse_materialization_hides_fill_before_warp_slit_closes(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+
+        overlay._apply_materialization_fill_state(0.90)
+
+        overlay._fill_layer.setOpacity_.assert_called_with(0.0)
+        overlay._fill_layer.setValue_forKeyPath_.assert_any_call(
+            mod._OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
+            "transform.scale.y",
+        )
+
 
 class TestShowFinishHide:
     """Test overlay lifecycle state transitions."""
