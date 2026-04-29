@@ -3712,11 +3712,6 @@ class SpokeAppDelegate(NSObject):
                 session_id = launched.get("id") if isinstance(launched, dict) else None
                 if not isinstance(session_id, str) or not session_id:
                     raise RuntimeError(f"{label} did not return a Spoke session id")
-                self.performSelectorOnMainThread_withObject_waitUntilDone_(
-                    "commandToken:",
-                    {"token": token, "text": f"Started {label} session {session_id}.\n"},
-                    False,
-                )
 
                 session = launched
                 while token == self._transcription_token:

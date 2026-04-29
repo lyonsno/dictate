@@ -14,6 +14,11 @@ from typing import Any, Callable
 
 _ALLOWED_PROVIDERS = {"codex"}
 _BILLING_CREDENTIAL_ENV = ("OPENAI_" + "API_KEY", "CODEX_" + "API_KEY")
+_CODEX_CANDIDATE_PATHS = (
+    "/opt/homebrew/bin/codex",
+    "/usr/local/bin/codex",
+    os.path.expanduser("~/.local/bin/codex"),
+)
 
 
 class AgentBackendUnavailable(RuntimeError):
@@ -44,6 +49,49 @@ def _subscription_only_env() -> dict[str, str]:
     for name in _BILLING_CREDENTIAL_ENV:
         env.pop(name, None)
     return env
+
+
+def _executable_file(path: str) -> bool:
+    return os.path.isfile(path) and os.access(path, os.X_OK)
+
+
+def _resolve_codex_path(env: dict[str, str] | None = None) -> str | None:
+    env = env or os.environ
+    override = env.get("SPOKE_CODEX_PATH")
+    if isinstance(override, str) and override.strip():
+        candidate = override.strip()
+        if _executable_file(candidate):
+            return candidate
+
+    path_value = env.get("PATH")
+    found = (
+        shutil.which("codex", path=path_value)
+        if isinstance(path_value, str) and path_value
+        else shutil.which("codex")
+    )
+    if found:
+        return found
+
+    for candidate in _CODEX_CANDIDATE_PATHS:
+        if _executable_file(candidate):
+            return candidate
+
+    try:
+        result = subprocess.run(
+            ["/bin/zsh", "-lc", "command -v codex"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=5,
+            env=env,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    candidate = (result.stdout or "").strip().splitlines()[0:1]
+    if candidate and _executable_file(candidate[0]):
+        return candidate[0]
+    return None
 
 
 def _codex_login_status(codex_path: str, env: dict[str, str]) -> str:
@@ -123,10 +171,10 @@ def _run_codex_cli(
     resume_id: str | None,
     cancel_check: Callable[[], bool] | None,
 ) -> AgentBackendRunResult:
-    codex_path = shutil.which("codex")
+    env = _subscription_only_env()
+    codex_path = _resolve_codex_path(env)
     if not codex_path:
         raise AgentBackendUnavailable("Codex CLI is not installed or not on PATH")
-    env = _subscription_only_env()
     _require_codex_subscription_login(codex_path, env)
 
     command = _codex_command(

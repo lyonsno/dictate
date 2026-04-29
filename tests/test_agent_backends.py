@@ -64,13 +64,14 @@ class _FakeAgentBackendManager:
 
     def get_session(self, session_id):
         provider = self.launched[-1]["provider"]
+        error = "backend failed" if self.final_state == "failed" else None
         return {
             "id": session_id,
             "provider": provider,
             "state": self.final_state,
             "provider_session_id": f"{provider}-provider-session-1",
             "result": self.result,
-            "error": None,
+            "error": error,
         }
 
     def cancel(self, session_id):
@@ -109,6 +110,23 @@ def _make_agent_shell_delegate(main_module):
 
 
 class TestAgentBackendManager:
+    def test_codex_resolution_checks_homebrew_path_when_gui_path_is_thin(
+        self, monkeypatch
+    ):
+        from spoke.agent_backends import _resolve_codex_path
+
+        monkeypatch.setattr(
+            "spoke.agent_backends.shutil.which",
+            lambda _name, *args, **kwargs: None,
+        )
+        monkeypatch.setattr(
+            "spoke.agent_backends.os.path.isfile",
+            lambda path: path == "/opt/homebrew/bin/codex",
+        )
+        monkeypatch.setattr("spoke.agent_backends.os.access", lambda _path, _mode: True)
+
+        assert _resolve_codex_path() == "/opt/homebrew/bin/codex"
+
     def test_codex_backend_env_strips_billing_credentials(self, monkeypatch):
         from spoke.agent_backends import _subscription_only_env
 
@@ -458,7 +476,7 @@ class TestAgentShellMenuState:
 
 
 class TestAgentShellDelegateDispatch:
-    def test_send_text_routes_active_agent_shell_to_sdk_manager(
+    def test_send_text_routes_active_agent_shell_to_backend_manager(
         self, main_module, monkeypatch
     ):
         monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
@@ -485,6 +503,26 @@ class TestAgentShellDelegateDispatch:
         assert calls[0].args[0] == "commandUtteranceReady:"
         assert calls[-1].args[0] == "commandComplete:"
         assert calls[-1].args[1]["response"] == "Patch looks good."
+
+    def test_backend_failure_does_not_claim_session_started_first(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
+        delegate = _make_agent_shell_delegate(main_module)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = _FakeAgentBackendManager(final_state="failed")
+
+        delegate._send_text_as_command("inspect the failing test")
+
+        calls = delegate.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+        token_texts = [
+            call.args[1]["text"]
+            for call in calls
+            if call.args[0] == "commandToken:" and "text" in call.args[1]
+        ]
+        assert not any("Started Codex session" in text for text in token_texts)
+        assert calls[-1].args[0] == "commandFailed:"
+        assert calls[-1].args[1]["error"] == "backend failed"
 
     def test_epistaxis_shaped_text_stays_on_assistant_path_not_provider(
         self, main_module, monkeypatch
