@@ -852,10 +852,10 @@ class TestConcurrencyContract:
 
         assert sleeps[:2] == [0.15, 0.3]
 
-    def test_preview_loop_batch_uses_slow_cadence_while_command_overlay_visible(
+    def test_preview_loop_batch_uses_fast_cadence_while_command_overlay_visible(
         self, main_module, monkeypatch
     ):
-        """Dual-overlay recording should heavily space local preview inference."""
+        """Dual-overlay recording should stress the normal local preview cadence."""
         d = _make_delegate(main_module, monkeypatch)
         d._preview_backend = "local"
         d._preview_active = True
@@ -887,7 +887,8 @@ class TestConcurrencyContract:
         assert d._capture.get_buffer.call_count == 2
         d._preview_done.set.assert_called_once_with()
         assert sleeps[0] == 0.15
-        assert sleeps[1] == main_module._COMMAND_OVERLAY_LOCAL_PREVIEW_INTERVAL_S
+        assert main_module._COMMAND_OVERLAY_LOCAL_PREVIEW_INTERVAL_S == 0.3
+        assert sleeps[1] == main_module._LOCAL_PREVIEW_INTERVAL_S
 
     def test_preview_loop_batch_uses_local_inference_lock_and_signals_done(
         self, main_module, monkeypatch
