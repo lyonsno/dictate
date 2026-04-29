@@ -763,6 +763,60 @@ class TestAgentShellDelegateDispatch:
         assert calls[-1].args[0] == "commandComplete:"
         assert calls[-1].args[1]["response"] == "Patch looks good."
 
+    def test_agent_shell_transcript_survives_deferred_utterance_overlay_setup(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
+        delegate = _make_agent_shell_delegate(main_module)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = _FakeAgentBackendManager(
+            result="Patch looks good."
+        )
+        calls = []
+        pending_utterance = None
+
+        def perform(selector, payload, wait):
+            nonlocal pending_utterance
+            calls.append((selector, payload, wait))
+            if selector == "commandUtteranceReady:":
+                pending_utterance = payload
+                return
+            if selector == "commandComplete:" and pending_utterance is not None:
+                delegate.commandUtteranceReady_(pending_utterance)
+                pending_utterance = None
+            method_name = selector.replace(":", "_")
+            method = getattr(delegate, method_name, None)
+            if callable(method):
+                method(payload)
+
+        delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = perform
+
+        delegate._send_text_as_command("inspect the failing test")
+
+        assert delegate._agent_shell_sessions["codex"]["provider_session_id"] == (
+            "codex-provider-session-1"
+        )
+        assert delegate._agent_shell_sessions["codex"]["last_utterance"] == (
+            "inspect the failing test"
+        )
+        assert delegate._agent_shell_sessions["codex"]["last_response"] == (
+            "Patch looks good."
+        )
+        assert delegate._save_preference.call_args_list[-1].args == (
+            "agent_shell_overlay_snapshots",
+            {
+                "codex": {
+                    "provider_session_id": "codex-provider-session-1",
+                    "last_utterance": "inspect the failing test",
+                    "last_response": "Patch looks good.",
+                }
+            },
+        )
+        assert any(
+            call[0] == "commandComplete:" and call[1]["response"] == "Patch looks good."
+            for call in calls
+        )
+
     def test_backend_failure_does_not_claim_session_started_first(
         self, main_module, monkeypatch
     ):

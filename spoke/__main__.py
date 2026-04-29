@@ -3868,6 +3868,7 @@ class SpokeAppDelegate(NSObject):
             return
         self._command_turn_route = "agent_shell"
         self._command_turn_provider = provider
+        self._command_turn_token = token
 
         def _run() -> None:
             label = _agent_shell_provider_label(provider)
@@ -3972,6 +3973,9 @@ class SpokeAppDelegate(NSObject):
         self._transcribing = True
         self._command_tool_used_tts = False
         self._transcribe_start = time.monotonic()
+        self._command_turn_token = token
+        self._command_turn_route = "local"
+        self._command_turn_provider = None
 
         if self._menubar is not None:
             self._menubar.set_status_text("Sending to assistant…")
@@ -4166,6 +4170,9 @@ class SpokeAppDelegate(NSObject):
 
         transcribe_ms = (time.monotonic() - self._transcribe_start) * 1000
         logger.info("Command utterance: %r (%.0fms)", utterance, transcribe_ms)
+        self._command_turn_token = token
+        self._command_turn_route = "local"
+        self._command_turn_provider = None
 
         # Show the utterance in the input overlay before hiding it
         self.performSelectorOnMainThread_withObject_waitUntilDone_(
@@ -4320,8 +4327,10 @@ class SpokeAppDelegate(NSObject):
         self._command_streaming_text = ""
         self._pending_command_approval_active = False
         self._pending_command_approval_request = None
-        self._command_turn_route = "local"
-        self._command_turn_provider = None
+        if getattr(self, "_command_turn_token", None) != payload["token"]:
+            self._command_turn_token = payload["token"]
+            self._command_turn_route = "local"
+            self._command_turn_provider = None
         self._detector.approval_active = False
         # Hide the input overlay
         if self._overlay is not None:
