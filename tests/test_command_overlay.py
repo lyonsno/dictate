@@ -555,16 +555,16 @@ class TestOpticalShellMaterialization:
 
         assert pinch["content_width_points"] > base["content_width_points"]
         assert pinch["content_height_points"] > base["content_height_points"] * 0.50
-        assert pinch["x_squeeze"] > 0.0
-        assert pinch["y_squeeze"] > 0.0
-        assert pinch["ring_amplitude_points"] > 0.0
-        assert pinch["tail_amplitude_points"] > 0.0
-        assert pinch["x_squeeze"] == pytest.approx(2.32 * 0.25, rel=0.20)
-        assert rebound["x_squeeze"] < 0.0
-        assert rebound["ring_amplitude_points"] < 0.0
-        assert abs(rebound["x_squeeze"]) < abs(pinch["x_squeeze"])
-        assert rest["x_squeeze"] == pytest.approx(0.0)
+        assert pinch["warp_mode"] == pytest.approx(1.0)
+        assert pinch["scar_amount"] > 0.0
+        assert pinch["scar_amount"] == pytest.approx(0.25, rel=0.20)
+        assert rebound["scar_amount"] < 0.0
+        assert abs(rebound["scar_amount"]) < abs(pinch["scar_amount"])
+        assert rest["scar_amount"] == pytest.approx(0.0)
+        assert pinch["x_squeeze"] == pytest.approx(1.0)
+        assert pinch["y_squeeze"] == pytest.approx(1.0)
         assert rest["ring_amplitude_points"] == pytest.approx(0.0)
+        assert rest["tail_amplitude_points"] == pytest.approx(0.0)
         assert pinch["cleanup_blur_radius_points"] == pytest.approx(0.0)
         assert pinch["mip_blur_strength"] == pytest.approx(0.0)
 

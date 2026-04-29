@@ -156,6 +156,8 @@ struct WarpParams {{
     float xSqueeze;
     float ySqueeze;
     float mipBlurStrength; // 0 = crisp level-0 sampling, 1 = material blur LOD
+    float warpMode; // 0 = material shell, 1 = seam-tension scar
+    float scarAmount; // signed: positive pinches inward, negative rebounds outward
 }};
 
 float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
@@ -220,6 +222,30 @@ kernel void opticalShellWarp(
         return;
     }}
 
+    float scaleX = 1.0f;
+    float scaleY = 1.0f;
+    float2 result = d;
+    if (params.warpMode > 0.5f) {{
+        // Seam-tension scar: a dismiss-only displacement field, not the
+        // material-shell fisheye. Positive scarAmount makes content appear to
+        // pinch toward the sealed horizontal seam; negative amount rebounds it
+        // outward before settling.
+        float2 extent = max(halfRect, float2(1.0f, 1.0f));
+        float x01 = clamp(abs(p.x) / extent.x, 0.0f, 1.0f);
+        float y01 = clamp(abs(p.y) / extent.y, 0.0f, 1.0f);
+        float xFalloff = 1.0f - smoothstep(0.70f, 1.0f, x01);
+        float yFalloff = 1.0f - smoothstep(0.15f, 1.0f, y01);
+        float field = xFalloff * yFalloff;
+        float seamFocus = 1.0f - smoothstep(0.0f, 0.34f, y01);
+        float sideFocus = 1.0f - smoothstep(0.0f, 0.82f, x01);
+        float amount = clamp(params.scarAmount, -1.0f, 1.0f);
+        float verticalGrip = mix(0.055f, 0.20f, seamFocus);
+        float horizontalGrip = mix(0.020f, 0.070f, sideFocus) * (0.35f + 0.65f * seamFocus);
+        float2 displacement = p * float2(horizontalGrip, verticalGrip) * amount * field;
+        result = d + displacement;
+        scaleX = 1.0f + horizontalGrip * amount * field;
+        scaleY = 1.0f + verticalGrip * amount * field;
+    }} else {{
     float curveBoost = min(
         {_WARP_CURVEBOOST_CAP}f,
         max(0.0f, (params.coreMagnification - 1.0f) * {_WARP_CURVEBOOST_MAG_SCALE}f)
@@ -235,11 +261,11 @@ kernel void opticalShellWarp(
     float sourceField01 = 1.0f - depthRemap(1.0f - field01, curveBoost);
     float scale = sourceField01 / field01;
 
-    float scaleX = pow(max(scale, 0.0f), params.xSqueeze);
-    float scaleY = pow(max(scale, 0.0f), params.ySqueeze);
+    scaleX = pow(max(scale, 0.0f), params.xSqueeze);
+    scaleY = pow(max(scale, 0.0f), params.ySqueeze);
     float2 warped = c + p * float2(scaleX, scaleY);
 
-    float2 result = warped;
+    result = warped;
     if (capsuleSdf > 0.0f) {{
         // Exterior: blend toward boundary warp scale
         float probeRaw = clamp(1.0f - 0.15f, 0.0f, 1.0f);
@@ -253,6 +279,7 @@ kernel void opticalShellWarp(
         t = t * t;
         float2 boundaryWarped = c + p * float2(probeSX, probeSY);
         result = mix(d, boundaryWarped, t * 0.50f);
+    }}
     }}
     result = clamp(result, float2(0.0f), float2(params.width, params.height));
 
@@ -328,7 +355,7 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-_WARP_PARAMS_FORMAT = "21f"
+_WARP_PARAMS_FORMAT = "23f"
 _WARP_PARAMS_SIZE = struct.calcsize(_WARP_PARAMS_FORMAT)
 
 
@@ -361,6 +388,8 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         _shell_x_squeeze(shell_config),
         _shell_y_squeeze(shell_config),
         float(shell_config.get("mip_blur_strength", 1.0)),
+        float(shell_config.get("warp_mode", 0.0)),
+        float(shell_config.get("scar_amount", 0.0)),
     )
 
 

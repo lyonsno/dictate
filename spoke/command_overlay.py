@@ -682,12 +682,14 @@ def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
     config["core_magnification"] = 1.0
     config["cleanup_blur_radius_points"] = 0.0
     config["mip_blur_strength"] = 0.0
-    config["x_squeeze"] = 2.32 * amount
-    config["y_squeeze"] = 1.52 * amount
+    config["warp_mode"] = 1.0
+    config["scar_amount"] = amount
+    config["x_squeeze"] = 1.0
+    config["y_squeeze"] = 1.0
     if "ring_amplitude_points" in config:
-        config["ring_amplitude_points"] = abs(float(config["ring_amplitude_points"])) * 0.88 * amount
+        config["ring_amplitude_points"] = 0.0
     if "tail_amplitude_points" in config:
-        config["tail_amplitude_points"] = abs(float(config["tail_amplitude_points"])) * 0.72 * amount
+        config["tail_amplitude_points"] = 0.0
     config["continuous_present"] = True
     return config
 

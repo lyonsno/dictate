@@ -80,6 +80,23 @@ def test_pack_warp_params_uses_shell_specific_mip_blur_strength():
     assert values[20] == pytest.approx(0.0)
 
 
+def test_pack_warp_params_uses_shell_specific_scar_mode_controls():
+    payload = metal_warp._pack_warp_params(
+        1440.0,
+        900.0,
+        {
+            "content_width_points": 640.0,
+            "content_height_points": 120.0,
+            "corner_radius_points": 20.0,
+            "warp_mode": 1.0,
+            "scar_amount": -0.25,
+        },
+    )
+    values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, payload)
+    assert values[21] == pytest.approx(1.0)
+    assert values[22] == pytest.approx(-0.25)
+
+
 def test_warp_dispatch_box_respects_shell_specific_bleed_zone_frac():
     wide = metal_warp._warp_dispatch_box(
         1440.0,
