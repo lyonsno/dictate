@@ -2114,7 +2114,7 @@ class TestGeometryCaps:
 
         overlay._apply_ridge_masks.assert_called_once_with(
             mod._OVERLAY_WIDTH,
-            pytest.approx(304.0),
+            pytest.approx(320.0),
         )
 
     def test_update_layout_sends_display_local_shell_center_to_compositor(
@@ -2187,8 +2187,9 @@ class TestGeometryCaps:
 
         doc_frame = overlay._text_view.setFrame_.call_args[0][0]
         assert doc_frame.size.width == pytest.approx(mod._OVERLAY_WIDTH - 24)
-        assert doc_frame.size.height == pytest.approx(304.0 - 16)
+        assert doc_frame.size.height == pytest.approx(296.0)
         assert container.size == (mod._OVERLAY_WIDTH - 24, 1.0e7)
+        overlay._text_view.setTextContainerInset_.assert_called()
 
     def test_update_layout_gives_agent_shell_chrome_top_and_bottom_headroom(
         self, mock_pyobjc, monkeypatch
@@ -2197,7 +2198,8 @@ class TestGeometryCaps:
         monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
         overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
         overlay._text_view.layoutManager.return_value = _FakeLayoutManager(120.0)
-        overlay._text_view.textContainer.return_value = object()
+        container = _FakeTextContainer()
+        overlay._text_view.textContainer.return_value = container
         overlay._agent_shell_header_label.isHidden.return_value = False
         overlay._agent_shell_footer_label.isHidden.return_value = False
         string_obj = MagicMock()
@@ -2211,7 +2213,7 @@ class TestGeometryCaps:
         header_frame = overlay._agent_shell_header_label.setFrame_.call_args[0][0]
         footer_frame = overlay._agent_shell_footer_label.setFrame_.call_args[0][0]
 
-        assert content_frame.size.height == pytest.approx(196.0)
+        assert content_frame.size.height == pytest.approx(212.0)
         assert footer_frame.origin.y >= 8.0
         assert (
             header_frame.origin.y + header_frame.size.height
@@ -2222,6 +2224,10 @@ class TestGeometryCaps:
         assert header_frame.origin.x >= 28.0
         assert footer_frame.origin.x >= 28.0
         assert scroll_frame.origin.x >= 28.0
+        doc_frame = overlay._text_view.setFrame_.call_args[0][0]
+        assert doc_frame.size.width == pytest.approx(scroll_frame.size.width)
+        assert container.size == (scroll_frame.size.width, 1.0e7)
+        overlay._text_view.setTextContainerInset_.assert_called()
         assert (
             scroll_frame.origin.y
             >= footer_frame.origin.y + footer_frame.size.height + 10.0
