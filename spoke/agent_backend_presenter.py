@@ -184,7 +184,7 @@ def _identity_header_label(name: str, source: str, confidence: str) -> str:
     if source == "epistaxis-session-id":
         return f"Topos: {name}"
     if source == "epistaxis-worktree":
-        return f"Lane: {name}"
+        return f"Worktree: {name}"
     if source == "epistaxis-archive-metadata":
         return f"Likely lane: {name}"
     if confidence == "weak":

@@ -821,7 +821,7 @@ class TestAgentBackendPresentation:
             for action in actions
         )
 
-    def test_presenter_labels_worktree_identity_as_lane_context(self):
+    def test_presenter_labels_worktree_identity_as_worktree_context(self):
         from spoke.agent_backend_presenter import (
             AgentBackendPresentationState,
             present_backend_events,
@@ -846,7 +846,7 @@ class TestAgentBackendPresentation:
         assert [(action.kind, action.text) for action in actions] == [
             (
                 "metadata_header",
-                "Lane: codex-agent-sdk-partyline-spinal-tap-0428",
+                "Worktree: codex-agent-sdk-partyline-spinal-tap-0428",
             )
         ]
 
@@ -882,7 +882,7 @@ class TestAgentBackendPresentation:
             state,
         )
 
-        assert first[-1].text == "Lane: codex-agent-sdk-partyline-spinal-tap-0428"
+        assert first[-1].text == "Worktree: codex-agent-sdk-partyline-spinal-tap-0428"
         assert second[-1].text == "Topos: codex-agent-sdk-partyline-spinal-tap-0428"
 
     def test_presenter_does_not_infer_topos_from_tool_output_without_identity_event(self):
@@ -1356,7 +1356,7 @@ class TestAgentShellDelegateDispatch:
         )
         assert any(
             call.args[0] == "agentShellHeader:"
-            and call.args[1]["text"] == "Lane: codex-spoke-spinal-tap"
+            and call.args[1]["text"] == "Worktree: codex-spoke-spinal-tap"
             for call in calls
         )
         assert calls[-1].args[0] == "commandComplete:"
