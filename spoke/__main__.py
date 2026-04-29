@@ -44,6 +44,7 @@ from Foundation import NSMakeRect, NSObject, NSTimer
 _NS_COMMAND_KEY_MASK = 1 << 20
 _NS_KEY_DOWN_MASK = 1 << 10
 _RECORDING_LOAD_SHED_RELEASE_DELAY_S = 0.36
+_AGENT_SHELL_PROVIDERS = {"claude", "codex"}
 
 # Keep _PastableTextField as an alias so existing alloc() calls don't break.
 _PastableTextField = NSTextField
@@ -95,6 +96,14 @@ def _format_command_http_error(exc) -> str:
     if detail:
         return f"{base} — {detail}"
     return base
+
+
+def _agent_shell_provider_label(provider: str | None) -> str:
+    if provider == "claude":
+        return "Claude Agent SDK"
+    if provider == "codex":
+        return "Codex SDK"
+    return "Agent Shell"
 
 
 def _run_modal_with_paste(alert) -> int:
@@ -152,6 +161,7 @@ from .handsfree import (
 from .scene_capture import SceneCaptureCache
 from .optical_shell_metrics import OpticalShellMetrics
 from .agent_sdk_operator import AgentSDKManager
+from .agent_shell import AgentShellState, route_agent_shell_input
 from .subagents import SubagentManager, run_search_subagent_query
 from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas, get_tool_schemas
 from .glow import GlowOverlay
@@ -1089,6 +1099,7 @@ class SpokeAppDelegate(NSObject):
             )
             self._agent_sdk_manager = AgentSDKManager()
             self._agent_shell_provider = self._load_preference("agent_shell_provider") or "off"
+            self._agent_shell_sessions: dict[str, dict[str, str | None]] = {}
             # Converge: per-turn attractor carver (same model, OMLX batch parallel)
             self._turn_carver = TurnCarver(
                 base_url=command_url,
@@ -1148,6 +1159,7 @@ class SpokeAppDelegate(NSObject):
             self._subagent_manager = None
             self._agent_sdk_manager = None
             self._agent_shell_provider = "off"
+            self._agent_shell_sessions = {}
 
         # Heartbeat — zombie sweep runs before us, this starts the writer.
         self._heartbeat = HeartbeatManager()
@@ -3575,6 +3587,180 @@ class SpokeAppDelegate(NSObject):
 
     # ── command pathway ────────────────────────────────────
 
+    def _active_agent_shell_provider(self) -> str | None:
+        provider = getattr(self, "_agent_shell_provider", "off") or "off"
+        if provider not in _AGENT_SHELL_PROVIDERS:
+            return None
+        if getattr(self, "_agent_sdk_manager", None) is None:
+            return None
+        return provider
+
+    def _agent_shell_session_record(self, provider: str) -> dict[str, str | None]:
+        sessions = getattr(self, "_agent_shell_sessions", None)
+        if sessions is None:
+            sessions = {}
+            self._agent_shell_sessions = sessions
+        record = sessions.get(provider)
+        if not isinstance(record, dict):
+            record = {"spoke_session_id": None, "provider_session_id": None}
+            sessions[provider] = record
+        spoke_session_id = record.get("spoke_session_id")
+        manager = getattr(self, "_agent_sdk_manager", None)
+        if isinstance(spoke_session_id, str) and spoke_session_id and manager is not None:
+            latest = manager.get_session(spoke_session_id)
+            if isinstance(latest, dict):
+                provider_session_id = latest.get("provider_session_id")
+                if isinstance(provider_session_id, str) and provider_session_id:
+                    record["provider_session_id"] = provider_session_id
+        return record
+
+    def _agent_shell_state(self, provider: str) -> AgentShellState:
+        record = self._agent_shell_session_record(provider)
+        spoke_session_id = record.get("spoke_session_id")
+        provider_session_id = record.get("provider_session_id")
+        return AgentShellState(
+            active=True,
+            provider=provider,
+            spoke_session_id=spoke_session_id if isinstance(spoke_session_id, str) else None,
+            provider_session_id=(
+                provider_session_id if isinstance(provider_session_id, str) else None
+            ),
+            cwd=os.getcwd(),
+        )
+
+    def _remember_agent_shell_session(self, provider: str, session: dict) -> None:
+        session_id = session.get("id")
+        provider_session_id = session.get("provider_session_id")
+        record = self._agent_shell_session_record(provider)
+        if isinstance(session_id, str) and session_id:
+            record["spoke_session_id"] = session_id
+        if isinstance(provider_session_id, str) and provider_session_id:
+            record["provider_session_id"] = provider_session_id
+
+    def _maybe_route_agent_shell_text(self, text: str, token: int) -> bool:
+        provider = self._active_agent_shell_provider()
+        if provider is None:
+            return False
+        decision = route_agent_shell_input(text, self._agent_shell_state(provider))
+        if decision.kind == "provider_message":
+            self._start_agent_shell_provider_turn(decision, token)
+            return True
+        if decision.kind == "mode_control" and decision.control_action == "switch_provider":
+            self._complete_agent_shell_mode_control(decision.provider, token)
+            return True
+        if decision.kind == "epistaxis_verb":
+            logger.info("Agent Shell routed Epistaxis-shaped input away from provider")
+            return False
+        return False
+
+    def _complete_agent_shell_mode_control(self, provider: str | None, token: int) -> None:
+        if provider not in _AGENT_SHELL_PROVIDERS:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandFailed:",
+                {"token": token, "error": "Unknown Agent Shell provider"},
+                False,
+            )
+            return
+        self._apply_agent_shell_selection(provider)
+        label = _agent_shell_provider_label(provider)
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "commandComplete:",
+            {"token": token, "response": f"Agent Shell switched to {label}."},
+            False,
+        )
+
+    def _start_agent_shell_provider_turn(
+        self,
+        decision,
+        token: int,
+    ) -> None:
+        provider = decision.provider
+        manager = getattr(self, "_agent_sdk_manager", None)
+        if provider not in _AGENT_SHELL_PROVIDERS or manager is None:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandFailed:",
+                {"token": token, "error": "Agent Shell provider is not available"},
+                False,
+            )
+            return
+
+        def _run() -> None:
+            label = _agent_shell_provider_label(provider)
+            if self._menubar is not None:
+                self._menubar.set_status_text(f"Sending to {label}…")
+            try:
+                launched = manager.launch(
+                    provider=provider,
+                    prompt=decision.text,
+                    cwd=decision.cwd or os.getcwd(),
+                    resume_id=decision.provider_session_id,
+                )
+                if isinstance(launched, dict):
+                    self._remember_agent_shell_session(provider, launched)
+                session_id = launched.get("id") if isinstance(launched, dict) else None
+                if not isinstance(session_id, str) or not session_id:
+                    raise RuntimeError(f"{label} did not return a Spoke session id")
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "commandToken:",
+                    {"token": token, "text": f"Started {label} session {session_id}.\n"},
+                    False,
+                )
+
+                session = launched
+                while token == self._transcription_token:
+                    latest = manager.get_session(session_id)
+                    if isinstance(latest, dict):
+                        session = latest
+                    state = session.get("state") if isinstance(session, dict) else None
+                    if state in {"completed", "failed", "cancelled"}:
+                        break
+                    time.sleep(0.2)
+
+                if token != self._transcription_token:
+                    manager.cancel(session_id)
+                    return
+
+                if isinstance(session, dict):
+                    self._remember_agent_shell_session(provider, session)
+                    state = session.get("state")
+                    if state == "completed":
+                        response = session.get("result") or f"{label} session completed."
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandComplete:",
+                            {"token": token, "response": str(response)},
+                            False,
+                        )
+                        return
+                    if state == "cancelled":
+                        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                            "commandFailed:",
+                            {"token": token, "error": f"{label} session cancelled"},
+                            False,
+                        )
+                        return
+                    error = session.get("error") or f"{label} session failed"
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "commandFailed:",
+                        {"token": token, "error": str(error)},
+                        False,
+                    )
+                    return
+
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "commandFailed:",
+                    {"token": token, "error": f"{label} returned an invalid session"},
+                    False,
+                )
+            except Exception as exc:
+                logger.exception("Agent Shell provider turn failed")
+                self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                    "commandFailed:",
+                    {"token": token, "error": str(exc)},
+                    False,
+                )
+
+        threading.Thread(target=_run, daemon=True).start()
+
     def _send_text_as_command(self, text: str) -> None:
         """Send pre-transcribed text to the command pathway.
 
@@ -3597,6 +3783,9 @@ class SpokeAppDelegate(NSObject):
             {"token": token, "utterance": text},
             False,
         )
+
+        if self._maybe_route_agent_shell_text(text, token):
+            return
 
         # Stream the command in a background thread
         def _stream():
@@ -3785,6 +3974,9 @@ class SpokeAppDelegate(NSObject):
             {"token": token, "utterance": utterance},
             False,
         )
+
+        if self._maybe_route_agent_shell_text(utterance, token):
+            return
 
         # Step 2: Stream the command response
         full_response = ""

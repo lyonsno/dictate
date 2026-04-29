@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -27,6 +28,84 @@ class _DeferredThread:
 
     def run_now(self):
         self._target(*self._args, **self._kwargs)
+
+
+class _ImmediateThread:
+    """Test thread that executes target synchronously on start()."""
+
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+        self._target = target
+        self._args = args
+        self._kwargs = kwargs or {}
+        self.daemon = daemon
+
+    def start(self):
+        self._target(*self._args, **self._kwargs)
+
+
+class _FakeAgentSDKManager:
+    def __init__(self, *, final_state: str = "completed", result: str = "agent result"):
+        self.final_state = final_state
+        self.result = result
+        self.launched: list[dict] = []
+        self.cancelled: list[str] = []
+
+    def launch(self, **kwargs):
+        self.launched.append(kwargs)
+        provider = kwargs["provider"]
+        return {
+            "id": f"sdk-agent-{provider}-1",
+            "provider": provider,
+            "state": "queued",
+            "provider_session_id": None,
+            "result": None,
+            "error": None,
+        }
+
+    def get_session(self, session_id):
+        provider = self.launched[-1]["provider"]
+        return {
+            "id": session_id,
+            "provider": provider,
+            "state": self.final_state,
+            "provider_session_id": f"{provider}-provider-session-1",
+            "result": self.result,
+            "error": None,
+        }
+
+    def cancel(self, session_id):
+        self.cancelled.append(session_id)
+        return {"id": session_id, "state": "cancelled"}
+
+
+def _make_agent_shell_delegate(main_module):
+    delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+    delegate._transcription_token = 0
+    delegate._transcribing = False
+    delegate._command_tool_used_tts = False
+    delegate._transcribe_start = 0.0
+    delegate._menubar = MagicMock()
+    delegate._detector = MagicMock()
+    delegate._detector.approval_active = False
+    delegate._detector.command_overlay_active = False
+    delegate._command_overlay = None
+    delegate._command_client = MagicMock()
+    delegate._command_client.history = []
+    delegate._command_client.stream_command_events.return_value = [
+        SimpleNamespace(kind="assistant_final", text="assistant response")
+    ]
+    delegate._scene_cache = None
+    delegate._tool_schemas = []
+    delegate._tts_client = None
+    delegate._turn_carver = None
+    delegate._glow = None
+    delegate._overlay = None
+    delegate._narrator = None
+    delegate._agent_shell_sessions = {}
+    delegate._agent_shell_provider = "off"
+    delegate._save_preference = MagicMock()
+    delegate.performSelectorOnMainThread_withObject_waitUntilDone_ = MagicMock()
+    return delegate
 
 
 class TestAgentSDKManager:
@@ -311,3 +390,68 @@ class TestAgentShellMenuState:
                 ("codex", "Codex SDK", True, True),
             ],
         }
+
+
+class TestAgentShellDelegateDispatch:
+    def test_send_text_routes_active_agent_shell_to_sdk_manager(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
+        delegate = _make_agent_shell_delegate(main_module)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_sdk_manager = _FakeAgentSDKManager(result="Patch looks good.")
+
+        delegate._send_text_as_command("inspect the failing test")
+
+        assert delegate._agent_sdk_manager.launched == [
+            {
+                "provider": "codex",
+                "prompt": "inspect the failing test",
+                "cwd": str(Path.cwd()),
+                "resume_id": None,
+            }
+        ]
+        delegate._command_client.stream_command_events.assert_not_called()
+        assert delegate._agent_shell_sessions["codex"] == {
+            "spoke_session_id": "sdk-agent-codex-1",
+            "provider_session_id": "codex-provider-session-1",
+        }
+        calls = delegate.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+        assert calls[0].args[0] == "commandUtteranceReady:"
+        assert calls[-1].args[0] == "commandComplete:"
+        assert calls[-1].args[1]["response"] == "Patch looks good."
+
+    def test_epistaxis_shaped_text_stays_on_assistant_path_not_provider(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
+        delegate = _make_agent_shell_delegate(main_module)
+        delegate._agent_shell_provider = "claude"
+        delegate._agent_sdk_manager = _FakeAgentSDKManager()
+
+        delegate._send_text_as_command("epistaxis zetesis how fares the tyrant state")
+
+        assert delegate._agent_sdk_manager.launched == []
+        delegate._command_client.stream_command_events.assert_called_once()
+        assert (
+            delegate._command_client.stream_command_events.call_args.args[0]
+            == "epistaxis zetesis how fares the tyrant state"
+        )
+
+    def test_provider_switch_is_handled_as_mode_control_not_provider_or_assistant(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
+        delegate = _make_agent_shell_delegate(main_module)
+        delegate._agent_shell_provider = "claude"
+        delegate._agent_sdk_manager = _FakeAgentSDKManager()
+
+        delegate._send_text_as_command("switch to codex")
+
+        assert delegate._agent_shell_provider == "codex"
+        delegate._agent_sdk_manager.launched == []
+        delegate._command_client.stream_command_events.assert_not_called()
+        delegate._save_preference.assert_called_once_with("agent_shell_provider", "codex")
+        calls = delegate.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
+        assert calls[-1].args[0] == "commandComplete:"
+        assert "Agent Shell switched to Codex SDK" in calls[-1].args[1]["response"]
