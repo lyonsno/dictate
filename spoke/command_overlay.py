@@ -76,6 +76,12 @@ _APPROVAL_ACTION_TEXT = "Enter to run  ·  Delete to cancel  ·  speak or type t
 _FADE_IN_S = 0.16
 _ENTRANCE_POP_SCALE = 1.015  # ~1mm overshoot on a 600px overlay
 _ENTRANCE_POP_S = 0.15
+_OPTICAL_MATERIALIZATION_S = 0.34
+_OPTICAL_MATERIALIZATION_BODY_READY = 0.66
+_OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC = 0.06
+_OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC = 0.04
+_OPTICAL_MATERIALIZATION_SPREAD_END = 0.55
+_OPTICAL_MATERIALIZATION_BLOOM_START = 0.50
 _OPTICAL_ENTRANCE_READY_POLL_S = max(
     0.004,
     _env("SPOKE_COMMAND_OPTICAL_ENTRANCE_READY_POLL_S", 1.0 / 120.0),
@@ -309,6 +315,11 @@ def _lerp(start: float, end: float, t: float) -> float:
     return start + (end - start) * t
 
 
+def _smoothstep(progress: float) -> float:
+    t = _clamp01(progress)
+    return t * t * (3.0 - 2.0 * t)
+
+
 def _lerp_color(
     start: tuple[float, float, float],
     end: tuple[float, float, float],
@@ -514,6 +525,47 @@ def _command_optical_shell_config(
         "debug_grid_spacing_points": _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS,
         "cleanup_blur_radius_points": _COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS,
     }
+
+
+def _materialized_optical_shell_config(
+    shell_config: dict,
+    progress: float,
+) -> dict:
+    """Return a transient shell config for fluid entrance/dismissal.
+
+    The materialization path only changes the compositor warp envelope. It does
+    not touch the SDF fill geometry, which keeps entrance animation from
+    rebuilding expensive masks every visible frame.
+    """
+    config = dict(shell_config)
+    p = _clamp01(progress)
+    if p >= 1.0:
+        return config
+
+    base_w = max(float(config.get("content_width_points", 1.0)), 1.0)
+    base_h = max(float(config.get("content_height_points", 1.0)), 1.0)
+    base_radius = max(float(config.get("corner_radius_points", 1.0)), 1.0)
+
+    spread_t = _smoothstep(p / _OPTICAL_MATERIALIZATION_SPREAD_END)
+    bloom_t = _smoothstep(
+        (p - _OPTICAL_MATERIALIZATION_BLOOM_START)
+        / max(1.0 - _OPTICAL_MATERIALIZATION_BLOOM_START, 1e-6)
+    )
+    seed_w = max(24.0, min(base_w * _OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC, 72.0))
+    seed_h = max(3.0, min(base_h * _OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC, 10.0))
+    width = _lerp(seed_w, base_w, spread_t)
+    height = _lerp(seed_h, base_h, bloom_t)
+
+    config["content_width_points"] = width
+    config["content_height_points"] = height
+    config["corner_radius_points"] = min(base_radius, height * 0.5)
+    for key in ("band_width_points", "tail_width_points"):
+        if key in config:
+            config[key] = max(1.0, float(config[key]) * _lerp(0.25, 1.0, p))
+    for key in ("ring_amplitude_points", "tail_amplitude_points"):
+        if key in config:
+            config[key] = float(config[key]) * _lerp(0.35, 1.0, p)
+    return config
 
 
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
@@ -961,6 +1013,11 @@ class CommandOverlay(NSObject):
         self._visual_ready_timer: NSTimer | None = None
         self._visual_ready_wait_started_at = 0.0
         self._visual_ready_brightness_synced = False
+        self._materialization_timer: NSTimer | None = None
+        self._materialization_started_at = 0.0
+        self._materialization_progress = 1.0
+        self._materialization_direction = 1
+        self._materialization_final_shell_config: dict | None = None
         self._compositor_registry = None
         self._fullscreen_compositor = None
         self._force_backdrop_frame_callback = False
@@ -2505,6 +2562,13 @@ class CommandOverlay(NSObject):
 
     def _start_fade_out(self) -> None:
         self._cancel_fade()
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        shell_config = self._display_local_optical_shell_config()
+        if compositor is not None and shell_config is not None:
+            try:
+                self._start_materialization_animation(shell_config, direction=-1)
+            except Exception:
+                logger.debug("Failed to start command materialization dismissal", exc_info=True)
         self._fade_step = 0
         self._fade_from = self._window.alphaValue() if self._window else 1.0
         self._fade_direction = -1
@@ -2557,6 +2621,12 @@ class CommandOverlay(NSObject):
             timer.invalidate()
             self._visual_ready_timer = None
 
+    def _cancel_materialization_animation(self) -> None:
+        timer = getattr(self, "_materialization_timer", None)
+        if timer is not None:
+            timer.invalidate()
+            self._materialization_timer = None
+
     def _cancel_dismiss_animation(self) -> None:
         if self._cancel_timer_anim is not None:
             self._cancel_timer_anim.invalidate()
@@ -2577,6 +2647,7 @@ class CommandOverlay(NSObject):
         self._cancel_backdrop_refresh()
         self._cancel_visual_start()
         self._cancel_visual_ready_start()
+        self._cancel_materialization_animation()
         self._stop_thinking_timer()
 
     def _start_entrance_animation(self) -> None:
@@ -2602,6 +2673,59 @@ class CommandOverlay(NSObject):
         self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             interval, self, "fadeStep:", None, True
         )
+
+    def _start_materialization_animation(self, final_shell_config: dict, *, direction: int = 1) -> None:
+        """Animate the compositor geometry from/to a pressure slit."""
+        self._cancel_materialization_animation()
+        self._materialization_final_shell_config = dict(final_shell_config)
+        self._materialization_direction = 1 if direction >= 0 else -1
+        self._materialization_progress = 0.0 if self._materialization_direction > 0 else 1.0
+        self._materialization_started_at = time.perf_counter()
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is not None:
+            try:
+                compositor.update_shell_config(
+                    _materialized_optical_shell_config(
+                        self._materialization_final_shell_config,
+                        self._materialization_progress,
+                    )
+                )
+            except Exception:
+                logger.debug("Failed to seed command materialization shell", exc_info=True)
+        self._materialization_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0 / _DISMISS_ANIM_FPS,
+            self,
+            "materializationStep:",
+            None,
+            True,
+        )
+        _pin_timer_to_active_run_loop_modes(self._materialization_timer)
+
+    def materializationStep_(self, timer) -> None:
+        if getattr(self, "_materialization_timer", None) is not timer:
+            return
+        final_config = getattr(self, "_materialization_final_shell_config", None)
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if final_config is None or compositor is None:
+            self._cancel_materialization_animation()
+            self._materialization_progress = 1.0
+            return
+        elapsed = max(time.perf_counter() - getattr(self, "_materialization_started_at", 0.0), 0.0)
+        raw = _clamp01(elapsed / _OPTICAL_MATERIALIZATION_S)
+        progress = raw if getattr(self, "_materialization_direction", 1) > 0 else 1.0 - raw
+        self._materialization_progress = progress
+        try:
+            compositor.update_shell_config(
+                _materialized_optical_shell_config(final_config, progress)
+            )
+        except Exception:
+            logger.debug("Failed to update command materialization shell", exc_info=True)
+        if raw >= 1.0:
+            self._cancel_materialization_animation()
+            if getattr(self, "_materialization_direction", 1) > 0:
+                self._materialization_progress = 1.0
+            else:
+                self._materialization_progress = 0.0
 
     def _schedule_visual_start(self) -> None:
         """Defer compositor startup so first paint and text do not block."""
@@ -2665,13 +2789,18 @@ class CommandOverlay(NSObject):
             self._visual_ready_brightness_synced = True
         if not compositor_ready and elapsed < _OPTICAL_ENTRANCE_READY_TIMEOUT_S:
             return
-        if not self._optical_fill_ready():
+        if not self._optical_entrance_ready():
             return
         self._cancel_visual_ready_start()
         self._start_entrance_animation()
 
     def _optical_entrance_ready(self) -> bool:
-        return self._optical_compositor_has_presented() and self._optical_fill_ready()
+        return (
+            self._optical_compositor_has_presented()
+            and self._optical_fill_ready()
+            and getattr(self, "_materialization_progress", 1.0)
+            >= _OPTICAL_MATERIALIZATION_BODY_READY
+        )
 
     def _optical_compositor_has_presented(self) -> bool:
         compositor = getattr(self, "_fullscreen_compositor", None)
@@ -3329,33 +3458,18 @@ class CommandOverlay(NSObject):
         self._stop_fullscreen_compositor()
         try:
             from spoke.fullscreen_compositor import start_overlay_compositor
-            shell_config = self._current_optical_shell_config()
-            if shell_config is None:
+            final_shell_config = self._display_local_optical_shell_config()
+            if final_shell_config is None:
                 return
-            # Add capsule center position in pixel coordinates
-            scale = self._screen.backingScaleFactor() if hasattr(self._screen, "backingScaleFactor") else 2.0
-            screen_frame = self._screen.frame()
-            win_frame = self._window.frame()
-            content_frame = self._content_view.frame()
-            center_x, center_y = _display_local_capsule_center_pixels(
-                screen_frame, win_frame, content_frame, scale
+            start_shell_config = _materialized_optical_shell_config(
+                final_shell_config,
+                0.0,
             )
-            shell_config["center_x"] = center_x
-            shell_config["center_y"] = center_y
-            shell_config["initial_brightness"] = _clamp01(
-                float(getattr(self, "_brightness", 0.0))
-            )
-            # Scale content dimensions to pixel space
-            for k in ("content_width_points", "content_height_points",
-                      "corner_radius_points", "band_width_points",
-                      "tail_width_points"):
-                if k in shell_config:
-                    shell_config[k] = float(shell_config[k]) * scale
             compositor = start_overlay_compositor(
                 screen=self._screen,
                 window=self._window,
                 content_view=self._content_view,
-                shell_config=shell_config,
+                shell_config=start_shell_config,
                 client_id="assistant.command",
                 role="assistant",
                 registry=getattr(self, "_compositor_registry", None),
@@ -3363,7 +3477,7 @@ class CommandOverlay(NSObject):
             if compositor is not None:
                 self._fullscreen_compositor = compositor
                 self._cancel_brightness_sampling()
-                self._brightness_target = shell_config["initial_brightness"]
+                self._brightness_target = final_shell_config["initial_brightness"]
                 self._brightness_sample_tick = (
                     -_BRIGHTNESS_COMPOSITOR_STARTUP_GRACE_TICKS
                 )
@@ -3403,6 +3517,7 @@ class CommandOverlay(NSObject):
                     self._apply_surface_theme()
                 finally:
                     self._suppress_stale_fill_until_ready = suppress_stale_fill
+                self._start_materialization_animation(final_shell_config)
                 logger.info("Command overlay: full-screen compositor started")
             else:
                 logger.info("Command overlay: full-screen compositor failed to start")
@@ -3599,6 +3714,7 @@ class CommandOverlay(NSObject):
             logger.debug("Failed to update punch-through mask", exc_info=True)
 
     def _stop_fullscreen_compositor(self):
+        self._cancel_materialization_animation()
         compositor = getattr(self, "_fullscreen_compositor", None)
         self._fullscreen_compositor = None
         self._enable_text_punchthrough(False)
@@ -3700,6 +3816,33 @@ class CommandOverlay(NSObject):
 
     # ── layout ──────────────────────────────────────────────
 
+    def _display_local_optical_shell_config(self) -> dict | None:
+        shell_config = self._current_optical_shell_config()
+        if shell_config is None:
+            return None
+        scale = self._screen.backingScaleFactor() if hasattr(self._screen, "backingScaleFactor") else 2.0
+        screen_frame = self._screen.frame()
+        win_frame = self._window.frame()
+        content_frame = self._content_view.frame()
+        center_x, center_y = _display_local_capsule_center_pixels(
+            screen_frame, win_frame, content_frame, scale
+        )
+        shell_config["center_x"] = center_x
+        shell_config["center_y"] = center_y
+        shell_config["initial_brightness"] = _clamp01(
+            float(getattr(self, "_brightness", 0.0))
+        )
+        for key in (
+            "content_width_points",
+            "content_height_points",
+            "corner_radius_points",
+            "band_width_points",
+            "tail_width_points",
+        ):
+            if key in shell_config:
+                shell_config[key] = float(shell_config[key]) * scale
+        return shell_config
+
     def _reset_text_geometry(self, visible_height: float) -> None:
         """Keep the document view and text container in sync with overlay size."""
         if self._text_view is None:
@@ -3747,22 +3890,15 @@ class CommandOverlay(NSObject):
                 if shell_config is not None and hasattr(self._backdrop_renderer, "set_live_optical_shell_config"):
                     self._backdrop_renderer.set_live_optical_shell_config(shell_config)
                 compositor = getattr(self, "_fullscreen_compositor", None)
-                if compositor is not None and shell_config is not None:
-                    scale = self._screen.backingScaleFactor() if hasattr(self._screen, "backingScaleFactor") else 2.0
-                    screen_frame = self._screen.frame()
-                    win_frame = self._window.frame()
-                    content_frame = self._content_view.frame()
-                    center_x, center_y = _display_local_capsule_center_pixels(
-                        screen_frame, win_frame, content_frame, scale
-                    )
-                    shell_config["center_x"] = center_x
-                    shell_config["center_y"] = center_y
-                    for k in ("content_width_points", "content_height_points",
-                              "corner_radius_points", "band_width_points",
-                              "tail_width_points"):
-                        if k in shell_config:
-                            shell_config[k] = float(shell_config[k]) * scale
-                    compositor.update_shell_config(shell_config)
+                display_shell_config = self._display_local_optical_shell_config()
+                if compositor is not None and display_shell_config is not None:
+                    self._materialization_final_shell_config = dict(display_shell_config)
+                    if getattr(self, "_materialization_timer", None) is not None:
+                        display_shell_config = _materialized_optical_shell_config(
+                            display_shell_config,
+                            getattr(self, "_materialization_progress", 1.0),
+                        )
+                    compositor.update_shell_config(display_shell_config)
                 if self._visible:
                     self._refresh_backdrop_snapshot()
 

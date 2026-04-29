@@ -358,6 +358,55 @@ class TestDismissAnimation:
         assert overlay._cancel_timer_anim is None
 
 
+class TestOpticalShellMaterialization:
+    """Assistant optical-shell materialization should be geometry-driven."""
+
+    def test_materialization_starts_as_pressure_slit_before_vertical_bloom(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+        base = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "band_width_points": 20.0,
+            "tail_width_points": 12.0,
+            "ring_amplitude_points": 30.0,
+            "tail_amplitude_points": 8.0,
+        }
+
+        seed = mod._materialized_optical_shell_config(base, 0.0)
+        spread = mod._materialized_optical_shell_config(base, 0.50)
+        final = mod._materialized_optical_shell_config(base, 1.0)
+
+        assert seed["center_x"] == pytest.approx(base["center_x"])
+        assert seed["center_y"] == pytest.approx(base["center_y"])
+        assert seed["content_width_points"] < base["content_width_points"] * 0.20
+        assert seed["content_height_points"] < base["content_height_points"] * 0.12
+        assert spread["content_width_points"] > base["content_width_points"] * 0.80
+        assert spread["content_height_points"] < base["content_height_points"] * 0.45
+        assert final == pytest.approx(base)
+        assert base["content_width_points"] == pytest.approx(1200.0)
+
+    def test_optical_entrance_waits_for_body_materialization_before_fade(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        compositor = MagicMock()
+        compositor.presented_count = 1
+        overlay._fullscreen_compositor = compositor
+        overlay._fill_hidden_until_signature = None
+        overlay._materialization_progress = 0.10
+
+        assert overlay._optical_entrance_ready() is False
+
+        overlay._materialization_progress = 0.75
+
+        assert overlay._optical_entrance_ready() is True
+
+
 class TestShowFinishHide:
     """Test overlay lifecycle state transitions."""
 
