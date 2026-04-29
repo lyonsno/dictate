@@ -60,6 +60,7 @@ class OpticalShellMaterialSnapshot:
     core_magnification: float = 1.0
     ring_amplitude_points: float = 0.0
     tail_amplitude_points: float = 0.0
+    mip_blur_strength: float = 1.0
     bleed_zone_frac: float | None = None
     exterior_mix_width_points: float | None = None
     x_squeeze: float | None = None
@@ -1244,6 +1245,7 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
         "core_magnification": snapshot.material.core_magnification,
         "ring_amplitude_points": snapshot.material.ring_amplitude_points,
         "tail_amplitude_points": snapshot.material.tail_amplitude_points,
+        "mip_blur_strength": snapshot.material.mip_blur_strength,
         "cleanup_blur_radius_points": snapshot.material.cleanup_blur_radius_points,
         "debug_visualize": snapshot.material.debug_visualize,
         "debug_grid_spacing_points": snapshot.material.debug_grid_spacing_points,
@@ -1291,6 +1293,7 @@ def _snapshot_from_shell_config(
         core_magnification=float(config.get("core_magnification", 1.0)),
         ring_amplitude_points=float(config.get("ring_amplitude_points", 0.0)),
         tail_amplitude_points=float(config.get("tail_amplitude_points", 0.0)),
+        mip_blur_strength=float(config.get("mip_blur_strength", 1.0)),
         bleed_zone_frac=_optional_float("bleed_zone_frac"),
         exterior_mix_width_points=_optional_float("exterior_mix_width_points"),
         x_squeeze=_optional_float("x_squeeze"),
