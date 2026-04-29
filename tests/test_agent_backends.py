@@ -1260,6 +1260,73 @@ class TestAgentShellMenuState:
             },
         )
 
+    def test_agent_shell_chrome_events_persist_to_provider_record(self):
+        import spoke.__main__ as main_module
+
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._transcription_token = 7
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_shell_sessions = {"codex": {}}
+        delegate._command_overlay = MagicMock()
+        delegate._save_preference = MagicMock()
+
+        delegate.agentShellHeader_({"token": 7, "text": "Worktree: codex-spinal-tap"})
+        delegate.agentShellFooter_({"token": 7, "text": "model gpt-5.5 | cwd /tmp/spoke"})
+
+        record = delegate._agent_shell_sessions["codex"]
+        assert record["last_header"] == "Worktree: codex-spinal-tap"
+        assert record["last_footer"] == "model gpt-5.5 | cwd /tmp/spoke"
+
+    def test_recalling_agent_shell_snapshot_restores_persisted_chrome(self):
+        import spoke.__main__ as main_module
+
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._command_client = MagicMock()
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_shell_sessions = {
+            "codex": {
+                "provider_session_id": "codex-thread-1",
+                "last_utterance": "hello codex",
+                "last_response": "hello from codex",
+                "last_header": "Worktree: codex-spinal-tap",
+                "last_footer": "model gpt-5.5 | cwd /tmp/spoke",
+                "sessions": [],
+            }
+        }
+        delegate._command_overlay = MagicMock()
+        delegate._command_overlay._visible = False
+        delegate._detector = MagicMock()
+        delegate._sync_command_overlay_brightness = MagicMock()
+
+        delegate._toggle_command_overlay()
+
+        delegate._command_overlay.show.assert_called_once()
+        _, kwargs = delegate._command_overlay.show.call_args
+        assert kwargs["agent_shell_header"] == "Worktree: codex-spinal-tap"
+        assert kwargs["agent_shell_footer"] == "model gpt-5.5 | cwd /tmp/spoke"
+
+    def test_switching_agent_shell_off_clears_visible_chrome(self):
+        import spoke.__main__ as main_module
+
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._command_overlay = MagicMock()
+        delegate._command_overlay._visible = True
+        delegate._command_overlay.clear_agent_shell_chrome = MagicMock()
+        delegate._command_client = MagicMock()
+        delegate._command_client.history = []
+        delegate._last_command_utterance = "local prompt"
+        delegate._last_command_response = "local response"
+        delegate._save_preference = MagicMock()
+        delegate._menubar = MagicMock()
+
+        delegate._apply_agent_shell_selection("off")
+
+        delegate._command_overlay.clear_agent_shell_chrome.assert_called_once()
+
 
 class TestAgentShellDelegateDispatch:
     def test_send_text_routes_active_agent_shell_to_backend_manager(

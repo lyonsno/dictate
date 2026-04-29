@@ -3056,6 +3056,9 @@ class SpokeAppDelegate(NSObject):
                     start_thinking_timer=False,
                     initial_utterance=last_utterance,
                     initial_response=_command_overlay_recall_preview(last_response),
+                    **self._agent_shell_chrome_snapshot(
+                        self._active_agent_shell_provider()
+                    ),
                 )
                 self._command_overlay.finish()
                 self._detector.command_overlay_active = True
@@ -3417,6 +3420,7 @@ class SpokeAppDelegate(NSObject):
                             start_thinking_timer=False,
                             initial_utterance=last_utterance,
                             initial_response=_command_overlay_recall_preview(last_response),
+                            **self._agent_shell_chrome_snapshot(agent_shell_provider),
                         )
                         self._command_overlay.finish()
                         self._detector.command_overlay_active = True
@@ -3625,6 +3629,8 @@ class SpokeAppDelegate(NSObject):
             "provider_session_id": None,
             "last_utterance": None,
             "last_response": None,
+            "last_header": None,
+            "last_footer": None,
             "sessions": [],
         }
 
@@ -3643,7 +3649,7 @@ class SpokeAppDelegate(NSObject):
                 continue
             seen.add(provider_session_id)
             sanitized = {"provider_session_id": provider_session_id}
-            for key in ("last_utterance", "last_response"):
+            for key in ("last_utterance", "last_response", "last_header", "last_footer"):
                 value = entry.get(key)
                 if isinstance(value, str) and value:
                     sanitized[key] = value
@@ -3655,7 +3661,7 @@ class SpokeAppDelegate(NSObject):
         if not isinstance(provider_session_id, str) or not provider_session_id:
             return None
         entry = {"provider_session_id": provider_session_id}
-        for key in ("last_utterance", "last_response"):
+        for key in ("last_utterance", "last_response", "last_header", "last_footer"):
             value = record.get(key)
             if isinstance(value, str) and value:
                 entry[key] = value
@@ -3684,7 +3690,13 @@ class SpokeAppDelegate(NSObject):
             if provider not in _AGENT_SHELL_PROVIDERS or not isinstance(record, dict):
                 continue
             sanitized = self._empty_agent_shell_session_record()
-            for key in ("provider_session_id", "last_utterance", "last_response"):
+            for key in (
+                "provider_session_id",
+                "last_utterance",
+                "last_response",
+                "last_header",
+                "last_footer",
+            ):
                 value = record.get(key)
                 if isinstance(value, str) and value:
                     sanitized[key] = value
@@ -3708,7 +3720,13 @@ class SpokeAppDelegate(NSObject):
             if provider not in _AGENT_SHELL_PROVIDERS or not isinstance(record, dict):
                 continue
             stored: dict[str, str] = {}
-            for key in ("provider_session_id", "last_utterance", "last_response"):
+            for key in (
+                "provider_session_id",
+                "last_utterance",
+                "last_response",
+                "last_header",
+                "last_footer",
+            ):
                 value = record.get(key)
                 if isinstance(value, str) and value:
                     stored[key] = value
@@ -3766,6 +3784,42 @@ class SpokeAppDelegate(NSObject):
         self._upsert_agent_shell_catalog_entry(record)
         self._persist_agent_shell_sessions()
 
+    def _agent_shell_chrome_snapshot(self, provider: str | None) -> dict[str, str]:
+        if provider not in _AGENT_SHELL_PROVIDERS:
+            return {}
+        record = self._agent_shell_session_record(provider)
+        chrome: dict[str, str] = {}
+        header = record.get("last_header")
+        footer = record.get("last_footer")
+        if isinstance(header, str) and header:
+            chrome["agent_shell_header"] = header
+        if isinstance(footer, str) and footer:
+            chrome["agent_shell_footer"] = footer
+        return chrome
+
+    def _remember_agent_shell_chrome(
+        self,
+        provider: str | None,
+        *,
+        header: str | None = None,
+        footer: str | None = None,
+    ) -> None:
+        if provider not in _AGENT_SHELL_PROVIDERS:
+            return
+        record = self._agent_shell_session_record(provider)
+        if header is not None:
+            record["last_header"] = header
+        if footer is not None:
+            record["last_footer"] = footer
+        self._upsert_agent_shell_catalog_entry(record)
+        self._persist_agent_shell_sessions()
+
+    def _current_agent_shell_turn_provider(self) -> str | None:
+        provider = getattr(self, "_command_turn_provider", None)
+        if provider in _AGENT_SHELL_PROVIDERS:
+            return provider
+        return self._active_agent_shell_provider()
+
     def _agent_shell_state(self, provider: str) -> AgentShellState:
         record = self._agent_shell_session_record(provider)
         spoke_session_id = record.get("spoke_session_id")
@@ -3790,6 +3844,8 @@ class SpokeAppDelegate(NSObject):
             if record.get("provider_session_id") != provider_session_id:
                 record["last_utterance"] = None
                 record["last_response"] = None
+                record["last_header"] = None
+                record["last_footer"] = None
             record["provider_session_id"] = provider_session_id
             self._upsert_agent_shell_catalog_entry(record)
             self._persist_agent_shell_sessions()
@@ -4428,7 +4484,10 @@ class SpokeAppDelegate(NSObject):
         # Show the command overlay with the utterance as context
         if self._command_overlay is not None:
             self._sync_command_overlay_brightness(immediate=True)
-            self._command_overlay.show(initial_utterance=utterance)
+            self._command_overlay.show(
+                initial_utterance=utterance,
+                **self._agent_shell_chrome_snapshot(self._active_agent_shell_provider()),
+            )
             self._detector.command_overlay_active = True
             logger.info("command_overlay_active -> True (command started)")
         self._command_first_token = True
@@ -4512,6 +4571,10 @@ class SpokeAppDelegate(NSObject):
         overlay = self._command_overlay
         if overlay is not None:
             try:
+                self._remember_agent_shell_chrome(
+                    self._current_agent_shell_turn_provider(),
+                    header=text,
+                )
                 overlay.set_agent_shell_header(text)
             except Exception:
                 logger.exception("Command overlay failed to set Agent Shell header")
@@ -4526,6 +4589,10 @@ class SpokeAppDelegate(NSObject):
         overlay = self._command_overlay
         if overlay is not None:
             try:
+                self._remember_agent_shell_chrome(
+                    self._current_agent_shell_turn_provider(),
+                    footer=text,
+                )
                 overlay.set_agent_shell_footer(text)
             except Exception:
                 logger.exception("Command overlay failed to set Agent Shell footer")
@@ -5306,8 +5373,21 @@ class SpokeAppDelegate(NSObject):
         utterance, response = snapshot
         try:
             self._sync_command_overlay_brightness(immediate=True)
+            agent_shell_provider = self._active_agent_shell_provider()
+            if agent_shell_provider is None:
+                clear_chrome = getattr(overlay, "clear_agent_shell_chrome", None)
+                if callable(clear_chrome):
+                    clear_chrome()
             overlay.set_utterance(utterance)
             overlay.set_response_text(_command_overlay_recall_preview(response))
+            if agent_shell_provider is not None:
+                chrome = self._agent_shell_chrome_snapshot(agent_shell_provider)
+                header = chrome.get("agent_shell_header")
+                footer = chrome.get("agent_shell_footer")
+                if header:
+                    overlay.set_agent_shell_header(header)
+                if footer:
+                    overlay.set_agent_shell_footer(footer)
             overlay.finish()
             detector = getattr(self, "_detector", None)
             if detector is not None:
@@ -5326,6 +5406,8 @@ class SpokeAppDelegate(NSObject):
                 record["provider_session_id"] = provider_session_id
                 record["last_utterance"] = entry.get("last_utterance")
                 record["last_response"] = entry.get("last_response")
+                record["last_header"] = entry.get("last_header")
+                record["last_footer"] = entry.get("last_footer")
                 self._upsert_agent_shell_catalog_entry(record)
                 self._save_preference("agent_shell_provider", "codex")
                 self._persist_agent_shell_sessions()

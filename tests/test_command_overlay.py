@@ -498,6 +498,26 @@ class TestShowFinishHide:
         )
         overlay._agent_shell_footer_label.setHidden_.assert_called_once_with(False)
 
+    def test_show_can_seed_agent_shell_chrome_for_reconstructed_transcript(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._agent_shell_header_label = MagicMock()
+        overlay._agent_shell_footer_label = MagicMock()
+        overlay.set_agent_shell_header = MagicMock()
+        overlay.set_agent_shell_footer = MagicMock()
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="hello codex",
+            initial_response="hello from codex",
+            agent_shell_header="Worktree: codex-spinal-tap",
+            agent_shell_footer="model gpt-5.5 | cwd /tmp/spoke",
+        )
+
+        overlay.set_agent_shell_header.assert_called_once_with("Worktree: codex-spinal-tap")
+        overlay.set_agent_shell_footer.assert_called_once_with("model gpt-5.5 | cwd /tmp/spoke")
+
     def test_agent_shell_chrome_theme_uses_neutral_gray_not_glow_purple(
         self, mock_pyobjc
     ):
@@ -2173,6 +2193,39 @@ class TestGeometryCaps:
         )
         assert scroll_frame.origin.y >= footer_frame.origin.y + footer_frame.size.height
         assert scroll_frame.origin.y + scroll_frame.size.height <= header_frame.origin.y
+
+    def test_update_layout_reframes_agent_shell_chrome_even_at_same_height(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        feather = (
+            mod._OPTICAL_SHELL_FEATHER
+            if mod._COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+            else mod._OUTER_FEATHER
+        )
+        overlay._window.frame.return_value = _make_rect(
+            0.0,
+            260.0,
+            680.0,
+            mod._OVERLAY_HEIGHT + 2 * feather,
+        )
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(8.0)
+        overlay._text_view.textContainer.return_value = object()
+        overlay._agent_shell_header_label.isHidden.return_value = False
+        overlay._agent_shell_footer_label.isHidden.return_value = False
+        string_obj = MagicMock()
+        string_obj.length.return_value = 0
+        overlay._text_view.string.return_value = string_obj
+        overlay._scroll_view.setFrame_.reset_mock()
+        overlay._agent_shell_header_label.setFrame_.reset_mock()
+        overlay._agent_shell_footer_label.setFrame_.reset_mock()
+
+        overlay._update_layout()
+
+        overlay._scroll_view.setFrame_.assert_called()
+        overlay._agent_shell_header_label.setFrame_.assert_called()
+        overlay._agent_shell_footer_label.setFrame_.assert_called()
 
 
 class TestToolState:

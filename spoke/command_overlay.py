@@ -69,6 +69,8 @@ _OVERLAY_HEIGHT = _env("SPOKE_COMMAND_OVERLAY_HEIGHT", 80.0)
 _COMMAND_OVERLAY_WINDOW_LEVEL = _OVERLAY_WINDOW_LEVEL + 1
 _OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 300.0)
 _OVERLAY_TOP_MARGIN = _env("SPOKE_COMMAND_OVERLAY_TOP_MARGIN", 140.0)
+_AGENT_SHELL_MAX_BOTTOM_MARGIN = _env("SPOKE_AGENT_SHELL_OVERLAY_BOTTOM_MARGIN", 240.0)
+_AGENT_SHELL_MAX_TOP_MARGIN = _env("SPOKE_AGENT_SHELL_OVERLAY_TOP_MARGIN", 80.0)
 _OVERLAY_CORNER_RADIUS = _env("SPOKE_COMMAND_OVERLAY_CORNER_RADIUS", 16.0)
 _FONT_SIZE = 15.5
 _APPROVAL_HEADER_TEXT = "Approval needed"
@@ -93,8 +95,10 @@ _DISMISS_ANIM_FPS = 60.0
 _DISMISS_GROW_SCALE = 1.018
 _DISMISS_END_SCALE = 0.94
 
-def _max_overlay_height(screen_height: float) -> float:
-    return max(_OVERLAY_HEIGHT, screen_height - _OVERLAY_BOTTOM_MARGIN - _OVERLAY_TOP_MARGIN)
+def _max_overlay_height(screen_height: float, *, agent_shell: bool = False) -> float:
+    bottom_margin = _AGENT_SHELL_MAX_BOTTOM_MARGIN if agent_shell else _OVERLAY_BOTTOM_MARGIN
+    top_margin = _AGENT_SHELL_MAX_TOP_MARGIN if agent_shell else _OVERLAY_TOP_MARGIN
+    return max(_OVERLAY_HEIGHT, screen_height - bottom_margin - top_margin)
 
 
 def _approval_card_ranges(text: str) -> dict[str, tuple[int, int]]:
@@ -1423,6 +1427,8 @@ class CommandOverlay(NSObject):
         start_thinking_timer: bool = True,
         initial_utterance: str = "",
         initial_response: str = "",
+        agent_shell_header: str = "",
+        agent_shell_footer: str = "",
     ) -> None:
         """Fade the overlay in, optionally starting or resuming the thinking timer."""
         if self._window is None:
@@ -1510,6 +1516,10 @@ class CommandOverlay(NSObject):
                 self.set_response_text(initial_response)
             elif initial_utterance:
                 self.set_utterance(initial_utterance)
+            if agent_shell_header:
+                self.set_agent_shell_header(agent_shell_header)
+            if agent_shell_footer:
+                self.set_agent_shell_footer(agent_shell_footer)
         finally:
             self._suppress_stale_fill_until_ready = False
 
@@ -1749,6 +1759,11 @@ class CommandOverlay(NSObject):
             if label is not None:
                 label.setStringValue_("")
                 label.setHidden_(True)
+
+    def clear_agent_shell_chrome(self) -> None:
+        """Clear Agent Shell chrome when the visible transcript belongs to another mode."""
+        self._clear_agent_shell_chrome()
+        self._update_layout()
 
     def set_agent_shell_header(self, text: str) -> None:
         """Set the Agent Shell identity line above the transcript."""
@@ -3853,8 +3868,11 @@ class CommandOverlay(NSObject):
             else:
                 text_height = _OVERLAY_HEIGHT - 16
 
-            max_height = _max_overlay_height(self._screen.frame().size.height)
             chrome_visible = self._agent_shell_chrome_visible()
+            max_height = _max_overlay_height(
+                self._screen.frame().size.height,
+                agent_shell=chrome_visible,
+            )
             vertical_pad = _AGENT_SHELL_VERTICAL_PAD if chrome_visible else 24.0
             new_height = min(max(_OVERLAY_HEIGHT, text_height + vertical_pad), max_height)
 
@@ -3863,37 +3881,39 @@ class CommandOverlay(NSObject):
             f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
             win_frame = self._window.frame()
             new_win_h = new_height + 2 * f
-            if abs(win_frame.size.height - new_win_h) > 4:
+            height_changed = abs(win_frame.size.height - new_win_h) > 4
+            if height_changed:
                 win_frame.size.height = new_win_h
                 self._window.setFrame_display_animate_(win_frame, True, False)
-                self._content_view.setFrame_(
-                    NSMakeRect(f, f, _OVERLAY_WIDTH, new_height)
+            self._content_view.setFrame_(
+                NSMakeRect(f, f, _OVERLAY_WIDTH, new_height)
+            )
+            if chrome_visible:
+                footer_y = _AGENT_SHELL_FOOTER_BOTTOM_INSET
+                footer_h = _AGENT_SHELL_FOOTER_HEIGHT
+                header_h = _AGENT_SHELL_HEADER_HEIGHT
+                header_y = new_height - _AGENT_SHELL_HEADER_TOP_INSET - header_h
+                scroll_y = footer_y + footer_h + _AGENT_SHELL_TRANSCRIPT_GAP
+                scroll_h = max(1.0, header_y - _AGENT_SHELL_TRANSCRIPT_GAP - scroll_y)
+            else:
+                footer_y = 4.0
+                footer_h = 14.0
+                header_h = 16.0
+                header_y = new_height - 22.0
+                scroll_y = 20.0
+                scroll_h = new_height - 44.0
+            self._scroll_view.setFrame_(
+                NSMakeRect(12, scroll_y, _OVERLAY_WIDTH - 24, scroll_h)
+            )
+            if self._agent_shell_header_label is not None:
+                self._agent_shell_header_label.setFrame_(
+                    NSMakeRect(14.0, header_y, _OVERLAY_WIDTH - 106.0, header_h)
                 )
-                if chrome_visible:
-                    footer_y = _AGENT_SHELL_FOOTER_BOTTOM_INSET
-                    footer_h = _AGENT_SHELL_FOOTER_HEIGHT
-                    header_h = _AGENT_SHELL_HEADER_HEIGHT
-                    header_y = new_height - _AGENT_SHELL_HEADER_TOP_INSET - header_h
-                    scroll_y = footer_y + footer_h + _AGENT_SHELL_TRANSCRIPT_GAP
-                    scroll_h = max(1.0, header_y - _AGENT_SHELL_TRANSCRIPT_GAP - scroll_y)
-                else:
-                    footer_y = 4.0
-                    footer_h = 14.0
-                    header_h = 16.0
-                    header_y = new_height - 22.0
-                    scroll_y = 20.0
-                    scroll_h = new_height - 44.0
-                self._scroll_view.setFrame_(
-                    NSMakeRect(12, scroll_y, _OVERLAY_WIDTH - 24, scroll_h)
+            if self._agent_shell_footer_label is not None:
+                self._agent_shell_footer_label.setFrame_(
+                    NSMakeRect(14.0, footer_y, _OVERLAY_WIDTH - 28.0, footer_h)
                 )
-                if self._agent_shell_header_label is not None:
-                    self._agent_shell_header_label.setFrame_(
-                        NSMakeRect(14.0, header_y, _OVERLAY_WIDTH - 106.0, header_h)
-                    )
-                if self._agent_shell_footer_label is not None:
-                    self._agent_shell_footer_label.setFrame_(
-                        NSMakeRect(14.0, footer_y, _OVERLAY_WIDTH - 28.0, footer_h)
-                    )
+            if height_changed:
                 self._apply_ridge_masks(_OVERLAY_WIDTH, new_height)
                 self._update_backdrop_capture_geometry()
                 shell_config = self._current_optical_shell_config()

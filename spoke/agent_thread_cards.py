@@ -190,7 +190,7 @@ def _title_from_bearing(bearing: str, prompt: str) -> str:
             if lowered.startswith(prefix):
                 return _strip_sentence(stripped[len(prefix):])
         return _strip_sentence(stripped)
-    return _strip_sentence(prompt) or "Agent thread"
+    return "Agent thread"
 
 
 def _paths_from_file_change(data: dict[str, Any], text: str) -> list[str]:
@@ -246,7 +246,11 @@ def build_agent_thread_card(session: dict[str, Any]) -> AgentThreadCard:
     readiness = _readiness(state, has_response=bool(result))
     orientation = _orientation_waypoint(events)
     bearing = orientation.text if orientation is not None else _string(session.get("prompt"))
-    title = _title_from_bearing(bearing, _string(session.get("prompt")))
+    title = (
+        _title_from_bearing(orientation.text, _string(session.get("prompt")))
+        if orientation is not None
+        else "Agent thread"
+    )
     updated_sequence = max([_event_sequence(event) for event in events] or [0])
     return AgentThreadCard(
         thread_id=_string(session.get("id")),

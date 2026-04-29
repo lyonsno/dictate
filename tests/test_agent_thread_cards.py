@@ -126,3 +126,27 @@ def test_thread_card_keeps_running_activity_under_anagnosis_anchor():
     assert card.title == "fixing Agent Shell overlay cards"
     assert card.activity_line == "Edited spoke/agent_thread_cards.py"
     assert "pure extraction before UI polish" in card.bearing
+
+
+def test_working_card_without_orientation_does_not_echo_full_prompt():
+    from spoke.agent_thread_cards import build_agent_thread_card
+
+    prompt = (
+        "Yes well you don't know unless I tell you I guess it's probably what "
+        "you're going to say it looks like our UI cut off the last line"
+    )
+
+    card = build_agent_thread_card(
+        {
+            "id": "agent-backend-codex-1",
+            "provider": "codex",
+            "state": "running",
+            "prompt": prompt,
+            "backend_events": [],
+        }
+    )
+
+    assert card.readiness == "working"
+    assert card.title == "Agent thread"
+    assert card.activity_line == "Working"
+    assert card.bearing == prompt
