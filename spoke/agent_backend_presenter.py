@@ -18,6 +18,7 @@ class AgentBackendPresentationState:
     seven_day_percent: float | None = None
     plan_type: str = ""
     topos_name: str = ""
+    topos_source: str = ""
 
 
 @dataclass(frozen=True)
@@ -179,15 +180,39 @@ def _usage_actions(
     return [AgentBackendPresentation(kind="metadata_footer", text=footer)]
 
 
+def _identity_header_label(name: str, source: str, confidence: str) -> str:
+    if source == "epistaxis-session-id":
+        return f"Topos: {name}"
+    if source == "epistaxis-worktree":
+        return f"Lane: {name}"
+    if source == "epistaxis-archive-metadata":
+        return f"Likely lane: {name}"
+    if confidence == "weak":
+        return f"Mentioned topos: {name}"
+    return f"Context: {name}"
+
+
 def _topos_actions(
     name: str,
+    source: str,
+    confidence: str,
     state: AgentBackendPresentationState,
 ) -> list[AgentBackendPresentation]:
     name = name.strip()
-    if not name or name == state.topos_name:
+    source = source.strip()
+    confidence = confidence.strip()
+    if not name:
+        return []
+    if name == state.topos_name and source == state.topos_source:
         return []
     state.topos_name = name
-    return [AgentBackendPresentation(kind="metadata_header", text=f"Topos: {name}")]
+    state.topos_source = source
+    return [
+        AgentBackendPresentation(
+            kind="metadata_header",
+            text=_identity_header_label(name, source, confidence),
+        )
+    ]
 
 
 def present_backend_events(
@@ -217,7 +242,14 @@ def present_backend_events(
         elif kind == "topos_identity":
             name = _string(data.get("name")).strip() or _string(event.get("text")).strip()
             if name:
-                actions.extend(_topos_actions(name, state))
+                actions.extend(
+                    _topos_actions(
+                        name,
+                        _string(data.get("source")),
+                        _string(data.get("confidence")),
+                        state,
+                    )
+                )
         elif kind == "web_search":
             query = _string(data.get("query")).strip()
             if query:

@@ -821,6 +821,70 @@ class TestAgentBackendPresentation:
             for action in actions
         )
 
+    def test_presenter_labels_worktree_identity_as_lane_context(self):
+        from spoke.agent_backend_presenter import (
+            AgentBackendPresentationState,
+            present_backend_events,
+        )
+
+        actions = present_backend_events(
+            [
+                {
+                    "sequence": 1,
+                    "kind": "topos_identity",
+                    "text": "codex-agent-sdk-partyline-spinal-tap-0428",
+                    "data": {
+                        "name": "codex-agent-sdk-partyline-spinal-tap-0428",
+                        "source": "epistaxis-worktree",
+                        "confidence": "exact",
+                    },
+                }
+            ],
+            AgentBackendPresentationState(),
+        )
+
+        assert [(action.kind, action.text) for action in actions] == [
+            (
+                "metadata_header",
+                "Lane: codex-agent-sdk-partyline-spinal-tap-0428",
+            )
+        ]
+
+    def test_presenter_refreshes_identity_when_same_name_gets_stronger_source(self):
+        from spoke.agent_backend_presenter import (
+            AgentBackendPresentationState,
+            present_backend_events,
+        )
+
+        state = AgentBackendPresentationState()
+        first = present_backend_events(
+            [
+                {
+                    "kind": "topos_identity",
+                    "data": {
+                        "name": "codex-agent-sdk-partyline-spinal-tap-0428",
+                        "source": "epistaxis-worktree",
+                    },
+                }
+            ],
+            state,
+        )
+        second = present_backend_events(
+            [
+                {
+                    "kind": "topos_identity",
+                    "data": {
+                        "name": "codex-agent-sdk-partyline-spinal-tap-0428",
+                        "source": "epistaxis-session-id",
+                    },
+                }
+            ],
+            state,
+        )
+
+        assert first[-1].text == "Lane: codex-agent-sdk-partyline-spinal-tap-0428"
+        assert second[-1].text == "Topos: codex-agent-sdk-partyline-spinal-tap-0428"
+
     def test_presenter_does_not_infer_topos_from_tool_output_without_identity_event(self):
         from spoke.agent_backend_presenter import (
             AgentBackendPresentationState,
@@ -1292,7 +1356,7 @@ class TestAgentShellDelegateDispatch:
         )
         assert any(
             call.args[0] == "agentShellHeader:"
-            and call.args[1]["text"] == "Topos: codex-spoke-spinal-tap"
+            and call.args[1]["text"] == "Lane: codex-spoke-spinal-tap"
             for call in calls
         )
         assert calls[-1].args[0] == "commandComplete:"
