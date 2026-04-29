@@ -196,6 +196,9 @@ _BRIGHTNESS_COMPOSITOR_STARTUP_GRACE_TICKS = max(
 )
 _BRIGHTNESS_SAMPLE_INTERVAL = 1.0
 _POINTS_PER_CM = 72.0 / 2.54
+_COMMAND_MATERIAL_FILL_OVERSCAN_POINTS = (
+    _env("SPOKE_COMMAND_MATERIAL_FILL_OVERSCAN_MM", 1.5) / 10.0 * _POINTS_PER_CM
+)
 _COMMAND_BACKDROP_OVERSCAN_CM = _env("SPOKE_COMMAND_BACKDROP_OVERSCAN_CM", 1.5)
 _COMMAND_BACKDROP_BLUR_RADIUS = _env("SPOKE_COMMAND_BACKDROP_BLUR_RADIUS", 9.0)
 _COMMAND_BACKDROP_MASK_WIDTH_MULTIPLIER = _env(
@@ -3372,11 +3375,25 @@ class CommandOverlay(NSObject):
         scale = getattr(self, '_ridge_scale', 2.0)
         total_w = width + 2 * f
         total_h = height + 2 * f
+        fill_overscan = (
+            _COMMAND_MATERIAL_FILL_OVERSCAN_POINTS
+            if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+            else 0.0
+        )
+        fill_body_w = width + 2 * fill_overscan
+        fill_body_h = height + 2 * fill_overscan
 
         _has_compositor = getattr(self, "_fullscreen_compositor", None) is not None
         _b = getattr(self, '_brightness', 0.0)
         _b_rounded = round(_b * 50) / 50  # 0.02 steps
-        geom_key = (width, height, scale, _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED)
+        geom_key = (
+            width,
+            height,
+            fill_body_w,
+            fill_body_h,
+            scale,
+            _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED,
+        )
         appearance_key = (
             round(float(total_w), 3),
             round(float(total_h), 3),
@@ -3465,9 +3482,9 @@ class CommandOverlay(NSObject):
                     sdf = _stadium_signed_distance_field(
                         total_w,
                         total_h,
-                        width,
-                        height,
-                        _optical_shell_body_corner_radius(height),
+                        fill_body_w,
+                        fill_body_h,
+                        _optical_shell_body_corner_radius(height) + fill_overscan,
                         scale,
                     )
                     inside_d = np.maximum(-sdf, 0.0)
@@ -3486,7 +3503,7 @@ class CommandOverlay(NSObject):
                 elif not _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED and fallback_alpha is None:
                     raw_interior = edge_ridge = inside_mask = ext_exterior = None
                     sdf = _overlay_rounded_rect_sdf(
-                        total_w, total_h, width, height,
+                        total_w, total_h, fill_body_w, fill_body_h,
                         _OVERLAY_CORNER_RADIUS, scale,
                     )
                     fallback_alpha = _glow_fill_alpha(sdf, width=2.5 * scale)

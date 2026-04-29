@@ -2876,3 +2876,42 @@ class TestSDFCaching:
         overlay._apply_ridge_masks(600.0, 80.0)
 
         assert radii == [32.0]
+
+    def test_assistant_optical_fill_overscan_grows_fill_not_warp(
+        self, mock_pyobjc, monkeypatch
+    ):
+        """Assistant material fill may bleed slightly without changing warp geometry."""
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._spring_tint_layer = None
+        overlay._fullscreen_compositor = MagicMock()
+
+        import numpy as np
+        import spoke.overlay as ov_mod
+
+        observed_sdf = []
+
+        def capture_sdf(total_w, total_h, body_w, body_h, corner_radius, scale):
+            observed_sdf.append((total_w, total_h, body_w, body_h, corner_radius, scale))
+            return np.zeros((4, 4), dtype=np.float32)
+
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        monkeypatch.setattr(mod, "_stadium_signed_distance_field", capture_sdf)
+        monkeypatch.setattr(ov_mod, "_fill_field_to_image", lambda *_args: ("image", b"payload"))
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: work())
+
+        overlay._apply_ridge_masks(600.0, 80.0)
+        shell = mod._command_optical_shell_config(600.0, 80.0)
+
+        overscan = mod._COMMAND_MATERIAL_FILL_OVERSCAN_POINTS
+        assert observed_sdf[-1][2] == pytest.approx(600.0 + 2 * overscan)
+        assert observed_sdf[-1][3] == pytest.approx(80.0 + 2 * overscan)
+        assert shell["content_width_points"] == pytest.approx(
+            600.0
+            + mod._COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_X_RADII
+            * mod._optical_shell_body_corner_radius(80.0)
+        )
+        assert shell["content_height_points"] == pytest.approx(
+            80.0
+            + mod._COMMAND_BACKDROP_OPTICAL_SHELL_INFLATION_Y_RADII
+            * mod._optical_shell_body_corner_radius(80.0)
+        )

@@ -162,7 +162,6 @@ _PREVIEW_OPTICAL_SHELL_Y_SQUEEZE = _env(
 _PREVIEW_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS = _env(
     "SPOKE_PREVIEW_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS", 0.75
 )
-_PREVIEW_FILL_OVERSCAN_POINTS = _env("SPOKE_PREVIEW_FILL_OVERSCAN_MM", 1.5) / 10.0 * _POINTS_PER_CM
 
 
 # Recovery mode constants
@@ -1291,10 +1290,8 @@ class TranscriptionOverlay(NSObject):
         scale = getattr(self, '_ridge_scale', 2.0)
         total_w = width + 2 * f
         total_h = height + 2 * f
-        fill_body_w = width + 2 * _PREVIEW_FILL_OVERSCAN_POINTS
-        fill_body_h = height + 2 * _PREVIEW_FILL_OVERSCAN_POINTS
 
-        geom_key = (width, height, fill_body_w, fill_body_h, scale)
+        geom_key = (width, height, scale)
         brightness = getattr(self, "_brightness", 0.0)
         fill_override_rgb = getattr(self, "_fill_override_rgb", None)
         appearance_key = (
@@ -1330,8 +1327,8 @@ class TranscriptionOverlay(NSObject):
                 sdf = cached_sdf
                 if sdf is None:
                     sdf = _overlay_rounded_rect_sdf(
-                        total_w, total_h, fill_body_w, fill_body_h,
-                        _OVERLAY_CORNER_RADIUS + _PREVIEW_FILL_OVERSCAN_POINTS, scale,
+                        total_w, total_h, width, height,
+                        _OVERLAY_CORNER_RADIUS, scale,
                     )
                 floor = _lerp(0.55, 0.775, brightness)
                 fill_alpha = _glow_fill_alpha(
