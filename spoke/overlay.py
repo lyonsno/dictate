@@ -2084,7 +2084,8 @@ _GHOST_HEIGHT = 22.0           # height of each ghost indicator
 _GHOST_PADDING = 4.0           # horizontal gap between ghosts
 _GHOST_FONT_SIZE = 11.0        # small label font
 _GHOST_FAINT_ALPHA = 0.15      # resting state — present but quiet
-_GHOST_ACTIVE_ALPHA = 0.70     # active state — sharpened
+_GHOST_ACTIVE_ALPHA = 0.70     # active state — sharpened (transient per-recording)
+_GHOST_STICKY_ALPHA = 0.90     # sticky/locked state — persistent glow
 _GHOST_BOTTOM_GAP = 8.0        # gap between preview overlay top and ghost row
 _BRACKET_PILL_WIDTH = 24.0     # width of the `]` pill indicator
 _BRACKET_PILL_GAP = 8.0        # gap between preview overlay and bracket pill
@@ -2113,6 +2114,7 @@ class GhostIndicatorLayer:
     def __init__(self, bindings: dict[int, dict]):
         self._bindings = bindings
         self._active_keycode: int | None = None
+        self._sticky_keycode: int | None = None
 
     @property
     def bindings(self) -> dict[int, dict]:
@@ -2126,12 +2128,28 @@ class GhostIndicatorLayer:
         """Set which route key ghost is sharpened (or None for all faint)."""
         self._active_keycode = keycode
 
+    def set_sticky(self, keycode: int | None) -> None:
+        """Set which route key ghost has a persistent sticky glow (or None to clear)."""
+        self._sticky_keycode = keycode
+
+    @property
+    def sticky_keycode(self) -> int | None:
+        return self._sticky_keycode
+
     def is_bracket_key(self, keycode: int) -> bool:
         """Return True if this keycode is the `]` bracket key."""
         return keycode == _BRACKET_RIGHT_KEYCODE
 
     def ghost_alpha(self, keycode: int) -> float:
-        """Return the target alpha for a given key's ghost indicator."""
+        """Return the target alpha for a given key's ghost indicator.
+
+        Priority: sticky glow > transient active > faint.
+        A sticky/locked key renders with persistent glow (_GHOST_STICKY_ALPHA)
+        that is visually distinct from the transient sharpening used for
+        per-recording selection.
+        """
+        if keycode == self._sticky_keycode:
+            return _GHOST_STICKY_ALPHA
         if keycode == self._active_keycode:
             return _GHOST_ACTIVE_ALPHA
         return _GHOST_FAINT_ALPHA

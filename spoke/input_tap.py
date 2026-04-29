@@ -234,6 +234,20 @@ class SpacebarHoldDetector(NSObject):
         # while command overlay is visible.
         self._on_cancel_generation: Callable[[], None] | None = None
 
+        # Sticky routing — set by delegate. Called with keycode= when
+        # Space + Enter + route key fires from IDLE to toggle sticky mode.
+        self._on_sticky_toggle: Callable[..., None] | None = None
+
+        # Sticky keystroke capture — set by delegate. Called with keycode=
+        # when a key is pressed while sticky routing is active.
+        self._on_sticky_keystroke: Callable[..., None] | None = None
+
+        # Sticky routing state — managed by the delegate via callbacks.
+        # When True, keyboard capture is active and keystrokes route to
+        # the hot destination instead of the frontmost app.
+        self.sticky_active: bool = False
+        self.sticky_keycode: int | None = None
+
         return self
 
     # ── public ──────────────────────────────────────────────
@@ -597,6 +611,71 @@ class SpacebarHoldDetector(NSObject):
         cb()
         return True
 
+    def handle_sticky_toggle(self, keycode: int) -> bool:
+        """Handle a potential sticky routing toggle (Space + Enter + route key).
+
+        Returns True to suppress the key event if a sticky toggle fires.
+        The toggle fires when:
+        - State is WAITING (space is held, before hold threshold)
+        - Enter is currently held
+        - The keycode is a valid route key
+
+        This detects the three-key chord: Space (held) + Enter (held) +
+        route key (tapped). Space puts us in WAITING; Enter is tracked
+        separately; the route key completes the chord.
+
+        The callback _on_sticky_toggle is called with keycode= so the
+        delegate can toggle sticky routing state.
+        """
+        if self._state != _State.WAITING:
+            return False
+        if not getattr(self, '_enter_held', False):
+            return False
+
+        from spoke.route_keys import ALL_ROUTE_KEYCODES
+        if keycode not in ALL_ROUTE_KEYCODES:
+            return False
+
+        cb = getattr(self, '_on_sticky_toggle', None)
+        if cb is None:
+            return False
+
+        logger.info("Sticky toggle detected: Space + Enter + keycode=%d", keycode)
+        # Cancel the hold timer — this chord consumed the space press
+        self._cancel_hold_timer()
+        self._state = _State.IDLE
+        self._suppress_enter_keyup = True
+        self._awaiting_space_release = True
+        self._enter_held = False
+        self._enter_observed = False
+        self._enter_last_down_monotonic = 0.0
+        cb(keycode=keycode)
+        return True
+
+    def handle_sticky_keystroke(self, keycode: int) -> bool:
+        """Handle keyboard capture while sticky routing is active.
+
+        Returns True to suppress the key event if it should be captured.
+        Only fires when sticky_active is True. Spacebar, Enter, and
+        modifier keys are NOT captured — they retain their normal
+        control functions.
+        """
+        if not getattr(self, 'sticky_active', False):
+            return False
+
+        # Don't capture control keys — they still drive recording/gestures
+        if keycode == SPACEBAR_KEYCODE:
+            return False
+        if keycode in ENTER_KEYCODES:
+            return False
+
+        cb = getattr(self, '_on_sticky_keystroke', None)
+        if cb is None:
+            return False
+
+        cb(keycode=keycode)
+        return True
+
     def _reset_route_keys(self) -> None:
         """Reset route key selection. Called at end of every recording."""
         selector = getattr(self, "_route_key_selector", None)
@@ -940,6 +1019,12 @@ def _event_tap_callback(proxy, event_type, event, refcon):
             # Mark space between shift down/up for tray shift-tap discrimination
             if getattr(det, 'tray_active', False) and getattr(det, '_tray_shift_down', False):
                 det._tray_space_between = True
+        # Sticky toggle: Space + Enter + route key from WAITING
+        if det.handle_sticky_toggle(keycode):
+            return None  # suppress — sticky toggle fired
+        # Keyboard capture: while sticky routing is active, intercept keystrokes
+        if det.handle_sticky_keystroke(keycode):
+            return None  # suppress — keystroke captured for hot route
         # Send chord: Enter + route key from tray (IDLE)
         if det.handle_send_chord(keycode):
             return None  # suppress — send chord fired
