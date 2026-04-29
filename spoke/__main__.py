@@ -47,6 +47,7 @@ _RECORDING_LOAD_SHED_RELEASE_DELAY_S = 0.36
 _AGENT_SHELL_PROVIDERS = {"codex", "claude-code"}
 _AGENT_SHELL_SELECTABLE_PROVIDERS = {"codex"}
 _AGENT_SHELL_OVERLAY_SNAPSHOTS_PREF = "agent_shell_overlay_snapshots"
+_AGENT_SHELL_SESSION_CATALOG_LIMIT = 12
 
 # Keep _PastableTextField as an alias so existing alloc() calls don't break.
 _PastableTextField = NSTextField
@@ -3617,25 +3618,82 @@ class SpokeAppDelegate(NSObject):
         label = _agent_shell_provider_label(provider)
         return "", f"{label} Agent Shell selected.\nSend a message to continue with {label}."
 
-    def _load_agent_shell_sessions(self) -> dict[str, dict[str, str | None]]:
+    def _empty_agent_shell_session_record(self) -> dict:
+        return {
+            "spoke_session_id": None,
+            "provider_session_id": None,
+            "last_utterance": None,
+            "last_response": None,
+            "sessions": [],
+        }
+
+    def _sanitize_agent_shell_catalog(self, raw) -> list[dict[str, str]]:
+        if not isinstance(raw, list):
+            return []
+        catalog: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            provider_session_id = entry.get("provider_session_id")
+            if not isinstance(provider_session_id, str) or not provider_session_id:
+                continue
+            if provider_session_id in seen:
+                continue
+            seen.add(provider_session_id)
+            sanitized = {"provider_session_id": provider_session_id}
+            for key in ("last_utterance", "last_response"):
+                value = entry.get(key)
+                if isinstance(value, str) and value:
+                    sanitized[key] = value
+            catalog.append(sanitized)
+        return catalog[-_AGENT_SHELL_SESSION_CATALOG_LIMIT:]
+
+    def _agent_shell_current_catalog_entry(self, record: dict) -> dict[str, str] | None:
+        provider_session_id = record.get("provider_session_id")
+        if not isinstance(provider_session_id, str) or not provider_session_id:
+            return None
+        entry = {"provider_session_id": provider_session_id}
+        for key in ("last_utterance", "last_response"):
+            value = record.get(key)
+            if isinstance(value, str) and value:
+                entry[key] = value
+        return entry
+
+    def _upsert_agent_shell_catalog_entry(self, record: dict) -> None:
+        entry = self._agent_shell_current_catalog_entry(record)
+        if entry is None:
+            return
+        catalog = self._sanitize_agent_shell_catalog(record.get("sessions"))
+        for index, existing in enumerate(catalog):
+            if existing.get("provider_session_id") == entry["provider_session_id"]:
+                catalog[index] = {**existing, **entry}
+                break
+        else:
+            catalog.append(entry)
+        record["sessions"] = catalog[-_AGENT_SHELL_SESSION_CATALOG_LIMIT:]
+
+    def _load_agent_shell_sessions(self) -> dict[str, dict]:
         raw = self._load_preference(_AGENT_SHELL_OVERLAY_SNAPSHOTS_PREF)
         if not isinstance(raw, dict):
             return {}
 
-        sessions: dict[str, dict[str, str | None]] = {}
+        sessions: dict[str, dict] = {}
         for provider, record in raw.items():
             if provider not in _AGENT_SHELL_PROVIDERS or not isinstance(record, dict):
                 continue
-            sanitized: dict[str, str | None] = {
-                "spoke_session_id": None,
-                "provider_session_id": None,
-                "last_utterance": None,
-                "last_response": None,
-            }
+            sanitized = self._empty_agent_shell_session_record()
             for key in ("provider_session_id", "last_utterance", "last_response"):
                 value = record.get(key)
                 if isinstance(value, str) and value:
                     sanitized[key] = value
+            sanitized["sessions"] = self._sanitize_agent_shell_catalog(
+                record.get("sessions")
+            )
+            if not sanitized["sessions"]:
+                current_entry = self._agent_shell_current_catalog_entry(sanitized)
+                if current_entry is not None:
+                    sanitized["sessions"] = [current_entry]
             sessions[provider] = sanitized
         return sessions
 
@@ -3653,6 +3711,9 @@ class SpokeAppDelegate(NSObject):
                 value = record.get(key)
                 if isinstance(value, str) and value:
                     stored[key] = value
+            catalog = self._sanitize_agent_shell_catalog(record.get("sessions"))
+            if catalog:
+                stored["sessions"] = catalog
             if stored:
                 payload[provider] = stored
 
@@ -3668,13 +3729,10 @@ class SpokeAppDelegate(NSObject):
             self._agent_shell_sessions = sessions
         record = sessions.get(provider)
         if not isinstance(record, dict):
-            record = {
-                "spoke_session_id": None,
-                "provider_session_id": None,
-                "last_utterance": None,
-                "last_response": None,
-            }
+            record = self._empty_agent_shell_session_record()
             sessions[provider] = record
+        if not isinstance(record.get("sessions"), list):
+            record["sessions"] = []
         spoke_session_id = record.get("spoke_session_id")
         manager = getattr(self, "_agent_backend_manager", None)
         if isinstance(spoke_session_id, str) and spoke_session_id and manager is not None:
@@ -3704,6 +3762,7 @@ class SpokeAppDelegate(NSObject):
         record = self._agent_shell_session_record(provider)
         record["last_utterance"] = utterance
         record["last_response"] = response
+        self._upsert_agent_shell_catalog_entry(record)
         self._persist_agent_shell_sessions()
 
     def _agent_shell_state(self, provider: str) -> AgentShellState:
@@ -3727,7 +3786,11 @@ class SpokeAppDelegate(NSObject):
         if isinstance(session_id, str) and session_id:
             record["spoke_session_id"] = session_id
         if isinstance(provider_session_id, str) and provider_session_id:
+            if record.get("provider_session_id") != provider_session_id:
+                record["last_utterance"] = None
+                record["last_response"] = None
             record["provider_session_id"] = provider_session_id
+            self._upsert_agent_shell_catalog_entry(record)
             self._persist_agent_shell_sessions()
 
     def _agent_backend_presentation_state(
@@ -5147,13 +5210,33 @@ class SpokeAppDelegate(NSObject):
         selected = getattr(self, "_agent_shell_provider", "off") or "off"
         if selected not in {"off", "codex", "claude-code"}:
             selected = "off"
+        codex_record = self._agent_shell_session_record("codex")
+        current_codex_session = codex_record.get("provider_session_id")
+        codex_sessions = self._sanitize_agent_shell_catalog(
+            codex_record.get("sessions")
+        )
+        items = [
+            ("off", "Off", selected == "off", True),
+            ("codex", "Codex", selected == "codex", True),
+            ("claude-code", "Claude Code", selected == "claude-code", False),
+        ]
+        for entry in codex_sessions:
+            provider_session_id = entry["provider_session_id"]
+            label_source = entry.get("last_utterance") or provider_session_id
+            label_source = label_source.strip().replace("\n", " ")
+            if len(label_source) > 48:
+                label_source = f"{label_source[:45]}..."
+            items.append(
+                (
+                    f"codex-session:{provider_session_id}",
+                    f"Codex: {label_source}",
+                    selected == "codex" and provider_session_id == current_codex_session,
+                    True,
+                )
+            )
         return {
             "title": "Agent Shell",
-            "items": [
-                ("off", "Off", selected == "off", True),
-                ("codex", "Codex", selected == "codex", True),
-                ("claude-code", "Claude Code", selected == "claude-code", False),
-            ],
+            "items": items,
         }
 
     def _repaint_visible_command_overlay_for_current_route(self) -> None:
@@ -5178,6 +5261,23 @@ class SpokeAppDelegate(NSObject):
             logger.exception("Repaint command overlay after Agent Shell selection failed")
 
     def _apply_agent_shell_selection(self, provider: str) -> None:
+        if provider.startswith("codex-session:"):
+            provider_session_id = provider.removeprefix("codex-session:")
+            record = self._agent_shell_session_record("codex")
+            for entry in self._sanitize_agent_shell_catalog(record.get("sessions")):
+                if entry.get("provider_session_id") != provider_session_id:
+                    continue
+                self._agent_shell_provider = "codex"
+                record["provider_session_id"] = provider_session_id
+                record["last_utterance"] = entry.get("last_utterance")
+                record["last_response"] = entry.get("last_response")
+                self._upsert_agent_shell_catalog_entry(record)
+                self._save_preference("agent_shell_provider", "codex")
+                self._persist_agent_shell_sessions()
+                if self._menubar is not None:
+                    self._menubar.set_status_text("Agent Shell: Codex")
+                self._repaint_visible_command_overlay_for_current_route()
+                return
         provider = provider if provider in {"off", "codex"} else "off"
         self._agent_shell_provider = provider
         self._save_preference("agent_shell_provider", provider)

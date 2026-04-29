@@ -5694,6 +5694,112 @@ class TestOverlayRecallSnapshots:
             "persisted codex answer",
         )
 
+    def test_agent_shell_sessions_load_persisted_provider_catalog(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._load_preference = MagicMock(
+            return_value={
+                "codex": {
+                    "provider_session_id": "codex-thread-2",
+                    "sessions": [
+                        {
+                            "provider_session_id": "codex-thread-1",
+                            "last_utterance": "first codex question",
+                            "last_response": "first codex answer",
+                        },
+                        {
+                            "provider_session_id": "codex-thread-2",
+                            "last_utterance": "second codex question",
+                            "last_response": "second codex answer",
+                        },
+                    ],
+                }
+            }
+        )
+        d._agent_shell_sessions = None
+
+        record = d._agent_shell_session_record("codex")
+
+        assert record["provider_session_id"] == "codex-thread-2"
+        assert record["sessions"] == [
+            {
+                "provider_session_id": "codex-thread-1",
+                "last_utterance": "first codex question",
+                "last_response": "first codex answer",
+            },
+            {
+                "provider_session_id": "codex-thread-2",
+                "last_utterance": "second codex question",
+                "last_response": "second codex answer",
+            },
+        ]
+
+    def test_agent_shell_catalog_keeps_prior_sessions_when_current_changes(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._agent_shell_sessions = {}
+        d._save_preference = MagicMock()
+
+        d._remember_agent_shell_session(
+            "codex",
+            {"id": "spoke-1", "provider_session_id": "codex-thread-1"},
+        )
+        d._remember_agent_shell_overlay_snapshot(
+            "codex",
+            "first codex question",
+            "first codex answer",
+        )
+        d._remember_agent_shell_session(
+            "codex",
+            {"id": "spoke-2", "provider_session_id": "codex-thread-2"},
+        )
+        d._remember_agent_shell_overlay_snapshot(
+            "codex",
+            "second codex question",
+            "second codex answer",
+        )
+
+        record = d._agent_shell_sessions["codex"]
+        assert record["provider_session_id"] == "codex-thread-2"
+        assert record["last_utterance"] == "second codex question"
+        assert record["last_response"] == "second codex answer"
+        assert record["sessions"] == [
+            {
+                "provider_session_id": "codex-thread-1",
+                "last_utterance": "first codex question",
+                "last_response": "first codex answer",
+            },
+            {
+                "provider_session_id": "codex-thread-2",
+                "last_utterance": "second codex question",
+                "last_response": "second codex answer",
+            },
+        ]
+        assert d._save_preference.call_args_list[-1].args == (
+            "agent_shell_overlay_snapshots",
+            {
+                "codex": {
+                    "provider_session_id": "codex-thread-2",
+                    "last_utterance": "second codex question",
+                    "last_response": "second codex answer",
+                    "sessions": [
+                        {
+                            "provider_session_id": "codex-thread-1",
+                            "last_utterance": "first codex question",
+                            "last_response": "first codex answer",
+                        },
+                        {
+                            "provider_session_id": "codex-thread-2",
+                            "last_utterance": "second codex question",
+                            "last_response": "second codex answer",
+                        },
+                    ],
+                }
+            },
+        )
+
     def test_last_command_overlay_snapshot_prefers_client_overlay_snapshot_over_flat_history(
         self, main_module, monkeypatch
     ):

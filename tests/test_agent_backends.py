@@ -703,6 +703,7 @@ class TestAgentShellMenuState:
         delegate._command_server_unreachable = False
         delegate._agent_shell_provider = "codex"
         delegate._agent_backend_manager = MagicMock()
+        delegate._agent_shell_sessions = {}
         delegate._load_cloud_provider_preference = MagicMock(return_value="google")
         delegate._load_preference = MagicMock(return_value=None)
         delegate._select_model = MagicMock(return_value=[])
@@ -730,6 +731,97 @@ class TestAgentShellMenuState:
                 ("claude-code", "Claude Code", False, False),
             ],
         }
+
+    def test_delegate_exposes_agent_shell_session_catalog_menu_items(self, monkeypatch):
+        import spoke.__main__ as main_module
+
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_shell_sessions = {
+            "codex": {
+                "provider_session_id": "codex-thread-2",
+                "sessions": [
+                    {
+                        "provider_session_id": "codex-thread-1",
+                        "last_utterance": "first codex question",
+                        "last_response": "first codex answer",
+                    },
+                    {
+                        "provider_session_id": "codex-thread-2",
+                        "last_utterance": "second codex question",
+                        "last_response": "second codex answer",
+                    },
+                ],
+            }
+        }
+
+        assert delegate._agent_shell_menu_state()["items"] == [
+            ("off", "Off", False, True),
+            ("codex", "Codex", True, True),
+            ("claude-code", "Claude Code", False, False),
+            ("codex-session:codex-thread-1", "Codex: first codex question", False, True),
+            ("codex-session:codex-thread-2", "Codex: second codex question", True, True),
+        ]
+
+    def test_agent_shell_session_selection_restores_catalog_snapshot(self, monkeypatch):
+        import spoke.__main__ as main_module
+
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "off"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_shell_sessions = {
+            "codex": {
+                "provider_session_id": "codex-thread-2",
+                "last_utterance": "second codex question",
+                "last_response": "second codex answer",
+                "sessions": [
+                    {
+                        "provider_session_id": "codex-thread-1",
+                        "last_utterance": "first codex question",
+                        "last_response": "first codex answer",
+                    },
+                    {
+                        "provider_session_id": "codex-thread-2",
+                        "last_utterance": "second codex question",
+                        "last_response": "second codex answer",
+                    },
+                ],
+            }
+        }
+        delegate._save_preference = MagicMock()
+        delegate._menubar = MagicMock()
+        delegate._command_overlay = None
+
+        delegate._apply_agent_shell_selection("codex-session:codex-thread-1")
+
+        assert delegate._agent_shell_provider == "codex"
+        record = delegate._agent_shell_sessions["codex"]
+        assert record["provider_session_id"] == "codex-thread-1"
+        assert record["last_utterance"] == "first codex question"
+        assert record["last_response"] == "first codex answer"
+        assert delegate._save_preference.call_args_list[-1].args == (
+            "agent_shell_overlay_snapshots",
+            {
+                "codex": {
+                    "provider_session_id": "codex-thread-1",
+                    "last_utterance": "first codex question",
+                    "last_response": "first codex answer",
+                    "sessions": [
+                        {
+                            "provider_session_id": "codex-thread-1",
+                            "last_utterance": "first codex question",
+                            "last_response": "first codex answer",
+                        },
+                        {
+                            "provider_session_id": "codex-thread-2",
+                            "last_utterance": "second codex question",
+                            "last_response": "second codex answer",
+                        },
+                    ],
+                }
+            },
+        )
 
 
 class TestAgentShellDelegateDispatch:
@@ -809,6 +901,13 @@ class TestAgentShellDelegateDispatch:
                     "provider_session_id": "codex-provider-session-1",
                     "last_utterance": "inspect the failing test",
                     "last_response": "Patch looks good.",
+                    "sessions": [
+                        {
+                            "provider_session_id": "codex-provider-session-1",
+                            "last_utterance": "inspect the failing test",
+                            "last_response": "Patch looks good.",
+                        }
+                    ],
                 }
             },
         )
