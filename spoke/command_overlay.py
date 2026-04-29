@@ -565,6 +565,7 @@ def _materialized_optical_shell_config(
     for key in ("ring_amplitude_points", "tail_amplitude_points"):
         if key in config:
             config[key] = float(config[key]) * _lerp(0.35, 1.0, p)
+    config["continuous_present"] = True
     return config
 
 

@@ -122,6 +122,10 @@ def _normalize_shell_configs(shell_configs) -> list[dict]:
     return configs
 
 
+def _wants_continuous_present(shell_configs: list[dict]) -> bool:
+    return any(bool(config.get("continuous_present")) for config in shell_configs)
+
+
 def _initial_brightness_from_shell_config(config: dict | None, fallback: float) -> float:
     if config is None:
         return fallback
@@ -1025,6 +1029,7 @@ class FullScreenCompositor:
             configs = list(self._shell_configs)
             frame_generation = self._latest_frame_generation
             config_generation = self._config_generation
+            continuous_present = _wants_continuous_present(configs)
 
         try:
             if iosurface is None or w <= 0 or h <= 0 or not configs:
@@ -1032,6 +1037,7 @@ class FullScreenCompositor:
             if (
                 frame_generation == self._rendered_frame_generation
                 and config_generation == self._rendered_config_generation
+                and not continuous_present
             ):
                 with self._lock:
                     self._duplicate_frames += 1
