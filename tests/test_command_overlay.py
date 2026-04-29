@@ -2170,6 +2170,25 @@ class TestGeometryCaps:
         assert second_config is not first_config
         assert second_config["center_x"] != -1.0
 
+    def test_current_optical_shell_config_carries_agent_thread_cards(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._content_view.frame.return_value = _make_rect(28.0, 28.0, 624.0, 104.0)
+        overlay._agent_shell_cards = [
+            {
+                "provider_session_id": "codex-thread-1",
+                "title": "first thread",
+                "readiness": "ready",
+            }
+        ]
+
+        config = overlay._current_optical_shell_config()
+
+        assert config["surface_kind"] == "agent_shell"
+        assert config["agent_thread_cards"] == overlay._agent_shell_cards
+
     def test_update_layout_resets_text_geometry_to_match_visible_area(
         self, mock_pyobjc, monkeypatch
     ):

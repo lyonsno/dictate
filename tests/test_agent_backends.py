@@ -1359,6 +1359,47 @@ class TestAgentShellMenuState:
         assert record["last_utterance"] == "first codex question"
         assert delegate._agent_shell_state("codex").provider_session_id == "codex-thread-1"
 
+    def test_agent_shell_thread_cards_snapshot_uses_catalog_sessions(self, main_module):
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_shell_sessions = {
+            "codex": {
+                "provider_session_id": "codex-thread-2",
+                "sessions": [
+                    {
+                        "provider_session_id": "codex-thread-1",
+                        "last_utterance": "first codex question",
+                        "last_response": "first codex answer",
+                    },
+                    {
+                        "provider_session_id": "codex-thread-2",
+                        "last_utterance": "second codex question",
+                        "last_response": "second codex answer",
+                        "thread_card": {
+                            "provider_session_id": "codex-thread-2",
+                            "title": "custom second thread",
+                            "readiness": "ready",
+                            "bearing": "custom bearing",
+                            "activity_line": "Ready to read",
+                            "latest_response": "second codex answer",
+                        },
+                    },
+                ],
+            }
+        }
+
+        cards = delegate._agent_shell_thread_cards_snapshot("codex")
+
+        assert [card["provider_session_id"] for card in cards] == [
+            "codex-thread-1",
+            "codex-thread-2",
+        ]
+        assert cards[0]["title"] == "first codex question"
+        assert cards[0]["selected"] is False
+        assert cards[1]["title"] == "custom second thread"
+        assert cards[1]["selected"] is True
+
     def test_agent_shell_chrome_events_persist_to_provider_record(self, main_module):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         delegate._transcription_token = 7

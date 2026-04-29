@@ -960,6 +960,7 @@ class CommandOverlay(NSObject):
         self._narrator_shimmer_active = False
         self._agent_shell_header_label = None
         self._agent_shell_footer_label = None
+        self._agent_shell_cards = []
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -1340,16 +1341,36 @@ class CommandOverlay(NSObject):
     def _current_optical_shell_config(self) -> dict[str, float | bool] | None:
         content = getattr(self, "_content_view", None)
         if content is None or not hasattr(content, "frame"):
-            return _command_optical_shell_config()
+            return self._attach_agent_shell_surface_payload(
+                _command_optical_shell_config()
+            )
         try:
             frame = content.frame()
             width = frame.size.width
             height = frame.size.height
         except Exception:
-            return _command_optical_shell_config()
+            return self._attach_agent_shell_surface_payload(
+                _command_optical_shell_config()
+            )
         if not isinstance(width, numbers.Real) or not isinstance(height, numbers.Real):
-            return _command_optical_shell_config()
-        return _command_optical_shell_config(width, height)
+            return self._attach_agent_shell_surface_payload(
+                _command_optical_shell_config()
+            )
+        return self._attach_agent_shell_surface_payload(
+            _command_optical_shell_config(width, height)
+        )
+
+    def _attach_agent_shell_surface_payload(self, config):
+        if config is None:
+            return None
+        cards = getattr(self, "_agent_shell_cards", None)
+        if isinstance(cards, list) and cards:
+            config = dict(config)
+            config["surface_kind"] = "agent_shell"
+            config["agent_thread_cards"] = [
+                dict(card) for card in cards if isinstance(card, dict)
+            ]
+        return config
 
     def _apply_backdrop_pulse_style(self, breath: float) -> None:
         layer = getattr(self, "_backdrop_layer", None)
@@ -1432,6 +1453,7 @@ class CommandOverlay(NSObject):
         initial_response: str = "",
         agent_shell_header: str = "",
         agent_shell_footer: str = "",
+        agent_shell_cards: list[dict] | None = None,
     ) -> None:
         """Fade the overlay in, optionally starting or resuming the thinking timer."""
         if self._window is None:
@@ -1447,6 +1469,7 @@ class CommandOverlay(NSObject):
         self._utterance_text = ""
         self._collapsed_text = ""
         self._clear_agent_shell_chrome()
+        self.set_agent_shell_cards(agent_shell_cards or [])
         # Reset TTS state so stale blend doesn't affect new responses
         self._tts_active = False
         self._tts_blend = 0.0
@@ -1780,6 +1803,7 @@ class CommandOverlay(NSObject):
     def clear_agent_shell_chrome(self) -> None:
         """Clear Agent Shell chrome when the visible transcript belongs to another mode."""
         self._clear_agent_shell_chrome()
+        self.set_agent_shell_cards([])
         self._update_layout()
 
     def _set_agent_shell_chrome_texts(self, header: str = "", footer: str = "") -> None:
@@ -1793,6 +1817,21 @@ class CommandOverlay(NSObject):
             footer_label.setHidden_(not bool(footer))
         self._apply_agent_shell_chrome_theme()
 
+    def set_agent_shell_cards(self, cards: list[dict] | None) -> None:
+        self._agent_shell_cards = [
+            dict(card) for card in (cards or []) if isinstance(card, dict)
+        ]
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is None:
+            return
+        shell_config = self._current_optical_shell_config()
+        if shell_config is None:
+            return
+        try:
+            compositor.update_shell_config(shell_config)
+        except Exception:
+            logger.debug("Failed to push Agent Shell card payload", exc_info=True)
+
     def replace_transcript(
         self,
         *,
@@ -1800,12 +1839,14 @@ class CommandOverlay(NSObject):
         response: str,
         agent_shell_header: str = "",
         agent_shell_footer: str = "",
+        agent_shell_cards: list[dict] | None = None,
     ) -> None:
         """Replace recalled transcript and chrome with one layout pass."""
         self._utterance_text = utterance
         self._collapsed_text = ""
         self._response_text = ""
         self._set_agent_shell_chrome_texts(agent_shell_header, agent_shell_footer)
+        self.set_agent_shell_cards(agent_shell_cards or [])
         if self._text_view is None or not self._visible:
             self._response_text = response
             return

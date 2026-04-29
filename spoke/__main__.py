@@ -3056,7 +3056,7 @@ class SpokeAppDelegate(NSObject):
                     start_thinking_timer=False,
                     initial_utterance=last_utterance,
                     initial_response=_command_overlay_recall_preview(last_response),
-                    **self._agent_shell_chrome_snapshot(
+                    **self._agent_shell_surface_snapshot(
                         self._active_agent_shell_provider()
                     ),
                 )
@@ -3420,7 +3420,7 @@ class SpokeAppDelegate(NSObject):
                             start_thinking_timer=False,
                             initial_utterance=last_utterance,
                             initial_response=_command_overlay_recall_preview(last_response),
-                            **self._agent_shell_chrome_snapshot(agent_shell_provider),
+                            **self._agent_shell_surface_snapshot(agent_shell_provider),
                         )
                         self._command_overlay.finish()
                         self._detector.command_overlay_active = True
@@ -3631,6 +3631,7 @@ class SpokeAppDelegate(NSObject):
             "last_response": None,
             "last_header": None,
             "last_footer": None,
+            "thread_card": None,
             "sessions": [],
         }
 
@@ -3653,8 +3654,100 @@ class SpokeAppDelegate(NSObject):
                 value = entry.get(key)
                 if isinstance(value, str) and value:
                     sanitized[key] = value
+            thread_card = self._sanitize_agent_shell_thread_card(
+                entry.get("thread_card")
+            )
+            if thread_card:
+                sanitized["thread_card"] = thread_card
             catalog.append(sanitized)
         return catalog[-_AGENT_SHELL_SESSION_CATALOG_LIMIT:]
+
+    def _sanitize_agent_shell_thread_card(self, raw) -> dict:
+        if not isinstance(raw, dict):
+            return {}
+        sanitized = {}
+        for key in (
+            "thread_id",
+            "provider",
+            "provider_session_id",
+            "title",
+            "readiness",
+            "bearing",
+            "activity_line",
+            "latest_response",
+        ):
+            value = raw.get(key)
+            if isinstance(value, str) and value:
+                sanitized[key] = value
+        value = raw.get("updated_sequence")
+        if isinstance(value, int):
+            sanitized["updated_sequence"] = value
+        return sanitized
+
+    def _agent_shell_card_title(self, value: str) -> str:
+        title = " ".join(value.split()).strip()
+        if len(title) > 48:
+            return f"{title[:45]}..."
+        return title or "Agent thread"
+
+    def _agent_shell_catalog_card(
+        self,
+        provider: str,
+        entry: dict,
+        *,
+        selected_provider_session_id: str | None,
+    ) -> dict:
+        provider_session_id = entry.get("provider_session_id")
+        provider_session_id = provider_session_id if isinstance(provider_session_id, str) else ""
+        raw_card = self._sanitize_agent_shell_thread_card(entry.get("thread_card"))
+        title = raw_card.get("title")
+        if not title:
+            title = self._agent_shell_card_title(
+                entry.get("last_utterance") if isinstance(entry.get("last_utterance"), str) else ""
+            )
+        latest_response = raw_card.get("latest_response")
+        if not latest_response:
+            latest_response = (
+                entry.get("last_response")
+                if isinstance(entry.get("last_response"), str)
+                else ""
+            )
+        bearing = raw_card.get("bearing") or (
+            entry.get("last_utterance")
+            if isinstance(entry.get("last_utterance"), str)
+            else ""
+        )
+        card = {
+            "thread_id": raw_card.get("thread_id") or provider_session_id,
+            "provider": raw_card.get("provider") or provider,
+            "provider_session_id": raw_card.get("provider_session_id") or provider_session_id,
+            "title": title,
+            "readiness": raw_card.get("readiness") or "ready",
+            "bearing": bearing,
+            "activity_line": raw_card.get("activity_line") or "Ready to read",
+            "latest_response": latest_response,
+            "selected": provider_session_id == selected_provider_session_id,
+        }
+        if "updated_sequence" in raw_card:
+            card["updated_sequence"] = raw_card["updated_sequence"]
+        return card
+
+    def _agent_shell_thread_cards_snapshot(self, provider: str | None) -> list[dict]:
+        if provider not in _AGENT_SHELL_PROVIDERS:
+            return []
+        record = self._agent_shell_session_record(provider)
+        selected_provider_session_id = record.get("provider_session_id")
+        if not isinstance(selected_provider_session_id, str):
+            selected_provider_session_id = None
+        catalog = self._sanitize_agent_shell_catalog(record.get("sessions"))
+        return [
+            self._agent_shell_catalog_card(
+                provider,
+                entry,
+                selected_provider_session_id=selected_provider_session_id,
+            )
+            for entry in catalog
+        ]
 
     def _agent_shell_current_catalog_entry(self, record: dict) -> dict[str, str] | None:
         provider_session_id = record.get("provider_session_id")
@@ -3665,6 +3758,9 @@ class SpokeAppDelegate(NSObject):
             value = record.get(key)
             if isinstance(value, str) and value:
                 entry[key] = value
+        thread_card = self._sanitize_agent_shell_thread_card(record.get("thread_card"))
+        if thread_card:
+            entry["thread_card"] = thread_card
         return entry
 
     def _upsert_agent_shell_catalog_entry(self, record: dict) -> None:
@@ -3700,6 +3796,9 @@ class SpokeAppDelegate(NSObject):
                 value = record.get(key)
                 if isinstance(value, str) and value:
                     sanitized[key] = value
+            thread_card = self._sanitize_agent_shell_thread_card(record.get("thread_card"))
+            if thread_card:
+                sanitized["thread_card"] = thread_card
             sanitized["sessions"] = self._sanitize_agent_shell_catalog(
                 record.get("sessions")
             )
@@ -3730,6 +3829,9 @@ class SpokeAppDelegate(NSObject):
                 value = record.get(key)
                 if isinstance(value, str) and value:
                     stored[key] = value
+            thread_card = self._sanitize_agent_shell_thread_card(record.get("thread_card"))
+            if thread_card:
+                stored["thread_card"] = thread_card
             catalog = self._sanitize_agent_shell_catalog(record.get("sessions"))
             if catalog:
                 stored["sessions"] = catalog
@@ -3797,6 +3899,15 @@ class SpokeAppDelegate(NSObject):
             chrome["agent_shell_footer"] = footer
         return chrome
 
+    def _agent_shell_surface_snapshot(self, provider: str | None) -> dict:
+        if provider not in _AGENT_SHELL_PROVIDERS:
+            return {}
+        surface = dict(self._agent_shell_chrome_snapshot(provider))
+        cards = self._agent_shell_thread_cards_snapshot(provider)
+        if cards:
+            surface["agent_shell_cards"] = cards
+        return surface
+
     def _remember_agent_shell_chrome(
         self,
         provider: str | None,
@@ -3837,6 +3948,7 @@ class SpokeAppDelegate(NSObject):
     def _remember_agent_shell_session(self, provider: str, session: dict) -> None:
         session_id = session.get("id")
         provider_session_id = session.get("provider_session_id")
+        thread_card = self._sanitize_agent_shell_thread_card(session.get("thread_card"))
         record = self._agent_shell_session_record(provider)
         if isinstance(session_id, str) and session_id:
             record["spoke_session_id"] = session_id
@@ -3846,7 +3958,13 @@ class SpokeAppDelegate(NSObject):
                 record["last_response"] = None
                 record["last_header"] = None
                 record["last_footer"] = None
+                record["thread_card"] = None
             record["provider_session_id"] = provider_session_id
+            if thread_card:
+                thread_card["provider_session_id"] = provider_session_id
+                thread_card.setdefault("thread_id", provider_session_id)
+                thread_card.setdefault("provider", provider)
+                record["thread_card"] = thread_card
             self._upsert_agent_shell_catalog_entry(record)
             self._persist_agent_shell_sessions()
 
@@ -4486,7 +4604,7 @@ class SpokeAppDelegate(NSObject):
             self._sync_command_overlay_brightness(immediate=True)
             self._command_overlay.show(
                 initial_utterance=utterance,
-                **self._agent_shell_chrome_snapshot(self._active_agent_shell_provider()),
+                **self._agent_shell_surface_snapshot(self._active_agent_shell_provider()),
             )
             self._detector.command_overlay_active = True
             logger.info("command_overlay_active -> True (command started)")
@@ -5376,23 +5494,34 @@ class SpokeAppDelegate(NSObject):
             self._sync_command_overlay_brightness(immediate=True)
             agent_shell_provider = self._active_agent_shell_provider()
             chrome = (
-                self._agent_shell_chrome_snapshot(agent_shell_provider)
+                self._agent_shell_surface_snapshot(agent_shell_provider)
                 if agent_shell_provider is not None
                 else {}
             )
             replace_transcript = getattr(overlay, "replace_transcript", None)
             if callable(replace_transcript):
-                replace_transcript(
-                    utterance=utterance,
-                    response=_command_overlay_recall_preview(response),
-                    agent_shell_header=chrome.get("agent_shell_header", ""),
-                    agent_shell_footer=chrome.get("agent_shell_footer", ""),
-                )
+                kwargs = {
+                    "utterance": utterance,
+                    "response": _command_overlay_recall_preview(response),
+                    "agent_shell_header": chrome.get("agent_shell_header", ""),
+                    "agent_shell_footer": chrome.get("agent_shell_footer", ""),
+                }
+                cards = chrome.get("agent_shell_cards")
+                if cards:
+                    kwargs["agent_shell_cards"] = cards
+                replace_transcript(**kwargs)
             else:
                 if agent_shell_provider is None:
                     clear_chrome = getattr(overlay, "clear_agent_shell_chrome", None)
                     if callable(clear_chrome):
                         clear_chrome()
+                    set_cards = getattr(overlay, "set_agent_shell_cards", None)
+                    if callable(set_cards):
+                        set_cards([])
+                else:
+                    set_cards = getattr(overlay, "set_agent_shell_cards", None)
+                    if callable(set_cards):
+                        set_cards(chrome.get("agent_shell_cards", []))
                 overlay.set_utterance(utterance)
                 overlay.set_response_text(_command_overlay_recall_preview(response))
             if agent_shell_provider is not None:
@@ -5436,6 +5565,9 @@ class SpokeAppDelegate(NSObject):
                 record["last_response"] = entry.get("last_response")
                 record["last_header"] = entry.get("last_header")
                 record["last_footer"] = entry.get("last_footer")
+                record["thread_card"] = self._sanitize_agent_shell_thread_card(
+                    entry.get("thread_card")
+                ) or None
                 self._upsert_agent_shell_catalog_entry(record)
                 self._save_preference("agent_shell_provider", "codex")
                 self._persist_agent_shell_sessions()

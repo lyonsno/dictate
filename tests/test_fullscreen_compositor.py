@@ -160,6 +160,45 @@ def test_registry_reuses_one_host_per_display_for_distinct_clients(monkeypatch):
     ]
 
 
+def test_shell_config_preserves_agent_thread_card_payload(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    registry = fullscreen_compositor.OverlayCompositorRegistry()
+    screen = object()
+    host = registry.host_for_screen(screen)
+    client = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(251),
+        content_view=object(),
+    )
+    cards = [
+        {
+            "provider_session_id": "codex-thread-1",
+            "title": "first thread",
+            "readiness": "ready",
+            "selected": False,
+        }
+    ]
+
+    assert client.update_shell_config(
+        {
+            "center_x": 10.0,
+            "center_y": 20.0,
+            "content_width_points": 300.0,
+            "content_height_points": 90.0,
+            "corner_radius_points": 16.0,
+            "band_width_points": 8.0,
+            "tail_width_points": 12.0,
+            "initial_brightness": 0.4,
+            "agent_thread_cards": cards,
+            "surface_kind": "agent_shell",
+        }
+    )
+
+    config = _FakeFullScreenCompositor.instances[0].updated_configs[-1][0]
+    assert config["agent_thread_cards"] == cards
+    assert config["surface_kind"] == "agent_shell"
+
+
 def test_release_one_client_keeps_host_running_until_last_client_releases(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
     registry = fullscreen_compositor.OverlayCompositorRegistry()
