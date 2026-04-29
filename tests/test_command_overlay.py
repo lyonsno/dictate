@@ -513,9 +513,9 @@ class TestOpticalShellMaterialization:
         full = mod._materialization_fill_state(1.0)
 
         assert seed["opacity"] == pytest.approx(0.0)
-        assert seed["height_frac"] < 0.04
+        assert seed["height_frac"] < 0.02
         assert wide_warp["opacity"] == pytest.approx(0.0)
-        assert wide_warp["height_frac"] < 0.04
+        assert wide_warp["height_frac"] < 0.02
         assert early_slit["opacity"] < 0.35
         assert early_slit["height_frac"] < 0.12
         assert gathering["height_frac"] < 0.45
@@ -550,10 +550,10 @@ class TestOpticalShellMaterialization:
         lingering = mod._dismiss_pucker_shell_config(base, 0.55)
         rest = mod._dismiss_pucker_shell_config(base, 1.0)
 
-        assert peak["content_width_points"] < base["content_width_points"] * 0.45
-        assert peak["content_height_points"] < base["content_height_points"] * 0.10
-        assert peak["x_squeeze"] < -1.0
-        assert peak["y_squeeze"] < -0.70
+        assert peak["content_width_points"] > base["content_width_points"]
+        assert peak["content_height_points"] > base["content_height_points"] * 0.50
+        assert peak["x_squeeze"] < -2.0
+        assert peak["y_squeeze"] < -1.40
         assert abs(lingering["x_squeeze"]) > abs(rest["x_squeeze"])
         assert abs(lingering["x_squeeze"]) < abs(peak["x_squeeze"])
         assert rest["x_squeeze"] == pytest.approx(0.0)

@@ -103,7 +103,7 @@ _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT = 1.20
 _OPTICAL_MATERIAL_FILL_START = _OPTICAL_MATERIALIZATION_SPREAD_END
 _OPTICAL_MATERIAL_FILL_SOLID_AT = 0.84
 _OPTICAL_MATERIAL_FILL_FULL_AT = 0.96
-_OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC = 0.022
+_OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC = 0.011
 _OPTICAL_ENTRANCE_READY_POLL_S = max(
     0.004,
     _env("SPOKE_COMMAND_OPTICAL_ENTRANCE_READY_POLL_S", 1.0 / 120.0),
@@ -662,19 +662,19 @@ def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
     base_w = max(float(shell_config.get("content_width_points", 1.0)), 1.0)
     base_h = max(float(shell_config.get("content_height_points", 1.0)), 1.0)
     config = _materialized_optical_shell_config(shell_config, 0.0)
-    config["content_width_points"] = max(24.0, min(base_w * 0.34, 360.0))
-    config["content_height_points"] = max(2.0, min(base_h * 0.045, 12.0))
+    config["content_width_points"] = max(24.0, base_w * 1.18)
+    config["content_height_points"] = max(2.0, base_h * 0.62)
     config["corner_radius_points"] = min(
         max(float(shell_config.get("corner_radius_points", 1.0)), 1.0),
         config["content_height_points"] * 0.5,
     )
     config["core_magnification"] = 1.0
-    config["x_squeeze"] = -1.16 * amount
-    config["y_squeeze"] = -0.76 * amount
+    config["x_squeeze"] = -2.32 * amount
+    config["y_squeeze"] = -1.52 * amount
     if "ring_amplitude_points" in config:
-        config["ring_amplitude_points"] = -abs(float(config["ring_amplitude_points"])) * 0.44 * amount
+        config["ring_amplitude_points"] = -abs(float(config["ring_amplitude_points"])) * 0.88 * amount
     if "tail_amplitude_points" in config:
-        config["tail_amplitude_points"] = -abs(float(config["tail_amplitude_points"])) * 0.36 * amount
+        config["tail_amplitude_points"] = -abs(float(config["tail_amplitude_points"])) * 0.72 * amount
     config["continuous_present"] = True
     return config
 

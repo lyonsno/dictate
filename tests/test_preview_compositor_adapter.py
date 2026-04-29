@@ -70,6 +70,12 @@ class _FakeLayer:
     def setOpacity_(self, opacity):
         self._opacity = opacity
 
+    def setContents_(self, contents):
+        self.contents = contents
+
+    def setCompositingFilter_(self, filter_name):
+        self.compositing_filter = filter_name
+
     def addAnimation_forKey_(self, animation, key):
         self.animations.append((key, animation))
 
@@ -326,6 +332,48 @@ def test_preview_warp_defaults_match_live_tuner_baseline(mock_pyobjc, monkeypatc
     assert tuning["bleed_zone_frac"] == pytest.approx(0.702946360518)
     assert tuning["exterior_mix_width_points"] == pytest.approx(26.980754573171)
     assert tuning["ring_amplitude_points"] == pytest.approx(35.369188262195)
+
+
+def test_preview_fill_overscan_grows_sdf_body_without_growing_warp(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    overlay._ridge_scale = 2.0
+    observed_sdf = []
+    observed_alpha = []
+
+    def _fake_sdf(total_w, total_h, rect_w, rect_h, radius, scale):
+        observed_sdf.append((total_w, total_h, rect_w, rect_h, radius, scale))
+        return "sdf"
+
+    def _fake_alpha(sdf, *, width, interior_floor):
+        observed_alpha.append((sdf, width, interior_floor))
+        return "alpha"
+
+    monkeypatch.setattr(overlay_module, "_overlay_rounded_rect_sdf", _fake_sdf)
+    monkeypatch.setattr(overlay_module, "_glow_fill_alpha", _fake_alpha)
+    monkeypatch.setattr(
+        overlay_module,
+        "_fill_field_to_image",
+        lambda _alpha, _r, _g, _b: ("image", b"payload"),
+    )
+
+    overlay._apply_ridge_masks(600.0, 80.0)
+    geometry = overlay._preview_compositor_geometry_snapshot()
+
+    overscan = overlay_module._PREVIEW_FILL_OVERSCAN_POINTS
+    assert observed_sdf[-1][2] == pytest.approx(600.0 + 2 * overscan)
+    assert observed_sdf[-1][3] == pytest.approx(80.0 + 2 * overscan)
+    assert overlay._fill_layer.frame().size.width == pytest.approx(
+        600.0 + 2 * overlay_module._OUTER_FEATHER
+    )
+    assert geometry.content_width_points == pytest.approx(
+        (600.0 + overlay_module._PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII * 16.0) * 2.0
+    )
+    assert geometry.content_height_points == pytest.approx(
+        (80.0 + overlay_module._PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII * 16.0) * 2.0
+    )
 
 
 def test_preview_adapter_hide_releases_only_preview_client_and_leaves_assistant_state(
