@@ -112,6 +112,7 @@ def test_pack_warp_params_uses_shell_specific_seam_pucker_controls():
             "scar_seam_focus_frac": 0.27,
             "scar_vertical_grip": 0.51,
             "scar_horizontal_grip": 0.19,
+            "scar_axis_rotation": 1.0,
         },
     )
     values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, payload)
@@ -121,6 +122,19 @@ def test_pack_warp_params_uses_shell_specific_seam_pucker_controls():
     assert values[25] == pytest.approx(0.27)
     assert values[26] == pytest.approx(0.51)
     assert values[27] == pytest.approx(0.19)
+    assert values[28] == pytest.approx(1.0)
+
+
+def test_metal_shader_can_rotate_seam_scar_axis_for_pucker_tuning():
+    source = metal_warp._metal_shader_source()
+    seam_branch = source.split("Seam-tension scar:", 1)[1].split(
+        "float curveBoost",
+        1,
+    )[0]
+
+    assert "scarAxisRotation" in seam_branch
+    assert "float2 rotatedP = float2(p.y, p.x)" in seam_branch
+    assert "mix(normalDisplacement, rotatedDisplacement" in seam_branch
 
 
 def test_metal_shader_has_separate_radial_scar_mode():

@@ -104,6 +104,7 @@ _OPTICAL_MATERIALIZATION_SEAM_THICKNESS_FRAC = 0.15
 _OPTICAL_MATERIALIZATION_SEAM_FOCUS_FRAC = 0.34
 _OPTICAL_MATERIALIZATION_SEAM_VERTICAL_GRIP = 0.20
 _OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP = 0.07
+_OPTICAL_MATERIALIZATION_SEAM_AXIS_ROTATION = 1.0
 _OPTICAL_MATERIALIZATION_SEAM_FIELD_HEIGHT_FRAC = 0.72
 _OPTICAL_MATERIALIZATION_SEAM_FIELD_MIN_HEIGHT_POINTS = 96.0
 _OPTICAL_MATERIALIZATION_RADIAL_PUCKER_INTENSITY = 0.25
@@ -720,6 +721,7 @@ def _seam_pucker_tuning_defaults() -> dict[str, float]:
         "scar_seam_focus_frac": _OPTICAL_MATERIALIZATION_SEAM_FOCUS_FRAC,
         "scar_vertical_grip": _OPTICAL_MATERIALIZATION_SEAM_VERTICAL_GRIP,
         "scar_horizontal_grip": _OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP,
+        "scar_axis_rotation": _OPTICAL_MATERIALIZATION_SEAM_AXIS_ROTATION,
     }
 
 
@@ -792,6 +794,7 @@ def _apply_dismiss_seam_latch_fields(
     updated["scar_seam_focus_frac"] = settings["scar_seam_focus_frac"]
     updated["scar_vertical_grip"] = settings["scar_vertical_grip"]
     updated["scar_horizontal_grip"] = settings["scar_horizontal_grip"]
+    updated["scar_axis_rotation"] = settings["scar_axis_rotation"]
     updated["x_squeeze"] = 1.0
     updated["y_squeeze"] = 1.0
     updated["ring_amplitude_points"] = 0.0

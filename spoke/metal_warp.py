@@ -163,6 +163,7 @@ struct WarpParams {{
     float scarSeamFocusFrac; // normalized near-seam focus width
     float scarVerticalGrip; // vertical pinch strength for seam scar
     float scarHorizontalGrip; // side pinch strength for seam scar
+    float scarAxisRotation; // 0 = horizontal seam field, 1 = 90-degree rotated field
 }};
 
 float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
@@ -251,27 +252,50 @@ kernel void opticalShellWarp(
         // material-shell fisheye. Positive scarAmount makes content appear to
         // pinch toward the sealed horizontal seam; negative amount rebounds it
         // outward before settling.
-        float2 extent = max(halfRect, float2(1.0f, 1.0f));
-        float x01 = clamp(abs(p.x) / extent.x, 0.0f, 1.0f);
-        float y01 = clamp(abs(p.y) / extent.y, 0.0f, 1.0f);
         float lengthFrac = clamp(params.scarSeamLengthFrac, 0.05f, 1.0f);
         float thicknessFrac = clamp(params.scarSeamThicknessFrac, 0.01f, 1.5f);
         float focusFrac = clamp(params.scarSeamFocusFrac, 0.01f, 1.0f);
-        float xFalloff = 1.0f - smoothstep(lengthFrac, 1.0f, x01);
-        float yFalloff = exp(-y01 / thicknessFrac);
-        float field = xFalloff * yFalloff;
-        float seamFocus = exp(-y01 / focusFrac);
-        float sideFocus = 1.0f - smoothstep(0.0f, min(lengthFrac + 0.12f, 1.0f), x01);
         float amount = clamp(params.scarAmount, -2.0f, 2.0f);
-        float verticalGrip = max(params.scarVerticalGrip, 0.0f) * (0.25f + 0.75f * seamFocus);
-        float horizontalGrip = max(params.scarHorizontalGrip, 0.0f) * sideFocus * (0.25f + 0.75f * seamFocus);
+        float axisRotation = clamp(params.scarAxisRotation, 0.0f, 1.0f);
+
+        float2 normalExtent = max(halfRect, float2(1.0f, 1.0f));
+        float normalX01 = clamp(abs(p.x) / normalExtent.x, 0.0f, 1.0f);
+        float normalY01 = clamp(abs(p.y) / normalExtent.y, 0.0f, 1.0f);
+        float normalXFalloff = 1.0f - smoothstep(lengthFrac, 1.0f, normalX01);
+        float normalYFalloff = exp(-normalY01 / thicknessFrac);
+        float normalField = normalXFalloff * normalYFalloff;
+        float normalSeamFocus = exp(-normalY01 / focusFrac);
+        float normalSideFocus = 1.0f - smoothstep(0.0f, min(lengthFrac + 0.12f, 1.0f), normalX01);
+        float normalVerticalGrip = max(params.scarVerticalGrip, 0.0f) * (0.25f + 0.75f * normalSeamFocus);
+        float normalHorizontalGrip = max(params.scarHorizontalGrip, 0.0f) * normalSideFocus * (0.25f + 0.75f * normalSeamFocus);
+        float2 normalDisplacement = -p * float2(normalHorizontalGrip, normalVerticalGrip) * amount * normalField;
+
+        float2 rotatedP = float2(p.y, p.x);
+        float2 rotatedExtent = max(float2(halfRect.y, halfRect.x), float2(1.0f, 1.0f));
+        float rotatedX01 = clamp(abs(rotatedP.x) / rotatedExtent.x, 0.0f, 1.0f);
+        float rotatedY01 = clamp(abs(rotatedP.y) / rotatedExtent.y, 0.0f, 1.0f);
+        float rotatedXFalloff = 1.0f - smoothstep(lengthFrac, 1.0f, rotatedX01);
+        float rotatedYFalloff = exp(-rotatedY01 / thicknessFrac);
+        float rotatedField = rotatedXFalloff * rotatedYFalloff;
+        float rotatedSeamFocus = exp(-rotatedY01 / focusFrac);
+        float rotatedSideFocus = 1.0f - smoothstep(0.0f, min(lengthFrac + 0.12f, 1.0f), rotatedX01);
+        float rotatedVerticalGrip = max(params.scarVerticalGrip, 0.0f) * (0.25f + 0.75f * rotatedSeamFocus);
+        float rotatedHorizontalGrip = max(params.scarHorizontalGrip, 0.0f) * rotatedSideFocus * (0.25f + 0.75f * rotatedSeamFocus);
+        float2 rotatedQDisplacement = -rotatedP * float2(rotatedHorizontalGrip, rotatedVerticalGrip) * amount * rotatedField;
+        float2 rotatedDisplacement = float2(rotatedQDisplacement.y, rotatedQDisplacement.x);
+
         // Positive seam scar samples toward the seam rather than reusing the
-        // material shell's outward bulge; this is the horizontal pucker family
-        // the live tuner is meant to overdetermine visually.
-        float2 displacement = -p * float2(horizontalGrip, verticalGrip) * amount * field;
+        // material shell's outward bulge. The rotated path lets the tuner test
+        // the same squeeze family sideways, which better matches a sealed slit.
+        float2 displacement = mix(normalDisplacement, rotatedDisplacement, axisRotation);
         result = d + displacement;
-        scaleX = 1.0f - horizontalGrip * amount * field;
-        scaleY = 1.0f - verticalGrip * amount * field;
+        float2 scaleDisplacement = mix(
+            float2(normalHorizontalGrip * normalField, normalVerticalGrip * normalField),
+            float2(rotatedVerticalGrip * rotatedField, rotatedHorizontalGrip * rotatedField),
+            axisRotation
+        );
+        scaleX = 1.0f - scaleDisplacement.x * amount;
+        scaleY = 1.0f - scaleDisplacement.y * amount;
     }} else {{
     float curveBoost = min(
         {_WARP_CURVEBOOST_CAP}f,
@@ -382,7 +406,7 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-_WARP_PARAMS_FORMAT = "28f"
+_WARP_PARAMS_FORMAT = "29f"
 _WARP_PARAMS_SIZE = struct.calcsize(_WARP_PARAMS_FORMAT)
 
 
@@ -422,6 +446,7 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         float(shell_config.get("scar_seam_focus_frac", 0.34)),
         float(shell_config.get("scar_vertical_grip", 0.20)),
         float(shell_config.get("scar_horizontal_grip", 0.07)),
+        float(shell_config.get("scar_axis_rotation", 0.0)),
     )
 
 

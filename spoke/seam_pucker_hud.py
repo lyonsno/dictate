@@ -33,7 +33,7 @@ _PREFS_PATH = (
     / "assistant_seam_pucker_hud.json"
 )
 _PANEL_WIDTH = 390.0
-_PANEL_HEIGHT = 520.0
+_PANEL_HEIGHT = 568.0
 _PADDING_X = 14.0
 _ROW_HEIGHT = 48.0
 _TITLE_HEIGHT = 24.0
@@ -51,6 +51,7 @@ _SLIDER_SPECS = [
     ("Seam Focus", "scar_seam_focus_frac", 0.01, 1.0, "{:.2f}"),
     ("Vertical Grip", "scar_vertical_grip", 0.0, 1.0, "{:.2f}"),
     ("Horizontal Grip", "scar_horizontal_grip", 0.0, 0.6, "{:.2f}"),
+    ("Rotate Field 90deg", "scar_axis_rotation", 0.0, 1.0, "{:.2f}"),
 ]
 
 

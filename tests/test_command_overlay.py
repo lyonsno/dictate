@@ -22,23 +22,44 @@ def _smoothstep(edge0, edge1, x):
     return t * t * (3.0 - 2.0 * t)
 
 
-def _seam_scar_vertical_displacement(config, y_offset):
+def _seam_scar_displacement(config, x_offset, y_offset):
+    def component(px, py, extent_x, extent_y):
+        x01 = min(max(abs(float(px)) / extent_x, 0.0), 1.0)
+        y01 = min(max(abs(float(py)) / extent_y, 0.0), 1.0)
+        length_frac = min(max(float(config["scar_seam_length_frac"]), 0.05), 1.0)
+        thickness_frac = min(max(float(config["scar_seam_thickness_frac"]), 0.01), 1.5)
+        focus_frac = min(max(float(config["scar_seam_focus_frac"]), 0.01), 1.0)
+        x_falloff = 1.0 - _smoothstep(length_frac, 1.0, x01)
+        y_falloff = math.exp(-y01 / thickness_frac)
+        field = x_falloff * y_falloff
+        seam_focus = math.exp(-y01 / focus_frac)
+        side_focus = 1.0 - _smoothstep(0.0, min(length_frac + 0.12, 1.0), x01)
+        vertical_grip = max(float(config["scar_vertical_grip"]), 0.0) * (
+            0.25 + 0.75 * seam_focus
+        )
+        horizontal_grip = max(float(config["scar_horizontal_grip"]), 0.0) * side_focus * (
+            0.25 + 0.75 * seam_focus
+        )
+        amount = min(max(float(config["scar_amount"]), -2.0), 2.0)
+        return (
+            -float(px) * horizontal_grip * amount * field,
+            -float(py) * vertical_grip * amount * field,
+        )
+
     extent_x = max(float(config["content_width_points"]) * 0.5, 1.0)
     extent_y = max(float(config["content_height_points"]) * 0.5, 1.0)
-    x01 = 0.0
-    y01 = min(max(abs(float(y_offset)) / extent_y, 0.0), 1.0)
-    length_frac = min(max(float(config["scar_seam_length_frac"]), 0.05), 1.0)
-    thickness_frac = min(max(float(config["scar_seam_thickness_frac"]), 0.01), 1.5)
-    focus_frac = min(max(float(config["scar_seam_focus_frac"]), 0.01), 1.0)
-    x_falloff = 1.0 - _smoothstep(length_frac, 1.0, x01)
-    y_falloff = math.exp(-y01 / thickness_frac)
-    field = x_falloff * y_falloff
-    seam_focus = math.exp(-y01 / focus_frac)
-    vertical_grip = max(float(config["scar_vertical_grip"]), 0.0) * (
-        0.25 + 0.75 * seam_focus
+    normal_x, normal_y = component(x_offset, y_offset, extent_x, extent_y)
+    rotated_qx, rotated_qy = component(y_offset, x_offset, extent_y, extent_x)
+    rotation = min(max(float(config.get("scar_axis_rotation", 0.0)), 0.0), 1.0)
+    rotated_x, rotated_y = rotated_qy, rotated_qx
+    return (
+        normal_x * (1.0 - rotation) + rotated_x * rotation,
+        normal_y * (1.0 - rotation) + rotated_y * rotation,
     )
-    amount = min(max(float(config["scar_amount"]), -2.0), 2.0)
-    return abs(-float(y_offset) * vertical_grip * amount * field)
+
+
+def _seam_scar_vertical_displacement(config, y_offset):
+    return abs(_seam_scar_displacement(config, 0.0, y_offset)[1])
 
 def _make_rect(x, y, width, height):
     return SimpleNamespace(
@@ -643,6 +664,7 @@ class TestOpticalShellMaterialization:
         assert tuned["scar_horizontal_grip"] == pytest.approx(
             mod._OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP
         )
+        assert tuned["scar_axis_rotation"] == pytest.approx(1.0)
 
     def test_seam_pucker_tuner_summons_static_preview_when_overlay_hidden(
         self, mock_pyobjc
