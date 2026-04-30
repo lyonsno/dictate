@@ -2159,7 +2159,7 @@ class _TimerCallback(NSObject):
 _GHOST_HEIGHT = 22.0           # height of each ghost indicator
 _GHOST_PADDING = 4.0           # horizontal gap between ghosts
 _GHOST_FONT_SIZE = 11.0        # small label font
-_GHOST_FAINT_ALPHA = 0.15      # resting state — present but quiet
+_GHOST_FAINT_ALPHA = 0.35      # resting state — visible but quiet
 _GHOST_ACTIVE_ALPHA = 0.70     # active state — sharpened (transient per-recording)
 _GHOST_STICKY_ALPHA = 0.90     # sticky/locked state — persistent glow
 _GHOST_BOTTOM_GAP = 8.0        # gap between preview overlay top and ghost row
