@@ -231,7 +231,35 @@ kernel void opticalShellWarp(
     float scaleX = 1.0f;
     float scaleY = 1.0f;
     float2 result = d;
-    if (params.warpMode > 1.5f) {{
+    if (params.warpMode > 2.5f) {{
+        // Mirrored seam lip: evaluate one side of the slit with folded
+        // coordinates, then unfold it across the horizontal seam. This makes
+        // the centerline a real crease: both halves meet positionally while
+        // their vertical derivatives oppose each other.
+        float foldedY = abs(p.y);
+        float side = p.y < 0.0f ? -1.0f : 1.0f;
+        float2 rotatedFoldedP = float2(foldedY, p.x);
+        float2 rotatedExtent = max(float2(halfRect.y, halfRect.x), float2(1.0f, 1.0f));
+        float x01 = clamp(abs(rotatedFoldedP.x) / rotatedExtent.x, 0.0f, 1.0f);
+        float y01 = clamp(abs(rotatedFoldedP.y) / rotatedExtent.y, 0.0f, 1.0f);
+        float lengthFrac = clamp(params.scarSeamLengthFrac, 0.05f, 1.0f);
+        float thicknessFrac = clamp(params.scarSeamThicknessFrac, 0.01f, 1.5f);
+        float focusFrac = clamp(params.scarSeamFocusFrac, 0.01f, 1.0f);
+        float xFalloff = 1.0f - smoothstep(lengthFrac, 1.0f, x01);
+        float yFalloff = exp(-y01 / thicknessFrac);
+        float seamFocus = exp(-y01 / focusFrac);
+        float sideFocus = 1.0f - smoothstep(0.0f, min(lengthFrac + 0.12f, 1.0f), x01);
+        float field = xFalloff * yFalloff;
+        float amount = clamp(params.scarAmount, -2.0f, 2.0f);
+        float verticalGrip = max(params.scarVerticalGrip, 0.0f) * (0.25f + 0.75f * seamFocus);
+        float horizontalGrip = max(params.scarHorizontalGrip, 0.0f) * sideFocus * (0.25f + 0.75f * seamFocus);
+        float2 rotatedDisplacement = -rotatedFoldedP * float2(horizontalGrip, verticalGrip) * amount * field;
+        float2 foldedDisplacement = float2(rotatedDisplacement.y, rotatedDisplacement.x);
+        float2 displacement = float2(foldedDisplacement.x, side * foldedDisplacement.y);
+        result = d + displacement;
+        scaleX = 1.0f - verticalGrip * amount * field;
+        scaleY = 1.0f - horizontalGrip * amount * field;
+    }} else if (params.warpMode > 1.5f) {{
         // Radial scar: the post-close underdamped ringdown after the seam has
         // vanished. This deliberately avoids the material-shell fisheye and
         // mip blur path so the screen stays readable while the surface relaxes.

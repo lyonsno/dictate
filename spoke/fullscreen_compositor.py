@@ -69,6 +69,7 @@ class OpticalShellMaterialSnapshot:
     scar_vertical_grip: float = 0.20
     scar_horizontal_grip: float = 0.07
     scar_axis_rotation: float = 0.0
+    scar_mirrored_lip: float = 0.0
     bleed_zone_frac: float | None = None
     exterior_mix_width_points: float | None = None
     x_squeeze: float | None = None
@@ -1262,6 +1263,7 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
         "scar_vertical_grip": snapshot.material.scar_vertical_grip,
         "scar_horizontal_grip": snapshot.material.scar_horizontal_grip,
         "scar_axis_rotation": snapshot.material.scar_axis_rotation,
+        "scar_mirrored_lip": snapshot.material.scar_mirrored_lip,
         "cleanup_blur_radius_points": snapshot.material.cleanup_blur_radius_points,
         "debug_visualize": snapshot.material.debug_visualize,
         "debug_grid_spacing_points": snapshot.material.debug_grid_spacing_points,
@@ -1318,6 +1320,7 @@ def _snapshot_from_shell_config(
         scar_vertical_grip=float(config.get("scar_vertical_grip", 0.20)),
         scar_horizontal_grip=float(config.get("scar_horizontal_grip", 0.07)),
         scar_axis_rotation=float(config.get("scar_axis_rotation", 0.0)),
+        scar_mirrored_lip=float(config.get("scar_mirrored_lip", 0.0)),
         bleed_zone_frac=_optional_float("bleed_zone_frac"),
         exterior_mix_width_points=_optional_float("exterior_mix_width_points"),
         x_squeeze=_optional_float("x_squeeze"),

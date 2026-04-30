@@ -233,6 +233,7 @@ def test_snapshot_round_trip_preserves_scar_warp_controls():
             "scar_vertical_grip": 0.52,
             "scar_horizontal_grip": 0.18,
             "scar_axis_rotation": 1.0,
+            "scar_mirrored_lip": 1.0,
         },
         generation=7,
     )
@@ -245,6 +246,7 @@ def test_snapshot_round_trip_preserves_scar_warp_controls():
     assert snapshot.material.scar_vertical_grip == pytest.approx(0.52)
     assert snapshot.material.scar_horizontal_grip == pytest.approx(0.18)
     assert snapshot.material.scar_axis_rotation == pytest.approx(1.0)
+    assert snapshot.material.scar_mirrored_lip == pytest.approx(1.0)
     round_trip = _snapshot_to_shell_config(snapshot)
     assert round_trip["warp_mode"] == pytest.approx(1.0)
     assert round_trip["scar_amount"] == pytest.approx(-0.25)
@@ -254,6 +256,7 @@ def test_snapshot_round_trip_preserves_scar_warp_controls():
     assert round_trip["scar_vertical_grip"] == pytest.approx(0.52)
     assert round_trip["scar_horizontal_grip"] == pytest.approx(0.18)
     assert round_trip["scar_axis_rotation"] == pytest.approx(1.0)
+    assert round_trip["scar_mirrored_lip"] == pytest.approx(1.0)
 
 
 def test_registry_reuses_one_host_per_display_for_distinct_clients(monkeypatch):

@@ -137,6 +137,21 @@ def test_metal_shader_can_rotate_seam_scar_axis_for_pucker_tuning():
     assert "mix(normalDisplacement, rotatedDisplacement" in seam_branch
 
 
+def test_metal_shader_has_mirrored_seam_lip_mode():
+    source = metal_warp._metal_shader_source()
+    assert "Mirrored seam lip:" in source
+    mirrored_branch = source.split("Mirrored seam lip:", 1)[1].split(
+        "Radial scar:",
+        1,
+    )[0]
+
+    assert "float foldedY = abs(p.y)" in mirrored_branch
+    assert "float side = p.y < 0.0f ? -1.0f : 1.0f" in mirrored_branch
+    assert "float2 rotatedFoldedP = float2(foldedY, p.x)" in mirrored_branch
+    assert "float2 foldedDisplacement = float2(rotatedDisplacement.y, rotatedDisplacement.x)" in mirrored_branch
+    assert "float2 displacement = float2(foldedDisplacement.x, side * foldedDisplacement.y)" in mirrored_branch
+
+
 def test_metal_shader_has_separate_radial_scar_mode():
     source = metal_warp._metal_shader_source()
     assert "params.warpMode > 1.5f" in source
