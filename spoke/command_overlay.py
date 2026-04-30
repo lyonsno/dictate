@@ -80,31 +80,57 @@ _APPROVAL_ACTION_TEXT = "Enter to run  ·  Delete to cancel  ·  speak or type t
 _FADE_IN_S = 0.16
 _ENTRANCE_POP_SCALE = 1.015  # ~1mm overshoot on a 600px overlay
 _ENTRANCE_POP_S = 0.15
-_OPTICAL_MATERIALIZATION_S = 1.36
-_OPTICAL_MATERIALIZATION_DISMISS_S = _OPTICAL_MATERIALIZATION_S * 0.5
-_OPTICAL_MATERIALIZATION_PUCKER_FAST_S = 0.60
-_OPTICAL_MATERIALIZATION_PUCKER_RELEASE_S = 1.40
-_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = (
-    _OPTICAL_MATERIALIZATION_PUCKER_FAST_S
-    + _OPTICAL_MATERIALIZATION_PUCKER_RELEASE_S
+_OPTICAL_MATERIALIZATION_BASE_S = 1.36
+_OPTICAL_MATERIALIZATION_BASE_SPREAD_END = 0.77
+_OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE = 2.0
+_OPTICAL_MATERIALIZATION_SEAM_OPEN_S = (
+    _OPTICAL_MATERIALIZATION_BASE_S * _OPTICAL_MATERIALIZATION_BASE_SPREAD_END
 )
+_OPTICAL_MATERIALIZATION_S = (
+    _OPTICAL_MATERIALIZATION_SEAM_OPEN_S
+    + (
+        _OPTICAL_MATERIALIZATION_BASE_S
+        - _OPTICAL_MATERIALIZATION_SEAM_OPEN_S
+    )
+    * _OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE
+)
+_OPTICAL_MATERIALIZATION_DISMISS_S = _OPTICAL_MATERIALIZATION_BASE_S
+_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = 0.50
 _OPTICAL_MATERIALIZATION_PUCKER_INTENSITY = 0.25
 _OPTICAL_MATERIALIZATION_PUCKER_REBOUND = 0.55
+_OPTICAL_MATERIALIZATION_PUCKER_SECOND = 0.62
+_OPTICAL_MATERIALIZATION_PUCKER_SECOND_REBOUND = 0.34
 _OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S = (
     _OPTICAL_MATERIALIZATION_DISMISS_S + _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
 )
 _OPTICAL_MATERIALIZATION_BODY_READY = 0.55
 _OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC = 0.06
 _OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC = 0.028
-_OPTICAL_MATERIALIZATION_SPREAD_END = 0.77
-_OPTICAL_MATERIALIZATION_BLOOM_START = 0.70
+_OPTICAL_MATERIALIZATION_SPREAD_END = (
+    _OPTICAL_MATERIALIZATION_SEAM_OPEN_S / _OPTICAL_MATERIALIZATION_S
+)
+_OPTICAL_MATERIALIZATION_BLOOM_START = _OPTICAL_MATERIALIZATION_SPREAD_END
 _OPTICAL_MATERIALIZATION_MAG_SEED_FRAC = 0.04
 _OPTICAL_MATERIALIZATION_MAG_ACCEL_END = 0.42
 _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT = 0.72
 _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT = 1.20
 _OPTICAL_MATERIAL_FILL_START = _OPTICAL_MATERIALIZATION_SPREAD_END
-_OPTICAL_MATERIAL_FILL_SOLID_AT = 0.84
-_OPTICAL_MATERIAL_FILL_FULL_AT = 0.96
+_OPTICAL_MATERIAL_FILL_SOLID_AT = (
+    _OPTICAL_MATERIALIZATION_SEAM_OPEN_S
+    + (
+        _OPTICAL_MATERIALIZATION_BASE_S * 0.84
+        - _OPTICAL_MATERIALIZATION_SEAM_OPEN_S
+    )
+    * _OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE
+) / _OPTICAL_MATERIALIZATION_S
+_OPTICAL_MATERIAL_FILL_FULL_AT = (
+    _OPTICAL_MATERIALIZATION_SEAM_OPEN_S
+    + (
+        _OPTICAL_MATERIALIZATION_BASE_S * 0.96
+        - _OPTICAL_MATERIALIZATION_SEAM_OPEN_S
+    )
+    * _OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE
+) / _OPTICAL_MATERIALIZATION_S
 _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC = 0.011
 _OPTICAL_ENTRANCE_READY_POLL_S = max(
     0.004,
@@ -650,21 +676,42 @@ def _materialization_fill_state(progress: float) -> dict[str, float]:
 
 
 def _dismiss_pucker_amount(progress: float) -> float:
-    """Signed dismiss scar amount: inward pinch, weaker rebound, then rest."""
+    """Signed dismiss scar amount: pinch, overspread, second pinch, settle."""
     p = _clamp01(progress)
-    pinch_peak = 0.18
-    neutral_cross = 0.42
-    rebound_peak = 0.58
-    if p <= pinch_peak:
-        return _smoothstep(p / pinch_peak)
-    if p <= neutral_cross:
-        t = (p - pinch_peak) / max(neutral_cross - pinch_peak, 1e-6)
-        return 1.0 - _smoothstep(t)
-    if p <= rebound_peak:
-        t = (p - neutral_cross) / max(rebound_peak - neutral_cross, 1e-6)
-        return -_OPTICAL_MATERIALIZATION_PUCKER_REBOUND * _smoothstep(t)
-    t = (p - rebound_peak) / max(1.0 - rebound_peak, 1e-6)
-    return -_OPTICAL_MATERIALIZATION_PUCKER_REBOUND * (1.0 - _smoothstep(t))
+    first_pinch_at = 0.16
+    first_expand_at = 0.34
+    second_pinch_at = 0.56
+    second_expand_at = 0.70
+    if p <= first_pinch_at:
+        # The first contraction should bite immediately, not luxuriate into it.
+        return p / first_pinch_at
+    if p <= first_expand_at:
+        t = (p - first_pinch_at) / max(first_expand_at - first_pinch_at, 1e-6)
+        return _lerp(
+            1.0,
+            -_OPTICAL_MATERIALIZATION_PUCKER_REBOUND,
+            1.0 - (1.0 - t) ** 3.0,
+        )
+    if p <= second_pinch_at:
+        t = (p - first_expand_at) / max(second_pinch_at - first_expand_at, 1e-6)
+        return _lerp(
+            -_OPTICAL_MATERIALIZATION_PUCKER_REBOUND,
+            _OPTICAL_MATERIALIZATION_PUCKER_SECOND,
+            t * t * t,
+        )
+    if p <= second_expand_at:
+        t = (p - second_pinch_at) / max(second_expand_at - second_pinch_at, 1e-6)
+        return _lerp(
+            _OPTICAL_MATERIALIZATION_PUCKER_SECOND,
+            -_OPTICAL_MATERIALIZATION_PUCKER_SECOND_REBOUND,
+            1.0 - (1.0 - t) ** 3.0,
+        )
+    t = (p - second_expand_at) / max(1.0 - second_expand_at, 1e-6)
+    return _lerp(
+        -_OPTICAL_MATERIALIZATION_PUCKER_SECOND_REBOUND,
+        0.0,
+        1.0 - (1.0 - t) ** 3.0,
+    )
 
 
 def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:

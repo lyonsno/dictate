@@ -378,8 +378,12 @@ class TestOpticalShellMaterialization:
         }
 
         seed = mod._materialized_optical_shell_config(base, 0.0)
-        gathering = mod._materialized_optical_shell_config(base, 0.50)
-        spread = mod._materialized_optical_shell_config(base, 0.77)
+        gathering = mod._materialized_optical_shell_config(
+            base, mod._OPTICAL_MATERIALIZATION_SPREAD_END * 0.68
+        )
+        spread = mod._materialized_optical_shell_config(
+            base, mod._OPTICAL_MATERIALIZATION_SPREAD_END
+        )
         final = mod._materialized_optical_shell_config(base, 1.0)
 
         assert seed["center_x"] == pytest.approx(base["center_x"])
@@ -439,14 +443,17 @@ class TestOpticalShellMaterialization:
             shell_config,
             direction=-1,
         )
-        assert mod._OPTICAL_MATERIALIZATION_DISMISS_S < mod._OPTICAL_MATERIALIZATION_S
+        seam_open_s = mod._OPTICAL_MATERIALIZATION_BASE_S * 0.77
+        assert mod._OPTICAL_MATERIALIZATION_SPREAD_END == pytest.approx(
+            seam_open_s / mod._OPTICAL_MATERIALIZATION_S
+        )
         assert mod._OPTICAL_MATERIALIZATION_DISMISS_S == pytest.approx(
-            mod._OPTICAL_MATERIALIZATION_S * 0.5
+            mod._OPTICAL_MATERIALIZATION_BASE_S
         )
         assert mod._OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S > (
             mod._OPTICAL_MATERIALIZATION_DISMISS_S
         )
-        assert mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S == pytest.approx(2.0)
+        assert mod._OPTICAL_MATERIALIZATION_PUCKER_TAIL_S == pytest.approx(0.5)
         assert scheduled[-1] == (
             pytest.approx(
                 mod._OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S / mod._FADE_STEPS
@@ -508,8 +515,18 @@ class TestOpticalShellMaterialization:
         seed = mod._materialization_fill_state(0.0)
         wide_warp = mod._materialization_fill_state(0.55)
         early_slit = mod._materialization_fill_state(0.62)
-        gathering = mod._materialization_fill_state(0.90)
-        blooming = mod._materialization_fill_state(0.95)
+        gathering = mod._materialization_fill_state(
+            mod._OPTICAL_MATERIAL_FILL_SOLID_AT + 0.25 * (
+                mod._OPTICAL_MATERIAL_FILL_FULL_AT
+                - mod._OPTICAL_MATERIAL_FILL_SOLID_AT
+            )
+        )
+        blooming = mod._materialization_fill_state(
+            mod._OPTICAL_MATERIAL_FILL_SOLID_AT + 0.92 * (
+                mod._OPTICAL_MATERIAL_FILL_FULL_AT
+                - mod._OPTICAL_MATERIAL_FILL_SOLID_AT
+            )
+        )
         full = mod._materialization_fill_state(1.0)
 
         assert seed["opacity"] == pytest.approx(0.0)
@@ -528,8 +545,18 @@ class TestOpticalShellMaterialization:
     ):
         mod = importlib.import_module("spoke.command_overlay")
 
-        gathering = mod._materialization_fill_state(0.88)
-        snap = mod._materialization_fill_state(0.95)
+        gathering = mod._materialization_fill_state(
+            mod._OPTICAL_MATERIAL_FILL_SOLID_AT + 0.20 * (
+                mod._OPTICAL_MATERIAL_FILL_FULL_AT
+                - mod._OPTICAL_MATERIAL_FILL_SOLID_AT
+            )
+        )
+        snap = mod._materialization_fill_state(
+            mod._OPTICAL_MATERIAL_FILL_SOLID_AT + 0.85 * (
+                mod._OPTICAL_MATERIAL_FILL_FULL_AT
+                - mod._OPTICAL_MATERIAL_FILL_SOLID_AT
+            )
+        )
 
         assert gathering["height_frac"] < 0.25
         assert snap["height_frac"] - gathering["height_frac"] > 0.55
@@ -549,8 +576,8 @@ class TestOpticalShellMaterialization:
             "cleanup_blur_radius_points": 0.75,
         }
 
-        pinch = mod._dismiss_pucker_shell_config(base, 0.18)
-        rebound = mod._dismiss_pucker_shell_config(base, 0.52)
+        pinch = mod._dismiss_pucker_shell_config(base, 0.16)
+        rebound = mod._dismiss_pucker_shell_config(base, 0.34)
         rest = mod._dismiss_pucker_shell_config(base, 1.0)
 
         assert pinch["content_width_points"] > base["content_width_points"]
@@ -567,6 +594,25 @@ class TestOpticalShellMaterialization:
         assert rest["tail_amplitude_points"] == pytest.approx(0.0)
         assert pinch["cleanup_blur_radius_points"] == pytest.approx(0.0)
         assert pinch["mip_blur_strength"] == pytest.approx(0.0)
+
+    def test_dismiss_pucker_tail_double_tap_waveform(self, mock_pyobjc):
+        mod = importlib.import_module("spoke.command_overlay")
+
+        start = mod._dismiss_pucker_amount(0.0)
+        first_pinch = mod._dismiss_pucker_amount(0.16)
+        first_expand = mod._dismiss_pucker_amount(0.34)
+        second_pinch = mod._dismiss_pucker_amount(0.56)
+        second_expand = mod._dismiss_pucker_amount(0.70)
+        rest = mod._dismiss_pucker_amount(1.0)
+
+        assert start == pytest.approx(0.0)
+        assert first_pinch > 0.95
+        assert first_expand < 0.0
+        assert second_pinch > 0.0
+        assert second_pinch < first_pinch
+        assert second_expand < 0.0
+        assert abs(second_expand) < abs(first_expand)
+        assert rest == pytest.approx(0.0)
 
     def test_reverse_materialization_hides_local_layers_before_compositor_seed(
         self, mock_pyobjc
