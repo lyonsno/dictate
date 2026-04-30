@@ -1012,6 +1012,13 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_enter_pressed = None
         self._detector._on_tray_delete = self._on_tray_delete_gesture
         self._detector._on_tray_key = self._on_tray_key
+        # Route key selection during recording
+        from spoke.route_keys import RouteKeySelector
+        self._detector._route_key_selector = RouteKeySelector(
+            on_change=self._on_route_key_changed,
+        )
+        self._detector._on_send_chord = self._on_send_chord
+        self._detector._on_sticky_toggle = self._on_sticky_toggle
         self._detector._on_cancel_spring_start = self._on_cancel_spring_start
         self._detector._on_cancel_spring_release = self._on_cancel_spring_release
         self._detector._on_enter_during_waiting = self._toggle_command_overlay
@@ -1224,6 +1231,10 @@ class SpokeAppDelegate(NSObject):
         self._tray_selection: tuple[int, int] | None = None
         self._recording_from_tray: bool = False
         self._tray_tool_result: dict | None = None
+
+        # Route key state — active per-recording selection and sticky persistence
+        self._active_route_destination: str | None = None
+        self._sticky_route_keycode: int | None = None
 
         # Recovery mode state (implementation detail of tray)
         # _NOT_CAPTURED sentinel distinguishes "not captured yet" from
@@ -3444,6 +3455,87 @@ class SpokeAppDelegate(NSObject):
             char = _keycode_to_char(keycode, bool(flags & 0x00020000))
             if char:
                 self._tray_insert_char(char)
+
+    # ── route key, send chord, sticky toggle handlers ───────────
+
+    def _on_route_key_changed(self, keycode: int | None, destination: str | None) -> None:
+        """Called by RouteKeySelector when the active route key changes."""
+        self._active_route_destination = destination
+        logger.info("Route key changed: keycode=%s dest=%s", keycode, destination)
+        if self._overlay is not None:
+            self._overlay.update_ghosts(keycode)
+
+    def _on_send_chord(self, keycode: int) -> None:
+        """Handle send chord: Enter + route key from tray dispatches tray text."""
+        if not self._tray_active or not self._tray_stack:
+            return
+        entry = self._get_tray_entry(self._tray_index)
+        text = entry.text
+
+        # Remove consumed entry from stack
+        del self._tray_stack[self._tray_index]
+        if self._tray_index >= len(self._tray_stack) and self._tray_stack:
+            self._tray_index = len(self._tray_stack) - 1
+
+        self._tray_active = False
+        self._detector.tray_active = False
+        if self._glow is not None:
+            self._glow.hide()
+        self._cancel_recovery()
+        if self._overlay is not None:
+            self._overlay.hide()
+
+        # Look up the destination from the route key bindings
+        from spoke.route_keys import default_bindings
+        bindings = default_bindings()
+        binding = bindings.get(keycode)
+        dest = binding["destination"] if binding else "assistant"
+
+        if dest == "assistant" and self._command_client is not None:
+            self._send_text_as_command(text)
+        else:
+            logger.info("Send chord: dest=%s — dispatching text", dest)
+            if self._command_client is not None:
+                self._send_text_as_command(text)
+            else:
+                logger.warning("Send chord — no command client configured")
+                if self._menubar is not None:
+                    self._menubar.set_status_text("Ready — hold spacebar")
+
+    def _on_sticky_toggle(self, keycode: int) -> None:
+        """Handle sticky routing toggle: Space + Enter + route key from IDLE."""
+        current = getattr(self, '_sticky_route_keycode', None)
+        if current == keycode:
+            self._sticky_route_keycode = None
+            logger.info("Sticky routing cleared (was keycode=%d)", keycode)
+        else:
+            self._sticky_route_keycode = keycode
+            logger.info("Sticky routing set: keycode=%d", keycode)
+        # Update ghost indicator persistent glow
+        if self._overlay is not None:
+            self._overlay.update_ghosts(
+                active_keycode=getattr(self, '_active_route_destination', None),
+                sticky_keycode=self._sticky_route_keycode,
+            )
+
+    def _dispatch_transcription_with_route(self, text: str) -> None:
+        """Dispatch transcription text using the active route destination.
+
+        If a route key was selected during recording, route to that
+        destination. Otherwise, fall through to normal paste.
+        """
+        dest = getattr(self, '_active_route_destination', None)
+        if dest == "assistant" and self._command_client is not None:
+            self._send_text_as_command(text)
+        elif dest is not None:
+            # Future: other route destinations
+            logger.info("Route dispatch: dest=%s text=%r", dest, text[:50])
+            if self._command_client is not None:
+                self._send_text_as_command(text)
+            else:
+                inject_text(text)
+        else:
+            inject_text(text)
 
     def _on_tray_shift_tap(self) -> None:
         """Shift tap (no spacebar) during tray = dismiss."""

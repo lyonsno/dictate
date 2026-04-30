@@ -526,3 +526,117 @@ class TestRecordingFromTrayAppendsAtCursor:
         d.trayTranscriptionComplete_({"token": 42, "text": "world"})
 
         assert d._recording_from_tray is False
+
+
+# ── Route key, send chord, sticky toggle delegate wiring tests ────
+
+
+class TestRouteKeySelectorWiring:
+    """RouteKeySelector wiring: delegate creates it and uses it for routing."""
+
+    def test_on_route_key_changed_method_exists(self, main_module, monkeypatch):
+        """The delegate should have a _on_route_key_changed method for wiring."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        assert callable(getattr(d, '_on_route_key_changed', None))
+
+    def test_route_key_selection_routes_to_assistant(self, main_module, monkeypatch):
+        """When ] is the active route key at recording end, transcription should
+        go to the assistant instead of paste."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._send_text_as_command = MagicMock()
+        # Set up a route key selector with ] selected
+        from spoke.route_keys import RouteKeySelector
+        selector = RouteKeySelector(on_change=d._on_route_key_changed)
+        selector.tap(30)  # select ]
+        d._active_route_destination = selector.active_destination
+
+        # Simulate transcription completion with route key active
+        d._dispatch_transcription_with_route("hello world")
+
+        d._send_text_as_command.assert_called_once_with("hello world")
+
+    def test_no_route_key_pastes_normally(self, main_module, monkeypatch):
+        """Without a route key selected, transcription should paste normally."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._active_route_destination = None
+
+        # _dispatch_transcription_with_route with no destination should
+        # fall through to normal paste
+        with patch("spoke.__main__.inject_text") as mock_inject:
+            d._dispatch_transcription_with_route("hello world")
+            mock_inject.assert_called_once()
+
+
+class TestSendChordWiring:
+    """Send chord dispatches tray text to the selected destination."""
+
+    def test_on_send_chord_method_exists(self, main_module, monkeypatch):
+        """The delegate should have a _on_send_chord method."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        assert callable(getattr(d, '_on_send_chord', None))
+
+    def test_send_chord_dispatches_tray_to_assistant(self, main_module, monkeypatch):
+        """Send chord with ] key should dispatch tray text to assistant."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._enter_tray("test command")
+        d._send_text_as_command = MagicMock()
+
+        d._on_send_chord(keycode=30)
+
+        d._send_text_as_command.assert_called_once_with("test command")
+        # Tray should be dismissed after sending
+        assert d._tray_active is False
+
+    def test_send_chord_no_tray_is_noop(self, main_module, monkeypatch):
+        """Send chord with no tray active should do nothing."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._send_text_as_command = MagicMock()
+
+        d._on_send_chord(keycode=30)
+
+        d._send_text_as_command.assert_not_called()
+
+
+class TestStickyToggleWiring:
+    """Sticky toggle sets persistent routing state."""
+
+    def test_on_sticky_toggle_method_exists(self, main_module, monkeypatch):
+        """The delegate should have a _on_sticky_toggle method."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        assert callable(getattr(d, '_on_sticky_toggle', None))
+
+    def test_sticky_toggle_sets_sticky_state(self, main_module, monkeypatch):
+        """Sticky toggle should set sticky routing keycode on the delegate."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+
+        d._on_sticky_toggle(keycode=30)
+
+        assert d._sticky_route_keycode == 30
+
+    def test_sticky_toggle_same_key_clears(self, main_module, monkeypatch):
+        """Toggling sticky with the same key should clear sticky state."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+
+        d._on_sticky_toggle(keycode=30)
+        assert d._sticky_route_keycode == 30
+
+        d._on_sticky_toggle(keycode=30)
+        assert d._sticky_route_keycode is None
+
+    def test_sticky_toggle_different_key_switches(self, main_module, monkeypatch):
+        """Toggling sticky with a different key should switch to it."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+
+        d._on_sticky_toggle(keycode=30)
+        assert d._sticky_route_keycode == 30
+
+        d._on_sticky_toggle(keycode=22)  # keycode for '6'
+        assert d._sticky_route_keycode == 22
+
+
+class TestGhostIndicatorRendering:
+    """Ghost indicators render in the overlay."""
+
+    def test_overlay_has_update_ghosts_method(self, main_module, monkeypatch):
+        """The overlay class should have an update_ghosts method."""
+        assert callable(getattr(main_module.TranscriptionOverlay, 'update_ghosts', None))

@@ -41,6 +41,13 @@ from .dedup import ontology_term_spans
 logger = logging.getLogger(__name__)
 
 
+def _cgcolor_from_rgb(r: float, g: float, b: float, a: float = 1.0):
+    """Create a CGColor from RGBA components (0.0–1.0)."""
+    from Quartz import CGColorSpaceCreateDeviceRGB, CGColorCreate
+    cs = CGColorSpaceCreateDeviceRGB()
+    return CGColorCreate(cs, (r, g, b, a))
+
+
 def _start_overlay_fill_worker(work):
     thread = threading.Thread(target=work, name="spoke-overlay-fill", daemon=True)
     thread.start()
@@ -465,6 +472,10 @@ class TranscriptionOverlay(NSObject):
         self._on_insert_callback = None
         self._on_clipboard_toggle_callback = None
 
+        # Ghost indicator state (route key visual feedback)
+        self._ghost_layers: dict[int, object] = {}  # keycode → CATextLayer
+        self._ghost_data: GhostIndicatorLayer | None = None
+
         # Performance caches — populated in setup() once we have screen state
         self._body_font = None           # NSFont — allocated once, reused forever
         self._max_overlay_height_cached = None  # screen height doesn't change
@@ -631,7 +642,72 @@ class TranscriptionOverlay(NSObject):
 
         self._window.setAlphaValue_(0.0)
 
+        # Ghost indicator layers — small faint key labels below the overlay
+        self._setup_ghost_layers(wrapper)
+
         logger.info("Transcription overlay created")
+
+    def _setup_ghost_layers(self, wrapper) -> None:
+        """Create faint ghost indicator CATextLayers for route key feedback.
+
+        The ghost labels sit below the overlay content, centered horizontally.
+        Each key gets a small text layer showing its label character.
+        """
+        from Quartz import CATextLayer
+        from spoke.route_keys import default_bindings
+
+        bindings = default_bindings()
+        self._ghost_data = GhostIndicatorLayer(bindings)
+
+        # Layout: number row keys in keyboard order, then ] at the end
+        display_keys = self._ghost_data.number_row_keys() + [_BRACKET_RIGHT_KEYCODE]
+
+        # Position below the content overlay
+        f = _OUTER_FEATHER
+        total_width = len(display_keys) * (_GHOST_HEIGHT + _GHOST_PADDING) - _GHOST_PADDING
+        start_x = f + (_OVERLAY_WIDTH - total_width) / 2
+        ghost_y = f - _GHOST_BOTTOM_GAP - _GHOST_HEIGHT  # below overlay content
+
+        root_layer = wrapper.layer()
+        for i, keycode in enumerate(display_keys):
+            label = self._ghost_data.label_for(keycode)
+            layer = CATextLayer.alloc().init()
+            layer.setString_(label)
+            layer.setFontSize_(_GHOST_FONT_SIZE)
+            layer.setAlignmentMode_("center")
+            layer.setForegroundColor_(
+                _cgcolor_from_rgb(1.0, 1.0, 1.0, _GHOST_FAINT_ALPHA)
+            )
+            layer.setBackgroundColor_(None)
+            x = start_x + i * (_GHOST_HEIGHT + _GHOST_PADDING)
+            layer.setFrame_(((x, ghost_y), (_GHOST_HEIGHT, _GHOST_HEIGHT)))
+            layer.setContentsScale_(
+                self._screen.backingScaleFactor()
+                if hasattr(self._screen, 'backingScaleFactor')
+                else 2.0
+            )
+            layer.setOpacity_(_GHOST_FAINT_ALPHA)
+            root_layer.addSublayer_(layer)
+            self._ghost_layers[keycode] = layer
+
+    def update_ghosts(self, active_keycode: int | None = None, sticky_keycode: int | None = None) -> None:
+        """Update ghost indicator alpha values.
+
+        Called when route key selection changes during recording, or when
+        sticky routing is toggled. Faint by default, sharpened when active,
+        persistent glow when sticky.
+        """
+        if not self._ghost_layers or self._ghost_data is None:
+            return
+        self._ghost_data.set_active(active_keycode)
+        if sticky_keycode is not None:
+            self._ghost_data.set_sticky(sticky_keycode)
+        for keycode, layer in self._ghost_layers.items():
+            alpha = self._ghost_data.ghost_alpha(keycode)
+            layer.setOpacity_(alpha)
+            layer.setForegroundColor_(
+                _cgcolor_from_rgb(1.0, 1.0, 1.0, alpha)
+            )
 
     def set_compositor_registry(self, registry) -> None:
         """Attach the shared optical compositor registry for preview snapshots."""

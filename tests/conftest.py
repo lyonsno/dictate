@@ -77,6 +77,7 @@ def _make_fake_quartz():
     q.CALayer = MagicMock()
     q.CAMediaTimingFunction = MagicMock()
     q.CAShapeLayer = MagicMock()
+    q.CATextLayer = MagicMock()
     q.kCAGravityCenter = "center"
     q.CGPathCreateWithRoundedRect = MagicMock(return_value=MagicMock())
     q.CGPathCreateMutable = MagicMock(return_value=MagicMock())
@@ -88,6 +89,8 @@ def _make_fake_quartz():
     q.CGAffineTransformIdentity = MagicMock()
     q.kCAFillRuleEvenOdd = "even-odd"
     q.kCGEventSourceStateCombinedSessionState = 0
+    q.CGColorSpaceCreateDeviceRGB = MagicMock(return_value=MagicMock())
+    q.CGColorCreate = MagicMock(return_value=MagicMock())
     return q
 
 
