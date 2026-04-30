@@ -178,6 +178,18 @@ def test_shell_config_preserves_agent_thread_card_payload(monkeypatch):
             "selected": False,
         }
     ]
+    hud = {
+        "surface_kind": "agent_shell_partyline",
+        "cards": [
+            {
+                "thread_id": "codex-thread-1",
+                "role": "inactive_card",
+                "text": "first thread",
+                "show_latest_response": False,
+                "frame": {"x": 0.0, "y": 0.0, "width": 144.0, "height": 44.0},
+            }
+        ],
+    }
 
     assert client.update_shell_config(
         {
@@ -190,12 +202,14 @@ def test_shell_config_preserves_agent_thread_card_payload(monkeypatch):
             "tail_width_points": 12.0,
             "initial_brightness": 0.4,
             "agent_thread_cards": cards,
+            "agent_thread_hud": hud,
             "surface_kind": "agent_shell",
         }
     )
 
     config = _FakeFullScreenCompositor.instances[0].updated_configs[-1][0]
     assert config["agent_thread_cards"] == cards
+    assert config["agent_thread_hud"] == hud
     assert config["surface_kind"] == "agent_shell"
 
 

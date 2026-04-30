@@ -47,6 +47,7 @@ from .overlay import (
     _post_overlay_result_to_main,
     _start_overlay_fill_worker,
 )
+from .agent_thread_hud import build_agent_thread_hud
 from .optical_shell_metrics import OpticalShellMetrics
 
 logger = logging.getLogger(__name__)
@@ -1370,6 +1371,11 @@ class CommandOverlay(NSObject):
             config["agent_thread_cards"] = [
                 dict(card) for card in cards if isinstance(card, dict)
             ]
+            config["agent_thread_hud"] = build_agent_thread_hud(
+                config["agent_thread_cards"],
+                content_width_points=float(config.get("content_width_points", 0.0)),
+                content_height_points=float(config.get("content_height_points", 0.0)),
+            )
         return config
 
     def _apply_backdrop_pulse_style(self, breath: float) -> None:

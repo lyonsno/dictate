@@ -2188,6 +2188,9 @@ class TestGeometryCaps:
 
         assert config["surface_kind"] == "agent_shell"
         assert config["agent_thread_cards"] == overlay._agent_shell_cards
+        assert config["agent_thread_hud"]["surface_kind"] == "agent_shell_partyline"
+        assert config["agent_thread_hud"]["cards"][0]["thread_id"] == "codex-thread-1"
+        assert config["agent_thread_hud"]["cards"][0]["show_latest_response"] is False
 
     def test_update_layout_resets_text_geometry_to_match_visible_area(
         self, mock_pyobjc, monkeypatch
