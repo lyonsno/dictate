@@ -103,6 +103,17 @@ def test_metal_shader_has_separate_radial_scar_mode():
     assert "Radial scar" in source
 
 
+def test_radial_scar_uses_asymptotic_exponential_falloff():
+    source = metal_warp._metal_shader_source()
+    radial_branch = source.split("Radial scar:", 1)[1].split(
+        "Seam-tension scar:",
+        1,
+    )[0]
+
+    assert "exp(-" in radial_branch
+    assert "smoothstep" not in radial_branch
+
+
 def test_warp_dispatch_box_respects_shell_specific_bleed_zone_frac():
     wide = metal_warp._warp_dispatch_box(
         1440.0,

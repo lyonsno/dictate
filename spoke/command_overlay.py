@@ -759,7 +759,7 @@ def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
     base_w = max(float(shell_config.get("content_width_points", 1.0)), 1.0)
     base_h = max(float(shell_config.get("content_height_points", 1.0)), 1.0)
     config = _materialized_optical_shell_config(shell_config, 0.0)
-    diameter = max(260.0, min(base_w * 0.34, base_h * 1.9))
+    diameter = max(560.0, min(base_w * 0.52, base_h * 2.9))
     config["content_width_points"] = diameter
     config["content_height_points"] = diameter
     config["corner_radius_points"] = diameter * 0.5

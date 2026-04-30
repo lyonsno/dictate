@@ -636,6 +636,7 @@ class TestOpticalShellMaterialization:
         assert start["content_width_points"] == pytest.approx(
             start["content_height_points"]
         )
+        assert start["content_width_points"] > base["content_height_points"] * 2.75
         assert start["scar_amount"] > 0.0
         assert rebound["scar_amount"] < 0.0
         assert abs(rebound["scar_amount"]) > abs(start["scar_amount"])
