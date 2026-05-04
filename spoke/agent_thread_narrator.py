@@ -11,6 +11,10 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
+NO_DURABLE_BEARING = "No durable bearing captured yet"
+_GENERIC_BEARING_TITLES = {"agent thread"}
+
+
 @dataclass(frozen=True)
 class AgentThreadNarratorState:
     provider: str
@@ -116,6 +120,10 @@ def _is_prompt_echo(candidate: str, latest_user_prompt: str) -> bool:
     return len(latest_user_prompt) >= 48 and candidate.startswith(latest_user_prompt[:48])
 
 
+def _is_generic_bearing(candidate: str) -> bool:
+    return _normalize_line(candidate).casefold() in _GENERIC_BEARING_TITLES
+
+
 def _bearing(session: dict[str, Any], card: dict[str, Any], events: list[dict[str, Any]]) -> str:
     waypoints = [
         event
@@ -131,9 +139,13 @@ def _bearing(session: dict[str, Any], card: dict[str, Any], events: list[dict[st
         )
     latest_user_prompt = _latest_user_prompt(session)
     for candidate in (_string(card.get("bearing")), _string(card.get("title"))):
-        if candidate and not _is_prompt_echo(candidate, latest_user_prompt):
+        if (
+            candidate
+            and not _is_prompt_echo(candidate, latest_user_prompt)
+            and not _is_generic_bearing(candidate)
+        ):
             return _clamp(candidate, 220)
-    return "No durable bearing captured yet"
+    return NO_DURABLE_BEARING
 
 
 def _readiness(session: dict[str, Any], card: dict[str, Any], latest_text: str) -> str:

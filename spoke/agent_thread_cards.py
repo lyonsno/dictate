@@ -7,6 +7,9 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
+NO_DURABLE_BEARING = "No durable bearing captured yet"
+
+
 @dataclass(frozen=True)
 class AgentThreadWaypoint:
     kind: str
@@ -245,7 +248,7 @@ def build_agent_thread_card(session: dict[str, Any]) -> AgentThreadCard:
     state = _string(session.get("state"))
     readiness = _readiness(state, has_response=bool(result))
     orientation = _orientation_waypoint(events)
-    bearing = orientation.text if orientation is not None else _string(session.get("prompt"))
+    bearing = orientation.text if orientation is not None else NO_DURABLE_BEARING
     title = (
         _title_from_bearing(orientation.text, _string(session.get("prompt")))
         if orientation is not None

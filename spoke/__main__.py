@@ -175,7 +175,7 @@ from .agent_backend_presenter import (
 from .agent_backends import AgentBackendManager
 from .agent_shell import AgentShellState, route_agent_shell_input
 from .agent_shell_primitives import build_agent_shell_primitives
-from .agent_thread_cards import card_display_contract
+from .agent_thread_cards import NO_DURABLE_BEARING, card_display_contract
 from .agent_thread_narrator import (
     build_agent_thread_narrator_state,
     format_selected_thread_narrator_response,
@@ -3776,11 +3776,7 @@ class SpokeAppDelegate(NSObject):
                 if isinstance(entry.get("last_response"), str)
                 else ""
             )
-        bearing = raw_card.get("bearing") or (
-            entry.get("last_utterance")
-            if isinstance(entry.get("last_utterance"), str)
-            else ""
-        )
+        bearing = raw_card.get("bearing") or NO_DURABLE_BEARING
         card = {
             "thread_id": raw_card.get("thread_id") or provider_session_id,
             "provider": raw_card.get("provider") or provider,

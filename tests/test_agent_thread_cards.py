@@ -149,7 +149,7 @@ def test_working_card_without_orientation_does_not_echo_full_prompt():
     assert card.readiness == "working"
     assert card.title == "Agent thread"
     assert card.activity_line == "Working"
-    assert card.bearing == prompt
+    assert card.bearing == "No durable bearing captured yet"
 
 
 def test_selected_resting_display_exposes_latest_real_response():

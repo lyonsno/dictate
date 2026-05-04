@@ -2319,6 +2319,7 @@ class TestAgentShellMenuState:
             "gemini-thread-live",
         ]
         assert cards[0]["selected"] is True
+        assert cards[0]["bearing"] == "No durable bearing captured yet"
         assert cards[1]["provider"] == "gemini-cli"
         assert cards[1]["selected"] is False
         assert cards[1]["readiness"] == "working"
@@ -2366,6 +2367,10 @@ class TestAgentShellMenuState:
             "gemini-thread-1",
         ]
         assert [card["selected"] for card in cards] == [False, True]
+        assert [card["bearing"] for card in cards] == [
+            "No durable bearing captured yet",
+            "No durable bearing captured yet",
+        ]
         assert cards[0]["display"]["display_state"] == "inactive"
         assert cards[1]["display"]["display_state"] == "selected_resting"
 

@@ -317,3 +317,22 @@ def test_selected_overlay_bearing_does_not_echo_latest_user_prompt():
         "Since your prompt: Assistant replied with 1 visible line; "
         "no tool or state events captured in this slice."
     ) in response
+
+
+def test_selected_overlay_bearing_does_not_promote_generic_thread_title():
+    from spoke.agent_thread_narrator import build_agent_thread_narrator_state
+
+    state = build_agent_thread_narrator_state(
+        {
+            "provider": "claude-code",
+            "provider_session_id": "claude-thread-generic",
+            "last_utterance": "Where were we?",
+            "last_response": "We were sorting out the narrator surface.",
+            "thread_card": {
+                "title": "Agent thread",
+                "readiness": "ready",
+            },
+        }
+    )
+
+    assert state.bearing == "No durable bearing captured yet"
