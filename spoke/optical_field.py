@@ -8,12 +8,12 @@ dictionaries.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from typing import Any, Literal, Mapping
 
 
-OpticalFieldState = Literal["rest", "materialize", "dismiss"]
+OpticalFieldState = Literal["hidden", "rest", "materialize", "dismiss", "resize"]
 OpticalFieldDisturbanceMode = Literal["persistent", "ephemeral"]
 
 
@@ -41,6 +41,16 @@ class OpticalFieldBounds:
     @property
     def min_dimension(self) -> float:
         return min(self.width, self.height)
+
+    def as_metadata(self) -> dict[str, float]:
+        """Stable JSON-shaped representation for compositor snapshots/debugging."""
+
+        return {
+            "x": float(self.x),
+            "y": float(self.y),
+            "width": float(self.width),
+            "height": float(self.height),
+        }
 
 
 @dataclass(frozen=True)
@@ -89,7 +99,12 @@ class OpticalFieldDisturbance:
 
 @dataclass(frozen=True)
 class OpticalFieldRequest:
-    """Stable request contract consumed by future UI lanes."""
+    """Stable request contract consumed by future UI lanes.
+
+    Consumers declare lifecycle intent and desired geometry here.  They do not
+    own animation progress, shader constants, or cleanup of old compositor
+    fields; those remain primitive/backend responsibilities.
+    """
 
     caller_id: str
     bounds: OpticalFieldBounds
@@ -97,6 +112,7 @@ class OpticalFieldRequest:
     state: OpticalFieldState = "rest"
     profile: OpticalFieldProfileRef = field(default_factory=OpticalFieldProfileRef)
     disturbances: tuple[OpticalFieldDisturbance, ...] = ()
+    previous_bounds: OpticalFieldBounds | None = None
     visible: bool = True
     z_index: int = 0
 
@@ -106,6 +122,37 @@ class OpticalFieldRequest:
         if not self.role:
             raise ValueError("role must be non-empty")
         object.__setattr__(self, "disturbances", tuple(self.disturbances))
+
+    def as_materializing(self) -> "OpticalFieldRequest":
+        """Request compositor-owned summon/materialization for this surface."""
+
+        return replace(self, state="materialize", visible=True, previous_bounds=None)
+
+    def as_resting(self) -> "OpticalFieldRequest":
+        """Request settled visible rest state for this surface."""
+
+        return replace(self, state="rest", visible=True, previous_bounds=None)
+
+    def as_dismissing(self) -> "OpticalFieldRequest":
+        """Request compositor-owned dismissal for this surface."""
+
+        return replace(self, state="dismiss", visible=True, previous_bounds=None)
+
+    def as_hidden(self) -> "OpticalFieldRequest":
+        """Request fully hidden state with no compiled visible shell config."""
+
+        return replace(self, state="hidden", visible=False, previous_bounds=None)
+
+    def resize_to(self, bounds: OpticalFieldBounds) -> "OpticalFieldRequest":
+        """Request primitive-owned resize from current bounds to new bounds."""
+
+        return replace(
+            self,
+            bounds=bounds,
+            state="resize",
+            visible=True,
+            previous_bounds=self.bounds,
+        )
 
 
 _BASE_PROFILES: dict[str, dict[str, float | str | bool]] = {
@@ -161,7 +208,7 @@ def available_optical_field_profiles() -> tuple[str, ...]:
 
 
 def _slot_name_for_state(state: OpticalFieldState) -> str:
-    if state in {"materialize", "dismiss"}:
+    if state in {"materialize", "dismiss", "resize"}:
         return state
     return "rest"
 
@@ -219,6 +266,12 @@ def compile_placeholder_shell_config(request: OpticalFieldRequest) -> dict[str, 
             "profile": request.profile.base,
             "state": request.state,
             "slot": slot_name,
+            "bounds": bounds.as_metadata(),
+            "previous_bounds": (
+                request.previous_bounds.as_metadata()
+                if request.previous_bounds is not None
+                else None
+            ),
             "disturbances": tuple(
                 disturbance.disturbance_id for disturbance in request.disturbances
             ),

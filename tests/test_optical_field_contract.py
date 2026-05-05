@@ -54,6 +54,13 @@ def test_placeholder_backend_preserves_contract_identity_and_profile_slot_metada
         "profile": "agent_card",
         "state": "rest",
         "slot": "rest",
+        "bounds": {
+            "x": 40.0,
+            "y": 80.0,
+            "width": 320.0,
+            "height": 96.0,
+        },
+        "previous_bounds": None,
         "disturbances": ("ready-pulse",),
     }
 
@@ -99,6 +106,75 @@ def test_profile_slots_override_independently_without_leaking_between_lifecycle_
     assert materialize["mip_blur_strength"] == pytest.approx(0.25)
     assert dismiss["ring_amplitude_points"] == pytest.approx(7.2)
     assert dismiss["mip_blur_strength"] == pytest.approx(0.0)
+
+
+def test_resize_is_first_class_lifecycle_with_old_and_new_bounds_metadata():
+    backend = OpticalFieldPlaceholderBackend()
+    profile = OpticalFieldProfileRef(
+        base="agent_card",
+        slots={
+            "resize": OpticalFieldSlotOverride(
+                params={"ring_amplitude_frac": 0.12, "mip_blur_strength": 0.15}
+            )
+        },
+    )
+    original_bounds = OpticalFieldBounds(x=20.0, y=30.0, width=240.0, height=80.0)
+    next_bounds = OpticalFieldBounds(x=40.0, y=50.0, width=360.0, height=120.0)
+    request = OpticalFieldRequest(
+        caller_id="agent.card.codex-1",
+        bounds=original_bounds,
+        role="agent_card",
+        profile=profile,
+    ).resize_to(next_bounds)
+
+    backend.upsert(request)
+
+    (shell_config,) = backend.compile_shell_configs()
+    assert request.state == "resize"
+    assert request.previous_bounds == original_bounds
+    assert shell_config["content_width_points"] == pytest.approx(360.0)
+    assert shell_config["content_height_points"] == pytest.approx(120.0)
+    assert shell_config["ring_amplitude_points"] == pytest.approx(14.4)
+    assert shell_config["mip_blur_strength"] == pytest.approx(0.15)
+    assert shell_config["optical_field"]["slot"] == "resize"
+    assert shell_config["optical_field"]["bounds"] == {
+        "x": 40.0,
+        "y": 50.0,
+        "width": 360.0,
+        "height": 120.0,
+    }
+    assert shell_config["optical_field"]["previous_bounds"] == {
+        "x": 20.0,
+        "y": 30.0,
+        "width": 240.0,
+        "height": 80.0,
+    }
+
+
+def test_lifecycle_helpers_keep_consumers_out_of_progress_and_shader_ownership():
+    backend = OpticalFieldPlaceholderBackend()
+    request = OpticalFieldRequest(
+        caller_id="preview",
+        bounds=OpticalFieldBounds(x=0.0, y=0.0, width=180.0, height=42.0),
+        role="preview",
+        profile=OpticalFieldProfileRef(base="preview_pill"),
+    )
+
+    materializing = request.as_materializing()
+    resting = materializing.as_resting()
+    dismissing = resting.as_dismissing()
+    hidden = dismissing.as_hidden()
+
+    assert materializing.state == "materialize"
+    assert resting.state == "rest"
+    assert dismissing.state == "dismiss"
+    assert hidden.state == "hidden"
+    assert hidden.visible is False
+    assert materializing.profile is request.profile
+    assert not hasattr(materializing, "progress")
+
+    backend.upsert(hidden)
+    assert backend.compile_shell_configs() == ()
 
 
 def test_normalized_profile_values_scale_with_geometry_not_raw_preview_tuning():
