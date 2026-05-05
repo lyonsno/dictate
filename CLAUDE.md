@@ -1,5 +1,9 @@
 # Claude Code Instructions
 
+# Spoke Policy Core
+
+<!-- Shared source of truth. Compiled into CLAUDE.md and AGENTS.md by tools/build-policy.sh -->
+
 ## Repo Identity
 
 The canonical repo and product name is `spoke`.
@@ -14,14 +18,64 @@ Treat the repo as renamed for documentation purposes and keep naming consistent 
 force-pushed onto `main` on 2026-04-04 and the two are now identical.
 All new feature branches, fix branches, and worktrees must be sliced
 from `origin/main`. Do not use `main-next`, `dev`, or any other branch
-as a base.
+as a base unless the human explicitly asks for some historical or
+non-trunk surface.
 
 Before creating a worktree: `git fetch origin main` and branch from
 `origin/main`.
 
+Treat remote `origin/main` as the source of truth rather than any older
+local trunk witness or smoke worktree. Do not present an older local
+worktree as "the current tip" just because it was the last place a smoke
+run happened.
+
+## Integration Landings
+
+When the user says to merge or land something on the integration branch,
+that means remote `origin/main`.
+
+An intermediate branch may still be used as a temporary landing carrier
+for verification, but it is only a short-lived transport surface:
+
+- cut it fresh from the then-current `origin/main`
+- port the intended change there
+- run the relevant verification there
+- remote-merge it to `main`
+- delete the branch and worktree immediately after merge
+
+Do not present an intermediate landing branch as a second integration
+branch, as a durable trunk variant, or as a user-facing launch target
+unless the human explicitly asked for that separate surface.
+
+If a feature branch was not directly smoke-ready on its own base and had
+to be rebased, cherry-picked, or otherwise carried onto trunk-compatible
+support work, the smoke-ready surface must itself be re-sliced from the
+then-current `origin/main` before being called ready. Do not smoke or
+hand off an older pre-carry surface as though it were current trunk.
+
 ## Testing
 
 Always run `uv run pytest -q` after code changes and before committing. All tests must pass.
+
+## Topothesia
+
+`spoke` uses Topothesia for README-vs-operator/developer routing. Before
+restoring or removing a README note about a real capability, check
+`docs/documentation_surfaces.toml` and the routed canonical surface first.
+
+When the human says `Make this durable for review`, treat that as a request to
+choose the narrowest durable review-control surface:
+
+- use Topothesia review surfaces when the issue is authority, canonical-vs-
+  fallback interpretation, allowed divergence, or review-routing semantics;
+  consult `docs/review_surfaces.toml` and `docs/review-authority-surfaces.md`
+- use Prilosec when the issue is a recurring acknowledged false positive or
+  accepted finding family that future reviews should suppress or demote
+- use a review-artifact disposition only when the issue is specific to one
+  reviewed commit and does not need a standing repo-level rule
+
+For the current `spoke` contract, the public README is intentionally not the
+home for smoke-only runtime affordances or developer-only repair-pass notes.
 
 ## Smoke testing
 
@@ -49,65 +103,38 @@ code is running. Select the target in the registry's `selected` field.
 Per-worktree env overrides can go in `.spoke-smoke-env` at the worktree root
 (e.g. `SPOKE_COMMAND_URL`, `SPOKE_TTS_VOICE`).
 
-## Secrets
+When a new smoke-ready `spoke` surface is ready to hand to the human, repoint
+the relevant launcher state to that worktree before calling it ready. Update
+both the stable launcher pin and any menu/registry state that governs the same
+surface. This repointing step is autonomous and is distinct from relaunching.
 
-Machine-local secrets (API keys, access tokens) for every spoke
-surface on a box live in a single file at `~/.config/spoke/secrets.env`.
-The launcher (`scripts/launch-main.sh`) sources this file into the
-child environment before applying per-worktree `.spoke-smoke-env`
-overrides. That means Automator-launched spoke processes receive
-secrets even though Automator's non-interactive `/bin/bash` never
-sources any shell profile.
+Do not present a surface as smoke-ready if invoking the intended launcher would
+still reopen an older worktree. Do not present a surface as smoke-worthy unless
+that branch already carries the menubar launch-target affordance needed to
+select and identify it from the visible launcher UI.
 
-**Never commit real secret values anywhere.** `~/.config/spoke/secrets.env`
-lives outside the repo on purpose. A tracked template at
-`scripts/secrets.env.example` documents the expected shape with empty
-values — copy it to the real location on each new box:
+"Smoke-ready" for `spoke` means all of the following are true:
 
-```sh
-mkdir -p ~/.config/spoke
-cp scripts/secrets.env.example ~/.config/spoke/secrets.env
-chmod 600 ~/.config/spoke/secrets.env
-# then edit ~/.config/spoke/secrets.env and populate from your
-# offline source of truth
-```
+- the branch carries any launcher or launch-target code it depends on
+- the relevant launcher target or registry entry points at the intended worktree
+- any required `.spoke-smoke-env` is present and correct
+- the launcher log shows it is launching from the intended path, not a fallback
+- if exercised live, the app's `Source:` and `Branch:` lines match
 
-The single cross-project registry that lists secret-file locations,
-provenance, and rotation history (never values) lives at
-`~/dev/epistaxis/system/secrets.md`. Consult that rather than
-re-deriving where to put things. When adding a new secret to spoke,
-update both `scripts/secrets.env.example` and that registry.
+If those conditions are not met, say the branch is code-ready or branch-ready,
+not smoke-ready.
 
-Gemini API key specifics: spoke reads `GEMINI_API_KEY_INACTIVE` before
-`GEMINI_API_KEY` via `spoke/__main__.py::_gemini_api_key_env()`. The
-`_INACTIVE` alias exists so a spoke-only key can sit in the same shell
-or secrets file without colliding with the Gemini CLI, which prefers
-API-key auth over an active subscription login when it sees
-`GEMINI_API_KEY` set. Put the key under the alias in
-`~/.config/spoke/secrets.env` and the CLI stays on your subscription.
+## Local hotkey policy
 
-**Known deferral:** `.spoke-smoke-env` currently holds a real
-`SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY` in committed history. Migrating
-that key out is a separate cleanup (requires key rotation + history
-rewrite) and is intentionally out of scope for this pattern's initial
-landing. See `~/dev/epistaxis/system/secrets.md` for status.
+When changing or resetting local smoke hotkeys:
 
-Do not tell the user a surface is "smoke-ready" unless the launcher path is
-ready too. For `spoke`, that means:
-
-- the registry entry has been added and selected
-- required `.spoke-smoke-env` values are present and correct
-- `~/Library/Logs/spoke-main-launch.log` shows the launcher choosing the
-  intended worktree/path rather than a fallback
-- if the app has been relaunched, the menubar `Source:` and `Branch:` lines
-  match the claimed surface
-
-If only the code is ready but the launcher contract has not been checked,
-describe it as branch-ready or code-ready, not smoke-ready.
-
-After updating the registry, **ask the user if the spacebar is working**
-before doing anything else. There is no way to verify event tap functionality
-from logs or process state.
+- treat the live WezTerm mapping and the launcher target files as one contract
+- keep the meaning legible: `Space` for pinned `main`, `K` for the current smoke target, and any optional extra smoke binding clearly named and logged
+- prefer retargeting `~/.config/spoke/*-target` files over editing launcher scripts when only the destination worktree changes
+- if a hotkey fails, check the corresponding `~/Library/Logs/spoke-*-launch.log` first to distinguish dead binding from launcher/runtime failure
+- treat missing target-worktree `.venv` bootstrap as launcher responsibility by default
+- if a launcher needs a known-good interpreter, set `SPOKE_VENV_PYTHON` in that worktree's `.spoke-smoke-env` instead of hardcoding a machine path
+- record any durable remap or reset rule in repo docs and `spoke` Epistaxis
 
 ## Launch target registry policy
 
@@ -123,54 +150,53 @@ When the launch-target menu feature is in play:
 - smoke-worthy surfaces must carry the launcher/menu commits that make the target selectable and legible in the menubar; registry prep alone is not enough
 - record durable registry conventions or machine-local target changes in `spoke` Epistaxis when another session would need them to resume coherently
 
-## Building the .app bundle
+## Secrets
 
-For .app distribution testing (not normal dev smoke testing):
+Machine-local secrets (API keys, access tokens) for every spoke
+surface on a box live in a single file at `~/.config/spoke/secrets.env`.
+The launcher (`scripts/launch-main.sh`) sources this file into the
+child environment before applying per-worktree `.spoke-smoke-env`
+overrides.
 
-```sh
-pkill -TERM -f "Spoke" 2>/dev/null
-sleep 1
-rm -f ~/Library/Logs/.spoke.lock
-./scripts/build.sh --fast
-rm -rf ~/Applications/Spoke.app
-cp -r dist/Spoke.app ~/Applications/
-open ~/Applications/Spoke.app
-```
-
-For full clean builds (after dependency changes, spec file changes, or when
-`--fast` builds behave unexpectedly):
+**Never commit real secret values anywhere.** `~/.config/spoke/secrets.env`
+lives outside the repo on purpose. A tracked template at
+`scripts/secrets.env.example` documents the expected shape with empty
+values — copy it to the real location on each new box:
 
 ```sh
-./scripts/build.sh
+mkdir -p ~/.config/spoke
+cp scripts/secrets.env.example ~/.config/spoke/secrets.env
+chmod 600 ~/.config/spoke/secrets.env
+# then edit and populate from your offline source of truth
 ```
 
-## Permissions
+The single cross-project registry that lists secret-file locations,
+provenance, and rotation history (never values) lives at
+`~/dev/epistaxis/system/secrets.md`. Consult that rather than
+re-deriving where to put things. When adding a new secret to spoke,
+update both `scripts/secrets.env.example` and that registry.
 
-- **Ad-hoc signed .app bundles cannot reliably get Accessibility on Sequoia.** System Settings shows the toggle as on but silently drops the grant — it never writes to the TCC database. This is a Sequoia limitation, not a bug in Spoke.
-- **Workaround for development**: Run via `uv run spoke` from Terminal. Terminal.app has a real Apple signature with a working Accessibility grant, and the Python process inherits it.
-- **Permanent fix**: Sign with a Developer ID certificate ($99/yr Apple Developer Program). This is also required for distribution (notarization, no Gatekeeper warnings).
-- Every rebuild changes the ad-hoc signature, which may invalidate macOS TCC permissions (Accessibility, Microphone).
-- The app has a graceful permissions flow that retries automatically — the user just needs to grant when prompted.
-- If permissions stop working after a rebuild (app says "no permissions" despite being granted in System Settings), the TCC daemon has cached a stale CDHash. Fix: `sudo tccutil reset Accessibility com.noahlyons.spoke`, re-grant in System Settings, and **reboot** to flush the daemon's in-memory cache. The reset alone is not sufficient without a reboot.
-- Do NOT run `tccutil reset` in build scripts — it causes more problems than it solves. Only use it as a manual recovery step.
-- Do NOT change the bundle identifier to work around TCC — Sequoia won't prompt for Accessibility for unknown ad-hoc apps.
-- Use `pkill -TERM` (not `-9`) to kill the app so the SIGTERM handler can cleanly uninstall the CGEventTap.
-- After rebuilding and relaunching, **ask the user if the spacebar is working** before doing anything else. There is no way to verify event tap functionality from logs or process state.
+Gemini API key specifics: spoke reads `GEMINI_API_KEY_INACTIVE` before
+`GEMINI_API_KEY` via `spoke/__main__.py::_gemini_api_key_env()`. The
+`_INACTIVE` alias exists so a spoke-only key can sit in the same shell
+or secrets file without colliding with the Gemini CLI.
+
+After updating the registry, **ask the user if the spacebar is working**
+before doing anything else. There is no way to verify event tap functionality
+from logs or process state.
 
 ## Service fleet
 
 Spoke runs as a coordinated fleet of isolated services. The core app handles
 UI, orchestration, and input; sidecar services handle inference workloads in
-their own venvs. Each sidecar can break independently without taking down the
-core.
+their own venvs.
 
 **Fleet manifest:** `services.yaml` at the repo root describes every service —
 ports, env vars, health endpoints, rebuild instructions, and which box runs
 what. Read it before debugging connectivity or preparing a new smoke surface.
 
 **Health check:** `scripts/spoke-doctor.sh` pings every expected service and
-reports what's up, what's down, and what URL it tried. Run it when something
-feels broken — it separates "service is down" from "spoke can't reach it."
+reports what's up, what's down, and what URL it tried.
 
 ```sh
 ./scripts/spoke-doctor.sh            # quick status
@@ -199,18 +225,26 @@ local OMLX server at `http://localhost:8001` and captures structured logs.
 On `MacBook-Pro-2.local`, `phylax` owns the `grapheus_local` service lifecycle.
 
 Authentication: the app reads `SPOKE_COMMAND_API_KEY` first, then falls back to
-`OMLX_SERVER_API_KEY` from the environment. Both are typically set in the
-user's shell profile. If the assistant menu appears but is empty ("couldn't
-reach the model"), the most likely cause is the model server not running or the
-API key not reaching the app process.
+`OMLX_SERVER_API_KEY` from the environment.
 
-When preparing a new worktree or smoke surface, do not assume the assistant
-will work without checking. The command pathway is always enabled but the model
-server and API key must be reachable from the launched process.
+### Grapheus headers (`X-Spoke-*`)
+
+Every LLM call through Grapheus must send these headers:
+
+- `X-Spoke-Pathway`: which pathway is making the call (e.g. `command`, `narrator`, `positioning`)
+- `X-Spoke-Utterance-ID`: a stable ID tying all calls from one user action together
+
+Without `Utterance-ID`, Grapheus cannot group calls into logical requests.
+`X-Spoke-Turn` (round number) and `X-Spoke-Step` (pipeline stage) are
+optional but recommended for multi-round or multi-step pathways.
 
 ## Epistaxis
 
-When reading epistaxis, if any recorded state doesn't match what you observe in the code or thread, flag it before proceeding — even if the mismatch might just be stale rather than wrong. Multiple sessions may write to the same epistaxis file concurrently; merge your changes without overwriting entries you didn't write.
+When reading epistaxis, if any recorded state doesn't match what you observe
+in the code or thread, flag it before proceeding — even if the mismatch might
+just be stale rather than wrong. Multiple sessions may write to the same
+epistaxis file concurrently; merge your changes without overwriting entries
+you didn't write.
 
 ## Epistaxis Intent Model
 
@@ -238,15 +272,52 @@ When updating `spoke` Epistaxis state:
   invariant, or contradictory strategic direction, not merely the existence of
   several active branches.
 
-## Demo video
-
-- `scripts/demo-convert.sh` converts screen recordings (.mov) to optimized MP4s. Run with `--help` for options.
-- GitHub README only renders inline `<video>` with `user-attachments` URLs. Release download URLs and raw.githubusercontent URLs are silently stripped.
-- The only way to get a `user-attachments` URL is drag-and-drop into a GitHub issue/PR comment in the browser. Wait for the "Uploading..." placeholder to resolve to an actual URL before submitting — if you submit while it still says uploading, the upload is lost.
-- `gh` CLI cannot upload to `user-attachments`. Don't waste time trying.
-
 ## Commits
 
 Use descriptive commit messages. Include `Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>` in all commits.
 Unless the user explicitly says otherwise, push commits after creating them.
 If commit/push is the required next step, needing sandbox/escalation approval is not a reason to defer it or leave work local-only. Request the permission and continue.
+
+## Demo video
+
+- `scripts/demo-convert.sh` converts screen recordings (.mov) to optimized MP4s. Run with `--help` for options.
+- GitHub README only renders inline `<video>` with `user-attachments` URLs. Release download URLs and raw.githubusercontent URLs are silently stripped.
+- The only way to get a `user-attachments` URL is drag-and-drop into a GitHub issue/PR comment in the browser.
+- `gh` CLI cannot upload to `user-attachments`. Don't waste time trying.
+
+---
+
+<!-- Sources: policy/shared/core.md — read it first, this file adds Claude Code deltas only -->
+
+## Building the .app bundle
+
+For .app distribution testing (not normal dev smoke testing):
+
+```sh
+pkill -TERM -f "Spoke" 2>/dev/null
+sleep 1
+rm -f ~/Library/Logs/.spoke.lock
+./scripts/build.sh --fast
+rm -rf ~/Applications/Spoke.app
+cp -r dist/Spoke.app ~/Applications/
+open ~/Applications/Spoke.app
+```
+
+For full clean builds (after dependency changes, spec file changes, or when
+`--fast` builds behave unexpectedly):
+
+```sh
+./scripts/build.sh
+```
+
+## Permissions
+
+- **Ad-hoc signed .app bundles cannot reliably get Accessibility on Sequoia.** System Settings shows the toggle as on but silently drops the grant — it never writes to the TCC database. This is a Sequoia limitation, not a bug in Spoke.
+- **Workaround for development**: Run via `uv run spoke` from Terminal. Terminal.app has a real Apple signature with a working Accessibility grant, and the Python process inherits it.
+- **Permanent fix**: Sign with a Developer ID certificate ($99/yr Apple Developer Program). This is also required for distribution (notarization, no Gatekeeper warnings).
+- Every rebuild changes the ad-hoc signature, which may invalidate macOS TCC permissions (Accessibility, Microphone).
+- If permissions stop working after a rebuild, the TCC daemon has cached a stale CDHash. Fix: `sudo tccutil reset Accessibility com.noahlyons.spoke`, re-grant in System Settings, and **reboot**.
+- Do NOT run `tccutil reset` in build scripts.
+- Do NOT change the bundle identifier to work around TCC.
+- Use `pkill -TERM` (not `-9`) to kill the app so the SIGTERM handler can cleanly uninstall the CGEventTap.
+- After rebuilding and relaunching, **ask the user if the spacebar is working** before doing anything else.

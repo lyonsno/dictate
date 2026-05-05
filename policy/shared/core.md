@@ -1,5 +1,3 @@
-# Codex Instructions
-
 # Spoke Policy Core
 
 <!-- Shared source of truth. Compiled into CLAUDE.md and AGENTS.md by tools/build-policy.sh -->
@@ -284,9 +282,3 @@ If commit/push is the required next step, needing sandbox/escalation approval is
 - GitHub README only renders inline `<video>` with `user-attachments` URLs. Release download URLs and raw.githubusercontent URLs are silently stripped.
 - The only way to get a `user-attachments` URL is drag-and-drop into a GitHub issue/PR comment in the browser.
 - `gh` CLI cannot upload to `user-attachments`. Don't waste time trying.
-
----
-
-<!-- Sources: policy/shared/core.md — read it first, this file adds Codex deltas only -->
-
-<!-- No Codex-specific policy at this time. All spoke policy lives in core. -->
