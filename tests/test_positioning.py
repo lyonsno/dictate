@@ -179,29 +179,36 @@ def test_target_system_prompt_has_grid_layout():
     assert "center" in TARGET_SYSTEM
 
 
-def test_axis_audit_prompt_forces_dimension_by_dimension_candidate_review():
-    """Iterative audit prompt should make KEEP mean the current outline is correct."""
-    from spoke.positioning.reposition import AXIS_AUDIT_SYSTEM
+def test_split_audit_prompts_keep_center_independent_from_current_size():
+    """Center repair should choose the best eventual center, not preserve size."""
+    from spoke.positioning.reposition import (
+        CENTER_AUDIT_SYSTEM,
+        SIZE_AUDIT_SYSTEM,
+        SUITABILITY_AUDIT_SYSTEM,
+    )
 
-    assert "red dashed outline is the current proposed overlay" in AXIS_AUDIT_SYSTEM
-    assert "horizontal center" in AXIS_AUDIT_SYSTEM
-    assert "vertical center" in AXIS_AUDIT_SYSTEM
-    assert "A dimension may be kept only if it already satisfies" in AXIS_AUDIT_SYSTEM
-    assert "Do not fix only one axis" in AXIS_AUDIT_SYSTEM
-    assert "valid JSON object" in AXIS_AUDIT_SYSTEM
-    assert '"justification"' in AXIS_AUDIT_SYSTEM
+    assert "red dashed outline is the current proposed overlay" in SUITABILITY_AUDIT_SYSTEM
+    assert '"done"' in SUITABILITY_AUDIT_SYSTEM
+    assert '"needs_position"' in SUITABILITY_AUDIT_SYSTEM
+    assert "Judge only the overlay center" in CENTER_AUDIT_SYSTEM
+    assert "width and height will be adjusted optimally" in CENTER_AUDIT_SYSTEM
+    assert "Do not preserve the current size" in CENTER_AUDIT_SYSTEM
+    assert '"center_x"' in CENTER_AUDIT_SYSTEM
+    assert "Judge only the overlay size" in SIZE_AUDIT_SYSTEM
+    assert "center will be adjusted optimally" in SIZE_AUDIT_SYSTEM
+    assert '"width"' in SIZE_AUDIT_SYSTEM
 
 
-def test_axis_audit_headers_are_round_addressable():
+def test_split_audit_headers_are_round_addressable():
     """Grapheus logs need enough header structure to reconstruct loop behavior."""
     from spoke.positioning.reposition import _api_headers, positioning_utterance_scope
 
     with positioning_utterance_scope("positioning-token-50"):
-        headers = _api_headers("axis-audit", mode="gridpoint-iterative", iteration=2)
+        headers = _api_headers("center-audit", mode="gridpoint-iterative", iteration=2)
 
     assert headers["X-Spoke-Pathway"] == "positioning"
     assert headers["X-Spoke-Utterance-ID"] == "positioning-token-50"
-    assert headers["X-Spoke-Step"] == "axis-audit"
+    assert headers["X-Spoke-Step"] == "center-audit"
     assert headers["X-Spoke-Positioning-Mode"] == "gridpoint-iterative"
     assert headers["X-Spoke-Positioning-Iteration"] == "2"
 
@@ -230,8 +237,8 @@ def test_positioning_pipeline_reuses_one_utterance_id_across_model_calls(monkeyp
         if headers["X-Spoke-Step"] == "gridpoint":
             return FakeResponse("A3")
         return FakeResponse(
-            '{"x":"KEEP","y":"KEEP","width":"KEEP","height":"KEEP",'
-            '"done":true,"justification":"already upper right"}'
+            '{"done":true,"needs_position":false,"needs_size":false,'
+            '"reason":"already upper right"}'
         )
 
     monkeypatch.setattr(reposition.requests, "post", fake_post)
@@ -252,40 +259,42 @@ def test_positioning_pipeline_reuses_one_utterance_id_across_model_calls(monkeyp
     assert result["_positioning_utterance_id"] == seen_ids[0]
 
 
-def test_parse_axis_audit_response_keeps_and_clamps_dimensions():
-    """Axis audit parser accepts JSON KEEP fields and clamps pixel edits."""
-    from spoke.positioning.reposition import _parse_axis_audit_response
-
-    audit = _parse_axis_audit_response(
-        '{"x":"KEEP","y":900,"width":2600,"height":"KEEP","done":false,'
-        '"justification":"still covers the text vertically"}',
-        screen_w=1920,
-        screen_h=1080,
+def test_parse_split_audit_responses_keep_and_clamp_dimensions():
+    """Split audit parsers accept JSON KEEP fields and clamp pixel edits."""
+    from spoke.positioning.reposition import (
+        _parse_center_audit_response,
+        _parse_size_audit_response,
+        _parse_suitability_audit_response,
     )
 
-    assert audit == {
-        "x": "KEEP",
-        "y": 900,
-        "width": 1920,
-        "height": "KEEP",
+    suitability = _parse_suitability_audit_response(
+        '{"done":false,"needs_position":true,"needs_size":false,'
+        '"reason":"too close to the code"}'
+    )
+    assert suitability == {
         "done": False,
-        "justification": "still covers the text vertically",
+        "needs_position": True,
+        "needs_size": False,
+        "reason": "too close to the code",
     }
 
-    fenced = _parse_axis_audit_response(
-        '```json\n{"x":500,"y":"KEEP","width":"KEEP","height":200,'
-        '"done":true,"justification":"candidate is clear"}\n```',
+    center = _parse_center_audit_response(
+        '```json\n{"center_x":2600,"center_y":"KEEP","reason":"right edge"}\n```',
         screen_w=1920,
         screen_h=1080,
     )
-    assert fenced["x"] == 500
-    assert fenced["height"] == 200
-    assert fenced["done"] is True
-    assert fenced["justification"] == "candidate is clear"
+    assert center == {"center_x": 1920, "center_y": "KEEP", "reason": "right edge"}
+
+    size = _parse_size_audit_response(
+        '{"width":"KEEP","height":-20,"reason":"make it short"}',
+        screen_w=1920,
+        screen_h=1080,
+    )
+    assert size == {"width": "KEEP", "height": 1, "reason": "make it short"}
 
 
-def test_iterative_axis_audit_rerenders_candidate_until_done(monkeypatch):
-    """Each cheap audit round should inspect the latest candidate outline."""
+def test_iterative_split_audit_combines_center_and_size_before_rerender(monkeypatch):
+    """Each split audit round should inspect the latest combined candidate."""
     import importlib
 
     reposition = importlib.import_module("spoke.positioning.reposition")
@@ -293,11 +302,12 @@ def test_iterative_axis_audit_rerenders_candidate_until_done(monkeypatch):
     image = Image.new("RGB", (100, 100), "white")
     outlined = []
     encoded = []
-    audits = [
-        {"x": 75, "y": "KEEP", "width": "KEEP", "height": "KEEP", "done": False},
-        {"x": "KEEP", "y": 25, "width": 40, "height": "KEEP", "done": False},
-        {"x": "KEEP", "y": "KEEP", "width": "KEEP", "height": "KEEP", "done": True},
+    suitability = [
+        {"done": False, "needs_position": True, "needs_size": True, "reason": "too central"},
+        {"done": True, "needs_position": False, "needs_size": False, "reason": "clear"},
     ]
+    centers = [{"center_x": 75, "center_y": 25, "reason": "upper right"}]
+    sizes = [{"width": 30, "height": 20, "reason": "compact"}]
 
     monkeypatch.setattr(reposition, "_draw_grid_points", lambda img: img)
     monkeypatch.setattr(reposition, "_pick_gridpoint", lambda *args, **kwargs: "B2")
@@ -311,13 +321,23 @@ def test_iterative_axis_audit_rerenders_candidate_until_done(monkeypatch):
         encoded.append(token)
         return token
 
-    def fake_audit(screenshot_b64, *args, **kwargs):
+    def fake_suitability(screenshot_b64, *args, **kwargs):
         assert screenshot_b64 == encoded[-1]
-        return audits.pop(0)
+        return suitability.pop(0)
+
+    def fake_center(screenshot_b64, *args, **kwargs):
+        assert screenshot_b64 == encoded[-1]
+        return centers.pop(0)
+
+    def fake_size(screenshot_b64, *args, **kwargs):
+        assert screenshot_b64 == encoded[-1]
+        return sizes.pop(0)
 
     monkeypatch.setattr(reposition, "_draw_overlay_outline", fake_outline)
     monkeypatch.setattr(reposition, "_encode_image", fake_encode)
-    monkeypatch.setattr(reposition, "_pick_axis_audit", fake_audit)
+    monkeypatch.setattr(reposition, "_pick_suitability_audit", fake_suitability)
+    monkeypatch.setattr(reposition, "_pick_center_audit", fake_center)
+    monkeypatch.setattr(reposition, "_pick_size_audit", fake_size)
 
     result = reposition.reposition_gridpoint_iterative(
         "upper right but compact",
@@ -327,16 +347,15 @@ def test_iterative_axis_audit_rerenders_candidate_until_done(monkeypatch):
         screen_h=100,
     )
 
-    assert result["x"] == pytest.approx(0.55)
-    assert result["y"] == pytest.approx(0.05)
-    assert result["width"] == pytest.approx(0.4)
-    assert result["height"] == pytest.approx(0.4)
+    assert result["x"] == pytest.approx(0.60)
+    assert result["y"] == pytest.approx(0.15)
+    assert result["width"] == pytest.approx(0.30)
+    assert result["height"] == pytest.approx(0.20)
     assert result["_debug_lines"][-1].startswith("Total:")
-    assert len(encoded) == 4  # initial grid pick plus three candidate audits
-    assert outlined[-3:] == [
+    assert len(encoded) == 3  # initial grid pick plus two candidate suitability rounds
+    assert outlined[-2:] == [
         {"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4},
-        {"x": 0.55, "y": 0.3, "width": 0.4, "height": 0.4},
-        {"x": 0.55, "y": 0.05, "width": 0.4, "height": 0.4},
+        {"x": 0.6, "y": 0.15, "width": 0.3, "height": 0.2},
     ]
 
 

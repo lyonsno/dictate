@@ -912,33 +912,46 @@ GRIDPOINT_RESIZE_SYSTEM = (
     "Output ONLY 'width height' or 'NONE'. Nothing else."
 )
 
-AXIS_AUDIT_SYSTEM = (
-    "You are correcting a proposed overlay rectangle.\n\n"
+SUITABILITY_AUDIT_SYSTEM = (
+    "You are auditing a proposed overlay rectangle.\n\n"
     "The red dashed outline is the current proposed overlay. The user request "
     "is the desired final result.\n\n"
-    "Audit the proposal dimension by dimension. A dimension may be kept only if "
-    "it already satisfies the request in the visible screen context.\n\n"
-    "Check:\n"
-    "- horizontal center: does the overlay need to move left or right?\n"
-    "- vertical center: does the overlay need to move up or down?\n"
-    "- width: is the overlay too narrow, too wide, or correct?\n"
-    "- height: is the overlay too short, too tall, or correct?\n\n"
-    "If the proposal already satisfies the request in position and size, output "
-    "done: YES and KEEP for every dimension.\n\n"
-    "If the proposal does not satisfy the request, change every dimension that "
-    "is part of the mismatch. Do not fix only one axis when the request implies "
-    "both axes. Do not output KEEP for width or height if the current outline "
-    "is the wrong size or shape for the request.\n\n"
+    "Decide whether this outline already satisfies the request in the visible "
+    "screen context. If it does not, mark whether the failure is about position, "
+    "size, or both.\n\n"
     "Output a valid JSON object and nothing else:\n"
-    '{"x":"KEEP or <center_x_px>",'
-    '"y":"KEEP or <center_y_px>",'
-    '"width":"KEEP or <width_px>",'
+    '{"done":true_or_false,'
+    '"needs_position":true_or_false,'
+    '"needs_size":true_or_false,'
+    '"reason":"short reason"}'
+)
+
+CENTER_AUDIT_SYSTEM = (
+    "You are correcting the center of a proposed overlay rectangle.\n\n"
+    "The red dashed outline is the current proposed overlay. The user request "
+    "is the desired final result.\n\n"
+    "Judge only the overlay center. Choose the center that best serves the user "
+    "request, assuming width and height will be adjusted optimally afterward to "
+    "satisfy the same request. Do not preserve the current size if a different "
+    "eventual size would change the best center.\n\n"
+    "Output a valid JSON object and nothing else:\n"
+    '{"center_x":"KEEP or <center_x_px>",'
+    '"center_y":"KEEP or <center_y_px>",'
+    '"reason":"short reason"}'
+)
+
+SIZE_AUDIT_SYSTEM = (
+    "You are correcting the size of a proposed overlay rectangle.\n\n"
+    "The red dashed outline is the current proposed overlay. The user request "
+    "is the desired final result.\n\n"
+    "Judge only the overlay size. Choose the width and height the overlay should "
+    "have in the final placement, assuming the center will be adjusted optimally "
+    "to satisfy the same request. Do not preserve the current size if the final "
+    "rectangle should be larger, smaller, wider, narrower, taller, or shorter.\n\n"
+    "Output a valid JSON object and nothing else:\n"
+    '{"width":"KEEP or <width_px>",'
     '"height":"KEEP or <height_px>",'
-    '"done":true_or_false,'
-    '"justification":"short reason for the edits or why no further change is needed"}\n\n'
-    "The justification is for diagnostics. If done is true, explain why the "
-    "current outline already satisfies the request. If done is false, explain "
-    "the mismatch you are correcting."
+    '"reason":"short reason"}'
 )
 
 
@@ -1036,45 +1049,7 @@ def _pick_gridpoint_resize(screenshot_b64: str, utterance: str,
         return None
 
 
-def _parse_axis_audit_response(
-    raw: str,
-    *,
-    screen_w: int,
-    screen_h: int,
-) -> dict[str, int | str | bool]:
-    """Parse an axis-audit response into clamped pixel edits."""
-
-    result: dict[str, int | str | bool] = {
-        "x": "KEEP",
-        "y": "KEEP",
-        "width": "KEEP",
-        "height": "KEEP",
-        "done": False,
-        "justification": "",
-    }
-    limits = {
-        "x": screen_w,
-        "y": screen_h,
-        "width": screen_w,
-        "height": screen_h,
-    }
-
-    def _coerce_field(key: str, value) -> int | str:
-        if isinstance(value, str) and value.strip().upper().startswith("KEEP"):
-            return "KEEP"
-        if isinstance(value, (int, float)):
-            parsed = int(float(value))
-        elif isinstance(value, str):
-            match = re.search(r"-?\d+(?:\.\d+)?", value)
-            if not match:
-                return "KEEP"
-            parsed = int(float(match.group(0)))
-        else:
-            return "KEEP"
-        if key in {"width", "height"}:
-            return max(1, min(limits[key], parsed))
-        return max(0, min(limits[key], parsed))
-
+def _extract_json_object(raw: str) -> dict | None:
     json_text = raw.strip()
     if json_text.startswith("```"):
         json_text = re.sub(r"^```(?:json)?\s*", "", json_text, flags=re.IGNORECASE)
@@ -1083,48 +1058,147 @@ def _parse_axis_audit_response(
         payload = json.loads(json_text)
     except json.JSONDecodeError:
         match = re.search(r"\{.*\}", json_text, flags=re.DOTALL)
-        if match:
-            try:
-                payload = json.loads(match.group(0))
-            except json.JSONDecodeError:
-                payload = None
-        else:
-            payload = None
+        if not match:
+            return None
+        try:
+            payload = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return None
+    return payload if isinstance(payload, dict) else None
 
-    if isinstance(payload, dict):
-        for key in ("x", "y", "width", "height"):
-            if key in payload:
-                result[key] = _coerce_field(key, payload[key])
-        if "done" in payload:
-            done = payload["done"]
-            if isinstance(done, bool):
-                result["done"] = done
-            elif isinstance(done, str):
-                result["done"] = done.strip().upper().startswith("Y") or done.strip().lower() == "true"
-        justification = payload.get("justification", "")
-        if justification is not None:
-            result["justification"] = str(justification).strip()
+
+def _coerce_bool(value, *, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "y", "1"}:
+            return True
+        if normalized in {"false", "no", "n", "0"}:
+            return False
+    return default
+
+
+def _coerce_pixel_or_keep(value, *, limit: int, minimum: int) -> int | str:
+    if isinstance(value, str) and value.strip().upper().startswith("KEEP"):
+        return "KEEP"
+    if isinstance(value, (int, float)):
+        parsed = int(float(value))
+    elif isinstance(value, str):
+        match = re.search(r"-?\d+(?:\.\d+)?", value)
+        if not match:
+            return "KEEP"
+        parsed = int(float(match.group(0)))
+    else:
+        return "KEEP"
+    return max(minimum, min(limit, parsed))
+
+
+def _parse_suitability_audit_response(raw: str) -> dict[str, bool | str]:
+    """Parse a suitability response into a bounded correction decision."""
+
+    result: dict[str, bool | str] = {
+        "done": False,
+        "needs_position": True,
+        "needs_size": True,
+        "reason": "",
+    }
+    payload = _extract_json_object(raw)
+    if not payload:
         return result
-
-    for raw_line in raw.splitlines():
-        if ":" not in raw_line:
-            continue
-        key, value = raw_line.split(":", 1)
-        key = key.strip().lower()
-        value = value.strip()
-        if key == "done":
-            result["done"] = value.upper().startswith("Y")
-            continue
-        if key not in limits:
-            continue
-        if value.upper().startswith("KEEP"):
-            result[key] = "KEEP"
-            continue
-        result[key] = _coerce_field(key, value)
+    result["done"] = _coerce_bool(payload.get("done"), default=False)
+    result["needs_position"] = _coerce_bool(payload.get("needs_position"), default=True)
+    result["needs_size"] = _coerce_bool(payload.get("needs_size"), default=True)
+    reason = payload.get("reason", "")
+    if reason is not None:
+        result["reason"] = str(reason).strip()
     return result
 
 
-def _pick_axis_audit(
+def _parse_center_audit_response(
+    raw: str,
+    *,
+    screen_w: int,
+    screen_h: int,
+) -> dict[str, int | str]:
+    """Parse a center repair response into clamped pixel coordinates."""
+
+    result: dict[str, int | str] = {"center_x": "KEEP", "center_y": "KEEP", "reason": ""}
+    payload = _extract_json_object(raw)
+    if not payload:
+        return result
+    result["center_x"] = _coerce_pixel_or_keep(
+        payload.get("center_x"),
+        limit=screen_w,
+        minimum=0,
+    )
+    result["center_y"] = _coerce_pixel_or_keep(
+        payload.get("center_y"),
+        limit=screen_h,
+        minimum=0,
+    )
+    reason = payload.get("reason", "")
+    if reason is not None:
+        result["reason"] = str(reason).strip()
+    return result
+
+
+def _parse_size_audit_response(
+    raw: str,
+    *,
+    screen_w: int,
+    screen_h: int,
+) -> dict[str, int | str]:
+    """Parse a size repair response into clamped pixel dimensions."""
+
+    result: dict[str, int | str] = {"width": "KEEP", "height": "KEEP", "reason": ""}
+    payload = _extract_json_object(raw)
+    if not payload:
+        return result
+    result["width"] = _coerce_pixel_or_keep(payload.get("width"), limit=screen_w, minimum=1)
+    result["height"] = _coerce_pixel_or_keep(payload.get("height"), limit=screen_h, minimum=1)
+    reason = payload.get("reason", "")
+    if reason is not None:
+        result["reason"] = str(reason).strip()
+    return result
+
+
+def _candidate_pixels(candidate_overlay: dict, *, screen_w: int, screen_h: int) -> tuple[int, int, int, int, int, int]:
+    bx = int(candidate_overlay["x"] * screen_w)
+    by = int(candidate_overlay["y"] * screen_h)
+    bw = max(1, int(candidate_overlay["width"] * screen_w))
+    bh = max(1, int(candidate_overlay["height"] * screen_h))
+    cx = bx + bw // 2
+    cy = by + bh // 2
+    return bx, by, bw, bh, cx, cy
+
+
+def _candidate_audit_user_text(
+    *,
+    utterance: str,
+    screen_w: int,
+    screen_h: int,
+    candidate_overlay: dict,
+    iteration: int,
+    bearing: str | None,
+) -> str:
+    _bx, _by, bw, bh, cx, cy = _candidate_pixels(
+        candidate_overlay,
+        screen_w=screen_w,
+        screen_h=screen_h,
+    )
+    user_text = (
+        f"User request: {utterance}\n"
+        f"Screen resolution: {screen_w}×{screen_h} pixels\n"
+        f"Candidate overlay: center=({cx}, {cy}) width={bw} height={bh}\n"
+        f"Audit iteration: {iteration}"
+    )
+    if bearing:
+        user_text += f"\n\nOperator bearing:\n{bearing}"
+    return user_text
+
+
+def _pick_suitability_audit(
     screenshot_b64: str,
     utterance: str,
     screen_w: int,
@@ -1134,48 +1208,133 @@ def _pick_axis_audit(
     iteration: int,
     bearing: str | None = None,
 ) -> dict[str, int | str | bool]:
-    """Ask the VLM to edit the current candidate dimension by dimension."""
+    """Ask the VLM whether the current candidate is suitable."""
 
-    bx = int(candidate_overlay["x"] * screen_w)
-    by = int(candidate_overlay["y"] * screen_h)
-    bw = int(candidate_overlay["width"] * screen_w)
-    bh = int(candidate_overlay["height"] * screen_h)
-    cx = bx + bw // 2
-    cy = by + bh // 2
-
-    user_text = (
-        f"User request: {utterance}\n"
-        f"Screen resolution: {screen_w}×{screen_h} pixels\n"
-        f"Candidate overlay: center=({cx}, {cy}) width={bw} height={bh}\n"
-        f"Audit iteration: {iteration}"
+    user_text = _candidate_audit_user_text(
+        utterance=utterance,
+        screen_w=screen_w,
+        screen_h=screen_h,
+        candidate_overlay=candidate_overlay,
+        iteration=iteration,
+        bearing=bearing,
     )
-    if bearing:
-        user_text += f"\n\nOperator bearing:\n{bearing}"
 
     resp = requests.post(
         _get_api_url(),
         headers=_api_headers(
-            "axis-audit",
+            "suitability-audit",
             mode="gridpoint-iterative",
             iteration=iteration,
         ),
         json={
             "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
             "messages": [
-                {"role": "system", "content": AXIS_AUDIT_SYSTEM},
+                {"role": "system", "content": SUITABILITY_AUDIT_SYSTEM},
                 {"role": "user", "content": [
                     {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
                     {"type": "text", "text": user_text},
                 ]},
             ],
-            **_sampling_params(max_tokens=128),
+            **_sampling_params(max_tokens=96),
         },
         timeout=120,
     )
     resp.raise_for_status()
     raw = resp.json()["choices"][0]["message"].get("content", "").strip()
-    _pick_axis_audit._last_raw = raw
-    return _parse_axis_audit_response(raw, screen_w=screen_w, screen_h=screen_h)
+    _pick_suitability_audit._last_raw = raw
+    return _parse_suitability_audit_response(raw)
+
+
+def _pick_center_audit(
+    screenshot_b64: str,
+    utterance: str,
+    screen_w: int,
+    screen_h: int,
+    candidate_overlay: dict,
+    *,
+    iteration: int,
+    bearing: str | None = None,
+) -> dict[str, int | str]:
+    """Ask the VLM to repair only the candidate center."""
+
+    user_text = _candidate_audit_user_text(
+        utterance=utterance,
+        screen_w=screen_w,
+        screen_h=screen_h,
+        candidate_overlay=candidate_overlay,
+        iteration=iteration,
+        bearing=bearing,
+    )
+    resp = requests.post(
+        _get_api_url(),
+        headers=_api_headers(
+            "center-audit",
+            mode="gridpoint-iterative",
+            iteration=iteration,
+        ),
+        json={
+            "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
+            "messages": [
+                {"role": "system", "content": CENTER_AUDIT_SYSTEM},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
+                    {"type": "text", "text": user_text},
+                ]},
+            ],
+            **_sampling_params(max_tokens=96),
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    raw = resp.json()["choices"][0]["message"].get("content", "").strip()
+    _pick_center_audit._last_raw = raw
+    return _parse_center_audit_response(raw, screen_w=screen_w, screen_h=screen_h)
+
+
+def _pick_size_audit(
+    screenshot_b64: str,
+    utterance: str,
+    screen_w: int,
+    screen_h: int,
+    candidate_overlay: dict,
+    *,
+    iteration: int,
+    bearing: str | None = None,
+) -> dict[str, int | str]:
+    """Ask the VLM to repair only the candidate size."""
+
+    user_text = _candidate_audit_user_text(
+        utterance=utterance,
+        screen_w=screen_w,
+        screen_h=screen_h,
+        candidate_overlay=candidate_overlay,
+        iteration=iteration,
+        bearing=bearing,
+    )
+    resp = requests.post(
+        _get_api_url(),
+        headers=_api_headers(
+            "size-audit",
+            mode="gridpoint-iterative",
+            iteration=iteration,
+        ),
+        json={
+            "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
+            "messages": [
+                {"role": "system", "content": SIZE_AUDIT_SYSTEM},
+                {"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}},
+                    {"type": "text", "text": user_text},
+                ]},
+            ],
+            **_sampling_params(max_tokens=96),
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    raw = resp.json()["choices"][0]["message"].get("content", "").strip()
+    _pick_size_audit._last_raw = raw
+    return _parse_size_audit_response(raw, screen_w=screen_w, screen_h=screen_h)
 
 
 def _candidate_from_center(
@@ -1199,28 +1358,28 @@ def _candidate_from_center(
     }
 
 
-def _apply_axis_audit(
+def _apply_split_audit(
     candidate_overlay: dict,
-    audit: dict[str, int | str | bool],
+    center_audit: dict[str, int | str],
+    size_audit: dict[str, int | str],
     *,
     screen_w: int,
     screen_h: int,
 ) -> dict[str, float]:
-    bx = int(candidate_overlay["x"] * screen_w)
-    by = int(candidate_overlay["y"] * screen_h)
-    bw = int(candidate_overlay["width"] * screen_w)
-    bh = int(candidate_overlay["height"] * screen_h)
-    cx = bx + bw // 2
-    cy = by + bh // 2
+    _bx, _by, bw, bh, cx, cy = _candidate_pixels(
+        candidate_overlay,
+        screen_w=screen_w,
+        screen_h=screen_h,
+    )
 
-    if isinstance(audit.get("width"), int):
-        bw = int(audit["width"])
-    if isinstance(audit.get("height"), int):
-        bh = int(audit["height"])
-    if isinstance(audit.get("x"), int):
-        cx = int(audit["x"])
-    if isinstance(audit.get("y"), int):
-        cy = int(audit["y"])
+    if isinstance(center_audit.get("center_x"), int):
+        cx = int(center_audit["center_x"])
+    if isinstance(center_audit.get("center_y"), int):
+        cy = int(center_audit["center_y"])
+    if isinstance(size_audit.get("width"), int):
+        bw = int(size_audit["width"])
+    if isinstance(size_audit.get("height"), int):
+        bh = int(size_audit["height"])
 
     return _candidate_from_center(cx, cy, bw, bh, screen_w=screen_w, screen_h=screen_h)
 
@@ -1378,7 +1537,7 @@ def reposition_gridpoint_iterative(
     on_step: "callable | None" = None,
     bearing: str | None = None,
 ) -> dict | None:
-    """Grid-point seed followed by bounded cheap axis-audit correction rounds."""
+    """Grid-point seed followed by bounded cheap suitability/center/size rounds."""
 
     reposition_gridpoint_iterative._last_debug = []
     t0 = time.time()
@@ -1439,7 +1598,7 @@ def reposition_gridpoint_iterative(
     for iteration in range(1, max_rounds + 1):
         annotated = _draw_overlay_outline(screenshot, candidate)
         candidate_b64 = _encode_image(annotated)
-        audit = _pick_axis_audit(
+        suitability = _pick_suitability_audit(
             candidate_b64,
             utterance,
             screen_w,
@@ -1448,28 +1607,105 @@ def reposition_gridpoint_iterative(
             iteration=iteration,
             bearing=bearing,
         )
-        raw = getattr(_pick_axis_audit, "_last_raw", None)
+        raw = getattr(_pick_suitability_audit, "_last_raw", None)
         reposition_gridpoint_iterative._last_debug.append(
-            "Audit %d: x=%s y=%s width=%s height=%s done=%s"
+            "Audit %d suitability: done=%s position=%s size=%s"
             % (
                 iteration,
-                audit.get("x"),
-                audit.get("y"),
-                audit.get("width"),
-                audit.get("height"),
-                audit.get("done"),
+                suitability.get("done"),
+                suitability.get("needs_position"),
+                suitability.get("needs_size"),
             )
         )
         if raw:
-            reposition_gridpoint_iterative._last_debug.append(f"Audit {iteration} raw: {raw}")
-        justification = audit.get("justification")
-        if justification:
             reposition_gridpoint_iterative._last_debug.append(
-                f"Audit {iteration} justification: {justification}"
+                f"Audit {iteration} suitability raw: {raw}"
             )
-        if audit.get("done") is True:
+        reason = suitability.get("reason")
+        if reason:
+            reposition_gridpoint_iterative._last_debug.append(
+                f"Audit {iteration} suitability reason: {reason}"
+            )
+        if suitability.get("done") is True:
             break
-        updated = _apply_axis_audit(candidate, audit, screen_w=screen_w, screen_h=screen_h)
+
+        center_audit: dict[str, int | str] = {
+            "center_x": "KEEP",
+            "center_y": "KEEP",
+            "reason": "",
+        }
+        size_audit: dict[str, int | str] = {"width": "KEEP", "height": "KEEP", "reason": ""}
+        run_center = bool(suitability.get("needs_position", True))
+        run_size = bool(suitability.get("needs_size", True))
+        if not run_center and not run_size:
+            run_center = True
+            run_size = True
+
+        if run_center:
+            center_audit = _pick_center_audit(
+                candidate_b64,
+                utterance,
+                screen_w,
+                screen_h,
+                candidate,
+                iteration=iteration,
+                bearing=bearing,
+            )
+            center_raw = getattr(_pick_center_audit, "_last_raw", None)
+            reposition_gridpoint_iterative._last_debug.append(
+                "Audit %d center: center_x=%s center_y=%s"
+                % (
+                    iteration,
+                    center_audit.get("center_x"),
+                    center_audit.get("center_y"),
+                )
+            )
+            if center_raw:
+                reposition_gridpoint_iterative._last_debug.append(
+                    f"Audit {iteration} center raw: {center_raw}"
+                )
+            center_reason = center_audit.get("reason")
+            if center_reason:
+                reposition_gridpoint_iterative._last_debug.append(
+                    f"Audit {iteration} center reason: {center_reason}"
+                )
+
+        if run_size:
+            size_audit = _pick_size_audit(
+                candidate_b64,
+                utterance,
+                screen_w,
+                screen_h,
+                candidate,
+                iteration=iteration,
+                bearing=bearing,
+            )
+            size_raw = getattr(_pick_size_audit, "_last_raw", None)
+            reposition_gridpoint_iterative._last_debug.append(
+                "Audit %d size: width=%s height=%s"
+                % (
+                    iteration,
+                    size_audit.get("width"),
+                    size_audit.get("height"),
+                )
+            )
+            if size_raw:
+                reposition_gridpoint_iterative._last_debug.append(
+                    f"Audit {iteration} size raw: {size_raw}"
+                )
+            size_reason = size_audit.get("reason")
+            if size_reason:
+                reposition_gridpoint_iterative._last_debug.append(
+                    f"Audit {iteration} size reason: {size_reason}"
+                )
+
+        updated = _apply_split_audit(
+            candidate,
+            center_audit,
+            size_audit,
+            screen_w=screen_w,
+            screen_h=screen_h,
+        )
         if updated == candidate:
             reposition_gridpoint_iterative._last_debug.append(
                 f"Audit {iteration}: no material candidate change"
