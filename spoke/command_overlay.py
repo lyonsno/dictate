@@ -2069,6 +2069,66 @@ class CommandOverlay(NSObject):
             return _command_optical_shell_config()
         return _command_optical_shell_config(width, height)
 
+    def apply_semantic_positioning_request(self, request) -> bool:
+        """Make semantic positioning bounds authoritative for this overlay."""
+        if not self._apply_semantic_positioning_geometry(request):
+            return False
+        self._semantic_positioning_request = request
+        self._positioning_override = True
+        return True
+
+    def _apply_semantic_positioning_geometry(self, request) -> bool:
+        bounds = getattr(request, "bounds", None)
+        if (
+            self._window is None
+            or self._content_view is None
+            or self._scroll_view is None
+            or bounds is None
+        ):
+            return False
+        try:
+            x = float(bounds.x)
+            y = float(bounds.y)
+            w = float(bounds.width)
+            h = float(bounds.height)
+        except (TypeError, ValueError, AttributeError):
+            return False
+        if not all(math.isfinite(v) for v in (x, y, w, h)) or w <= 0 or h <= 0:
+            return False
+
+        f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
+        self._window.setFrame_display_animate_(
+            NSMakeRect(x - f, y - f, w + 2 * f, h + 2 * f),
+            True,
+            False,
+        )
+        self._content_view.setFrame_(NSMakeRect(f, f, w, h))
+
+        scroll_w = max(w - 24, 1.0)
+        scroll_h = max(h - 16, 1.0)
+        self._scroll_view.setFrame_(NSMakeRect(12, 8, scroll_w, scroll_h))
+        self._reset_text_geometry(scroll_h)
+
+        for attr in ("_fill_layer", "_boost_layer", "_spring_tint_layer"):
+            layer = getattr(self, attr, None)
+            if layer is not None and hasattr(layer, "setFrame_"):
+                try:
+                    layer.setFrame_(((0, 0), (w, h)))
+                except Exception:
+                    logger.debug("Failed to resize semantic positioning layer %s", attr, exc_info=True)
+
+        try:
+            self._apply_ridge_masks(w, h)
+        except Exception:
+            logger.debug("Failed to rebuild semantic positioning ridge masks", exc_info=True)
+        try:
+            self._apply_surface_theme()
+            self._update_backdrop_capture_geometry()
+            self._apply_backdrop_pulse_style(1.0)
+        except Exception:
+            logger.debug("Failed to refresh semantic positioning surface geometry", exc_info=True)
+        return True
+
     def _apply_backdrop_pulse_style(self, breath: float) -> None:
         layer = getattr(self, "_backdrop_layer", None)
         if layer is None:
@@ -2152,8 +2212,10 @@ class CommandOverlay(NSObject):
         """Fade the overlay in, optionally starting or resuming the thinking timer."""
         if self._window is None:
             return
-        # Clear any external positioning override so normal layout resumes.
-        self._positioning_override = False
+        positioning_request = getattr(self, "_semantic_positioning_request", None)
+        # Keep semantic positioning authoritative when the smoke hook has seated
+        # a request; otherwise clear the override so normal layout resumes.
+        self._positioning_override = positioning_request is not None
         self._cancel_all_timers()
         if getattr(self, "_fullscreen_compositor", None) is not None:
             self._stop_fullscreen_compositor()
@@ -2198,21 +2260,28 @@ class CommandOverlay(NSObject):
             screen_frame = self._screen.frame()
             sw = screen_frame.size.width
             f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
-            x = (sw - _OVERLAY_WIDTH) / 2 - f
-            self._window.setFrame_display_animate_(
-                NSMakeRect(x, _OVERLAY_BOTTOM_MARGIN - f,
-                           _OVERLAY_WIDTH + 2 * f, _OVERLAY_HEIGHT + 2 * f),
-                True, False
+            applied_positioning = (
+                positioning_request is not None
+                and self._apply_semantic_positioning_geometry(positioning_request)
             )
-            self._content_view.setFrame_(
-                NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
-            )
-            self._scroll_view.setFrame_(
-                NSMakeRect(48, 16, _OVERLAY_WIDTH - 96, _OVERLAY_HEIGHT - 32)
-            )
-            self._reset_text_geometry(self._scroll_view.frame().size.height)
+            if not applied_positioning:
+                self._positioning_override = False
+                x = (sw - _OVERLAY_WIDTH) / 2 - f
+                self._window.setFrame_display_animate_(
+                    NSMakeRect(x, _OVERLAY_BOTTOM_MARGIN - f,
+                               _OVERLAY_WIDTH + 2 * f, _OVERLAY_HEIGHT + 2 * f),
+                    True, False
+                )
+                self._content_view.setFrame_(
+                    NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
+                )
+                self._scroll_view.setFrame_(
+                    NSMakeRect(48, 16, _OVERLAY_WIDTH - 96, _OVERLAY_HEIGHT - 32)
+                )
+                self._reset_text_geometry(self._scroll_view.frame().size.height)
             if not has_initial_transcript:
-                self._apply_ridge_masks(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
+                if not applied_positioning:
+                    self._apply_ridge_masks(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
                 self._fill_image_brightness = self._brightness
             else:
                 # Do not let an old fill image masquerade as current during entrance.

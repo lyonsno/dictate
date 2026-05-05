@@ -2074,6 +2074,39 @@ class TestWindowLayering:
         assert "Command overlay created" in setup_source
         assert "Command overlay created" not in layer_choice_source
 
+    def test_semantic_positioning_request_moves_real_command_overlay_geometry(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._apply_ridge_masks = MagicMock()
+        overlay._apply_surface_theme = MagicMock()
+        overlay._update_backdrop_capture_geometry = MagicMock()
+        overlay._apply_backdrop_pulse_style = MagicMock()
+        request = SimpleNamespace(
+            bounds=SimpleNamespace(x=240.0, y=180.0, width=640.0, height=220.0)
+        )
+
+        assert overlay.apply_semantic_positioning_request(request) is True
+
+        f = (
+            mod._OPTICAL_SHELL_FEATHER
+            if mod._COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED
+            else mod._OUTER_FEATHER
+        )
+        window_frame = overlay._window.setFrame_display_animate_.call_args.args[0]
+        content_frame = overlay._content_view.setFrame_.call_args.args[0]
+        assert overlay._semantic_positioning_request is request
+        assert overlay._positioning_override is True
+        assert window_frame.origin.x == pytest.approx(240.0 - f)
+        assert window_frame.origin.y == pytest.approx(180.0 - f)
+        assert window_frame.size.width == pytest.approx(640.0 + 2 * f)
+        assert window_frame.size.height == pytest.approx(220.0 + 2 * f)
+        assert content_frame.origin.x == pytest.approx(f)
+        assert content_frame.origin.y == pytest.approx(f)
+        assert content_frame.size.width == pytest.approx(640.0)
+        assert content_frame.size.height == pytest.approx(220.0)
+
     def test_hide_clears_visible_and_streaming(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
         overlay._visible = True

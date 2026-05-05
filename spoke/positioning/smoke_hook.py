@@ -618,6 +618,20 @@ def _push_request_to_command_overlay_compositor(
     return True
 
 
+def _apply_request_to_command_overlay(
+    command_overlay,
+    request: OpticalFieldRequest,
+) -> bool:
+    applier = _explicit_attr(command_overlay, "apply_semantic_positioning_request", None)
+    if not callable(applier):
+        return False
+    try:
+        return bool(applier(request))
+    except Exception:
+        logger.debug("Failed to apply semantic positioning request to command overlay", exc_info=True)
+        return False
+
+
 def _request_with_lifecycle(
     request: OpticalFieldRequest,
     *,
@@ -640,6 +654,7 @@ def _reemit_stored_positioning_request(
         return
     updated = _request_with_lifecycle(request, state=state, visible=visible)
     app._positioning_field_request = updated
+    _apply_request_to_command_overlay(command_overlay, updated)
     screen = _get_main_screen_frame()
     if screen is None:
         return
@@ -724,10 +739,19 @@ def _finish_on_main(app, result: dict | None) -> None:
         )
 
         command_overlay = _explicit_attr(app, '_command_overlay', None)
+        applied_to_command_overlay = _apply_request_to_command_overlay(
+            command_overlay,
+            request,
+        )
 
         # Main now seats the live compositor session on CommandOverlay. Push the
         # optical-field request through that client contract when available.
-        if _push_request_to_command_overlay_compositor(command_overlay, request, screen):
+        pushed_to_command_compositor = _push_request_to_command_overlay_compositor(
+            command_overlay,
+            request,
+            screen,
+        )
+        if pushed_to_command_compositor:
             logger.info("Pushed optical field config through command overlay compositor session")
         else:
             # Older smoke/test surfaces seated a backend on the app-level
@@ -777,10 +801,12 @@ def _finish_on_main(app, result: dict | None) -> None:
 
         utterance = result.get("utterance", "")
 
-        # Show a standalone smoke rectangle at the computed position with the
-        # live positioning trace so the operator can move the diagnostics too.
-        smoke_text = _build_positioning_smoke_text(result, debug_steps)
-        _show_smoke_rect(x, mac_y, w, h, smoke_text)
+        # Legacy/non-compositor surfaces still need a standalone smoke rectangle
+        # for diagnostics. When the real command overlay accepted the request,
+        # avoid spawning a second black window over the actual assistant body.
+        if not (applied_to_command_overlay and pushed_to_command_compositor):
+            smoke_text = _build_positioning_smoke_text(result, debug_steps)
+            _show_smoke_rect(x, mac_y, w, h, smoke_text)
 
         # Flash the debug grid showing which cells the model marked YES/NO
         content_map = result.get("content_map")
@@ -1284,6 +1310,15 @@ def install_positioning_hook(app) -> None:
         if callable(original_show):
 
             def positioned_show(*args, **kwargs):
+                request = _explicit_attr(app, "_positioning_field_request", None)
+                if isinstance(request, OpticalFieldRequest):
+                    updated = _request_with_lifecycle(
+                        request,
+                        state="materialize",
+                        visible=True,
+                    )
+                    app._positioning_field_request = updated
+                    _apply_request_to_command_overlay(command_overlay, updated)
                 result = original_show(*args, **kwargs)
                 _reemit_stored_positioning_request(
                     app,

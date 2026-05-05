@@ -647,6 +647,58 @@ def test_positioning_uses_command_overlay_compositor_session_when_backend_absent
     assert config["initial_brightness"] == pytest.approx(0.42)
 
 
+def test_positioning_applies_semantic_bounds_to_real_command_overlay_when_compositor_active():
+    """The compositor path must move the real assistant overlay, not only a smoke rect."""
+    import spoke.positioning.smoke_hook as smoke_hook
+
+    class Frame:
+        origin = SimpleNamespace(x=0.0, y=0.0)
+        size = SimpleNamespace(width=1440.0, height=900.0)
+
+        def __getitem__(self, index):
+            return ((self.origin.x, self.origin.y), (self.size.width, self.size.height))[index]
+
+    class CommandOverlay:
+        def __init__(self):
+            self._fullscreen_compositor = MagicMock()
+            self._screen = MagicMock()
+            self._screen.backingScaleFactor.return_value = 2.0
+            self._brightness = 0.42
+            self.applied_requests = []
+
+        def apply_semantic_positioning_request(self, request):
+            self.applied_requests.append(request)
+            return True
+
+    command_overlay = CommandOverlay()
+    app = MagicMock()
+    app._transcribing = True
+    app._detector = MagicMock()
+    app._menubar = None
+    app._overlay = None
+    app._fullscreen_compositor = None
+    app._command_overlay = command_overlay
+
+    result = {
+        "x": 0.25,
+        "y": 0.25,
+        "width": 0.5,
+        "height": 0.5,
+        "utterance": "move out of my way",
+        "content_desc": "avoiding: central text",
+        "elapsed_s": 1.0,
+        "_debug_lines": ["Audit 1 justification: clear"],
+    }
+
+    with patch.object(smoke_hook, "_get_main_screen_frame", return_value=Frame()), \
+         patch.object(smoke_hook, "_show_smoke_rect") as show_smoke:
+        _run_finish_on_main(app, result)
+
+    assert len(command_overlay.applied_requests) == 1
+    assert command_overlay.applied_requests[0] is app._positioning_field_request
+    show_smoke.assert_not_called()
+
+
 def test_positioning_hook_reemits_stored_request_when_command_overlay_shows():
     """Summoning the command overlay should preserve the last semantic bounds."""
     import spoke.positioning.smoke_hook as smoke_hook
