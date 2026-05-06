@@ -168,7 +168,10 @@ def _frame_for_index(
                 max_width,
             ),
         )
-        height_budget = min(usable_height, max(min_height, content_height * 0.62))
+        height_budget = max(
+            min_height,
+            min(usable_height, max(min_height, content_height * 0.62)),
+        )
     else:
         width = max(
             1.0,
@@ -179,7 +182,10 @@ def _frame_for_index(
                 usable_width,
             ),
         )
-        height_budget = min(usable_height, max(min_height, content_height * 0.42))
+        height_budget = max(
+            min_height,
+            min(usable_height, max(min_height, content_height * 0.42)),
+        )
     height = max(1.0, min(preferred_height, height_budget))
     if anchor == "right":
         x = min(

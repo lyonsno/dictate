@@ -162,6 +162,7 @@ def _agent_shell_card_text_overlay_specs(
     scale: float,
 ) -> list[dict]:
     specs: list[dict] = []
+    layer_scale = max(float(scale), 1e-6)
     for config in shell_configs:
         if not isinstance(config, dict):
             continue
@@ -173,14 +174,26 @@ def _agent_shell_card_text_overlay_specs(
         if not primary and not secondary:
             continue
         try:
-            width = max(float(config.get("content_width_points", 0.0)), 1.0)
-            height = max(float(config.get("content_height_points", 0.0)), 1.0)
-            center_x = float(config.get("center_x", 0.0))
-            center_y_top = float(config.get("center_y", 0.0))
+            width = max(
+                float(config.get("content_width_points", 0.0)) / layer_scale,
+                1.0,
+            )
+            height = max(
+                float(config.get("content_height_points", 0.0)) / layer_scale,
+                1.0,
+            )
+            center_x = float(config.get("center_x", 0.0)) / layer_scale
+            center_y_top = float(config.get("center_y", 0.0)) / layer_scale
         except (TypeError, ValueError):
             continue
-        left = max(0.0, min(screen_width_points, center_x - width * 0.5))
-        top = max(0.0, min(screen_height_points, center_y_top - height * 0.5))
+        left = max(
+            0.0,
+            min(max(screen_width_points - width, 0.0), center_x - width * 0.5),
+        )
+        top = max(
+            0.0,
+            min(max(screen_height_points - height, 0.0), center_y_top - height * 0.5),
+        )
         inset = max(8.0, min(16.0, width * 0.05))
         specs.append(
             {
@@ -1452,6 +1465,39 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
     return config
 
 
+def _clamp_agent_shell_card_to_display(surface: dict, source_config: dict) -> None:
+    try:
+        display_width = float(source_config.get("display_width_points", 0.0))
+        display_height = float(source_config.get("display_height_points", 0.0))
+        width = float(surface.get("content_width_points", 0.0))
+        height = float(surface.get("content_height_points", 0.0))
+        center_x = float(surface.get("center_x", 0.0))
+        center_y = float(surface.get("center_y", 0.0))
+    except (TypeError, ValueError):
+        return
+    if display_width <= 0.0 or display_height <= 0.0 or width <= 0.0 or height <= 0.0:
+        return
+    margin = 12.0
+    half_width = width * 0.5
+    half_height = height * 0.5
+    if width + margin * 2.0 >= display_width:
+        center_x = display_width * 0.5
+    else:
+        center_x = min(
+            max(center_x, half_width + margin),
+            display_width - half_width - margin,
+        )
+    if height + margin * 2.0 >= display_height:
+        center_y = display_height * 0.5
+    else:
+        center_y = min(
+            max(center_y, half_height + margin),
+            display_height - half_height - margin,
+        )
+    surface["center_x"] = center_x
+    surface["center_y"] = center_y
+
+
 def _agent_shell_card_surface_configs(
     source_config: dict,
     *,
@@ -1524,6 +1570,7 @@ def _agent_shell_card_surface_configs(
                 for key in ("center_x", "center_y"):
                     if key in existing:
                         surface[key] = existing[key]
+        _clamp_agent_shell_card_to_display(surface, source_config)
         text = request.get("text")
         if isinstance(text, dict):
             surface["text"] = {
@@ -1596,6 +1643,8 @@ def _snapshot_from_shell_config(
             "agent_shell_primitives",
             "agent_shell_card_renderer",
             "agent_shell_card_optical_fields",
+            "display_width_points",
+            "display_height_points",
             "surface_kind",
         )
         if key in config

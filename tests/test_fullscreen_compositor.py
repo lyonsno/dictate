@@ -207,6 +207,35 @@ def test_snapshot_round_trip_preserves_shell_mip_blur_strength():
     assert round_trip["mip_blur_strength"] == pytest.approx(0.0)
 
 
+def test_snapshot_round_trip_preserves_agent_shell_card_display_bounds():
+    from spoke.fullscreen_compositor import (
+        _snapshot_from_shell_config,
+        _snapshot_to_shell_config,
+    )
+
+    identity = _identity("assistant.command", role="assistant")
+    snapshot = _snapshot_from_shell_config(
+        identity,
+        {
+            "center_x": 123.0,
+            "center_y": 456.0,
+            "content_width_points": 600.0,
+            "content_height_points": 80.0,
+            "corner_radius_points": 16.0,
+            "band_width_points": 11.3,
+            "tail_width_points": 8.5,
+            "initial_brightness": 0.37,
+            "display_width_points": 1920.0,
+            "display_height_points": 1080.0,
+        },
+        generation=7,
+    )
+
+    round_trip = _snapshot_to_shell_config(snapshot)
+    assert round_trip["display_width_points"] == pytest.approx(1920.0)
+    assert round_trip["display_height_points"] == pytest.approx(1080.0)
+
+
 def test_snapshot_round_trip_preserves_scar_warp_controls():
     from spoke.fullscreen_compositor import (
         _snapshot_from_shell_config,
@@ -661,6 +690,52 @@ def test_agent_shell_cards_are_positioned_from_final_parent_bounds_during_materi
     assert card["center_y"] == pytest.approx(300.0 - 160.0 + 48.0)
 
 
+def test_agent_shell_card_surfaces_are_clamped_inside_display_bounds(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+
+    source_config = {
+        "client_id": "assistant.command",
+        "center_x": 1700.0,
+        "center_y": 520.0,
+        "content_width_points": 900.0,
+        "content_height_points": 280.0,
+        "display_width_points": 1920.0,
+        "display_height_points": 1080.0,
+        "agent_shell_card_optical_fields": {
+            "surface_kind": "agent_shell_card_optical_fields",
+            "requests": [
+                {
+                    "caller_id": "agent.card.codex-thread-1",
+                    "text": {"primary": "Codex lane", "secondary": "ready"},
+                    "compiled_shell_config": {
+                        "client_id": "agent.card.codex-thread-1",
+                        "role": "agent_card",
+                        "center_x": 840.0,
+                        "center_y": 80.0,
+                        "content_width_points": 600.0,
+                        "content_height_points": 144.0,
+                        "optical_field": {
+                            "bounds": {
+                                "x": 540.0,
+                                "y": 8.0,
+                                "width": 600.0,
+                                "height": 144.0,
+                            },
+                            "previous_bounds": None,
+                        },
+                    },
+                }
+            ],
+        },
+    }
+
+    surfaces = fullscreen_compositor._agent_shell_card_surface_configs(source_config)
+    card = surfaces["agent.card.codex-thread-1"]
+
+    assert card["center_x"] <= 1920.0 - 300.0 - 12.0
+    assert card["center_y"] >= 72.0 + 12.0
+
+
 def test_agent_shell_card_text_overlay_specs_use_card_bounds_and_text_payload(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
 
@@ -700,13 +775,40 @@ def test_agent_shell_card_text_overlay_specs_use_card_bounds_and_text_payload(mo
             "font_size": 13.0,
             "foreground_color": (0.92, 0.95, 1.0, 0.98),
             "frame": {
-                "x": 265.0,
-                "y": 219.0,
-                "width": 270.0,
-                "height": 42.0,
+                "x": 133.0,
+                "y": 110.0,
+                "width": 134.0,
+                "height": 20.0,
             },
         }
     ]
+
+
+def test_agent_shell_card_text_overlay_specs_convert_display_pixels_to_layer_points(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+
+    specs = fullscreen_compositor._agent_shell_card_text_overlay_specs(
+        [
+            {
+                "client_id": "agent.card.codex-thread-1",
+                "role": "selected_thread",
+                "center_x": 1600.0,
+                "center_y": 480.0,
+                "content_width_points": 600.0,
+                "content_height_points": 240.0,
+                "text": {"primary": "Visible card", "secondary": "working"},
+            }
+        ],
+        screen_width_points=1000.0,
+        screen_height_points=700.0,
+        scale=2.0,
+    )
+
+    frame = specs[0]["frame"]
+    assert frame["x"] == pytest.approx(665.0)
+    assert frame["y"] == pytest.approx(195.0)
+    assert frame["width"] == pytest.approx(270.0)
+    assert frame["height"] == pytest.approx(90.0)
 
 
 def test_release_one_client_keeps_host_running_until_last_client_releases(monkeypatch):

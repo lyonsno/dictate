@@ -148,6 +148,27 @@ def test_card_renderer_keeps_placeholder_cards_readable_and_non_overlapping():
     assert len({(frame["x"], frame["y"]) for frame in frames}) == len(frames)
 
 
+def test_selected_placeholder_card_stays_readable_when_parent_body_is_short():
+    from spoke.agent_shell_card_renderer import build_agent_shell_card_render_payload
+
+    payload = build_agent_shell_card_render_payload(
+        [
+            _primitive(
+                "selected",
+                selected=True,
+                primary_text="Selected agent thread with readable smoke text",
+                secondary_text="working · claude-opus",
+            ),
+        ],
+        content_width_points=600.0,
+        content_height_points=80.0,
+    )
+
+    selected = payload["cards"][0]
+    assert selected["frame"]["width"] >= 420.0
+    assert selected["frame"]["height"] >= 120.0
+
+
 def test_card_renderer_builds_optical_field_requests_from_rendered_cards():
     from spoke.agent_shell_card_renderer import (
         build_agent_shell_card_optical_field_payload,
