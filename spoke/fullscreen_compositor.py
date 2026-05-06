@@ -1484,11 +1484,23 @@ def _agent_shell_card_surface_configs(
         surface["surface_attachment"] = "sibling"
         surface["movable"] = True
         try:
+            source_width = float(
+                source_config.get(
+                    "_materialization_base_width_points",
+                    source_config.get("content_width_points", 0.0),
+                )
+            )
+            source_height = float(
+                source_config.get(
+                    "_materialization_base_height_points",
+                    source_config.get("content_height_points", 0.0),
+                )
+            )
             source_left = float(source_config.get("center_x", 0.0)) - (
-                float(source_config.get("content_width_points", 0.0)) * 0.5
+                source_width * 0.5
             )
             source_bottom = float(source_config.get("center_y", 0.0)) - (
-                float(source_config.get("content_height_points", 0.0)) * 0.5
+                source_height * 0.5
             )
             surface["center_x"] = source_left + float(surface.get("center_x", 0.0))
             surface["center_y"] = source_bottom + float(surface.get("center_y", 0.0))

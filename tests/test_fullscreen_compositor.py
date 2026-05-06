@@ -615,6 +615,52 @@ def test_host_repositions_agent_shell_card_when_render_bounds_change(monkeypatch
     assert second["center_x"] == 300.0 - 200.0 + 96.0 + 150.0
 
 
+def test_agent_shell_cards_are_positioned_from_final_parent_bounds_during_materialization(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+
+    source_config = {
+        "client_id": "assistant.command",
+        "center_x": 500.0,
+        "center_y": 300.0,
+        "content_width_points": 24.0,
+        "content_height_points": 4.0,
+        "_materialization_base_width_points": 800.0,
+        "_materialization_base_height_points": 320.0,
+        "agent_shell_card_optical_fields": {
+            "surface_kind": "agent_shell_card_optical_fields",
+            "requests": [
+                {
+                    "caller_id": "agent.card.codex-thread-1",
+                    "text": {"primary": "Codex lane", "secondary": "ready"},
+                    "compiled_shell_config": {
+                        "client_id": "agent.card.codex-thread-1",
+                        "role": "agent_card",
+                        "center_x": 162.0,
+                        "center_y": 48.0,
+                        "content_width_points": 300.0,
+                        "content_height_points": 72.0,
+                        "optical_field": {
+                            "bounds": {
+                                "x": 12.0,
+                                "y": 12.0,
+                                "width": 300.0,
+                                "height": 72.0,
+                            },
+                            "previous_bounds": None,
+                        },
+                    },
+                }
+            ],
+        },
+    }
+
+    surfaces = fullscreen_compositor._agent_shell_card_surface_configs(source_config)
+    card = surfaces["agent.card.codex-thread-1"]
+
+    assert card["center_x"] == pytest.approx(500.0 - 400.0 + 162.0)
+    assert card["center_y"] == pytest.approx(300.0 - 160.0 + 48.0)
+
+
 def test_agent_shell_card_text_overlay_specs_use_card_bounds_and_text_payload(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
 
