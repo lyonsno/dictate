@@ -3,6 +3,7 @@
 import importlib
 import sys
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -29,7 +30,9 @@ class _FakeWindow:
     def __init__(self):
         self._frame = _make_rect(100.0, 60.0, 1040.0, 520.0)
         self.alpha = None
+        self.alpha_calls = []
         self.ordered_front = False
+        self.ordered_out = False
 
     def frame(self):
         return self._frame
@@ -42,9 +45,16 @@ class _FakeWindow:
 
     def setAlphaValue_(self, alpha):
         self.alpha = alpha
+        self.alpha_calls.append(alpha)
+
+    def alphaValue(self):
+        return 1.0 if self.alpha is None else self.alpha
 
     def orderFrontRegardless(self):
         self.ordered_front = True
+
+    def orderOut_(self, _sender):
+        self.ordered_out = True
 
 
 class _FakeLayer:
@@ -316,6 +326,155 @@ def test_preview_warp_tuning_updates_visible_shared_snapshot(
     assert snapshot.material.ring_amplitude_points == pytest.approx(13.5)
     assert snapshot.material.bleed_zone_frac == pytest.approx(0.62)
     assert snapshot.material.exterior_mix_width_points == pytest.approx(33.0)
+
+
+def test_preview_adapter_publishes_house_desired_state_with_bounds_profile_and_timing(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+    timer = MagicMock()
+    monkeypatch.setattr(
+        overlay_module.NSTimer,
+        "scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_",
+        MagicMock(return_value=timer),
+    )
+
+    overlay.set_compositor_registry(registry)
+    overlay.show()
+
+    snapshot = host.clients["preview.transcription"].published[-1]
+    optical_field = dict(snapshot.optical_field)
+    assert {
+        key: optical_field[key]
+        for key in ("caller_id", "profile", "state", "slot", "progress")
+    } == {
+        "caller_id": "preview.transcription",
+        "profile": "preview_pill",
+        "state": "materialize",
+        "slot": "materialize",
+        "progress": 0.0,
+    }
+    assert optical_field["bounds"] == {
+        "x": pytest.approx(snapshot.geometry.center_x - snapshot.geometry.content_width_points * 0.5),
+        "y": pytest.approx(snapshot.geometry.center_y - snapshot.geometry.content_height_points * 0.5),
+        "width": pytest.approx(snapshot.geometry.content_width_points),
+        "height": pytest.approx(snapshot.geometry.content_height_points),
+    }
+    assert optical_field["timing"] == {
+        "materialize_ms": pytest.approx(250.0),
+        "dismiss_ms": pytest.approx(175.0),
+    }
+    assert snapshot.material.initial_brightness == pytest.approx(0.37)
+    assert snapshot.material.x_squeeze == pytest.approx(
+        overlay_module._PREVIEW_OPTICAL_SHELL_X_SQUEEZE
+    )
+    assert snapshot.material.y_squeeze == pytest.approx(
+        overlay_module._PREVIEW_OPTICAL_SHELL_Y_SQUEEZE
+    )
+
+
+def test_compositor_preview_materialization_keeps_window_present(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+    timer = MagicMock()
+    monkeypatch.setattr(
+        overlay_module.NSTimer,
+        "scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_",
+        MagicMock(return_value=timer),
+    )
+
+    overlay.set_compositor_registry(registry)
+    overlay.show()
+
+    assert overlay._window.ordered_front is True
+    assert overlay._window.alpha == pytest.approx(1.0)
+
+    overlay._window.alpha_calls.clear()
+    overlay.fadeStep_(timer)
+
+    snapshot = host.clients["preview.transcription"].published[-1]
+    assert snapshot.optical_field["state"] == "materialize"
+    assert snapshot.optical_field["progress"] > 0.0
+    assert overlay._window.alpha_calls == [pytest.approx(1.0)]
+
+
+def test_compositor_preview_dismiss_keeps_window_present_until_release(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+    timer = MagicMock()
+    monkeypatch.setattr(
+        overlay_module.NSTimer,
+        "scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_",
+        MagicMock(return_value=timer),
+    )
+
+    overlay.set_compositor_registry(registry)
+    overlay._window.setAlphaValue_(1.0)
+    overlay.hide()
+
+    overlay._window.alpha_calls.clear()
+    overlay.fadeStep_(timer)
+
+    snapshot = host.clients["preview.transcription"].published[-1]
+    assert snapshot.visible is True
+    assert snapshot.optical_field["state"] == "dismiss"
+    assert snapshot.optical_field["progress"] > 0.0
+    assert overlay._window.alpha_calls == [pytest.approx(1.0)]
+    assert host.clients["preview.transcription"].release_calls == 0
+
+
+def test_preview_dismiss_request_uses_current_preview_axis_geometry_not_hidden_origin(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    overlay._window._frame = _make_rect(310.0, 140.0, 1040.0, 520.0)
+    overlay._content_view.setFrame_(_make_rect(220.0, 220.0, 640.0, 96.0))
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+    monkeypatch.setattr(
+        overlay_module.NSTimer,
+        "scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_",
+        MagicMock(return_value=MagicMock()),
+    )
+
+    overlay.set_compositor_registry(registry)
+    overlay.hide()
+
+    snapshot = host.clients["preview.transcription"].published[-1]
+    assert snapshot.visible is True
+    assert snapshot.geometry.center_x > 0.0
+    assert snapshot.geometry.center_y > 0.0
+    assert snapshot.optical_field["state"] == "dismiss"
+    assert snapshot.optical_field["bounds"]["x"] == pytest.approx(
+        snapshot.geometry.center_x - snapshot.geometry.content_width_points * 0.5
+    )
+    assert snapshot.optical_field["bounds"]["y"] == pytest.approx(
+        snapshot.geometry.center_y - snapshot.geometry.content_height_points * 0.5
+    )
+
+
+def test_preview_materialization_clock_is_not_the_old_twelve_frame_fade(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+
+    assert overlay_module._preview_fade_steps_for_duration(overlay_module._FADE_IN_S) >= 30
+    assert (
+        1.0 / overlay_module._preview_fade_steps_for_duration(1.0)
+        <= 1.0 / 120.0
+    )
 
 
 def test_preview_warp_defaults_match_live_tuner_baseline(mock_pyobjc, monkeypatch):

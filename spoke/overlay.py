@@ -75,9 +75,10 @@ _OVERLAY_MAX_HEIGHT = _env("SPOKE_PREVIEW_OVERLAY_MAX_HEIGHT", 300.0)
 _COMMAND_OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 230.0)
 _EXPAND_UPWARD = _env_bool("SPOKE_PREVIEW_EXPAND_UPWARD", True)
 _FONT_SIZE = 16.0
-_FADE_IN_S = 0.4  # fast ease-in so the overlay feels ready as soon as it appears
-_FADE_OUT_S = 0.315  # 75% longer fade keeps the preview legible through fast handoff
+_FADE_IN_S = 0.25  # House-driven materialization should feel immediate.
+_FADE_OUT_S = 0.175  # Fast dismiss leaves lifecycle ownership with House.
 _FADE_STEPS = 12  # number of steps for manual fade animation
+_PREVIEW_VISUAL_FPS = _env("SPOKE_PREVIEW_VISUAL_FPS", 144.0)
 _TYPEWRITER_INTERVAL = 0.02 / 0.75  # seconds between characters (~37.5 chars/sec)
 
 
@@ -192,6 +193,16 @@ def _truncate_preview(text: str | None) -> str:
 
 def _lerp(start: float, end: float, t: float) -> float:
     return start + (end - start) * t
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _preview_fade_steps_for_duration(duration: float) -> int:
+    """Use a display-rate visual clock instead of the legacy 12-step fade."""
+    fps = max(float(_PREVIEW_VISUAL_FPS), 1.0)
+    return max(_FADE_STEPS, int(math.ceil(max(float(duration), 0.0) * fps)))
 
 
 def _lerp_color(
@@ -430,6 +441,7 @@ class TranscriptionOverlay(NSObject):
         self._visible = False
         self._fade_timer: NSTimer | None = None
         self._fade_step = 0
+        self._fade_total_steps = _FADE_STEPS
         self._fade_from = 0.0
         self._fade_direction = 0
         self._tray_mode = False
@@ -452,6 +464,7 @@ class TranscriptionOverlay(NSObject):
         self._preview_compositor_identity = None
         self._preview_compositor_generation = 0
         self._preview_warp_tuning_overrides: dict[str, float] = {}
+        self._preview_compositor_visibility_driven = False
 
         # Recovery mode state
         self._recovery_mode = False
@@ -702,6 +715,64 @@ class TranscriptionOverlay(NSObject):
             debug_grid_spacing_points=18.0,
         )
 
+    def _preview_optical_field_request(self, *, field_state: str, progress: float):
+        from spoke.optical_field import (
+            OpticalFieldBounds,
+            OpticalFieldProfileRef,
+            OpticalFieldRequest,
+            OpticalFieldSlotOverride,
+        )
+
+        geometry = self._preview_compositor_geometry_snapshot()
+        material = self._preview_compositor_material_snapshot()
+        min_dimension = max(
+            1.0,
+            min(geometry.content_width_points, geometry.content_height_points),
+        )
+        profile_params = {
+            "corner_radius_frac": geometry.corner_radius_points / min_dimension,
+            "core_magnification": material.core_magnification,
+            "band_width_frac": geometry.band_width_points / min_dimension,
+            "tail_width_frac": geometry.tail_width_points / min_dimension,
+            "ring_amplitude_frac": material.ring_amplitude_points / min_dimension,
+            "tail_amplitude_frac": material.tail_amplitude_points / min_dimension,
+            "bleed_zone_frac": material.bleed_zone_frac,
+            "exterior_mix_frac": (material.exterior_mix_width_points or 0.0) / min_dimension,
+            "mip_blur_strength": material.mip_blur_strength,
+            "initial_brightness": material.initial_brightness,
+            "min_brightness": material.min_brightness,
+            "x_squeeze": material.x_squeeze,
+            "y_squeeze": material.y_squeeze,
+            "cleanup_blur_radius_points": material.cleanup_blur_radius_points,
+        }
+        profile = OpticalFieldProfileRef(
+            base="preview_pill",
+            params=profile_params,
+            slots={
+                "materialize": OpticalFieldSlotOverride(params=profile_params),
+                "dismiss": OpticalFieldSlotOverride(params=profile_params),
+            },
+        )
+        return OpticalFieldRequest(
+            caller_id="preview.transcription",
+            bounds=OpticalFieldBounds(
+                x=geometry.center_x - geometry.content_width_points * 0.5,
+                y=geometry.center_y - geometry.content_height_points * 0.5,
+                width=geometry.content_width_points,
+                height=geometry.content_height_points,
+            ),
+            role="preview",
+            state=field_state,
+            progress=_clamp01(float(progress)),
+            profile=profile,
+            timing={
+                "materialize_ms": _FADE_IN_S * 1000.0,
+                "dismiss_ms": _FADE_OUT_S * 1000.0,
+            },
+            visible=True,
+            z_index=0,
+        )
+
     def _preview_compositor_excluded_window_ids(self) -> tuple[int, ...]:
         try:
             return (int(self._window.windowNumber()),)
@@ -734,22 +805,33 @@ class TranscriptionOverlay(NSObject):
         self._preview_compositor_identity = identity
         return client
 
-    def _publish_preview_compositor_snapshot(self, *, visible: bool) -> bool:
+    def _publish_preview_compositor_snapshot(
+        self,
+        *,
+        visible: bool,
+        field_state: str = "rest",
+        progress: float = 1.0,
+    ) -> bool:
         client = self._ensure_preview_compositor_client()
         identity = getattr(self, "_preview_compositor_identity", None)
         if client is None or identity is None:
             return False
-        from spoke.fullscreen_compositor import OverlayRenderSnapshot
+        from spoke.fullscreen_compositor import _snapshot_from_shell_config
+        from spoke.optical_field import compile_placeholder_shell_config
 
+        request = self._preview_optical_field_request(
+            field_state=field_state,
+            progress=progress,
+        )
+        config = compile_placeholder_shell_config(request)
+        config["visible"] = bool(visible)
+        config["excluded_window_ids"] = self._preview_compositor_excluded_window_ids()
         self._preview_compositor_generation += 1
-        snapshot = OverlayRenderSnapshot(
-            identity=identity,
+        snapshot = _snapshot_from_shell_config(
+            identity,
+            config,
             generation=self._preview_compositor_generation,
-            visible=bool(visible),
-            geometry=self._preview_compositor_geometry_snapshot(),
-            material=self._preview_compositor_material_snapshot(),
             excluded_window_ids=self._preview_compositor_excluded_window_ids(),
-            z_index=0,
         )
         return bool(client.publish(snapshot))
 
@@ -770,7 +852,15 @@ class TranscriptionOverlay(NSObject):
     def _hide_and_release_preview_compositor_client(self) -> None:
         if getattr(self, "_preview_compositor_client", None) is not None:
             self._publish_preview_compositor_snapshot(visible=False)
+        self._preview_compositor_visibility_driven = False
         self._release_preview_compositor_client()
+
+    def _preview_compositor_can_drive_visibility(self, published: bool) -> bool:
+        return bool(
+            published
+            and not getattr(self, "_tray_mode", False)
+            and not getattr(self, "_recovery_mode", False)
+        )
 
     def show(self) -> None:
         """Fade the overlay in."""
@@ -818,15 +908,25 @@ class TranscriptionOverlay(NSObject):
         self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
         self._reset_text_geometry(_OVERLAY_HEIGHT - 16, scroll_to_top=True)
 
-        self._publish_preview_compositor_snapshot(visible=True)
+        materialization_published = self._publish_preview_compositor_snapshot(
+            visible=True,
+            field_state="materialize",
+            progress=0.0,
+        )
+        self._preview_compositor_visibility_driven = (
+            self._preview_compositor_can_drive_visibility(materialization_published)
+        )
         self._window.orderFrontRegardless()
+        if self._preview_compositor_visibility_driven:
+            self._window.setAlphaValue_(1.0)
 
         # Fade in using stepped timer
         self._fade_step = 0
+        self._fade_total_steps = _preview_fade_steps_for_duration(_FADE_IN_S)
         self._fade_from = 0.0
         self._fade_target = 1.0
         self._fade_direction = 1  # fading in
-        interval = _FADE_IN_S / _FADE_STEPS
+        interval = _FADE_IN_S / self._fade_total_steps
         self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             interval, self, "fadeStep:", None, True
         )
@@ -846,7 +946,16 @@ class TranscriptionOverlay(NSObject):
         self._visible = False
         self._tray_mode = False
         self._cancel_typewriter()
-        self._hide_and_release_preview_compositor_client()
+        dismiss_published = self._publish_preview_compositor_snapshot(
+            visible=True,
+            field_state="dismiss",
+            progress=0.0,
+        )
+        self._preview_compositor_visibility_driven = (
+            self._preview_compositor_can_drive_visibility(dismiss_published)
+        )
+        if self._preview_compositor_visibility_driven:
+            self._window.setAlphaValue_(1.0)
         self._start_fade_out(duration=fade_duration)
         logger.info("Overlay hide")
 
@@ -863,6 +972,7 @@ class TranscriptionOverlay(NSObject):
         self._cancel_tray_capture_flash()
         self._cancel_fade()
         self._cancel_typewriter()
+        self._preview_compositor_visibility_driven = False
         self._hide_and_release_preview_compositor_client()
         self._window.setAlphaValue_(0.0)
         self._window.orderOut_(None)
@@ -872,11 +982,14 @@ class TranscriptionOverlay(NSObject):
         """Animate fade-out using a repeating timer for smooth steps."""
         self._cancel_fade()
         self._fade_step = 0
+        self._fade_total_steps = _preview_fade_steps_for_duration(
+            duration if duration is not None else _FADE_OUT_S
+        )
         self._fade_from = self._window.alphaValue()
         self._fade_target = 0.0
         self._fade_direction = -1  # fading out
         fade_duration = duration if duration is not None else _FADE_OUT_S
-        interval = fade_duration / _FADE_STEPS
+        interval = fade_duration / self._fade_total_steps
         self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             interval, self, "fadeStep:", None, True
         )
@@ -884,25 +997,48 @@ class TranscriptionOverlay(NSObject):
     def fadeStep_(self, timer) -> None:
         """One step of the fade animation."""
         self._fade_step += 1
-        progress = self._fade_step / _FADE_STEPS
+        total_steps = max(int(getattr(self, "_fade_total_steps", _FADE_STEPS)), 1)
+        progress = self._fade_step / total_steps
 
         if self._fade_direction == 1:
             # Fade in: ease-in (slow start, confident finish)
             eased = progress * progress
             alpha = eased
+            if not getattr(self, "_tray_mode", False):
+                self._publish_preview_compositor_snapshot(
+                    visible=True,
+                    field_state="materialize",
+                    progress=progress,
+                )
         else:
             # Fade out: ease-in (slow start, fast end)
             eased = progress * progress
             alpha = self._fade_from * (1.0 - eased)
+            self._publish_preview_compositor_snapshot(
+                visible=True,
+                field_state="dismiss",
+                progress=progress,
+            )
 
-        self._window.setAlphaValue_(alpha)
+        if getattr(self, "_preview_compositor_visibility_driven", False):
+            self._window.setAlphaValue_(1.0)
+        else:
+            self._window.setAlphaValue_(alpha)
 
-        if self._fade_step >= _FADE_STEPS:
+        if self._fade_step >= total_steps:
             self._cancel_fade()
             if self._fade_direction == -1:
+                self._preview_compositor_visibility_driven = False
                 self._window.setAlphaValue_(0.0)
+                self._hide_and_release_preview_compositor_client()
                 self._window.orderOut_(None)
             else:
+                self._publish_preview_compositor_snapshot(
+                    visible=True,
+                    field_state="rest",
+                    progress=1.0,
+                )
+                self._preview_compositor_visibility_driven = False
                 self._window.setAlphaValue_(1.0)
 
     def _cancel_fade(self) -> None:

@@ -15,6 +15,7 @@ from typing import Any, Literal, Mapping
 
 OpticalFieldState = Literal["rest", "materialize", "dismiss"]
 OpticalFieldDisturbanceMode = Literal["persistent", "ephemeral"]
+OpticalFieldParam = float | str | bool
 
 
 @dataclass(frozen=True)
@@ -95,8 +96,10 @@ class OpticalFieldRequest:
     bounds: OpticalFieldBounds
     role: str
     state: OpticalFieldState = "rest"
+    progress: float = 1.0
     profile: OpticalFieldProfileRef = field(default_factory=OpticalFieldProfileRef)
     disturbances: tuple[OpticalFieldDisturbance, ...] = ()
+    timing: Mapping[str, OpticalFieldParam] = field(default_factory=dict)
     visible: bool = True
     z_index: int = 0
 
@@ -105,7 +108,10 @@ class OpticalFieldRequest:
             raise ValueError("caller_id must be non-empty")
         if not self.role:
             raise ValueError("role must be non-empty")
+        if not 0.0 <= self.progress <= 1.0:
+            raise ValueError("optical field progress must be between 0 and 1")
         object.__setattr__(self, "disturbances", tuple(self.disturbances))
+        object.__setattr__(self, "timing", MappingProxyType(dict(self.timing)))
 
 
 _BASE_PROFILES: dict[str, dict[str, float | str | bool]] = {
@@ -182,6 +188,12 @@ def _float_param(params: Mapping[str, Any], key: str) -> float:
     return float(params[key])
 
 
+def _optional_float_param(params: Mapping[str, Any], key: str) -> float | None:
+    if key not in params or params[key] is None:
+        return None
+    return float(params[key])
+
+
 def compile_placeholder_shell_config(request: OpticalFieldRequest) -> dict[str, Any]:
     """Compile one contract request into the current legacy shell-config shape."""
 
@@ -196,7 +208,7 @@ def compile_placeholder_shell_config(request: OpticalFieldRequest) -> dict[str, 
     )
     exterior_mix = scale * _float_param(params, "exterior_mix_frac")
 
-    return {
+    config = {
         "enabled": True,
         "client_id": request.caller_id,
         "role": request.role,
@@ -219,11 +231,30 @@ def compile_placeholder_shell_config(request: OpticalFieldRequest) -> dict[str, 
             "profile": request.profile.base,
             "state": request.state,
             "slot": slot_name,
+            "progress": float(request.progress),
+            "bounds": {
+                "x": float(bounds.x),
+                "y": float(bounds.y),
+                "width": float(bounds.width),
+                "height": float(bounds.height),
+            },
+            "timing": dict(request.timing),
             "disturbances": tuple(
                 disturbance.disturbance_id for disturbance in request.disturbances
             ),
         },
     }
+    for key in (
+        "initial_brightness",
+        "min_brightness",
+        "x_squeeze",
+        "y_squeeze",
+        "cleanup_blur_radius_points",
+    ):
+        value = _optional_float_param(params, key)
+        if value is not None:
+            config[key] = value
+    return config
 
 
 class OpticalFieldPlaceholderBackend:

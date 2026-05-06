@@ -54,6 +54,14 @@ def test_placeholder_backend_preserves_contract_identity_and_profile_slot_metada
         "profile": "agent_card",
         "state": "rest",
         "slot": "rest",
+        "progress": 1.0,
+        "bounds": {
+            "x": 40.0,
+            "y": 80.0,
+            "width": 320.0,
+            "height": 96.0,
+        },
+        "timing": {},
         "disturbances": ("ready-pulse",),
     }
 
