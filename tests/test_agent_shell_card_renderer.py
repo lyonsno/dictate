@@ -156,6 +156,8 @@ def test_card_renderer_builds_optical_field_requests_from_rendered_cards():
     assert selected["role"] == "selected_thread"
     assert selected["z_index"] > inactive["z_index"]
     assert selected["disturbances"][0]["kind"] == "readiness_pulse"
+    assert selected["compiled_shell_config"]["optical_field"]["bounds"] == selected["bounds"]
+    assert selected["compiled_shell_config"]["optical_field"]["previous_bounds"] is None
     assert selected["compiled_shell_config"]["optical_field"]["disturbances"] == (
         "readiness.codex-selected",
     )

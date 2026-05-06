@@ -396,12 +396,10 @@ def build_agent_shell_card_optical_field_payload(
             caller_id=f"agent.card.{primitive_id}",
             bounds=bounds,
             role="selected_thread" if selected else "agent_card",
-            state="rest",
             profile=OpticalFieldProfileRef(base=profile),
             disturbances=_disturbances_for_card(card),
-            visible=True,
             z_index=(200 + index) if selected else (100 + index),
-        )
+        ).as_resting()
         requests.append(_request_dict(request))
         requests[-1]["text"] = {
             "primary": _string(card.get("primary_text")),
