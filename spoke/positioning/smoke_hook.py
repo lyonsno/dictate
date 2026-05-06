@@ -722,8 +722,15 @@ def _request_with_lifecycle(
     state: str,
     visible: bool,
 ) -> OpticalFieldRequest:
-    progress = 0.0 if state == "dismiss" else 1.0
-    return replace(request, state=state, visible=visible, progress=progress)
+    if state == "materialize":
+        return replace(request.as_materializing(), visible=visible, progress=1.0)
+    if state == "rest":
+        return replace(request.as_resting(), visible=visible, progress=1.0)
+    if state == "dismiss":
+        return replace(request.as_dismissing(), visible=visible, progress=0.0)
+    if state == "hidden":
+        return request.as_hidden()
+    return replace(request, state=state, visible=visible)
 
 
 def _reemit_stored_positioning_request(
@@ -762,9 +769,8 @@ def _finish_on_main_immediate(app, result: dict) -> None:
         caller_id=_POSITIONING_CALLER_ID,
         bounds=OpticalFieldBounds(x=x, y=mac_y, width=w, height=h),
         role="assistant",
-        state="materialize",
         visible=True,
-    )
+    ).as_materializing()
     command_overlay = _explicit_attr(app, '_command_overlay', None)
     if _present_request_on_command_overlay(app, command_overlay, request, smoke_text, screen):
         return
@@ -828,9 +834,8 @@ def _finish_on_main(app, result: dict | None) -> None:
             caller_id=_POSITIONING_CALLER_ID,
             bounds=OpticalFieldBounds(x=x, y=mac_y, width=w, height=h),
             role="assistant",
-            state="materialize",
             visible=True,
-        )
+        ).as_materializing()
 
         from .reposition import reposition_gridpoint_iterative as _gpi_fn
         from .reposition import reposition_gridpoint as _gp_fn

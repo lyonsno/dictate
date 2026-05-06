@@ -350,14 +350,19 @@ def test_preview_adapter_publishes_through_optical_field_contract(
     assert overlay._publish_preview_compositor_snapshot(visible=True) is True
 
     snapshot = host.clients["preview.transcription"].published[-1]
-    assert snapshot.optical_field == {
-        "caller_id": "preview.transcription",
-        "profile": "preview_pill",
-        "state": "rest",
-        "slot": "rest",
-        "progress": 1.0,
-        "disturbances": (),
-    }
+    assert snapshot.optical_field["caller_id"] == "preview.transcription"
+    assert snapshot.optical_field["profile"] == "preview_pill"
+    assert snapshot.optical_field["state"] == "rest"
+    assert snapshot.optical_field["slot"] == "rest"
+    assert snapshot.optical_field["progress"] == pytest.approx(1.0)
+    assert snapshot.optical_field["previous_bounds"] is None
+    assert snapshot.optical_field["disturbances"] == ()
+    assert snapshot.optical_field["bounds"]["width"] == pytest.approx(
+        snapshot.geometry.content_width_points
+    )
+    assert snapshot.optical_field["bounds"]["height"] == pytest.approx(
+        snapshot.geometry.content_height_points
+    )
     assert snapshot.material.initial_brightness == pytest.approx(0.37)
     assert snapshot.material.x_squeeze == pytest.approx(
         overlay_module._PREVIEW_OPTICAL_SHELL_X_SQUEEZE
