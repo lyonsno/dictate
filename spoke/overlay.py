@@ -471,6 +471,7 @@ class TranscriptionOverlay(NSObject):
         self._preview_compositor_generation = 0
         self._preview_warp_tuning_overrides: dict[str, float] = {}
         self._preview_materialization_active = False
+        self._preview_compositor_visibility_driven = False
 
         # Recovery mode state
         self._recovery_mode = False
@@ -1071,7 +1072,15 @@ class TranscriptionOverlay(NSObject):
     def _hide_and_release_preview_compositor_client(self) -> None:
         if getattr(self, "_preview_compositor_client", None) is not None:
             self._publish_preview_compositor_snapshot(visible=False)
+        self._preview_compositor_visibility_driven = False
         self._release_preview_compositor_client()
+
+    def _preview_compositor_can_drive_visibility(self, published: bool) -> bool:
+        return bool(
+            published
+            and not getattr(self, "_tray_mode", False)
+            and not getattr(self, "_recovery_mode", False)
+        )
 
     def show(self) -> None:
         """Fade the overlay in."""
@@ -1119,12 +1128,17 @@ class TranscriptionOverlay(NSObject):
         self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
         self._reset_text_geometry(_OVERLAY_HEIGHT - 16, scroll_to_top=True)
 
-        self._publish_preview_compositor_snapshot(
+        materialization_published = self._publish_preview_compositor_snapshot(
             visible=True,
             field_state="materialize",
             progress=0.0,
         )
+        self._preview_compositor_visibility_driven = (
+            self._preview_compositor_can_drive_visibility(materialization_published)
+        )
         self._window.orderFrontRegardless()
+        if self._preview_compositor_visibility_driven:
+            self._window.setAlphaValue_(1.0)
 
         # Fade in using stepped timer
         self._fade_step = 0
@@ -1152,11 +1166,16 @@ class TranscriptionOverlay(NSObject):
         self._visible = False
         self._tray_mode = False
         self._cancel_typewriter()
-        self._publish_preview_compositor_snapshot(
+        dismiss_published = self._publish_preview_compositor_snapshot(
             visible=True,
             field_state="dismiss",
             progress=0.0,
         )
+        self._preview_compositor_visibility_driven = (
+            self._preview_compositor_can_drive_visibility(dismiss_published)
+        )
+        if self._preview_compositor_visibility_driven:
+            self._window.setAlphaValue_(1.0)
         self._start_fade_out(duration=fade_duration)
         logger.info("Overlay hide")
 
@@ -1173,6 +1192,7 @@ class TranscriptionOverlay(NSObject):
         self._cancel_tray_capture_flash()
         self._cancel_fade()
         self._cancel_typewriter()
+        self._preview_compositor_visibility_driven = False
         self._hide_and_release_preview_compositor_client()
         self._window.setAlphaValue_(0.0)
         self._window.orderOut_(None)
@@ -1220,11 +1240,18 @@ class TranscriptionOverlay(NSObject):
                 progress=progress,
             )
 
-        self._window.setAlphaValue_(alpha)
+        if getattr(self, "_preview_compositor_visibility_driven", False):
+            # The shared optical field owns the visible materialization/dismiss
+            # envelope.  Window alpha would multiply that field and make the
+            # preview look late, dim, or frame-dropped under load.
+            self._window.setAlphaValue_(1.0)
+        else:
+            self._window.setAlphaValue_(alpha)
 
         if self._fade_step >= total_steps:
             self._cancel_fade()
             if self._fade_direction == -1:
+                self._preview_compositor_visibility_driven = False
                 self._window.setAlphaValue_(0.0)
                 self._hide_and_release_preview_compositor_client()
                 self._window.orderOut_(None)
@@ -1234,6 +1261,7 @@ class TranscriptionOverlay(NSObject):
                     field_state="rest",
                     progress=1.0,
                 )
+                self._preview_compositor_visibility_driven = False
                 self._window.setAlphaValue_(1.0)
 
     def _cancel_fade(self) -> None:
