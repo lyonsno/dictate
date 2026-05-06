@@ -2154,7 +2154,7 @@ class CommandOverlay(NSObject):
             return
         self._cancel_all_timers()
         if getattr(self, "_fullscreen_compositor", None) is not None:
-            self._stop_fullscreen_compositor()
+            self._stop_fullscreen_compositor(reveal_local_shell=False)
         self._visible = True
         self._streaming = True
         has_initial_transcript = bool(initial_utterance or initial_response)
@@ -2900,7 +2900,7 @@ class CommandOverlay(NSObject):
                 self._reset_backdrop_layer()
                 if self._backdrop_renderer is not None and hasattr(self._backdrop_renderer, "stop_live_stream"):
                     self._backdrop_renderer.stop_live_stream()
-                self._stop_fullscreen_compositor()
+                self._stop_fullscreen_compositor(reveal_local_shell=False)
                 self._window.orderOut_(None)
                 self._cancel_pulse()  # now kill the pulse
             else:
@@ -4637,7 +4637,7 @@ class CommandOverlay(NSObject):
 
     def _start_fullscreen_compositor(self):
         """Start the full-screen compositor for zero-seam optical shell."""
-        self._stop_fullscreen_compositor()
+        self._stop_fullscreen_compositor(reveal_local_shell=False)
         try:
             from spoke.fullscreen_compositor import start_overlay_compositor
             final_shell_config = self._display_local_optical_shell_config()
@@ -4923,19 +4923,40 @@ class CommandOverlay(NSObject):
         except Exception:
             logger.debug("Failed to update punch-through mask", exc_info=True)
 
-    def _stop_fullscreen_compositor(self):
+    def _freeze_local_shell_layers_for_compositor_handoff(self) -> None:
+        """Keep fallback AppKit layers optically inert during compositor handoff."""
+        self._set_layer_hidden_without_actions(
+            getattr(self, "_backdrop_layer", None),
+            True,
+        )
+        for layer_name in ("_fill_layer", "_boost_layer", "_spring_tint_layer"):
+            layer = getattr(self, layer_name, None)
+            self._set_layer_opacity_without_actions(layer, 0.0)
+            if layer_name != "_fill_layer":
+                self._set_layer_hidden_without_actions(layer, True)
+        scroll = getattr(self, "_scroll_view", None)
+        if scroll is not None and hasattr(scroll, "setHidden_"):
+            try:
+                scroll.setHidden_(True)
+            except Exception:
+                logger.debug("Failed to hide command scroll layer for compositor handoff", exc_info=True)
+
+    def _stop_fullscreen_compositor(self, *, reveal_local_shell: bool = True):
         self._cancel_materialization_animation()
         self._cancel_dismiss_pucker_tail_animation()
         compositor = getattr(self, "_fullscreen_compositor", None)
         self._fullscreen_compositor = None
         self._enable_text_punchthrough(False)
-        # Unhide the old backdrop layer in case the old path resumes
-        backdrop = getattr(self, "_backdrop_layer", None)
-        if backdrop is not None:
-            try:
-                backdrop.setHidden_(False)
-            except Exception:
-                pass
+        if reveal_local_shell:
+            # Unhide the old backdrop layer in case the old path resumes.
+            backdrop = getattr(self, "_backdrop_layer", None)
+            if backdrop is not None:
+                try:
+                    backdrop.setHidden_(False)
+                except Exception:
+                    pass
+        else:
+            self._freeze_local_shell_layers_for_compositor_handoff()
         if compositor is not None:
             try:
                 compositor.stop()
@@ -4945,7 +4966,7 @@ class CommandOverlay(NSObject):
         # with its own colors/alpha profile on next render tick.
         self._sdf_cache_key = None
         self._fill_image_brightness = -1.0
-        if compositor is not None:
+        if compositor is not None and reveal_local_shell:
             self._apply_surface_theme()
 
     def _start_backdrop_refresh_timer(self):

@@ -1045,6 +1045,34 @@ class TestOpticalShellMaterialization:
 
         overlay._window.setAlphaValue_.assert_called_with(1.0)
 
+    def test_optical_dismiss_shutdown_does_not_reveal_local_rectangular_shell(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        events = []
+        compositor = MagicMock()
+        compositor.stop.side_effect = lambda: events.append("compositor-stop")
+        overlay._fullscreen_compositor = compositor
+        overlay._fade_direction = -1
+        overlay._fade_from = 1.0
+        overlay._fade_step = mod._FADE_STEPS - 1
+        overlay._backdrop_renderer.stop_live_stream.side_effect = (
+            lambda: events.append("live-stream-stop")
+        )
+        overlay._backdrop_layer.setHidden_.side_effect = (
+            lambda hidden: events.append(("backdrop-hidden", hidden))
+        )
+        overlay._apply_surface_theme = MagicMock(
+            side_effect=lambda: events.append("surface-theme")
+        )
+        overlay._window.orderOut_.side_effect = lambda sender: events.append("order-out")
+
+        overlay.fadeStep_(None)
+
+        assert ("backdrop-hidden", False) not in events
+        assert "surface-theme" not in events
+        assert events.index("compositor-stop") < events.index("order-out")
+
     def test_pulse_does_not_override_fill_opacity_during_materialization(
         self, mock_pyobjc
     ):
@@ -2178,13 +2206,36 @@ class TestWindowLayering:
         events = []
         overlay._fullscreen_compositor = MagicMock()
         overlay._stop_fullscreen_compositor = MagicMock(
-            side_effect=lambda: events.append("stop")
+            side_effect=lambda *_args, **_kwargs: events.append("stop")
         )
         overlay._window.orderFrontRegardless.side_effect = lambda: events.append("front")
 
         overlay.show()
 
         assert events[:2] == ["stop", "front"]
+
+    def test_show_stops_stale_compositor_without_revealing_old_backdrop(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        events = []
+        compositor = MagicMock()
+        compositor.stop.side_effect = lambda: events.append("compositor-stop")
+        overlay._fullscreen_compositor = compositor
+        overlay._backdrop_layer.setHidden_.side_effect = (
+            lambda hidden: events.append(("backdrop-hidden", hidden))
+        )
+        overlay._window.setAlphaValue_.side_effect = (
+            lambda alpha: events.append(("alpha", alpha))
+        )
+        overlay._window.orderFrontRegardless.side_effect = lambda: events.append("front")
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", False)
+
+        overlay.show(start_thinking_timer=False)
+
+        assert ("backdrop-hidden", False) not in events
+        assert events.index("compositor-stop") < events.index("front")
+        assert events.index(("alpha", 0.0)) < events.index("front")
 
     def test_show_clears_attributed_text_storage_before_reuse(self, mock_pyobjc):
         overlay, _ = _make_overlay(mock_pyobjc)
