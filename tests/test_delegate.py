@@ -3699,6 +3699,7 @@ class TestRecordingCap:
     ):
         d = _make_delegate(main_module, monkeypatch)
         d._command_overlay = MagicMock()
+        d._command_overlay._fullscreen_compositor = None
         d._glow._brightness = 0.61
         self._setup_glow_mock(d)
 
@@ -3711,6 +3712,7 @@ class TestRecordingCap:
     ):
         d = _make_delegate(main_module, monkeypatch)
         d._command_overlay = MagicMock(_visible=True)
+        d._command_overlay._fullscreen_compositor = None
         d._glow._visible = False
         d._overlay._visible = False
         d._glow._brightness = 0.72
@@ -3720,6 +3722,21 @@ class TestRecordingCap:
 
         d._glow.update_amplitude.assert_called_once_with(0.01)
         d._command_overlay.set_brightness.assert_called_with(0.72, immediate=False)
+
+    def test_amplitude_update_does_not_stomp_command_compositor_brightness(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock(_visible=True)
+        d._command_overlay._fullscreen_compositor = object()
+        d._glow._visible = False
+        d._overlay._visible = False
+        d._glow._brightness = 0.72
+        self._setup_glow_mock(d)
+
+        d.amplitudeUpdate_(0.01)
+
+        d._command_overlay.set_brightness.assert_not_called()
 
     def test_amplitude_updates_coalesce_to_latest_main_thread_sample(
         self, main_module, monkeypatch

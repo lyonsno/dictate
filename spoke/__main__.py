@@ -3059,9 +3059,18 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_status_text("Ready — hold spacebar")
 
     def _sync_command_overlay_brightness(self, immediate: bool = False) -> None:
-        if self._command_overlay is None or self._glow is None:
+        command_overlay = self._command_overlay
+        if command_overlay is None or self._glow is None:
             return
-        self._command_overlay.set_brightness(
+        overlay_state = getattr(command_overlay, "__dict__", None)
+        compositor = (
+            overlay_state.get("_fullscreen_compositor")
+            if isinstance(overlay_state, dict)
+            else getattr(command_overlay, "_fullscreen_compositor", None)
+        )
+        if compositor is not None:
+            return
+        command_overlay.set_brightness(
             getattr(self._glow, "_brightness", 0.0),
             immediate=immediate,
         )

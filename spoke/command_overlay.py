@@ -2963,6 +2963,10 @@ class CommandOverlay(NSObject):
             self._brightness = _advance_command_brightness(current, target)
         t = getattr(self, "_brightness", 0.0)
         self._apply_surface_theme()
+        if getattr(self, "_materialization_timer", None) is not None:
+            self._apply_materialization_fill_state(
+                getattr(self, "_materialization_progress", 1.0)
+            )
 
         # Advance phases
         self._pulse_phase_asst += dt / _PULSE_PERIOD_ASST
@@ -4680,9 +4684,9 @@ class CommandOverlay(NSObject):
                         pass
                     self._metal_display_link_renderer = None
                 self._enable_text_punchthrough(True)
-                # Force fill image rebuild with compositor-specific
-                # colors and alpha profile (invalidate SDF + brightness
-                # caches so _apply_surface_theme triggers a full rebuild).
+                # Force one compositor-owned fill image rebuild with the
+                # current geometry. Brightness-only updates skip this path
+                # while the compositor owns live optical sampling.
                 self._sdf_appearance_b = -1.0
                 self._fill_image_brightness = -1.0
                 suppress_stale_fill = getattr(
@@ -4705,6 +4709,11 @@ class CommandOverlay(NSObject):
                 except Exception:
                     logger.debug("Failed to seed command materialization slit", exc_info=True)
                 try:
+                    content_frame = self._content_view.frame()
+                    self._apply_ridge_masks(
+                        content_frame.size.width,
+                        content_frame.size.height,
+                    )
                     self._apply_surface_theme()
                 finally:
                     self._suppress_stale_fill_until_ready = suppress_stale_fill
@@ -4936,7 +4945,8 @@ class CommandOverlay(NSObject):
         # with its own colors/alpha profile on next render tick.
         self._sdf_cache_key = None
         self._fill_image_brightness = -1.0
-        self._apply_surface_theme()
+        if compositor is not None:
+            self._apply_surface_theme()
 
     def _start_backdrop_refresh_timer(self):
         self._cancel_backdrop_refresh()
@@ -5127,14 +5137,13 @@ class CommandOverlay(NSObject):
                 self._fill_layer.setCompositingFilter_(
                     _fill_compositing_filter_for_brightness(self._brightness)
             )
-        last_t = getattr(self, "_fill_image_brightness", -1.0)
-        # Tighter threshold when compositor is active — the graphic
-        # fill color tracks brightness more visibly than the glow.
-        threshold = 0.01 if getattr(self, "_fullscreen_compositor", None) is not None else 0.03
-        if abs(self._brightness - last_t) > threshold:
-            self._fill_image_brightness = self._brightness
-            content_frame = self._content_view.frame()
-            self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is None:
+            last_t = getattr(self, "_fill_image_brightness", -1.0)
+            if abs(self._brightness - last_t) > 0.03:
+                self._fill_image_brightness = self._brightness
+                content_frame = self._content_view.frame()
+                self._apply_ridge_masks(content_frame.size.width, content_frame.size.height)
         self._apply_thinking_label_theme()
         self._apply_narrator_theme()
 

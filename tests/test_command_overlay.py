@@ -1248,6 +1248,41 @@ class TestOpticalShellMaterialization:
         assert overlay._materialization_progress == pytest.approx(0.0)
         assert overlay._deferred_materialization_shell_config is not None
 
+    def test_optical_start_prepares_fill_geometry_before_materialization(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._content_view.frame.return_value = _make_rect(0.0, 0.0, 624.0, 208.0)
+        order = []
+        overlay._apply_ridge_masks = MagicMock(
+            side_effect=lambda width, height: order.append(
+                (
+                    "fill",
+                    getattr(overlay, "_fullscreen_compositor", None) is not None,
+                    width,
+                    height,
+                )
+            )
+        )
+        overlay._start_materialization_animation = MagicMock(
+            side_effect=lambda _config: order.append(("materialize",))
+        )
+
+        import spoke.fullscreen_compositor as fullscreen_compositor
+
+        monkeypatch.setattr(
+            fullscreen_compositor,
+            "start_overlay_compositor",
+            lambda **_kwargs: MagicMock(),
+        )
+
+        overlay._start_fullscreen_compositor()
+
+        overlay._apply_ridge_masks.assert_called_once_with(624.0, 208.0)
+        assert order[0] == ("fill", True, 624.0, 208.0)
+        assert order[1][0] == "materialize"
+
     def test_fill_image_ready_starts_deferred_materialization_from_slit(
         self, mock_pyobjc
     ):
@@ -2875,6 +2910,19 @@ class TestAdaptiveCompositing:
         overlay._fill_image_brightness = -1.0
         overlay._apply_surface_theme()
         overlay._fill_layer.setCompositingFilter_.assert_called_with(None)
+
+    def test_apply_surface_theme_does_not_rebuild_cpu_fill_for_compositor_brightness(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = object()
+        overlay._fill_image_brightness = 0.0
+        overlay._brightness = 1.0
+        overlay._apply_ridge_masks = MagicMock()
+
+        overlay._apply_surface_theme()
+
+        overlay._apply_ridge_masks.assert_not_called()
 
     def test_apply_backdrop_pulse_style_pushes_optical_shell_config_when_enabled(
         self, mock_pyobjc, monkeypatch
