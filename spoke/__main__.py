@@ -300,6 +300,16 @@ def _ensure_edit_menu() -> None:
     edit_item.setTitle_("Edit")
     edit_item.setSubmenu_(edit_menu)
     main_menu.addItem_(edit_item)
+
+
+def _coerce_bool(value, *, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 _CURATED_LOCAL_COMMAND_MODEL_IDS = [
     "lmstudio-community/Qwen3-4B-Instruct-2507-MLX-6bit",
     "mlx-community/Qwen3-4B-Thinking-2507-8bit",
@@ -945,6 +955,18 @@ class SpokeAppDelegate(NSObject):
             self._preview_model_id = self._whisper_cloud_model
         self._client_cache: dict[tuple[str, str], object] = {}
         self._optical_shell_metrics = OpticalShellMetrics()
+        optical_witness_pref = self._load_preference("optical_witness_enabled")
+        optical_witness_env = os.environ.get("SPOKE_OPTICAL_WITNESS_ENABLED")
+        self._optical_witness_enabled = _coerce_bool(
+            optical_witness_env if optical_witness_env is not None else optical_witness_pref,
+            default=False,
+        )
+        try:
+            from .optical_witness import set_optical_witness_enabled
+
+            set_optical_witness_enabled(self._optical_witness_enabled)
+        except Exception:
+            logger.debug("Failed to initialize Optical Witness controller", exc_info=True)
         self._capture = AudioCapture(metrics=self._optical_shell_metrics)
         self._capture.warmup()
         self._local_mode = not bool(transcription_url) and not bool(preview_url)
@@ -1269,6 +1291,7 @@ class SpokeAppDelegate(NSObject):
             )
             self._seam_pucker_hud.restore_visibility()
             self._menubar._on_toggle_seam_pucker = self._seam_pucker_hud.toggle
+        self._menubar._on_toggle_optical_witness = self._toggle_optical_witness
 
         # Hands-free mode — expose the toggle when a wakeword backend is configured
         if handsfree_env_ready():
@@ -1559,6 +1582,21 @@ class SpokeAppDelegate(NSObject):
             hf.disable(reason="menu/manual toggle")
         else:
             hf.enable()
+
+    def _toggle_optical_witness(self) -> None:
+        enabled = not bool(getattr(self, "_optical_witness_enabled", False))
+        self._optical_witness_enabled = enabled
+        self._save_preference("optical_witness_enabled", enabled)
+        try:
+            from .optical_witness import set_optical_witness_enabled
+
+            set_optical_witness_enabled(enabled)
+        except Exception:
+            logger.debug("Failed to toggle Optical Witness controller", exc_info=True)
+        if self._menubar is not None:
+            self._menubar.set_status_text(
+                "Optical Witness on" if enabled else "Optical Witness off"
+            )
 
     def handleWakeWord_(self, payload: dict) -> None:
         """Main-thread selector called by HandsFreeController on wake word detection."""

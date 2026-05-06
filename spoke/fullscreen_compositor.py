@@ -159,6 +159,12 @@ def _average_ms(total_ms: float, count: int) -> float:
     return total_ms / count
 
 
+def get_optical_witness_controller():
+    from spoke.optical_witness import get_optical_witness_controller as get_controller
+
+    return get_controller()
+
+
 def _clamp_sample_bounds(start: float, extent: float, limit: int) -> tuple[int, int] | None:
     lo = max(int(start), 0)
     hi = min(int(start + extent), int(limit))
@@ -1371,6 +1377,7 @@ class OverlayCompositorHost:
         self._compositor = FullScreenCompositor(screen)
         self._clients: dict[str, dict] = {}
         self._started = False
+        self._optical_witness_events: dict[tuple[str, str], str] = {}
 
     @property
     def display_id(self) -> int | str:
@@ -1412,6 +1419,7 @@ class OverlayCompositorHost:
         entry = self._clients.get(snapshot.identity.client_id)
         if entry is None:
             return False
+        previous_snapshot = entry.get("snapshot")
         entry["identity"] = snapshot.identity
         entry["snapshot"] = snapshot
         entry["generation"] = max(int(entry.get("generation", 0)), snapshot.generation)
@@ -1420,6 +1428,7 @@ class OverlayCompositorHost:
             if not any(client.get("snapshot") is not None for client in self._clients.values()):
                 _shared_overlay_hosts.pop(self._registry_key, None)
             return False
+        self._sync_optical_witness_lifecycle(previous_snapshot, snapshot)
         return True
 
     def add_client(self, client_id: str, window, content_view, shell_config: dict) -> bool:
@@ -1475,6 +1484,9 @@ class OverlayCompositorHost:
             if not any(client.get("snapshot") is not None for client in self._clients.values()):
                 _shared_overlay_hosts.pop(self._registry_key, None)
             return False
+        for client_id, _shell_config, snapshot in updates:
+            previous_snapshot, _generation = previous[client_id]
+            self._sync_optical_witness_lifecycle(previous_snapshot, snapshot)
         return True
 
     def update_client_config_key(self, client_id: str, key: str, value) -> bool:
@@ -1489,6 +1501,7 @@ class OverlayCompositorHost:
         return self.update_client_config(client_id, config)
 
     def release_client(self, client_id: str) -> None:
+        self._finish_optical_witness_events(client_id)
         self._clients.pop(client_id, None)
         if self._clients:
             self._sync_host()
@@ -1616,6 +1629,100 @@ class OverlayCompositorHost:
         elif shell_configs and hasattr(self._compositor, "update_shell_config"):
             self._compositor.update_shell_config(shell_configs[0])
         return True
+
+    def _sync_optical_witness_lifecycle(
+        self,
+        previous_snapshot: OverlayRenderSnapshot | None,
+        snapshot: OverlayRenderSnapshot,
+    ) -> None:
+        controller = get_optical_witness_controller()
+        if not bool(getattr(controller, "enabled", False)):
+            return
+        was_visible = bool(previous_snapshot.visible) if previous_snapshot is not None else False
+        is_visible = bool(snapshot.visible)
+        config = _snapshot_to_shell_config(snapshot)
+        if is_visible and not was_visible:
+            self._begin_optical_witness(snapshot, config, "summon")
+        if not is_visible and was_visible:
+            self._begin_optical_witness(snapshot, config, "dismiss")
+            self._end_optical_witness(snapshot.identity.client_id, "summon")
+            self._end_optical_witness(snapshot.identity.client_id, "dismiss")
+        self._observe_optical_witness_frame(snapshot.identity.client_id, config)
+        try:
+            controller.drain_ready()
+        except Exception:
+            logger.debug("Optical witness drain failed", exc_info=True)
+
+    def _begin_optical_witness(
+        self,
+        snapshot: OverlayRenderSnapshot,
+        shell_config: dict,
+        phase: str,
+    ) -> None:
+        controller = get_optical_witness_controller()
+        try:
+            event_id = controller.begin_lifecycle(
+                overlay_kind=snapshot.identity.role,
+                phase=phase,
+                client_id=snapshot.identity.client_id,
+                shell_config=shell_config,
+                timestamp_monotonic=time.monotonic(),
+                source_ref=None,
+            )
+        except Exception:
+            logger.debug("Optical witness lifecycle begin failed", exc_info=True)
+            return
+        if event_id:
+            self._optical_witness_events[(snapshot.identity.client_id, phase)] = event_id
+
+    def _end_optical_witness(self, client_id: str, phase: str) -> None:
+        event_id = self._optical_witness_events.pop((client_id, phase), None)
+        if event_id is None:
+            return
+        controller = get_optical_witness_controller()
+        try:
+            controller.end_lifecycle(
+                event_id,
+                timestamp_monotonic=time.monotonic(),
+                diagnostics=self.diagnostics_snapshot(),
+            )
+        except Exception:
+            logger.debug("Optical witness lifecycle end failed", exc_info=True)
+
+    def _finish_optical_witness_events(self, client_id: str) -> None:
+        for key in list(self._optical_witness_events):
+            if key[0] == client_id:
+                self._end_optical_witness(*key)
+        try:
+            get_optical_witness_controller().drain_ready()
+        except Exception:
+            logger.debug("Optical witness drain failed", exc_info=True)
+
+    def _observe_optical_witness_frame(self, client_id: str, shell_config: dict) -> None:
+        controller = get_optical_witness_controller()
+        try:
+            with self._compositor._lock:
+                pixel_buffer = getattr(self._compositor, "_latest_pixel_buffer", None)
+                width = int(getattr(self._compositor, "_latest_width", 0))
+                height = int(getattr(self._compositor, "_latest_height", 0))
+                frame_index = int(getattr(self._compositor, "_latest_frame_generation", 0))
+        except Exception:
+            pixel_buffer = None
+            width = 0
+            height = 0
+            frame_index = 0
+        try:
+            controller.observe_compositor_frame(
+                client_id=client_id,
+                shell_config=shell_config,
+                pixel_buffer=pixel_buffer,
+                width=width,
+                height=height,
+                timestamp_monotonic=time.monotonic(),
+                frame_index=frame_index,
+            )
+        except Exception:
+            logger.debug("Optical witness frame observation failed", exc_info=True)
 
 
 _SharedOverlayHost = OverlayCompositorHost

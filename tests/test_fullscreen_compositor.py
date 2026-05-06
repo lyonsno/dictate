@@ -403,6 +403,67 @@ def test_host_stops_when_all_clients_are_hidden(monkeypatch):
     assert host._started is False
 
 
+def test_shared_host_emits_optical_witness_lifecycle_edges(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    calls = []
+
+    class FakeWitness:
+        enabled = True
+
+        def begin_lifecycle(self, **kwargs):
+            calls.append(("begin", kwargs))
+            return f"{kwargs['client_id']}:{kwargs['phase']}"
+
+        def observe_compositor_frame(self, **kwargs):
+            calls.append(("frame", kwargs))
+
+        def end_lifecycle(self, event_id, **kwargs):
+            calls.append(("end", {"event_id": event_id, **kwargs}))
+            return object()
+
+        def drain_ready(self):
+            calls.append(("drain", {}))
+            return []
+
+    monkeypatch.setattr(
+        fullscreen_compositor,
+        "get_optical_witness_controller",
+        lambda: FakeWitness(),
+    )
+    host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
+    assistant = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(351),
+        content_view=object(),
+    )
+
+    assert assistant.publish(_snapshot("assistant.command", role="assistant"))
+    assert assistant.update_shell_config(
+        {
+            "center_x": 11.0,
+            "center_y": 20.0,
+            "content_width_points": 300.0,
+            "content_height_points": 80.0,
+            "visible": False,
+        }
+    )
+
+    assert calls[0][0] == "begin"
+    assert calls[0][1]["overlay_kind"] == "assistant"
+    assert calls[0][1]["phase"] == "summon"
+    assert calls[0][1]["client_id"] == "assistant.command"
+    assert any(call[0] == "frame" for call in calls)
+    assert any(
+        call[0] == "begin" and call[1]["phase"] == "dismiss"
+        for call in calls
+    )
+    assert any(
+        call[0] == "end" and call[1]["event_id"] == "assistant.command:summon"
+        for call in calls
+    )
+    assert calls[-1][0] == "drain"
+
+
 def test_brightness_sampling_uses_requesting_client_snapshot(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
     host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())

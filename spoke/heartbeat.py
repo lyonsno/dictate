@@ -13,7 +13,9 @@ import gc
 import json
 import logging
 import os
+import re
 import signal
+import shlex
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -70,7 +72,7 @@ def _is_spoke_process(pid: int) -> bool:
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             cmdline = f.read().decode("utf-8", errors="replace")
-        return "-m" in cmdline and "spoke" in cmdline
+        return _command_line_invokes_spoke(cmdline.replace("\x00", " "))
     except FileNotFoundError:
         pass
     # macOS: use ps
@@ -84,9 +86,33 @@ def _is_spoke_process(pid: int) -> bool:
             timeout=5,
         )
         cmd = result.stdout.strip()
-        return "spoke" in cmd and ("-m" in cmd or "spoke/" in cmd)
+        return _command_line_invokes_spoke(cmd)
     except Exception:
         return False
+
+
+def _command_line_invokes_spoke(cmd: str) -> bool:
+    """Return True for explicit spoke invocations, not paths containing spoke."""
+    if not cmd:
+        return False
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        tokens = cmd.split()
+    if tokens and Path(tokens[0]).name == "spoke":
+        return True
+    for index, token in enumerate(tokens[:-1]):
+        if token == "-m" and tokens[index + 1].split(".", 1)[0] == "spoke":
+            return True
+    # Tests and some launchers can present a Python ``-c`` command that rewrites
+    # sys.argv to the effective spoke invocation; accept that exact shape without
+    # treating interpreter/worktree paths as process identity.
+    return bool(
+        re.search(
+            r"sys\.argv\s*=\s*\[[^\]]*['\"]-m['\"]\s*,\s*['\"]spoke(?:['\".]|['\"])",
+            cmd,
+        )
+    )
 
 
 def zombie_sweep(heartbeat_path: str = HEARTBEAT_PATH) -> None:
