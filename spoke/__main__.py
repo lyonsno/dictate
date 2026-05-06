@@ -2095,7 +2095,12 @@ class SpokeAppDelegate(NSObject):
         # shown. At 20-50 Hz this saves 5-6 CA/attribute ops per tick.
         glow_visible = self._glow is not None and getattr(self._glow, "_visible", False)
         overlay_visible = self._overlay is not None and getattr(self._overlay, "_visible", False)
-        if not glow_visible and not overlay_visible:
+        command_overlay = getattr(self, "_command_overlay", None)
+        command_overlay_visible = (
+            command_overlay is not None
+            and getattr(command_overlay, "_visible", False)
+        )
+        if not glow_visible and not overlay_visible and not command_overlay_visible:
             return
 
         # VAD gating: if we are in silence, clamp the raw RMS to 0.0.
@@ -2129,22 +2134,23 @@ class SpokeAppDelegate(NSObject):
 
         if self._glow is not None:
             self._glow.update_amplitude(rms)
-        if self._overlay is not None and self._glow is not None:
+        if self._glow is not None:
             # Single brightness read — reuse for both overlay and command_overlay
             glow_brightness = getattr(self._glow, "_brightness", 0.0)
-            if glow_brightness != getattr(self._overlay, "_brightness", 0.0):
-                self._overlay.set_brightness(glow_brightness)
+            if self._overlay is not None:
+                if glow_brightness != getattr(self._overlay, "_brightness", 0.0):
+                    self._overlay.set_brightness(glow_brightness)
+                # Text breathing: glow's smoothed amplitude, scaled independently
+                self._overlay.update_text_amplitude(
+                    min(self._glow._smoothed_amplitude * 18.0, 1.0)
+                )
+                # Inner glow: track screen glow, saturate aggressively
+                glow_opacity = self._glow._glow_layer.opacity()
+                self._overlay.update_glow_amplitude(
+                    min(glow_opacity * 2.5, 1.0),
+                    cap_factor=self._glow._cap_factor,
+                )
             self._sync_command_overlay_brightness()
-            # Text breathing: glow's smoothed amplitude, scaled independently
-            self._overlay.update_text_amplitude(
-                min(self._glow._smoothed_amplitude * 18.0, 1.0)
-            )
-            # Inner glow: track screen glow, saturate aggressively
-            glow_opacity = self._glow._glow_layer.opacity()
-            self._overlay.update_glow_amplitude(
-                min(glow_opacity * 2.5, 1.0),
-                cap_factor=self._glow._cap_factor,
-            )
 
     def _preview_loop(self, token: int | None = None) -> None:
         """Background thread: preview transcription during recording.

@@ -1090,6 +1090,9 @@ class TranscriptionOverlay(NSObject):
                 except Exception:
                     pass
         else:
+            if getattr(self, "_typewriter_layout_step", 0):
+                self._typewriter_layout_step = 0
+                self._update_layout()
             self._cancel_typewriter()
 
     def _cancel_typewriter(self) -> None:

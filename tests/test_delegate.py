@@ -3706,6 +3706,21 @@ class TestRecordingCap:
 
         d._command_overlay.set_brightness.assert_called_with(0.61, immediate=False)
 
+    def test_amplitude_update_keeps_command_overlay_only_brightness_live(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._command_overlay = MagicMock(_visible=True)
+        d._glow._visible = False
+        d._overlay._visible = False
+        d._glow._brightness = 0.72
+        self._setup_glow_mock(d)
+
+        d.amplitudeUpdate_(0.01)
+
+        d._glow.update_amplitude.assert_called_once_with(0.01)
+        d._command_overlay.set_brightness.assert_called_with(0.72, immediate=False)
+
     def test_amplitude_updates_coalesce_to_latest_main_thread_sample(
         self, main_module, monkeypatch
     ):

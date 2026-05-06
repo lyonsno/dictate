@@ -1,5 +1,9 @@
 """Tests for the typewriter effect's high-water-mark snap behaviour."""
 
+import importlib
+import sys
+from unittest.mock import MagicMock
+
 
 class FakeOverlay:
     """Minimal stand-in that replicates the typewriter state machine
@@ -191,3 +195,27 @@ class TestTypewriterHighWaterMark:
         ov.set_text("xbc longer text here")
         assert ov._snapped
         assert ov._typewriter_hwm == len("xbc longer text here")
+
+
+def test_short_typewriter_run_flushes_layout_on_completion(mock_pyobjc):
+    sys.modules.pop("spoke.overlay", None)
+    overlay_module = importlib.import_module("spoke.overlay")
+    overlay = overlay_module.TranscriptionOverlay.__new__(
+        overlay_module.TranscriptionOverlay
+    )
+    overlay._typewriter_target = "hey"
+    overlay._typewriter_displayed = ""
+    overlay._typewriter_hwm = 0
+    overlay._typewriter_layout_step = 0
+    overlay._typewriter_timer = MagicMock()
+    overlay._text_view = MagicMock()
+    overlay._set_text_view_content = lambda text: setattr(overlay, "screen_text", text)
+    overlay._update_layout = MagicMock()
+
+    for _ in range(3):
+        overlay.typewriterStep_(None)
+    overlay.typewriterStep_(None)
+
+    assert overlay.screen_text == "hey"
+    overlay._update_layout.assert_called_once_with()
+    assert overlay._typewriter_timer is None
