@@ -58,8 +58,10 @@ class _FakeLayer:
         self._anchor_point = None
         self.values = {}
         self.animations = []
+        self.frame_calls = []
 
     def setFrame_(self, frame):
+        self.frame_calls.append(frame)
         if isinstance(frame, tuple):
             origin, size = frame
             self._frame = _make_rect(origin[0], origin[1], size[0], size[1])
@@ -350,7 +352,11 @@ def test_preview_adapter_publishes_through_optical_field_contract(
     assert overlay._publish_preview_compositor_snapshot(visible=True) is True
 
     snapshot = host.clients["preview.transcription"].published[-1]
-    assert snapshot.optical_field == {
+    optical_field = dict(snapshot.optical_field)
+    assert {
+        key: optical_field[key]
+        for key in ("caller_id", "profile", "state", "slot", "progress", "disturbances")
+    } == {
         "caller_id": "preview.transcription",
         "profile": "preview_pill",
         "state": "rest",
@@ -358,6 +364,12 @@ def test_preview_adapter_publishes_through_optical_field_contract(
         "progress": 1.0,
         "disturbances": (),
     }
+    assert optical_field["bounds"]["width"] == pytest.approx(
+        snapshot.geometry.content_width_points
+    )
+    assert optical_field["bounds"]["height"] == pytest.approx(
+        snapshot.geometry.content_height_points
+    )
     assert snapshot.material.initial_brightness == pytest.approx(0.37)
     assert snapshot.material.x_squeeze == pytest.approx(
         overlay_module._PREVIEW_OPTICAL_SHELL_X_SQUEEZE
@@ -391,6 +403,7 @@ def test_preview_dismiss_uses_reusable_pressure_sidecars(
     radial = host.clients["preview.transcription.dismiss_radial_pucker"].published[-1]
     assert seam.optical_field["sidecar"] == "dismiss_seam"
     assert seam.optical_field["profile"] == "preview_pill"
+    assert seam.material.scar_axis_rotation == pytest.approx(1.0)
     assert seam.material.warp_mode in {1.0, 3.0}
     assert radial.optical_field["sidecar"] == "dismiss_radial_pucker"
     assert radial.material.warp_mode == pytest.approx(2.0)
@@ -401,7 +414,7 @@ def test_preview_materialization_clock_is_not_the_old_twelve_frame_fade(
 ):
     overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
 
-    assert overlay_module._preview_fade_steps_for_duration(overlay_module._FADE_IN_S) >= 48
+    assert overlay_module._preview_fade_steps_for_duration(overlay_module._FADE_IN_S) >= 30
     assert (
         1.0 / overlay_module._preview_fade_steps_for_duration(1.0)
         <= 1.0 / 120.0
@@ -447,6 +460,44 @@ def test_preview_materialization_owns_and_scales_fill_layer(
     assert overlay._preview_materialization_active is False
     assert overlay._fill_layer.values["transform.scale.y"] == pytest.approx(1.0)
     assert overlay._fill_layer._opacity == pytest.approx(1.0)
+
+
+def test_late_preview_fill_image_does_not_reset_materializing_layer_frame(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+
+    overlay.set_compositor_registry(registry)
+    assert overlay._publish_preview_compositor_snapshot(
+        visible=True,
+        field_state="materialize",
+        progress=0.32,
+    ) is True
+    overlay._desired_fill_image_signature = "current-fill"
+    overlay._pending_fill_image_signature = "current-fill"
+    overlay._fill_layer.frame_calls.clear()
+
+    overlay.fillImageReady_(
+        {
+            "signature": "current-fill",
+            "geom_key": (600.0, 80.0, 2.0),
+            "sdf": "sdf",
+            "scale": 2.0,
+            "total_w": 1040.0,
+            "total_h": 520.0,
+            "payload": b"payload",
+            "image": "late-image",
+        }
+    )
+
+    assert overlay._preview_materialization_active is True
+    assert overlay._fill_layer.contents == "late-image"
+    assert overlay._fill_layer.frame_calls == []
+    assert overlay._fill_layer._anchor_point == (0.5, 0.5)
+    assert overlay._fill_layer._position == pytest.approx((520.0, 260.0))
 
 
 def test_preview_warp_defaults_match_live_tuner_baseline(mock_pyobjc, monkeypatch):

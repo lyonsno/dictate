@@ -79,8 +79,8 @@ _OVERLAY_MAX_HEIGHT = _env("SPOKE_PREVIEW_OVERLAY_MAX_HEIGHT", 300.0)
 _COMMAND_OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 230.0)
 _EXPAND_UPWARD = _env_bool("SPOKE_PREVIEW_EXPAND_UPWARD", True)
 _FONT_SIZE = 16.0
-_FADE_IN_S = 0.4  # fast ease-in so the overlay feels ready as soon as it appears
-_FADE_OUT_S = 0.315  # 75% longer fade keeps the preview legible through fast handoff
+_FADE_IN_S = 0.25  # preview entry should feel immediate even while the field forms
+_FADE_OUT_S = 0.175  # dismiss should clear quickly without snapping attention to itself
 _FADE_STEPS = 12  # number of steps for manual fade animation
 _PREVIEW_VISUAL_FPS = _env("SPOKE_PREVIEW_VISUAL_FPS", 144.0)
 _TYPEWRITER_INTERVAL = 0.02 / 0.75  # seconds between characters (~37.5 chars/sec)
@@ -956,6 +956,38 @@ class TranscriptionOverlay(NSObject):
                 except Exception:
                     logger.debug("Failed to commit preview materialization opacity", exc_info=True)
 
+    def _set_preview_fill_layer_base_frame(self, total_w: float, total_h: float) -> None:
+        fill = getattr(self, "_fill_layer", None)
+        if fill is None:
+            return
+        if getattr(self, "_preview_materialization_active", False):
+            scale_x, scale_y = getattr(
+                self,
+                "_preview_materialization_fill_scale",
+                (1.0, 1.0),
+            )
+            self._set_preview_layer_geometry_without_actions(
+                fill,
+                total_w=total_w,
+                total_h=total_h,
+                scale_x=scale_x,
+                scale_y=scale_y,
+            )
+            return
+        try:
+            if CATransaction is not None:
+                CATransaction.begin()
+                CATransaction.setDisableActions_(True)
+            fill.setFrame_(((0, 0), (total_w, total_h)))
+        except Exception:
+            logger.debug("Failed to update preview fill base frame", exc_info=True)
+        finally:
+            if CATransaction is not None:
+                try:
+                    CATransaction.commit()
+                except Exception:
+                    logger.debug("Failed to commit preview fill base frame", exc_info=True)
+
     def _preview_layer_frame_size(self, layer) -> tuple[float, float]:
         if layer is None or not hasattr(layer, "frame"):
             return (1.0, 1.0)
@@ -993,6 +1025,7 @@ class TranscriptionOverlay(NSObject):
         if not active:
             scale_x = 1.0
             scale_y = 1.0
+        self._preview_materialization_fill_scale = (scale_x, scale_y)
         self._set_preview_layer_geometry_without_actions(
             fill,
             total_w=total_w,
@@ -1611,8 +1644,7 @@ class TranscriptionOverlay(NSObject):
             if pending != appearance_key:
                 self._queued_fill_request = (width, height)
             return
-        if hasattr(self, "_fill_layer") and self._fill_layer is not None:
-            self._fill_layer.setFrame_(((0, 0), (total_w, total_h)))
+        self._set_preview_fill_layer_base_frame(total_w, total_h)
 
         self._pending_fill_image_signature = appearance_key
         cached_sdf = (
@@ -1691,7 +1723,7 @@ class TranscriptionOverlay(NSObject):
             return
         self._fill_payload = payload.get("payload")
         self._fill_layer.setContents_(payload.get("image"))
-        self._fill_layer.setFrame_(((0, 0), (payload["total_w"], payload["total_h"])))
+        self._set_preview_fill_layer_base_frame(payload["total_w"], payload["total_h"])
         self._fill_image_signature = signature
         if hasattr(self._fill_layer, "setCompositingFilter_"):
             fill_override_rgb = payload.get("fill_override_rgb")

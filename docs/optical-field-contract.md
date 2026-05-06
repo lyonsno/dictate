@@ -88,6 +88,26 @@ profile = OpticalFieldProfileRef(
 Slots map to primitive lifecycle phases: `rest`, `materialize`, `dismiss`, and
 `resize`. `hidden` compiles no visible shell config.
 
+Dismiss seam orientation is contract data, not consumer shader plumbing. If a
+consumer needs a different split direction, use the dismiss slot rather than
+forking compositor keys:
+
+```python
+profile = OpticalFieldProfileRef(
+    base="agent_card",
+    slots={
+        "dismiss": OpticalFieldSlotOverride(
+            params={"dismiss_seam_axis_rotation": 1.0}
+        ),
+    },
+)
+```
+
+The backend translates these profile params into the current Metal shader keys
+(`scar_seam_length_frac`, `scar_seam_thickness_frac`,
+`scar_seam_focus_frac`, `scar_axis_rotation`, and related grip controls).
+Consumers should not emit those shader keys directly.
+
 ## Do Not
 
 - Do not fork shader parameters into consumer code.

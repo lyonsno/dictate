@@ -342,6 +342,56 @@ def test_dismiss_compiles_generic_seam_and_radial_sidecars_without_private_ids()
     assert radial["optical_field"]["sidecar"] == "dismiss_radial_pucker"
 
 
+def test_dismiss_seam_profile_controls_compile_to_shader_keys():
+    backend = OpticalFieldPlaceholderBackend()
+    backend.upsert(
+        OpticalFieldRequest(
+            caller_id="preview.transcription",
+            bounds=OpticalFieldBounds(x=40.0, y=80.0, width=900.0, height=160.0),
+            role="preview",
+            state="dismiss",
+            progress=0.35,
+            profile=OpticalFieldProfileRef(
+                base="preview_pill",
+                slots={
+                    "dismiss": OpticalFieldSlotOverride(
+                        params={
+                            "dismiss_seam_axis_rotation": 1.0,
+                            "dismiss_seam_mirrored_lip": 1.0,
+                            "dismiss_seam_length_frac_start": 0.9,
+                            "dismiss_seam_length_frac_end": 0.2,
+                            "dismiss_seam_thickness_frac": 0.22,
+                            "dismiss_seam_focus_frac": 0.7,
+                            "dismiss_seam_vertical_grip": 1.4,
+                            "dismiss_seam_horizontal_grip": 0.35,
+                        }
+                    )
+                },
+            ),
+        )
+    )
+
+    by_id = {
+        config["client_id"]: config
+        for config in backend.compile_shell_configs()
+    }
+    seam = by_id["preview.transcription.dismiss_seam"]
+
+    assert seam["warp_mode"] == pytest.approx(3.0)
+    assert seam["scar_axis_rotation"] == pytest.approx(1.0)
+    assert seam["scar_mirrored_lip"] == pytest.approx(1.0)
+    assert seam["scar_seam_length_frac"] == pytest.approx(
+        0.9 + (0.2 - 0.9) * 0.35
+    )
+    assert seam["scar_seam_thickness_frac"] == pytest.approx(0.22)
+    assert seam["scar_seam_focus_frac"] == pytest.approx(0.7)
+    assert seam["scar_vertical_grip"] == pytest.approx(1.4)
+    assert seam["scar_horizontal_grip"] == pytest.approx(0.35)
+    assert "scar_seam_length" not in seam
+    assert "scar_seam_thickness" not in seam
+    assert "scar_seam_focus" not in seam
+
+
 def test_reusable_backend_allows_distinct_consumers_to_share_pressure_lifecycle():
     backend = OpticalFieldPlaceholderBackend()
     backend.upsert(

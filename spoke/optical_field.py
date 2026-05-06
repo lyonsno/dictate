@@ -152,6 +152,15 @@ _BASE_PROFILES: dict[str, dict[str, float | str | bool]] = {
         "bleed_zone_frac": 0.78,
         "exterior_mix_frac": 0.22,
         "mip_blur_strength": 1.0,
+        "dismiss_seam_axis_rotation": 0.0,
+        "dismiss_seam_mirrored_lip": 0.0,
+        "dismiss_seam_length_frac_start": 0.8,
+        "dismiss_seam_length_frac_end": 0.0,
+        "dismiss_seam_thickness_frac": 0.15,
+        "dismiss_seam_focus_frac": 1.0,
+        "dismiss_seam_vertical_grip": 1.0,
+        "dismiss_seam_horizontal_grip": 0.60,
+        "dismiss_seam_amount": 2.0,
     },
     "preview_pill": {
         "corner_radius_frac": 0.50,
@@ -163,6 +172,15 @@ _BASE_PROFILES: dict[str, dict[str, float | str | bool]] = {
         "bleed_zone_frac": 0.70,
         "exterior_mix_frac": 0.16,
         "mip_blur_strength": 1.0,
+        "dismiss_seam_axis_rotation": 1.0,
+        "dismiss_seam_mirrored_lip": 0.0,
+        "dismiss_seam_length_frac_start": 0.8,
+        "dismiss_seam_length_frac_end": 0.0,
+        "dismiss_seam_thickness_frac": 0.15,
+        "dismiss_seam_focus_frac": 1.0,
+        "dismiss_seam_vertical_grip": 1.0,
+        "dismiss_seam_horizontal_grip": 0.60,
+        "dismiss_seam_amount": 2.0,
     },
     "agent_card": {
         "corner_radius_frac": 0.34,
@@ -174,6 +192,15 @@ _BASE_PROFILES: dict[str, dict[str, float | str | bool]] = {
         "bleed_zone_frac": 0.60,
         "exterior_mix_frac": 0.12,
         "mip_blur_strength": 0.65,
+        "dismiss_seam_axis_rotation": 0.0,
+        "dismiss_seam_mirrored_lip": 0.0,
+        "dismiss_seam_length_frac_start": 0.8,
+        "dismiss_seam_length_frac_end": 0.0,
+        "dismiss_seam_thickness_frac": 0.15,
+        "dismiss_seam_focus_frac": 1.0,
+        "dismiss_seam_vertical_grip": 1.0,
+        "dismiss_seam_horizontal_grip": 0.60,
+        "dismiss_seam_amount": 2.0,
     },
     "quiet_chip": {
         "corner_radius_frac": 0.50,
@@ -185,6 +212,15 @@ _BASE_PROFILES: dict[str, dict[str, float | str | bool]] = {
         "bleed_zone_frac": 0.45,
         "exterior_mix_frac": 0.08,
         "mip_blur_strength": 0.4,
+        "dismiss_seam_axis_rotation": 0.0,
+        "dismiss_seam_mirrored_lip": 0.0,
+        "dismiss_seam_length_frac_start": 0.8,
+        "dismiss_seam_length_frac_end": 0.0,
+        "dismiss_seam_thickness_frac": 0.15,
+        "dismiss_seam_focus_frac": 1.0,
+        "dismiss_seam_vertical_grip": 1.0,
+        "dismiss_seam_horizontal_grip": 0.60,
+        "dismiss_seam_amount": 2.0,
     },
 }
 
@@ -417,8 +453,15 @@ def _dismiss_seam_progress(close_progress: float) -> float:
     return 0.42 * _clamp01(close_progress)
 
 
-def _dismiss_seam_length(close_progress: float) -> float:
-    return _lerp(0.8, 0.0, close_progress)
+def _dismiss_seam_length(
+    close_progress: float,
+    params: Mapping[str, Any],
+) -> float:
+    return _lerp(
+        _float_param(params, "dismiss_seam_length_frac_start"),
+        _float_param(params, "dismiss_seam_length_frac_end"),
+        close_progress,
+    )
 
 
 def _dismiss_seam_pressure_slit_config(
@@ -431,6 +474,7 @@ def _dismiss_seam_pressure_slit_config(
     close_progress = _clamp01(request.progress)
     config = _base_shell_config(request, slot_name=slot_name, params=params)
     field_height = max(96.0, bounds.height * 0.72)
+    mirrored_lip = _clamp01(_float_param(params, "dismiss_seam_mirrored_lip"))
     config.update(
         {
             "client_id": f"{request.caller_id}.dismiss_seam",
@@ -448,17 +492,18 @@ def _dismiss_seam_pressure_slit_config(
             "mip_blur_strength": 0.0,
             "cleanup_blur_radius_points": 0.0,
             "cleanup_blur_strength": 0.0,
-            "warp_mode": 3,
-            "scar_amount": 2.0 * _smoothstep(close_progress),
+            "warp_mode": 3 if mirrored_lip >= 0.5 else 1,
+            "scar_amount": _float_param(params, "dismiss_seam_amount")
+            * _smoothstep(close_progress),
             "scar_preview_progress": _dismiss_seam_progress(close_progress),
             "scar_latch_start": 0.0,
-            "scar_seam_length": _dismiss_seam_length(close_progress),
-            "scar_seam_thickness": 0.15,
-            "scar_seam_focus": 1.0,
-            "scar_vertical_grip": 1.0,
-            "scar_horizontal_grip": 0.60,
-            "scar_axis_rotation": 0.0,
-            "scar_mirrored_lip": 0.0,
+            "scar_seam_length_frac": _dismiss_seam_length(close_progress, params),
+            "scar_seam_thickness_frac": _float_param(params, "dismiss_seam_thickness_frac"),
+            "scar_seam_focus_frac": _float_param(params, "dismiss_seam_focus_frac"),
+            "scar_vertical_grip": _float_param(params, "dismiss_seam_vertical_grip"),
+            "scar_horizontal_grip": _float_param(params, "dismiss_seam_horizontal_grip"),
+            "scar_axis_rotation": _float_param(params, "dismiss_seam_axis_rotation"),
+            "scar_mirrored_lip": mirrored_lip,
             "continuous_present": True,
         }
     )

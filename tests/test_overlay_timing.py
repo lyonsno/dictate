@@ -38,7 +38,7 @@ class TestOverlayTiming:
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
-            assert mod._FADE_OUT_S == 0.315
+            assert mod._FADE_OUT_S == pytest.approx(0.175)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -47,7 +47,7 @@ class TestOverlayTiming:
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
-            assert mod._FADE_IN_S == pytest.approx(0.4)
+            assert mod._FADE_IN_S == pytest.approx(0.25)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
