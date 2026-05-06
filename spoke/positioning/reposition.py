@@ -930,6 +930,9 @@ CENTER_AUDIT_SYSTEM = (
     "You are correcting the center of a proposed overlay rectangle.\n\n"
     "The red dashed outline is the current proposed overlay. The user request "
     "is the desired final result.\n\n"
+    "If the user text includes a suitability diagnosis, treat that diagnosis "
+    "as the concrete problem you are repairing. Do not switch to a different "
+    "target or return KEEP merely because the outline is directionally close.\n\n"
     "Judge only the overlay center. Choose the center that best serves the user "
     "request, assuming width and height will be adjusted optimally afterward to "
     "satisfy the same request. Do not preserve the current size if a different "
@@ -944,6 +947,9 @@ SIZE_AUDIT_SYSTEM = (
     "You are correcting the size of a proposed overlay rectangle.\n\n"
     "The red dashed outline is the current proposed overlay. The user request "
     "is the desired final result.\n\n"
+    "If the user text includes a suitability diagnosis, treat that diagnosis "
+    "as the concrete problem you are repairing. Do not switch to a different "
+    "target or return KEEP merely because the outline is directionally close.\n\n"
     "Judge only the overlay size. Choose the width and height the overlay should "
     "have in the final placement, assuming the center will be adjusted optimally "
     "to satisfy the same request. Do not preserve the current size if the final "
@@ -1163,6 +1169,18 @@ def _parse_size_audit_response(
     return result
 
 
+def _suitability_context_for_actuator(suitability: dict[str, int | str | bool]) -> str:
+    """Format the suitability diagnosis for center/size repair prompts."""
+
+    reason = str(suitability.get("reason") or "").strip()
+    return (
+        f"done={suitability.get('done')} "
+        f"needs_position={suitability.get('needs_position')} "
+        f"needs_size={suitability.get('needs_size')}\n"
+        f"reason: {reason}"
+    )
+
+
 def _candidate_pixels(candidate_overlay: dict, *, screen_w: int, screen_h: int) -> tuple[int, int, int, int, int, int]:
     bx = int(candidate_overlay["x"] * screen_w)
     by = int(candidate_overlay["y"] * screen_h)
@@ -1181,6 +1199,7 @@ def _candidate_audit_user_text(
     candidate_overlay: dict,
     iteration: int,
     bearing: str | None,
+    suitability_context: str | None = None,
 ) -> str:
     _bx, _by, bw, bh, cx, cy = _candidate_pixels(
         candidate_overlay,
@@ -1193,6 +1212,14 @@ def _candidate_audit_user_text(
         f"Candidate overlay: center=({cx}, {cy}) width={bw} height={bh}\n"
         f"Audit iteration: {iteration}"
     )
+    if suitability_context:
+        user_text += (
+            "\n\nSuitability diagnosis for this same candidate:\n"
+            f"{suitability_context}\n"
+            "Repair that diagnosis with this actuator. If you output KEEP, "
+            "your reason must explain why this actuator cannot improve the "
+            "specific diagnosis."
+        )
     if bearing:
         user_text += f"\n\nOperator bearing:\n{bearing}"
     return user_text
@@ -1254,6 +1281,7 @@ def _pick_center_audit(
     *,
     iteration: int,
     bearing: str | None = None,
+    suitability_context: str | None = None,
 ) -> dict[str, int | str]:
     """Ask the VLM to repair only the candidate center."""
 
@@ -1264,6 +1292,7 @@ def _pick_center_audit(
         candidate_overlay=candidate_overlay,
         iteration=iteration,
         bearing=bearing,
+        suitability_context=suitability_context,
     )
     resp = requests.post(
         _get_api_url(),
@@ -1300,6 +1329,7 @@ def _pick_size_audit(
     *,
     iteration: int,
     bearing: str | None = None,
+    suitability_context: str | None = None,
 ) -> dict[str, int | str]:
     """Ask the VLM to repair only the candidate size."""
 
@@ -1310,6 +1340,7 @@ def _pick_size_audit(
         candidate_overlay=candidate_overlay,
         iteration=iteration,
         bearing=bearing,
+        suitability_context=suitability_context,
     )
     resp = requests.post(
         _get_api_url(),
@@ -1637,6 +1668,7 @@ def reposition_gridpoint_iterative(
         size_audit: dict[str, int | str] = {"width": "KEEP", "height": "KEEP", "reason": ""}
         run_center = True
         run_size = True
+        suitability_context = _suitability_context_for_actuator(suitability)
 
         if run_center:
             center_audit = _pick_center_audit(
@@ -1647,6 +1679,7 @@ def reposition_gridpoint_iterative(
                 candidate,
                 iteration=iteration,
                 bearing=bearing,
+                suitability_context=suitability_context,
             )
             center_raw = getattr(_pick_center_audit, "_last_raw", None)
             reposition_gridpoint_iterative._last_debug.append(
@@ -1676,6 +1709,7 @@ def reposition_gridpoint_iterative(
                 candidate,
                 iteration=iteration,
                 bearing=bearing,
+                suitability_context=suitability_context,
             )
             size_raw = getattr(_pick_size_audit, "_last_raw", None)
             reposition_gridpoint_iterative._last_debug.append(

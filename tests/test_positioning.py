@@ -405,6 +405,63 @@ def test_iterative_split_audit_treats_need_flags_as_advisory(monkeypatch):
     assert sizes == []
 
 
+def test_iterative_split_audit_passes_suitability_context_to_actuators(monkeypatch):
+    """Center/size repair must receive the suitability diagnosis it is repairing."""
+    import importlib
+
+    reposition = importlib.import_module("spoke.positioning.reposition")
+
+    image = Image.new("RGB", (100, 100), "white")
+    suitability = [
+        {
+            "done": False,
+            "needs_position": True,
+            "needs_size": True,
+            "reason": "candidate is too high and wide; move down and shrink",
+        },
+        {"done": True, "needs_position": False, "needs_size": False, "reason": "fits"},
+    ]
+    seen_contexts = []
+
+    monkeypatch.setattr(reposition, "_draw_grid_points", lambda img: img)
+    monkeypatch.setattr(reposition, "_draw_overlay_outline", lambda _screenshot, _overlay: image)
+    monkeypatch.setattr(reposition, "_encode_image", lambda _image: "image")
+    monkeypatch.setattr(reposition, "_pick_gridpoint", lambda *args, **kwargs: "B2")
+    monkeypatch.setattr(
+        reposition,
+        "_pick_suitability_audit",
+        lambda *args, **kwargs: suitability.pop(0),
+    )
+
+    def fake_center(*args, suitability_context, **kwargs):
+        seen_contexts.append(suitability_context)
+        return {"center_x": 50, "center_y": 70, "reason": "move down"}
+
+    def fake_size(*args, suitability_context, **kwargs):
+        seen_contexts.append(suitability_context)
+        return {"width": 30, "height": 20, "reason": "shrink"}
+
+    monkeypatch.setattr(reposition, "_pick_center_audit", fake_center)
+    monkeypatch.setattr(reposition, "_pick_size_audit", fake_size)
+
+    result = reposition.reposition_gridpoint_iterative(
+        "fill the empty space",
+        image,
+        current_overlay={"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4},
+        screen_w=100,
+        screen_h=100,
+    )
+
+    assert result["x"] == pytest.approx(0.35)
+    assert result["y"] == pytest.approx(0.60)
+    assert result["width"] == pytest.approx(0.30)
+    assert result["height"] == pytest.approx(0.20)
+    assert len(seen_contexts) == 2
+    assert all("candidate is too high and wide" in context for context in seen_contexts)
+    assert all("needs_position=True" in context for context in seen_contexts)
+    assert all("needs_size=True" in context for context in seen_contexts)
+
+
 def test_largest_rectangle_target_picks_yes_cells():
     """largest_rectangle_target finds rect in YES (occupy) cells."""
     from spoke.positioning.reposition import largest_rectangle_target
