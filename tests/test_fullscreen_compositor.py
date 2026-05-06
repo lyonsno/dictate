@@ -494,6 +494,13 @@ def test_host_keeps_agent_shell_card_surfaces_independent_of_parent_motion_and_v
                             "optical_field": {
                                 "caller_id": "agent.card.codex-thread-1",
                                 "profile": "agent_card",
+                                "bounds": {
+                                    "x": 8.0,
+                                    "y": 68.0,
+                                    "width": 144.0,
+                                    "height": 44.0,
+                                },
+                                "previous_bounds": None,
                             },
                         },
                         "text": {
@@ -542,6 +549,70 @@ def test_host_keeps_agent_shell_card_surfaces_independent_of_parent_motion_and_v
         hidden_parent_configs[0]["center_x"],
         hidden_parent_configs[0]["center_y"],
     ) == first_card_center
+
+
+def test_host_repositions_agent_shell_card_when_render_bounds_change(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    registry = fullscreen_compositor.OverlayCompositorRegistry()
+    screen = object()
+    host = registry.host_for_screen(screen)
+    client = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(253),
+        content_view=object(),
+    )
+
+    def _config(*, card_x):
+        return {
+            "center_x": 300.0,
+            "center_y": 200.0,
+            "visible": True,
+            "content_width_points": 400.0,
+            "content_height_points": 160.0,
+            "corner_radius_points": 16.0,
+            "band_width_points": 8.0,
+            "tail_width_points": 12.0,
+            "agent_shell_card_optical_fields": {
+                "surface_kind": "agent_shell_card_optical_fields",
+                "requests": [
+                    {
+                        "caller_id": "agent.card.codex-thread-1",
+                        "compiled_shell_config": {
+                            "client_id": "agent.card.codex-thread-1",
+                            "role": "agent_card",
+                            "center_x": card_x + 150.0,
+                            "center_y": 48.0,
+                            "content_width_points": 300.0,
+                            "content_height_points": 72.0,
+                            "corner_radius_points": 8.0,
+                            "band_width_points": 3.0,
+                            "tail_width_points": 2.0,
+                            "z_index": 101,
+                            "optical_field": {
+                                "caller_id": "agent.card.codex-thread-1",
+                                "profile": "agent_card",
+                                "bounds": {
+                                    "x": card_x,
+                                    "y": 12.0,
+                                    "width": 300.0,
+                                    "height": 72.0,
+                                },
+                                "previous_bounds": None,
+                            },
+                        },
+                        "text": {"primary": "Codex lane", "secondary": "ready"},
+                    }
+                ],
+            },
+        }
+
+    assert client.update_shell_config(_config(card_x=12.0))
+    first = _FakeFullScreenCompositor.instances[0].updated_configs[-1][1]
+    assert client.update_shell_config(_config(card_x=96.0))
+    second = _FakeFullScreenCompositor.instances[0].updated_configs[-1][1]
+
+    assert second["center_x"] != first["center_x"]
+    assert second["center_x"] == 300.0 - 200.0 + 96.0 + 150.0
 
 
 def test_agent_shell_card_text_overlay_specs_use_card_bounds_and_text_payload(monkeypatch):

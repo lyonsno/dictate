@@ -21,7 +21,6 @@ _CARD_READABLE_MIN_HEIGHT_POINTS = 72.0
 _SELECTED_CARD_READABLE_MIN_WIDTH_POINTS = 420.0
 _SELECTED_CARD_READABLE_MIN_HEIGHT_POINTS = 120.0
 _CARD_MAX_WIDTH_POINTS = 560.0
-_CARD_SLOT_MIN_WIDTH_POINTS = 92.0
 _MAX_VISIBLE_CARDS = 4
 
 _MATERIAL_STYLE_TO_OPTICAL_PROFILE = {
@@ -78,7 +77,7 @@ def _anchor(primitive: dict[str, Any]) -> str:
 
 def _max_cards_for_width(width: float) -> int:
     usable = width - 2 * _CARD_MARGIN_POINTS
-    if usable < _CARD_SLOT_MIN_WIDTH_POINTS:
+    if usable < _CARD_READABLE_MIN_WIDTH_POINTS:
         return 1
     return max(
         1,
@@ -86,7 +85,7 @@ def _max_cards_for_width(width: float) -> int:
             _MAX_VISIBLE_CARDS,
             int(
                 (usable + _CARD_GAP_POINTS)
-                // (_CARD_SLOT_MIN_WIDTH_POINTS + _CARD_GAP_POINTS)
+                // (_CARD_READABLE_MIN_WIDTH_POINTS + _CARD_GAP_POINTS)
             ),
         ),
     )
@@ -176,7 +175,7 @@ def _frame_for_index(
             min(
                 _CARD_MAX_WIDTH_POINTS,
                 preferred_width,
-                max(_CARD_SLOT_MIN_WIDTH_POINTS, equal_width),
+                max(min_width, equal_width),
                 usable_width,
             ),
         )

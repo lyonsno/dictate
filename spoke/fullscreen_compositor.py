@@ -1496,9 +1496,22 @@ def _agent_shell_card_surface_configs(
             pass
         existing = previous.get(client_id)
         if isinstance(existing, dict):
-            for key in ("center_x", "center_y"):
-                if key in existing:
-                    surface[key] = existing[key]
+            existing_field = existing.get("optical_field")
+            surface_field = surface.get("optical_field")
+            existing_bounds = (
+                existing_field.get("bounds")
+                if isinstance(existing_field, dict)
+                else None
+            )
+            surface_bounds = (
+                surface_field.get("bounds")
+                if isinstance(surface_field, dict)
+                else None
+            )
+            if existing_bounds is not None and existing_bounds == surface_bounds:
+                for key in ("center_x", "center_y"):
+                    if key in existing:
+                        surface[key] = existing[key]
         text = request.get("text")
         if isinstance(text, dict):
             surface["text"] = {

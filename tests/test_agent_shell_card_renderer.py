@@ -69,17 +69,9 @@ def test_card_renderer_consumes_primitives_without_reinterpreting_display_contra
         "text": "latest response codex-selected",
     }
     assert [surface["primitive_id"] for surface in payload["cards"]] == [
-        "codex-inactive-1",
-        "codex-inactive-2",
         "codex-selected",
     ]
-    inactive = payload["cards"][0]
     selected = payload["cards"][-1]
-    assert inactive["selected"] is False
-    assert inactive["readiness"] == "ready"
-    assert inactive["show_latest_response"] is False
-    assert inactive["latest_response"] == ""
-    assert inactive["primary_text"] == "primary codex-inactive-1"
     assert selected["selected"] is True
     assert selected["readiness"] == "working"
     assert selected["material"]["prominence"] == "selected"
@@ -97,10 +89,8 @@ def test_card_renderer_places_sibling_surfaces_inside_visible_content_bounds():
         content_height_points=154.0,
     )
 
-    assert len(payload["cards"]) == 3
+    assert len(payload["cards"]) == 1
     assert [surface["primitive_id"] for surface in payload["cards"]] == [
-        "thread-0",
-        "thread-1",
         "selected",
     ]
     transcript = payload["transcript_frame"]
@@ -119,8 +109,43 @@ def test_card_renderer_places_sibling_surfaces_inside_visible_content_bounds():
         assert surface["surface_attachment"] == "sibling"
         assert surface["material"]["style"] in {"thread_card", "quiet_chip"}
     selected = payload["cards"][-1]
-    assert selected["frame"]["x"] > payload["cards"][0]["frame"]["x"]
-    assert selected["frame"]["y"] > payload["cards"][0]["frame"]["y"]
+    assert selected["frame"]["width"] >= 1.0
+    assert selected["frame"]["height"] >= 1.0
+
+
+def test_card_renderer_keeps_placeholder_cards_readable_and_non_overlapping():
+    from spoke.agent_shell_card_renderer import build_agent_shell_card_render_payload
+
+    primitives = [
+        _primitive(
+            f"thread-{index}",
+            priority=index,
+            primary_text=f"Readable thread card {index} with enough text",
+            secondary_text=f"ready · branch-{index}",
+        )
+        for index in range(6)
+    ]
+    primitives.append(
+        _primitive(
+            "selected",
+            selected=True,
+            priority=100,
+            primary_text="Selected agent thread with real visible response text",
+            secondary_text="working · gpt-5.5",
+        )
+    )
+
+    payload = build_agent_shell_card_render_payload(
+        primitives,
+        content_width_points=720.0,
+        content_height_points=260.0,
+    )
+
+    assert len(payload["cards"]) >= 2
+    frames = [surface["frame"] for surface in payload["cards"]]
+    assert all(frame["width"] >= 300.0 for frame in frames)
+    assert all(frame["height"] >= 72.0 for frame in frames)
+    assert len({(frame["x"], frame["y"]) for frame in frames}) == len(frames)
 
 
 def test_card_renderer_builds_optical_field_requests_from_rendered_cards():
@@ -144,17 +169,12 @@ def test_card_renderer_builds_optical_field_requests_from_rendered_cards():
     assert optical["surface_kind"] == "agent_shell_card_optical_fields"
     requests = optical["requests"]
     assert [request["caller_id"] for request in requests] == [
-        "agent.card.codex-inactive",
         "agent.card.codex-selected",
     ]
-    inactive, selected = requests
-    assert inactive["profile"] == "agent_card"
-    assert inactive["role"] == "agent_card"
-    assert inactive["compiled_shell_config"]["optical_field"]["profile"] == "agent_card"
-    assert inactive["compiled_shell_config"]["center_x"] == inactive["bounds"]["x"] + inactive["bounds"]["width"] * 0.5
+    (selected,) = requests
     assert selected["profile"] == "agent_card"
     assert selected["role"] == "selected_thread"
-    assert selected["z_index"] > inactive["z_index"]
+    assert selected["z_index"] >= 200
     assert selected["disturbances"][0]["kind"] == "readiness_pulse"
     assert selected["compiled_shell_config"]["optical_field"]["bounds"] == selected["bounds"]
     assert selected["compiled_shell_config"]["optical_field"]["previous_bounds"] is None
