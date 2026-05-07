@@ -2192,6 +2192,7 @@ class CommandOverlay(NSObject):
         if self._window is None:
             return
         self._cancel_all_timers()
+        self._reset_fill_generation_latches_for_show()
         if getattr(self, "_fullscreen_compositor", None) is not None:
             self._stop_fullscreen_compositor()
         self._visible = True
@@ -3528,6 +3529,12 @@ class CommandOverlay(NSObject):
         self._cancel_dismiss_pucker_tail_animation()
         self._stop_thinking_timer()
 
+    def _reset_fill_generation_latches_for_show(self) -> None:
+        self._pending_fill_image_signature = None
+        self._queued_fill_request = None
+        self._fill_hidden_until_signature = None
+        self._deferred_materialization_shell_config = None
+
     def _cancel_pending_optical_entrance_if_invisible(self) -> bool:
         """Tear down an alpha-zero optical entrance without playing dismiss."""
         if getattr(self, "_fullscreen_compositor", None) is None or self._window is None:
@@ -3542,6 +3549,7 @@ class CommandOverlay(NSObject):
         self._cancel_entrance_pop()
         self._cancel_materialization_animation()
         self._cancel_dismiss_pucker_tail_animation()
+        self._reset_fill_generation_latches_for_show()
         self._stop_fullscreen_compositor()
         self._window.setAlphaValue_(0.0)
         self._set_overlay_scale(1.0)

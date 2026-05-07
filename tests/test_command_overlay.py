@@ -2698,6 +2698,45 @@ class TestWindowLayering:
         overlay._fill_layer.setHidden_.assert_called_with(False)
         assert overlay._fill_hidden_until_signature is None
 
+    def test_show_clears_stale_pending_fill_latch_before_optical_recall(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+        queued = []
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda work: queued.append(work))
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+
+        class PresentedCompositor:
+            presented_count = 1
+            sampled_brightness = 0.5
+
+            def refresh_brightness(self):
+                pass
+
+        overlay._pending_fill_image_signature = ("dismissed-stale-fill",)
+        overlay._fill_hidden_until_signature = ("dismissed-stale-fill",)
+        overlay._queued_fill_request = (111.0, 22.0)
+        overlay._materialization_progress = 0.0
+        overlay._start_fullscreen_compositor = MagicMock(
+            side_effect=lambda: setattr(
+                overlay,
+                "_fullscreen_compositor",
+                PresentedCompositor(),
+            )
+        )
+
+        overlay.show(
+            start_thinking_timer=False,
+            initial_utterance="User prompt",
+            initial_response="Assistant response",
+        )
+
+        assert queued, "fresh recall must start a fill build, not wait on stale pending state"
+        assert overlay._pending_fill_image_signature != ("dismissed-stale-fill",)
+        assert overlay._queued_fill_request != (111.0, 22.0)
+        assert overlay._fill_hidden_until_signature != ("dismissed-stale-fill",)
+
     def test_optical_show_without_initial_text_waits_for_compositor_before_fade(
         self, mock_pyobjc, monkeypatch
     ):
