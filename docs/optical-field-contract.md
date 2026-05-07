@@ -106,6 +106,40 @@ Final targets can interrupt provisional targets at the same epoch. A provisional
 target cannot overwrite a final target unless it carries a newer freshness
 epoch.
 
+## Motion Strategy
+
+Consumers may attach `OpticalFieldMotionIntent` to a request, but that intent is
+finite data. House owns the final continuity decision and the execution curve.
+
+Supported motion strategies:
+
+- `auto`
+- `continuous`
+- `morph`
+- `squirt`
+- `dematerialize_rematerialize`
+- `snap`
+
+`auto` resolves by comparing the current presented bounds to the desired target
+bounds. The metric is:
+
+```python
+intersection_area(current, target) / min(current_area, target_area)
+```
+
+The default overlap threshold is `0.50`. Ratios greater than the threshold
+preserve the same optical presence and use the profile-selected same-presence
+strategy, currently `squirt`. Ratios less than or equal to the threshold resolve
+to `dematerialize_rematerialize`. `continuity="new_presence"` or
+`continuity="replace"` also resolves to `dematerialize_rematerialize`, even when
+the rectangles overlap.
+
+When a mailbox transition is present, `auto` uses `presented_bounds` as the
+current geometry. This is the interruption contract: a final semantic target can
+interrupt provisional motion and retarget from the sampled visual state instead
+of replaying stale provisional rectangles. Obsolete provisional requests remain
+non-FIFO mailbox input and cannot overwrite an equal-epoch final target.
+
 ## Dismiss And Hidden
 
 `dismiss` and `hidden` are latest desired states for the same caller, not side
@@ -127,6 +161,20 @@ metadata also includes a `transition` block:
     "display_epoch": 3,
     "source_epoch": 9,
     "provisional": False,
+}
+```
+
+Requests with a motion intent also include a `motion` block:
+
+```python
+{
+    "requested_strategy": "auto",
+    "resolved_strategy": "squirt",
+    "continuity": "preserve_identity",
+    "overlap_ratio": 0.76,
+    "overlap_threshold": 0.50,
+    "same_presence": True,
+    "reason": "overlap_above_threshold",
 }
 ```
 

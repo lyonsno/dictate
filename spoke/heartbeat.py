@@ -13,6 +13,7 @@ import gc
 import json
 import logging
 import os
+import re
 import signal
 import subprocess
 import time
@@ -65,12 +66,22 @@ def _is_process_alive(pid: int) -> bool:
     return True
 
 
+def _command_looks_like_spoke_process(command: str) -> bool:
+    if not command:
+        return False
+    if re.search(r"(^|\s)-m\s+spoke(\b|\.)", command):
+        return True
+    if re.search(r"""["']-m["']\s*,\s*["']spoke(?:[.]["']|["'])""", command):
+        return True
+    return "spoke/" in command
+
+
 def _is_spoke_process(pid: int) -> bool:
     """Best-effort check that *pid* is actually a spoke process."""
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
-            cmdline = f.read().decode("utf-8", errors="replace")
-        return "-m" in cmdline and "spoke" in cmdline
+            cmdline = f.read().replace(b"\0", b" ").decode("utf-8", errors="replace")
+        return _command_looks_like_spoke_process(cmdline)
     except FileNotFoundError:
         pass
     # macOS: use ps
@@ -84,7 +95,7 @@ def _is_spoke_process(pid: int) -> bool:
             timeout=5,
         )
         cmd = result.stdout.strip()
-        return "spoke" in cmd and ("-m" in cmd or "spoke/" in cmd)
+        return _command_looks_like_spoke_process(cmd)
     except Exception:
         return False
 

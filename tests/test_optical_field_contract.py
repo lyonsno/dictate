@@ -16,6 +16,8 @@ from spoke.optical_field import (
     OpticalFieldSlotOverride,
     compile_placeholder_shell_config,
     normalize_optical_field_bounds,
+    optical_field_overlap_ratio,
+    resolve_optical_field_motion,
 )
 
 
@@ -264,6 +266,9 @@ def test_public_consumer_contract_round_trips_coordinate_content_motion_and_fres
     assert optical_field["layout_recipe"] == "semantic-placement-candidate"
     assert optical_field["motion"] == {
         "strategy": "auto",
+        "continuity": "preserve_identity",
+        "overlap_threshold": 0.50,
+        "same_presence_strategy": "squirt",
         "urgency": "normal",
         "latency_mask": "pending_resolution",
         "params": {"overlap_threshold": 0.50},
@@ -770,3 +775,157 @@ def test_transition_mailbox_payload_survives_fullscreen_compositor_snapshot_roun
     )
     assert round_tripped["optical_field"]["transition"]["display_epoch"] == 2
     assert round_tripped["optical_field"]["transition"]["source_epoch"] == 7
+
+
+def test_auto_motion_overlap_metric_uses_intersection_over_smaller_area():
+    current = OpticalFieldBounds(x=0.0, y=0.0, width=100.0, height=100.0)
+
+    assert optical_field_overlap_ratio(
+        current,
+        OpticalFieldBounds(x=25.0, y=0.0, width=100.0, height=100.0),
+    ) == pytest.approx(0.75)
+    assert optical_field_overlap_ratio(
+        current,
+        OpticalFieldBounds(x=50.0, y=0.0, width=100.0, height=100.0),
+    ) == pytest.approx(0.50)
+    assert optical_field_overlap_ratio(
+        current,
+        OpticalFieldBounds(x=10.0, y=10.0, width=50.0, height=50.0),
+    ) == pytest.approx(1.0)
+    assert optical_field_overlap_ratio(
+        current,
+        OpticalFieldBounds(x=160.0, y=0.0, width=100.0, height=100.0),
+    ) == pytest.approx(0.0)
+
+
+def test_auto_motion_policy_prefers_same_presence_only_above_threshold():
+    current = OpticalFieldBounds(x=0.0, y=0.0, width=100.0, height=100.0)
+    intent = OpticalFieldMotionIntent(strategy="auto")
+
+    near = resolve_optical_field_motion(
+        current,
+        OpticalFieldBounds(x=24.0, y=0.0, width=100.0, height=100.0),
+        intent,
+    )
+    boundary = resolve_optical_field_motion(
+        current,
+        OpticalFieldBounds(x=50.0, y=0.0, width=100.0, height=100.0),
+        intent,
+    )
+    forced_new = resolve_optical_field_motion(
+        current,
+        OpticalFieldBounds(x=10.0, y=0.0, width=100.0, height=100.0),
+        OpticalFieldMotionIntent(strategy="auto", continuity="new_presence"),
+    )
+
+    assert near.resolved_strategy == "squirt"
+    assert near.same_presence is True
+    assert near.overlap_ratio == pytest.approx(0.76)
+    assert boundary.resolved_strategy == "dematerialize_rematerialize"
+    assert boundary.same_presence is False
+    assert boundary.overlap_ratio == pytest.approx(0.50)
+    assert forced_new.resolved_strategy == "dematerialize_rematerialize"
+    assert forced_new.reason == "new_presence_continuity"
+
+
+def test_auto_motion_metadata_uses_mailbox_presented_bounds_for_retarget_decision():
+    backend = OpticalFieldPlaceholderBackend()
+    initial = OpticalFieldBounds(x=0.0, y=0.0, width=240.0, height=80.0)
+    stale_target = OpticalFieldBounds(x=500.0, y=0.0, width=240.0, height=80.0)
+    sampled_presented = OpticalFieldBounds(x=32.0, y=0.0, width=240.0, height=80.0)
+    final_target = OpticalFieldBounds(x=60.0, y=0.0, width=240.0, height=80.0)
+
+    backend.upsert(_field_request("assistant", bounds=initial, display_epoch=1))
+    backend.upsert(
+        _field_request(
+            "assistant",
+            bounds=stale_target,
+            state="recenter",
+            display_epoch=2,
+            source_epoch=2,
+            provisional=True,
+        )
+    )
+    backend.sample_presented_bounds("assistant", sampled_presented)
+    final = backend.upsert(
+        OpticalFieldRequest(
+            caller_id="assistant",
+            bounds=final_target,
+            role="agent_card",
+            state="recenter",
+            profile=OpticalFieldProfileRef(base="agent_card"),
+            display_epoch=3,
+            source_epoch=3,
+            provisional=False,
+            motion=OpticalFieldMotionIntent(strategy="auto"),
+        )
+    )
+
+    assert final.accepted is True
+    (shell_config,) = backend.compile_shell_configs()
+    motion = shell_config["optical_field"]["resolved_motion"]
+    assert motion["requested_strategy"] == "auto"
+    assert motion["resolved_strategy"] == "squirt"
+    assert motion["same_presence"] is True
+    assert motion["overlap_ratio"] == pytest.approx(0.8833333333)
+    assert shell_config["optical_field"]["transition"]["from_bounds"] == pytest.approx(
+        _bounds_tuple(sampled_presented)
+    )
+
+
+def test_final_auto_motion_interrupts_provisional_and_rejects_obsolete_provisional_fifo():
+    backend = OpticalFieldPlaceholderBackend()
+    initial = OpticalFieldBounds(x=0.0, y=0.0, width=200.0, height=80.0)
+    provisional_target = OpticalFieldBounds(x=24.0, y=0.0, width=200.0, height=80.0)
+    final_target = OpticalFieldBounds(x=48.0, y=0.0, width=200.0, height=80.0)
+    obsolete_target = OpticalFieldBounds(x=72.0, y=0.0, width=200.0, height=80.0)
+    motion = OpticalFieldMotionIntent(strategy="auto")
+
+    backend.upsert(_field_request("assistant", bounds=initial, display_epoch=1))
+    provisional = backend.upsert(
+        OpticalFieldRequest(
+            caller_id="assistant",
+            bounds=provisional_target,
+            role="agent_card",
+            state="recenter",
+            profile=OpticalFieldProfileRef(base="agent_card"),
+            display_epoch=2,
+            source_epoch=2,
+            provisional=True,
+            motion=motion,
+        )
+    )
+    final = backend.upsert(
+        OpticalFieldRequest(
+            caller_id="assistant",
+            bounds=final_target,
+            role="agent_card",
+            state="recenter",
+            profile=OpticalFieldProfileRef(base="agent_card"),
+            display_epoch=3,
+            source_epoch=3,
+            provisional=False,
+            motion=motion,
+        )
+    )
+    obsolete = backend.upsert(
+        OpticalFieldRequest(
+            caller_id="assistant",
+            bounds=obsolete_target,
+            role="agent_card",
+            state="recenter",
+            profile=OpticalFieldProfileRef(base="agent_card"),
+            display_epoch=3,
+            source_epoch=3,
+            provisional=True,
+            motion=motion,
+        )
+    )
+
+    assert provisional.accepted is True
+    assert final.accepted is True
+    assert obsolete.accepted is False
+    assert obsolete.reason == "stale_provisional_after_final"
+    (request,) = backend.requests()
+    assert request.bounds == final_target
+    assert request.provisional is False
