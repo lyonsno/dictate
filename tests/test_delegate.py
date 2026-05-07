@@ -4715,6 +4715,22 @@ class TestCommandOverlayToggle:
         d._command_overlay.finish.assert_called_once()
         d._command_overlay.append_token.assert_not_called()
 
+    def test_empty_enter_hold_recalls_overlay_when_hold_timer_wins_race(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        d._capture.stop.return_value = b""
+        d._command_client = MagicMock()
+        d._command_client.history = [("hello", "world")]
+        d._command_overlay = MagicMock(_visible=False)
+        d._detector.command_overlay_active = False
+
+        d._on_hold_end(shift_held=False, enter_held=True)
+
+        d._command_overlay.show.assert_called_once()
+        d._command_overlay.finish.assert_called_once()
+        assert d._detector.command_overlay_active is True
+
 
 class TestHoldStartDuringTranscription:
     """Test interrupt-and-restart when hold starts during active transcription."""

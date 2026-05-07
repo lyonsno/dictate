@@ -2466,6 +2466,16 @@ class SpokeAppDelegate(NSObject):
                 else:
                     logger.info("Shift+empty — no tray entries to recall")
             elif enter_held and self._command_client is not None:
+                command_overlay_visible = (
+                    self._command_overlay is not None
+                    and getattr(self._command_overlay, "_visible", False)
+                )
+                if not command_overlay_visible:
+                    logger.info(
+                        "Enter held on empty — recalling assistant overlay from slow toggle path"
+                    )
+                    self._toggle_command_overlay()
+                    return
                 logger.info("Enter held on empty — assistant path with no utterance")
             else:
                 logger.info("Empty tap — no action")
