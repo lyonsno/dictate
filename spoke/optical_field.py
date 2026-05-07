@@ -25,10 +25,13 @@ OpticalFieldState = Literal[
 OpticalFieldDisturbanceMode = Literal["persistent", "ephemeral"]
 OpticalFieldCoordinateSpace = Literal[
     "display_local",
+    "display_points",
     "screen_points",
     "backing_pixels",
     "parent_local",
+    "parent_points",
     "content_local",
+    "content_points",
     "recipe_local",
 ]
 OpticalFieldMotionStrategy = Literal[
@@ -46,6 +49,17 @@ _FORBIDDEN_CONSUMER_ANIMATION_NAMES = {
     "transition.phase",
     "animation_progress",
     "animation_phase",
+}
+
+_COORDINATE_SPACES = {
+    "display_local",
+    "display_points",
+    "screen_points",
+    "backing_pixels",
+    "parent_local",
+    "parent_points",
+    "content_local",
+    "content_points",
 }
 
 
@@ -81,6 +95,107 @@ class OpticalFieldBounds:
             "width": float(self.width),
             "height": float(self.height),
         }
+
+
+@dataclass(frozen=True)
+class OpticalFieldCoordinateContext:
+    """Coordinate custody metadata for geometry crossing into House."""
+
+    coordinate_space: OpticalFieldCoordinateSpace = "display_points"
+    display_id: str | int | None = None
+    display_epoch: str | int | None = None
+    source_epoch: str | int | None = None
+    backing_scale: float | None = None
+    display_origin: tuple[float, float] | None = None
+    parent_origin: tuple[float, float] | None = None
+    content_origin: tuple[float, float] | None = None
+
+    def __post_init__(self) -> None:
+        if self.coordinate_space not in _COORDINATE_SPACES:
+            raise ValueError(f"unknown optical coordinate space: {self.coordinate_space}")
+        if self.backing_scale is not None and self.backing_scale <= 0.0:
+            raise ValueError("backing_scale must be positive")
+        for field_name in ("display_origin", "parent_origin", "content_origin"):
+            origin = getattr(self, field_name)
+            if origin is not None:
+                if len(origin) != 2:
+                    raise ValueError(f"{field_name} must contain x and y")
+                object.__setattr__(
+                    self,
+                    field_name,
+                    (float(origin[0]), float(origin[1])),
+                )
+
+    @property
+    def carries_metadata(self) -> bool:
+        return (
+            self.coordinate_space != "display_points"
+            or self.display_id is not None
+            or self.display_epoch is not None
+            or self.source_epoch is not None
+            or self.backing_scale is not None
+            or self.display_origin is not None
+            or self.parent_origin is not None
+            or self.content_origin is not None
+        )
+
+
+def _require_origin(
+    context: OpticalFieldCoordinateContext,
+    attr: str,
+    space: str,
+) -> tuple[float, float]:
+    origin = getattr(context, attr)
+    if origin is None:
+        raise ValueError(f"{space} bounds require {attr}")
+    return origin
+
+
+def normalize_optical_field_bounds(
+    bounds: OpticalFieldBounds,
+    context: OpticalFieldCoordinateContext | None = None,
+) -> OpticalFieldBounds:
+    """Normalize explicit coordinate-space bounds into display-local points."""
+
+    context = context or OpticalFieldCoordinateContext()
+    space = context.coordinate_space
+    if space in {"display_local", "display_points"}:
+        return bounds
+    if space == "screen_points":
+        display_x, display_y = _require_origin(context, "display_origin", space)
+        return OpticalFieldBounds(
+            x=bounds.x - display_x,
+            y=bounds.y - display_y,
+            width=bounds.width,
+            height=bounds.height,
+        )
+    if space == "backing_pixels":
+        if context.backing_scale is None:
+            raise ValueError("backing_pixels bounds require backing_scale")
+        scale = context.backing_scale
+        return OpticalFieldBounds(
+            x=bounds.x / scale,
+            y=bounds.y / scale,
+            width=bounds.width / scale,
+            height=bounds.height / scale,
+        )
+    if space in {"parent_local", "parent_points"}:
+        parent_x, parent_y = _require_origin(context, "parent_origin", space)
+        return OpticalFieldBounds(
+            x=bounds.x + parent_x,
+            y=bounds.y + parent_y,
+            width=bounds.width,
+            height=bounds.height,
+        )
+    if space in {"content_local", "content_points"}:
+        content_x, content_y = _require_origin(context, "content_origin", space)
+        return OpticalFieldBounds(
+            x=bounds.x + content_x,
+            y=bounds.y + content_y,
+            width=bounds.width,
+            height=bounds.height,
+        )
+    raise ValueError(f"unknown optical coordinate space: {space}")
 
 
 @dataclass(frozen=True)
@@ -203,6 +318,10 @@ class OpticalFieldRequest:
     confidence: float | None = None
     profile: OpticalFieldProfileRef = field(default_factory=OpticalFieldProfileRef)
     disturbances: tuple[OpticalFieldDisturbance, ...] = ()
+    coordinate_context: OpticalFieldCoordinateContext = field(
+        default_factory=OpticalFieldCoordinateContext
+    )
+    content_coordinate_context: OpticalFieldCoordinateContext | None = None
     visible: bool = True
     z_index: int = 0
 
@@ -215,8 +334,6 @@ class OpticalFieldRequest:
             object.__setattr__(self, "continuity_key", self.caller_id)
         elif not self.continuity_key:
             raise ValueError("continuity_key must be non-empty when provided")
-        if self.content_frame is None:
-            object.__setattr__(self, "content_frame", self.bounds)
         if not self.coordinate_space:
             raise ValueError("coordinate_space must be non-empty")
         if not self.presentation_layer:
@@ -229,6 +346,12 @@ class OpticalFieldRequest:
             raise ValueError("confidence must be between 0.0 and 1.0")
         object.__setattr__(self, "signals", tuple(self.signals))
         object.__setattr__(self, "disturbances", tuple(self.disturbances))
+        if self.content_frame is not None and self.content_coordinate_context is None:
+            object.__setattr__(
+                self,
+                "content_coordinate_context",
+                self.coordinate_context,
+            )
 
 
 def _is_forbidden_animation_name(name: str) -> bool:
@@ -311,12 +434,55 @@ def _float_param(params: Mapping[str, Any], key: str) -> float:
     return float(params[key])
 
 
+def _bounds_dict(bounds: OpticalFieldBounds) -> dict[str, float]:
+    return {
+        "x": float(bounds.x),
+        "y": float(bounds.y),
+        "width": float(bounds.width),
+        "height": float(bounds.height),
+    }
+
+
+def _coordinate_metadata(
+    request: OpticalFieldRequest,
+    bounds: OpticalFieldBounds,
+    content_frame: OpticalFieldBounds | None,
+) -> dict[str, Any]:
+    context = request.coordinate_context
+    if not context.carries_metadata:
+        return {}
+    metadata: dict[str, Any] = {
+        "coordinate_space": "display_points",
+        "source_coordinate_space": context.coordinate_space,
+        "bounds": _bounds_dict(bounds),
+    }
+    if content_frame is not None:
+        metadata["content_frame"] = _bounds_dict(content_frame)
+    if context.display_id is not None:
+        metadata["display_id"] = context.display_id
+    if context.display_epoch is not None:
+        metadata["display_epoch"] = context.display_epoch
+    if context.source_epoch is not None:
+        metadata["source_epoch"] = context.source_epoch
+    if context.backing_scale is not None:
+        metadata["backing_scale"] = float(context.backing_scale)
+    return metadata
+
+
 def compile_placeholder_shell_config(request: OpticalFieldRequest) -> dict[str, Any]:
     """Compile one contract request into the current legacy shell-config shape."""
 
     slot_name = _slot_name_for_state(request.state)
     params = _merged_profile_params(request.profile, slot_name)
-    bounds = request.bounds
+    bounds = normalize_optical_field_bounds(request.bounds, request.coordinate_context)
+    content_frame = (
+        normalize_optical_field_bounds(
+            request.content_frame,
+            request.content_coordinate_context,
+        )
+        if request.content_frame is not None
+        else None
+    )
     scale = bounds.min_dimension
     corner_radius = min(
         scale * _float_param(params, "corner_radius_frac"),
@@ -369,6 +535,7 @@ def compile_placeholder_shell_config(request: OpticalFieldRequest) -> dict[str, 
             "disturbances": tuple(
                 disturbance.disturbance_id for disturbance in request.disturbances
             ),
+            **_coordinate_metadata(request, bounds, content_frame),
         },
     }
 
@@ -376,10 +543,43 @@ def compile_placeholder_shell_config(request: OpticalFieldRequest) -> dict[str, 
 class OpticalFieldPlaceholderBackend:
     """In-memory placeholder backend for consumers targeting the new contract."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        display_epochs: Mapping[str | int, str | int] | None = None,
+        source_epochs: Mapping[str | int, str | int] | None = None,
+    ) -> None:
         self._requests: dict[str, OpticalFieldRequest] = {}
+        self._display_epochs = dict(display_epochs or {})
+        self._source_epochs = dict(source_epochs or {})
+
+    def _validate_epoch_context(self, context: OpticalFieldCoordinateContext) -> None:
+        display_id = context.display_id
+        if display_id is None:
+            return
+        current_display_epoch = self._display_epochs.get(display_id)
+        if (
+            current_display_epoch is not None
+            and context.display_epoch != current_display_epoch
+        ):
+            raise ValueError(
+                f"stale display_epoch for {display_id}: "
+                f"{context.display_epoch!r} != {current_display_epoch!r}"
+            )
+        current_source_epoch = self._source_epochs.get(display_id)
+        if (
+            current_source_epoch is not None
+            and context.source_epoch != current_source_epoch
+        ):
+            raise ValueError(
+                f"stale source_epoch for {display_id}: "
+                f"{context.source_epoch!r} != {current_source_epoch!r}"
+            )
 
     def upsert(self, request: OpticalFieldRequest) -> None:
+        self._validate_epoch_context(request.coordinate_context)
+        if request.content_coordinate_context is not None:
+            self._validate_epoch_context(request.content_coordinate_context)
         self._requests[request.caller_id] = request
 
     def remove(self, caller_id: str) -> bool:

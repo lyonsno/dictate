@@ -6,6 +6,7 @@ import pytest
 
 from spoke.optical_field import (
     OpticalFieldBounds,
+    OpticalFieldCoordinateContext,
     OpticalFieldDisturbance,
     OpticalFieldMotionIntent,
     OpticalFieldPlaceholderBackend,
@@ -14,6 +15,7 @@ from spoke.optical_field import (
     OpticalFieldSignal,
     OpticalFieldSlotOverride,
     compile_placeholder_shell_config,
+    normalize_optical_field_bounds,
 )
 
 
@@ -333,3 +335,132 @@ def test_legacy_minimal_requests_compile_with_explicit_public_contract_defaults(
     assert optical_field["provisional"] is False
     assert optical_field["final"] is True
     assert optical_field["confidence"] is None
+
+
+def test_backing_pixel_bounds_normalize_to_display_points_with_scale_and_epoch_metadata():
+    bounds = OpticalFieldBounds(x=200.0, y=100.0, width=640.0, height=192.0)
+    context = OpticalFieldCoordinateContext(
+        coordinate_space="backing_pixels",
+        display_id="main-display",
+        display_epoch="display-7",
+        source_epoch="capture-3",
+        backing_scale=2.0,
+    )
+
+    normalized = normalize_optical_field_bounds(bounds, context)
+
+    assert normalized == OpticalFieldBounds(x=100.0, y=50.0, width=320.0, height=96.0)
+
+    backend = OpticalFieldPlaceholderBackend(display_epochs={"main-display": "display-7"})
+    backend.upsert(
+        OpticalFieldRequest(
+            caller_id="agent.card.pixel-space",
+            bounds=bounds,
+            role="agent_card",
+            coordinate_context=context,
+        )
+    )
+    (shell_config,) = backend.compile_shell_configs()
+
+    assert shell_config["center_x"] == pytest.approx(260.0)
+    assert shell_config["center_y"] == pytest.approx(98.0)
+    assert shell_config["optical_field"]["coordinate_space"] == "display_points"
+    assert shell_config["optical_field"]["source_coordinate_space"] == "backing_pixels"
+    assert shell_config["optical_field"]["display_id"] == "main-display"
+    assert shell_config["optical_field"]["display_epoch"] == "display-7"
+    assert shell_config["optical_field"]["source_epoch"] == "capture-3"
+    assert shell_config["optical_field"]["backing_scale"] == pytest.approx(2.0)
+
+
+def test_backing_pixel_bounds_without_scale_fail_loudly_instead_of_impersonating_points():
+    context = OpticalFieldCoordinateContext(
+        coordinate_space="backing_pixels",
+        display_id="main-display",
+        display_epoch="display-7",
+    )
+
+    with pytest.raises(ValueError, match="backing_scale"):
+        normalize_optical_field_bounds(
+            OpticalFieldBounds(x=200.0, y=100.0, width=640.0, height=192.0),
+            context,
+        )
+
+
+def test_parent_local_optical_bounds_and_content_frame_compile_as_distinct_display_rects():
+    backend = OpticalFieldPlaceholderBackend(display_epochs={"main-display": "display-7"})
+    backend.upsert(
+        OpticalFieldRequest(
+            caller_id="agent.card.parent-local",
+            bounds=OpticalFieldBounds(x=20.0, y=10.0, width=320.0, height=96.0),
+            content_frame=OpticalFieldBounds(x=36.0, y=22.0, width=260.0, height=52.0),
+            role="agent_card",
+            coordinate_context=OpticalFieldCoordinateContext(
+                coordinate_space="parent_points",
+                display_id="main-display",
+                display_epoch="display-7",
+                parent_origin=(100.0, 200.0),
+            ),
+            content_coordinate_context=OpticalFieldCoordinateContext(
+                coordinate_space="content_points",
+                display_id="main-display",
+                display_epoch="display-7",
+                content_origin=(120.0, 214.0),
+            ),
+        )
+    )
+
+    (shell_config,) = backend.compile_shell_configs()
+
+    assert shell_config["center_x"] == pytest.approx(280.0)
+    assert shell_config["center_y"] == pytest.approx(258.0)
+    assert shell_config["content_width_points"] == pytest.approx(320.0)
+    assert shell_config["content_height_points"] == pytest.approx(96.0)
+    assert shell_config["optical_field"]["bounds"] == {
+        "x": 120.0,
+        "y": 210.0,
+        "width": 320.0,
+        "height": 96.0,
+    }
+    assert shell_config["optical_field"]["content_frame"] == {
+        "x": 156.0,
+        "y": 236.0,
+        "width": 260.0,
+        "height": 52.0,
+    }
+
+
+def test_backend_rejects_stale_display_and_capture_epochs_before_compiling_geometry():
+    backend = OpticalFieldPlaceholderBackend(
+        display_epochs={"main-display": "display-7"},
+        source_epochs={"main-display": "capture-3"},
+    )
+
+    with pytest.raises(ValueError, match="stale display_epoch"):
+        backend.upsert(
+            OpticalFieldRequest(
+                caller_id="agent.card.old-display",
+                bounds=OpticalFieldBounds(x=0.0, y=0.0, width=100.0, height=40.0),
+                role="agent_card",
+                coordinate_context=OpticalFieldCoordinateContext(
+                    coordinate_space="display_points",
+                    display_id="main-display",
+                    display_epoch="display-6",
+                    source_epoch="capture-3",
+                ),
+            )
+        )
+
+    with pytest.raises(ValueError, match="stale source_epoch"):
+        backend.upsert(
+            OpticalFieldRequest(
+                caller_id="agent.card.old-capture",
+                bounds=OpticalFieldBounds(x=0.0, y=0.0, width=100.0, height=40.0),
+                role="agent_card",
+                coordinate_context=OpticalFieldCoordinateContext(
+                    coordinate_space="display_points",
+                    display_id="main-display",
+                    display_epoch="display-7",
+                    source_epoch="capture-2",
+                ),
+            )
+        )
