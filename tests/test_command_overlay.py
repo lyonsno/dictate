@@ -1124,6 +1124,61 @@ class TestOpticalShellMaterialization:
         assert material_calls
         assert material_calls[-1].args[1] == pytest.approx(overlay._brightness)
 
+    def test_materialization_keeps_gpu_material_basis_at_final_geometry(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        final_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "gpu_material_enabled": 1.0,
+            "gpu_material_brightness": 0.42,
+            "gpu_material_opacity": 1.0,
+        }
+
+        seed = mod._materialized_optical_shell_config(final_config, 0.0)
+        mid = mod._materialized_optical_shell_config(final_config, 0.90)
+
+        assert seed["content_width_points"] < final_config["content_width_points"]
+        assert mid["content_height_points"] < final_config["content_height_points"]
+        for config in (seed, mid):
+            assert config["gpu_material_base_width_points"] == pytest.approx(
+                final_config["content_width_points"]
+            )
+            assert config["gpu_material_base_height_points"] == pytest.approx(
+                final_config["content_height_points"]
+            )
+            assert config["gpu_material_base_corner_radius_points"] == pytest.approx(
+                final_config["corner_radius_points"]
+            )
+        assert seed["gpu_material_height_frac"] < mid["gpu_material_height_frac"] < 1.0
+
+    def test_gpu_compositor_hides_cpu_fill_layer_after_materialization(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_final_shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "gpu_material_enabled": 1.0,
+        }
+        overlay._materialization_direction = 1
+        overlay._materialization_started_at = 0.0
+        monkeypatch.setattr(mod.time, "perf_counter", lambda: mod._OPTICAL_MATERIALIZATION_S)
+
+        overlay.materializationStep_(overlay._materialization_timer)
+
+        overlay._fill_layer.setHidden_.assert_called_with(True)
+        overlay._scroll_view.setHidden_.assert_called_with(False)
+
     def test_fill_image_ready_preserves_active_materialization_geometry(
         self, mock_pyobjc
     ):

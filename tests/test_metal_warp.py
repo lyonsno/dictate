@@ -138,6 +138,10 @@ def test_pack_warp_params_uses_shell_specific_gpu_material_controls():
             "gpu_material_opacity": 0.74,
             "gpu_material_feather_points": 140.0,
             "gpu_material_fill_overscan_points": 5.2,
+            "gpu_material_base_width_points": 640.0,
+            "gpu_material_base_height_points": 120.0,
+            "gpu_material_base_corner_radius_points": 20.0,
+            "gpu_material_height_frac": 0.45,
         },
     )
     values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, payload)
@@ -147,12 +151,18 @@ def test_pack_warp_params_uses_shell_specific_gpu_material_controls():
     assert values[31] == pytest.approx(0.74)
     assert values[32] == pytest.approx(140.0)
     assert values[33] == pytest.approx(5.2)
+    assert values[34] == pytest.approx(640.0)
+    assert values[35] == pytest.approx(120.0)
+    assert values[36] == pytest.approx(20.0)
+    assert values[37] == pytest.approx(0.45)
 
 
 def test_metal_shader_composes_gpu_shell_material_after_warp_sampling():
     source = metal_warp._metal_shader_source()
 
     assert "gpuMaterialEnabled" in source
+    assert "gpuMaterialBaseWidth" in source
+    assert "gpuMaterialHeightFrac" in source
     assert "shellMaterialColorForBrightness" in source
     assert "shellMaterialAlphaForSdf" in source
     assert "composeShellMaterial" in source
@@ -261,6 +271,30 @@ def test_warp_dispatch_box_respects_shell_specific_corner_radius():
     assert squarer[1] > rounder[1]
     assert squarer[2] < rounder[2]
     assert squarer[3] < rounder[3]
+
+
+def test_warp_dispatch_box_covers_stable_gpu_material_basis():
+    box = metal_warp._warp_dispatch_box(
+        1440.0,
+        900.0,
+        {
+            "center_x": 720.0,
+            "center_y": 450.0,
+            "content_width_points": 72.0,
+            "content_height_points": 8.0,
+            "corner_radius_points": 4.0,
+            "bleed_zone_frac": 0.0,
+            "gpu_material_enabled": 1.0,
+            "gpu_material_base_width_points": 640.0,
+            "gpu_material_base_height_points": 120.0,
+            "gpu_material_height_frac": 0.25,
+        },
+    )
+
+    assert box[0] <= 400
+    assert box[2] >= 1040
+    assert box[1] <= 435
+    assert box[3] >= 465
 
 
 def test_warp_exterior_mix_weight_keeps_boundary_strength_but_starts_later_with_tighter_width():

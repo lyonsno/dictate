@@ -489,6 +489,27 @@ def _gpu_material_shell_fields(brightness: float, scale: float) -> dict[str, flo
     }
 
 
+def _with_gpu_material_basis(
+    config: dict,
+    *,
+    width: float,
+    height: float,
+    corner_radius: float,
+    progress: float = 1.0,
+) -> None:
+    if float(config.get("gpu_material_enabled", 0.0)) < 0.5:
+        return
+    state = _materialization_fill_state(progress)
+    config["gpu_material_base_width_points"] = max(float(width), 1.0)
+    config["gpu_material_base_height_points"] = max(float(height), 1.0)
+    config["gpu_material_base_corner_radius_points"] = max(float(corner_radius), 1.0)
+    config["gpu_material_height_frac"] = state["height_frac"]
+    config["gpu_material_opacity"] = min(
+        float(config.get("gpu_material_opacity", 1.0)),
+        state["opacity"] if progress < 1.0 else float(config.get("gpu_material_opacity", 1.0)),
+    )
+
+
 def _punchthrough_boost_style_for_brightness(
     brightness: float,
 ) -> tuple[tuple[float, float, float], float]:
@@ -680,6 +701,13 @@ def _materialized_optical_shell_config(
     config["_materialization_base_width_points"] = base_w
     config["_materialization_base_height_points"] = base_h
     config["_materialization_base_corner_radius_points"] = base_radius
+    _with_gpu_material_basis(
+        config,
+        width=base_w,
+        height=base_h,
+        corner_radius=base_radius,
+        progress=p,
+    )
 
     spread_t = _snap_ease_in(p / _OPTICAL_MATERIALIZATION_SPREAD_END)
     bloom_t = _snap_ease_in(
@@ -3647,7 +3675,17 @@ class CommandOverlay(NSObject):
             if getattr(self, "_materialization_direction", 1) > 0:
                 self._materialization_progress = 1.0
                 self._apply_materialization_fill_state(1.0)
-                if getattr(self, "_text_punchthrough", False):
+                if float(final_config.get("gpu_material_enabled", 0.0)) >= 0.5:
+                    self._enable_text_punchthrough(False)
+                    self._set_layer_opacity_without_actions(
+                        getattr(self, "_fill_layer", None),
+                        0.0,
+                    )
+                    self._set_layer_hidden_without_actions(
+                        getattr(self, "_fill_layer", None),
+                        True,
+                    )
+                elif getattr(self, "_text_punchthrough", False):
                     self._refresh_punchthrough_mask_if_needed()
                 if (
                     getattr(self, "_visible", False)
@@ -3884,6 +3922,7 @@ class CommandOverlay(NSObject):
         )
         if callable(updater):
             updater("gpu_material_opacity", state["opacity"])
+            updater("gpu_material_height_frac", state["height_frac"])
         if hide_material_layers:
             for layer_name in ("_boost_layer", "_spring_tint_layer"):
                 self._set_layer_opacity_without_actions(
@@ -5139,6 +5178,12 @@ class CommandOverlay(NSObject):
             if key in shell_config:
                 shell_config[key] = float(shell_config[key]) * scale
         shell_config.update(_gpu_material_shell_fields(brightness, scale))
+        _with_gpu_material_basis(
+            shell_config,
+            width=float(shell_config.get("content_width_points", 1.0)),
+            height=float(shell_config.get("content_height_points", 1.0)),
+            corner_radius=float(shell_config.get("corner_radius_points", 1.0)),
+        )
         return shell_config
 
     def _reset_text_geometry(self, visible_height: float) -> None:

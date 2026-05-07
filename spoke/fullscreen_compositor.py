@@ -63,6 +63,10 @@ class OpticalShellMaterialSnapshot:
     gpu_material_opacity: float = 1.0
     gpu_material_feather_points: float = 0.0
     gpu_material_fill_overscan_points: float = 0.0
+    gpu_material_base_width_points: float = 0.0
+    gpu_material_base_height_points: float = 0.0
+    gpu_material_base_corner_radius_points: float = 0.0
+    gpu_material_height_frac: float = 1.0
     core_magnification: float = 1.0
     ring_amplitude_points: float = 0.0
     tail_amplitude_points: float = 0.0
@@ -1263,6 +1267,10 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
         "gpu_material_opacity": snapshot.material.gpu_material_opacity,
         "gpu_material_feather_points": snapshot.material.gpu_material_feather_points,
         "gpu_material_fill_overscan_points": snapshot.material.gpu_material_fill_overscan_points,
+        "gpu_material_base_width_points": snapshot.material.gpu_material_base_width_points,
+        "gpu_material_base_height_points": snapshot.material.gpu_material_base_height_points,
+        "gpu_material_base_corner_radius_points": snapshot.material.gpu_material_base_corner_radius_points,
+        "gpu_material_height_frac": snapshot.material.gpu_material_height_frac,
         "core_magnification": snapshot.material.core_magnification,
         "ring_amplitude_points": snapshot.material.ring_amplitude_points,
         "tail_amplitude_points": snapshot.material.tail_amplitude_points,
@@ -1331,6 +1339,16 @@ def _snapshot_from_shell_config(
         gpu_material_fill_overscan_points=float(
             config.get("gpu_material_fill_overscan_points", 0.0)
         ),
+        gpu_material_base_width_points=float(
+            config.get("gpu_material_base_width_points", config.get("content_width_points", 0.0))
+        ),
+        gpu_material_base_height_points=float(
+            config.get("gpu_material_base_height_points", config.get("content_height_points", 0.0))
+        ),
+        gpu_material_base_corner_radius_points=float(
+            config.get("gpu_material_base_corner_radius_points", config.get("corner_radius_points", 0.0))
+        ),
+        gpu_material_height_frac=float(config.get("gpu_material_height_frac", 1.0)),
         core_magnification=float(config.get("core_magnification", 1.0)),
         ring_amplitude_points=float(config.get("ring_amplitude_points", 0.0)),
         tail_amplitude_points=float(config.get("tail_amplitude_points", 0.0)),
