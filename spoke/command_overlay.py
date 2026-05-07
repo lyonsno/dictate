@@ -302,6 +302,9 @@ _COMMAND_BACKDROP_PULSE_OPACITY_MAX = _env(
 _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED = _env_bool(
     "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", False
 )
+_COMMAND_GPU_MATERIAL_ENABLED = _env_bool(
+    "SPOKE_COMMAND_GPU_MATERIAL_ENABLED", False
+)
 _COMMAND_BACKDROP_OPTICAL_SHELL_CORE_MAGNIFICATION = _env(
     "SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_CORE_MAGNIFICATION", 1.55
 )
@@ -472,6 +475,8 @@ def _compositor_fill_alpha_multiplier_for_brightness(brightness: float) -> float
 
 
 def _gpu_material_shell_fields(brightness: float, scale: float) -> dict[str, float]:
+    if not _COMMAND_GPU_MATERIAL_ENABLED:
+        return {}
     return {
         "gpu_material_enabled": 1.0,
         "gpu_material_brightness": _clamp01(brightness),
@@ -3001,7 +3006,7 @@ class CommandOverlay(NSObject):
             self._brightness = _advance_command_brightness(current, target)
         t = getattr(self, "_brightness", 0.0)
         self._apply_surface_theme()
-        if compositor is not None:
+        if compositor is not None and _COMMAND_GPU_MATERIAL_ENABLED:
             updater = getattr(compositor, "update_shell_config_key", None)
             last_material_brightness = getattr(self, "_last_gpu_material_brightness", -1.0)
             if callable(updater) and abs(t - last_material_brightness) > 0.005:
@@ -3319,7 +3324,7 @@ class CommandOverlay(NSObject):
                     if compositor is not None
                     else None
                 )
-                if callable(updater):
+                if callable(updater) and _COMMAND_GPU_MATERIAL_ENABLED:
                     updater("gpu_material_opacity", new_opacity)
         # Brightness floor + boost for punch-through legibility.
         # On light backgrounds (dark fill), guarantee the warped content
@@ -3914,7 +3919,7 @@ class CommandOverlay(NSObject):
             if compositor is not None
             else None
         )
-        if callable(updater):
+        if callable(updater) and _COMMAND_GPU_MATERIAL_ENABLED:
             updater("gpu_material_opacity", state["opacity"])
             updater("gpu_material_height_frac", state["height_frac"])
         if hide_material_layers:
@@ -4060,7 +4065,7 @@ class CommandOverlay(NSObject):
                 )
             self._apply_surface_theme()
             updater = getattr(compositor, "update_shell_config_key", None)
-            if callable(updater):
+            if callable(updater) and _COMMAND_GPU_MATERIAL_ENABLED:
                 updater("gpu_material_brightness", brightness)
                 self._last_gpu_material_brightness = brightness
         finally:

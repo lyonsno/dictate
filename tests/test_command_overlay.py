@@ -1102,9 +1102,10 @@ class TestOpticalShellMaterialization:
         overlay._update_punchthrough_mask.assert_not_called()
 
     def test_pulse_updates_gpu_material_brightness_without_cpu_fill_rebuild(
-        self, mock_pyobjc
+        self, mock_pyobjc, monkeypatch
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_GPU_MATERIAL_ENABLED", True)
         overlay._visible = True
         overlay._fullscreen_compositor = MagicMock()
         overlay._fullscreen_compositor.sampled_brightness = 1.0
@@ -1123,6 +1124,53 @@ class TestOpticalShellMaterialization:
         ]
         assert material_calls
         assert material_calls[-1].args[1] == pytest.approx(overlay._brightness)
+
+    def test_gpu_material_is_disabled_by_default_for_smoke_stability(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+
+        config = overlay._display_local_optical_shell_config()
+
+        assert mod._COMMAND_GPU_MATERIAL_ENABLED is False
+        assert "gpu_material_enabled" not in config
+
+    def test_gpu_material_env_flag_enables_experimental_shell_fields(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        monkeypatch.setenv("SPOKE_COMMAND_GPU_MATERIAL_ENABLED", "1")
+        overlay, mod = _make_overlay(mock_pyobjc)
+
+        config = overlay._display_local_optical_shell_config()
+
+        assert mod._COMMAND_GPU_MATERIAL_ENABLED is True
+        assert config["gpu_material_enabled"] == pytest.approx(1.0)
+        assert config["gpu_material_base_width_points"] == pytest.approx(
+            config["content_width_points"]
+        )
+
+    def test_pulse_skips_gpu_material_key_updates_when_gate_is_off(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_GPU_MATERIAL_ENABLED", False)
+        overlay._visible = True
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._fullscreen_compositor.sampled_brightness = 1.0
+        overlay._brightness = 0.0
+        overlay._brightness_target = 0.0
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+
+        overlay._pulseStepInner()
+
+        material_calls = [
+            call
+            for call in overlay._fullscreen_compositor.update_shell_config_key.call_args_list
+            if call.args[0].startswith("gpu_material_")
+        ]
+        assert material_calls == []
 
     def test_compositor_sdf_alpha_multiplier_is_background_independent(
         self, mock_pyobjc
