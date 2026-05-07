@@ -207,6 +207,47 @@ def test_snapshot_round_trip_preserves_shell_mip_blur_strength():
     assert round_trip["mip_blur_strength"] == pytest.approx(0.0)
 
 
+def test_snapshot_round_trip_preserves_gpu_shell_material_controls():
+    from spoke.fullscreen_compositor import (
+        _snapshot_from_shell_config,
+        _snapshot_to_shell_config,
+    )
+
+    identity = _identity("assistant.command", role="assistant")
+    snapshot = _snapshot_from_shell_config(
+        identity,
+        {
+            "center_x": 123.0,
+            "center_y": 456.0,
+            "content_width_points": 600.0,
+            "content_height_points": 80.0,
+            "corner_radius_points": 16.0,
+            "band_width_points": 11.3,
+            "tail_width_points": 8.5,
+            "initial_brightness": 0.37,
+            "gpu_material_enabled": 1.0,
+            "gpu_material_brightness": 0.62,
+            "gpu_material_opacity": 0.81,
+            "gpu_material_feather_points": 140.0,
+            "gpu_material_fill_overscan_points": 5.2,
+        },
+        generation=7,
+    )
+
+    assert snapshot.material.gpu_material_enabled == pytest.approx(1.0)
+    assert snapshot.material.gpu_material_brightness == pytest.approx(0.62)
+    assert snapshot.material.gpu_material_opacity == pytest.approx(0.81)
+    assert snapshot.material.gpu_material_feather_points == pytest.approx(140.0)
+    assert snapshot.material.gpu_material_fill_overscan_points == pytest.approx(5.2)
+
+    round_trip = _snapshot_to_shell_config(snapshot)
+    assert round_trip["gpu_material_enabled"] == pytest.approx(1.0)
+    assert round_trip["gpu_material_brightness"] == pytest.approx(0.62)
+    assert round_trip["gpu_material_opacity"] == pytest.approx(0.81)
+    assert round_trip["gpu_material_feather_points"] == pytest.approx(140.0)
+    assert round_trip["gpu_material_fill_overscan_points"] == pytest.approx(5.2)
+
+
 def test_snapshot_round_trip_preserves_scar_warp_controls():
     from spoke.fullscreen_compositor import (
         _snapshot_from_shell_config,

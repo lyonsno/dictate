@@ -58,6 +58,11 @@ class OpticalShellGeometrySnapshot:
 class OpticalShellMaterialSnapshot:
     initial_brightness: float
     min_brightness: float = 0.0
+    gpu_material_enabled: float = 0.0
+    gpu_material_brightness: float = 0.5
+    gpu_material_opacity: float = 1.0
+    gpu_material_feather_points: float = 0.0
+    gpu_material_fill_overscan_points: float = 0.0
     core_magnification: float = 1.0
     ring_amplitude_points: float = 0.0
     tail_amplitude_points: float = 0.0
@@ -1253,6 +1258,11 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
         "tail_width_points": snapshot.geometry.tail_width_points,
         "initial_brightness": snapshot.material.initial_brightness,
         "min_brightness": snapshot.material.min_brightness,
+        "gpu_material_enabled": snapshot.material.gpu_material_enabled,
+        "gpu_material_brightness": snapshot.material.gpu_material_brightness,
+        "gpu_material_opacity": snapshot.material.gpu_material_opacity,
+        "gpu_material_feather_points": snapshot.material.gpu_material_feather_points,
+        "gpu_material_fill_overscan_points": snapshot.material.gpu_material_fill_overscan_points,
         "core_magnification": snapshot.material.core_magnification,
         "ring_amplitude_points": snapshot.material.ring_amplitude_points,
         "tail_amplitude_points": snapshot.material.tail_amplitude_points,
@@ -1312,6 +1322,15 @@ def _snapshot_from_shell_config(
     material = OpticalShellMaterialSnapshot(
         initial_brightness=float(config.get("initial_brightness", 0.5)),
         min_brightness=float(config.get("min_brightness", 0.0)),
+        gpu_material_enabled=float(config.get("gpu_material_enabled", 0.0)),
+        gpu_material_brightness=float(
+            config.get("gpu_material_brightness", config.get("initial_brightness", 0.5))
+        ),
+        gpu_material_opacity=float(config.get("gpu_material_opacity", 1.0)),
+        gpu_material_feather_points=float(config.get("gpu_material_feather_points", 0.0)),
+        gpu_material_fill_overscan_points=float(
+            config.get("gpu_material_fill_overscan_points", 0.0)
+        ),
         core_magnification=float(config.get("core_magnification", 1.0)),
         ring_amplitude_points=float(config.get("ring_amplitude_points", 0.0)),
         tail_amplitude_points=float(config.get("tail_amplitude_points", 0.0)),

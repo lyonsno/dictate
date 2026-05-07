@@ -1101,6 +1101,29 @@ class TestOpticalShellMaterialization:
 
         overlay._update_punchthrough_mask.assert_not_called()
 
+    def test_pulse_updates_gpu_material_brightness_without_cpu_fill_rebuild(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._fullscreen_compositor.sampled_brightness = 1.0
+        overlay._brightness = 0.0
+        overlay._brightness_target = 0.0
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+        overlay._apply_ridge_masks = MagicMock()
+
+        overlay._pulseStepInner()
+
+        overlay._apply_ridge_masks.assert_not_called()
+        material_calls = [
+            call
+            for call in overlay._fullscreen_compositor.update_shell_config_key.call_args_list
+            if call.args[0] == "gpu_material_brightness"
+        ]
+        assert material_calls
+        assert material_calls[-1].args[1] == pytest.approx(overlay._brightness)
+
     def test_fill_image_ready_preserves_active_materialization_geometry(
         self, mock_pyobjc
     ):

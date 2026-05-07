@@ -164,6 +164,11 @@ struct WarpParams {{
     float scarVerticalGrip; // vertical pinch strength for seam scar
     float scarHorizontalGrip; // side pinch strength for seam scar
     float scarAxisRotation; // 0 = horizontal seam field, 1 = 90-degree rotated field
+    float gpuMaterialEnabled; // 1 = compose shell fill/ridge material in shader
+    float gpuMaterialBrightness; // live sampled background brightness for material choice
+    float gpuMaterialOpacity; // pulse/entrance opacity multiplier for shell material
+    float gpuMaterialFeather; // exterior fill feather in pixels
+    float gpuMaterialFillOverscan; // body inflation for fill SDF in pixels
 }};
 
 float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
@@ -178,6 +183,56 @@ float depthRemap(float inside01, float curveBoost) {{
     float rimExp = mix({_WARP_REMAP_RIM_EXP}f, 1.0f, 1.0f - curveBoost);
     float exponent = mix(baseExp, rimExp, x * x);
     return pow(x, exponent);
+}}
+
+float shellMaterialChoiceForBrightness(float brightness) {{
+    float t = clamp((clamp(brightness, 0.0f, 1.0f) - 0.45f) * 6.0f + 0.5f, 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}}
+
+float3 shellMaterialColorForBrightness(float brightness) {{
+    float choice = shellMaterialChoiceForBrightness(brightness);
+    float3 darkBackgroundFill = float3(0.50f, 0.51f, 0.54f);
+    float3 lightBackgroundFill = float3(0.04f, 0.04f, 0.05f);
+    return mix(darkBackgroundFill, lightBackgroundFill, choice);
+}}
+
+float shellMaterialAlphaMultiplierForBrightness(float brightness) {{
+    return mix(1.50f, 1.0f, shellMaterialChoiceForBrightness(brightness));
+}}
+
+float shellMaterialAlphaForSdf(float capsuleSdf, constant WarpParams& params) {{
+    float opacity = clamp(params.gpuMaterialOpacity, 0.0f, 1.0f);
+    if (opacity <= 0.0f) return 0.0f;
+
+    float fillSdf = capsuleSdf - max(params.gpuMaterialFillOverscan, 0.0f);
+    float feather = max(params.gpuMaterialFeather, 1.0f);
+    float materialScale = max(feather / 140.0f, 1.0f);
+    float brightness = clamp(params.gpuMaterialBrightness, 0.0f, 1.0f);
+    if (fillSdf <= 0.0f) {{
+        float insideD = max(-fillSdf, 0.0f);
+        float edgeRidge = exp(-pow(insideD / max(1.5f * materialScale, 1e-6f), 2.0f));
+        float rawInterior = exp(sqrt(abs(fillSdf) / max(2.0f * materialScale, 1e-6f)) * -1.0f);
+        float interiorFloor = mix(0.60f, 0.85f, brightness);
+        float interior = clamp(interiorFloor + (1.0f - interiorFloor) * rawInterior + edgeRidge * 0.50f, 0.0f, 1.0f);
+        return clamp(interior * shellMaterialAlphaMultiplierForBrightness(brightness) * opacity, 0.0f, 1.0f);
+    }}
+
+    float sigma = feather / 3.0f;
+    float exterior = exp(-0.5f * pow(fillSdf / max(sigma, 1e-6f), 2.0f));
+    float extT = clamp(fillSdf / feather, 0.0f, 1.0f);
+    float exteriorTail = exterior * (0.13f * exp(-pow(extT / 0.30f, 1.5f)) + 0.007f);
+    return clamp(exteriorTail * opacity, 0.0f, 1.0f);
+}}
+
+float4 composeShellMaterial(float4 warpedColor, float capsuleSdf, constant WarpParams& params) {{
+    if (params.gpuMaterialEnabled < 0.5f || params.warpMode > 0.5f) {{
+        return warpedColor;
+    }}
+    float alpha = shellMaterialAlphaForSdf(capsuleSdf, params);
+    if (alpha <= 0.0f) return warpedColor;
+    float3 materialColor = shellMaterialColorForBrightness(params.gpuMaterialBrightness);
+    return float4(mix(warpedColor.rgb, materialColor, alpha), warpedColor.a);
 }}
 
 constexpr sampler bilinearSampler(
@@ -402,10 +457,12 @@ kernel void opticalShellWarp(
         float4 prev = accumIn.read(gid);
         float4 blended = mix(prev, warpedColor, temporalWeight);
         accumOut.write(blended, gid);
-        outTexture.write(blended, pixel);
+        warpedColor = composeShellMaterial(blended, capsuleSdf, params);
+        outTexture.write(warpedColor, pixel);
     }} else {{
         // Exterior: no temporal smoothing — fully responsive.
         accumOut.write(warpedColor, gid);
+        warpedColor = composeShellMaterial(warpedColor, capsuleSdf, params);
         outTexture.write(warpedColor, pixel);
     }}
 }}
@@ -434,7 +491,7 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-_WARP_PARAMS_FORMAT = "29f"
+_WARP_PARAMS_FORMAT = "34f"
 _WARP_PARAMS_SIZE = struct.calcsize(_WARP_PARAMS_FORMAT)
 
 
@@ -475,6 +532,11 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         float(shell_config.get("scar_vertical_grip", 0.20)),
         float(shell_config.get("scar_horizontal_grip", 0.07)),
         float(shell_config.get("scar_axis_rotation", 0.0)),
+        float(shell_config.get("gpu_material_enabled", 0.0)),
+        float(shell_config.get("gpu_material_brightness", shell_config.get("initial_brightness", 0.5))),
+        float(shell_config.get("gpu_material_opacity", 1.0)),
+        float(shell_config.get("gpu_material_feather_points", 0.0)),
+        float(shell_config.get("gpu_material_fill_overscan_points", 0.0)),
     )
 
 

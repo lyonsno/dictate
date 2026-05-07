@@ -125,6 +125,40 @@ def test_pack_warp_params_uses_shell_specific_seam_pucker_controls():
     assert values[28] == pytest.approx(1.0)
 
 
+def test_pack_warp_params_uses_shell_specific_gpu_material_controls():
+    payload = metal_warp._pack_warp_params(
+        1440.0,
+        900.0,
+        {
+            "content_width_points": 640.0,
+            "content_height_points": 120.0,
+            "corner_radius_points": 20.0,
+            "gpu_material_enabled": 1.0,
+            "gpu_material_brightness": 0.82,
+            "gpu_material_opacity": 0.74,
+            "gpu_material_feather_points": 140.0,
+            "gpu_material_fill_overscan_points": 5.2,
+        },
+    )
+    values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, payload)
+
+    assert values[29] == pytest.approx(1.0)
+    assert values[30] == pytest.approx(0.82)
+    assert values[31] == pytest.approx(0.74)
+    assert values[32] == pytest.approx(140.0)
+    assert values[33] == pytest.approx(5.2)
+
+
+def test_metal_shader_composes_gpu_shell_material_after_warp_sampling():
+    source = metal_warp._metal_shader_source()
+
+    assert "gpuMaterialEnabled" in source
+    assert "shellMaterialColorForBrightness" in source
+    assert "shellMaterialAlphaForSdf" in source
+    assert "composeShellMaterial" in source
+    assert "warpedColor = composeShellMaterial" in source
+
+
 def test_metal_shader_can_rotate_seam_scar_axis_for_pucker_tuning():
     source = metal_warp._metal_shader_source()
     seam_branch = source.split("Seam-tension scar:", 1)[1].split(
