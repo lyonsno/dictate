@@ -503,6 +503,21 @@ class TestOpticalShellMaterialization:
 
         assert overlay._optical_entrance_ready() is True
 
+    def test_optical_fill_ready_recovers_stale_hidden_latch_without_pending_fill(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._fill_hidden_until_signature = ("current-fill",)
+        overlay._fill_image_signature = ("current-fill",)
+        overlay._pending_fill_image_signature = None
+        overlay._queued_fill_request = None
+        overlay._fill_payload = b"payload"
+
+        assert overlay._optical_fill_ready() is True
+
+        assert overlay._fill_hidden_until_signature is None
+        overlay._fill_layer.setHidden_.assert_called_with(False)
+
     def test_optical_dismiss_uses_stretched_faster_reverse_timeline(
         self, mock_pyobjc
     ):

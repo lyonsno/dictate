@@ -4070,7 +4070,27 @@ class CommandOverlay(NSObject):
         return True
 
     def _optical_fill_ready(self) -> bool:
-        return getattr(self, "_fill_hidden_until_signature", None) is None
+        hidden_signature = getattr(self, "_fill_hidden_until_signature", None)
+        if hidden_signature is None:
+            return True
+        if getattr(self, "_pending_fill_image_signature", None) is not None:
+            return False
+        if getattr(self, "_queued_fill_request", None) is not None:
+            return False
+        if (
+            getattr(self, "_fill_image_signature", None) == hidden_signature
+            or getattr(self, "_fill_payload", None) is not None
+        ):
+            fill_layer = getattr(self, "_fill_layer", None)
+            if fill_layer is not None and hasattr(fill_layer, "setHidden_"):
+                fill_layer.setHidden_(False)
+            self._fill_hidden_until_signature = None
+            record_command_overlay_trace(
+                "overlay.fill_ready.recovered_hidden_latch",
+                signature=str(hidden_signature),
+            )
+            return True
+        return False
 
     def _sync_optical_compositor_brightness(
         self,
