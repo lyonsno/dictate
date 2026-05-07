@@ -67,6 +67,8 @@ class OpticalShellMaterialSnapshot:
     gpu_material_base_height_points: float = 0.0
     gpu_material_base_corner_radius_points: float = 0.0
     gpu_material_height_frac: float = 1.0
+    gpu_material_text_contrast_bias: float = 0.5
+    gpu_material_ridge_emphasis: float = 0.5
     core_magnification: float = 1.0
     ring_amplitude_points: float = 0.0
     tail_amplitude_points: float = 0.0
@@ -1271,6 +1273,8 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
         "gpu_material_base_height_points": snapshot.material.gpu_material_base_height_points,
         "gpu_material_base_corner_radius_points": snapshot.material.gpu_material_base_corner_radius_points,
         "gpu_material_height_frac": snapshot.material.gpu_material_height_frac,
+        "gpu_material_text_contrast_bias": snapshot.material.gpu_material_text_contrast_bias,
+        "gpu_material_ridge_emphasis": snapshot.material.gpu_material_ridge_emphasis,
         "core_magnification": snapshot.material.core_magnification,
         "ring_amplitude_points": snapshot.material.ring_amplitude_points,
         "tail_amplitude_points": snapshot.material.tail_amplitude_points,
@@ -1349,6 +1353,10 @@ def _snapshot_from_shell_config(
             config.get("gpu_material_base_corner_radius_points", config.get("corner_radius_points", 0.0))
         ),
         gpu_material_height_frac=float(config.get("gpu_material_height_frac", 1.0)),
+        gpu_material_text_contrast_bias=float(
+            config.get("gpu_material_text_contrast_bias", 0.5)
+        ),
+        gpu_material_ridge_emphasis=float(config.get("gpu_material_ridge_emphasis", 0.5)),
         core_magnification=float(config.get("core_magnification", 1.0)),
         ring_amplitude_points=float(config.get("ring_amplitude_points", 0.0)),
         tail_amplitude_points=float(config.get("tail_amplitude_points", 0.0)),

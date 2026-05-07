@@ -464,3 +464,50 @@ def test_backend_rejects_stale_display_and_capture_epochs_before_compiling_geome
                 ),
             )
         )
+
+
+def test_material_signals_compile_as_finite_material_basis_not_shader_knobs():
+    backend = OpticalFieldPlaceholderBackend()
+    backend.upsert(
+        OpticalFieldRequest(
+            caller_id="assistant.command",
+            bounds=OpticalFieldBounds(x=10.0, y=20.0, width=600.0, height=160.0),
+            role="assistant_shell",
+            state="rest",
+            profile=OpticalFieldProfileRef(base="assistant_shell"),
+            signals=(
+                OpticalFieldSignal(name="background_luminance", value=0.78),
+                OpticalFieldSignal(name="text_contrast_bias", value=0.64),
+                OpticalFieldSignal(name="ridge_emphasis", value=0.35),
+            ),
+        )
+    )
+
+    (shell_config,) = backend.compile_shell_configs()
+
+    assert shell_config["gpu_material_enabled"] == pytest.approx(1.0)
+    assert shell_config["gpu_material_brightness"] == pytest.approx(0.78)
+    assert shell_config["gpu_material_text_contrast_bias"] == pytest.approx(0.64)
+    assert shell_config["gpu_material_ridge_emphasis"] == pytest.approx(0.35)
+    assert shell_config["optical_field"]["signals"] == (
+        {"name": "background_luminance", "value": 0.78, "freshness_epoch": None, "params": {}},
+        {"name": "text_contrast_bias", "value": 0.64, "freshness_epoch": None, "params": {}},
+        {"name": "ridge_emphasis", "value": 0.35, "freshness_epoch": None, "params": {}},
+    )
+    assert "shader_params" not in shell_config["optical_field"]
+
+
+def test_unknown_signals_do_not_compile_into_gpu_material_knobs():
+    shell_config = compile_placeholder_shell_config(
+        OpticalFieldRequest(
+            caller_id="assistant.command",
+            bounds=OpticalFieldBounds(x=10.0, y=20.0, width=600.0, height=160.0),
+            role="assistant_shell",
+            signals=(OpticalFieldSignal(name="fragment_shader_uniform", value=0.5),),
+        )
+    )
+
+    assert "gpu_material_enabled" not in shell_config
+    assert shell_config["optical_field"]["signals"] == (
+        {"name": "fragment_shader_uniform", "value": 0.5, "freshness_epoch": None, "params": {}},
+    )

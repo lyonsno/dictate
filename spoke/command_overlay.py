@@ -475,7 +475,13 @@ def _compositor_fill_alpha_multiplier_for_brightness(brightness: float) -> float
     return 1.0
 
 
-def _gpu_material_shell_fields(brightness: float, scale: float) -> dict[str, float]:
+def _gpu_material_shell_fields(
+    brightness: float,
+    scale: float,
+    *,
+    text_contrast_bias: float = 0.5,
+    ridge_emphasis: float = 0.5,
+) -> dict[str, float]:
     if not _COMMAND_GPU_MATERIAL_ENABLED:
         return {}
     return {
@@ -486,6 +492,8 @@ def _gpu_material_shell_fields(brightness: float, scale: float) -> dict[str, flo
         "gpu_material_fill_overscan_points": (
             _COMMAND_MATERIAL_FILL_OVERSCAN_POINTS * max(float(scale), 1.0)
         ),
+        "gpu_material_text_contrast_bias": _clamp01(text_contrast_bias),
+        "gpu_material_ridge_emphasis": _clamp01(ridge_emphasis),
     }
 
 
@@ -4114,6 +4122,10 @@ class CommandOverlay(NSObject):
         self._brightness = brightness
         self._brightness_target = brightness
         self._brightness_sample_tick = 0
+        updater = getattr(compositor, "update_shell_config_key", None)
+        if callable(updater):
+            updater("gpu_material_brightness", brightness)
+            self._last_gpu_material_brightness = brightness
         suppress_stale_fill = getattr(
             self,
             "_suppress_stale_fill_until_ready",
@@ -5241,7 +5253,15 @@ class CommandOverlay(NSObject):
         ):
             if key in shell_config:
                 shell_config[key] = float(shell_config[key]) * scale
-        shell_config.update(_gpu_material_shell_fields(brightness, scale))
+        text_contrast_bias = 1.0 if getattr(self, "_text_punchthrough", False) else 0.5
+        shell_config.update(
+            _gpu_material_shell_fields(
+                brightness,
+                scale,
+                text_contrast_bias=text_contrast_bias,
+                ridge_emphasis=0.5,
+            )
+        )
         _with_gpu_material_basis(
             shell_config,
             width=float(shell_config.get("content_width_points", 1.0)),

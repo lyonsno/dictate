@@ -142,6 +142,8 @@ def test_pack_warp_params_uses_shell_specific_gpu_material_controls():
             "gpu_material_base_height_points": 120.0,
             "gpu_material_base_corner_radius_points": 20.0,
             "gpu_material_height_frac": 0.45,
+            "gpu_material_text_contrast_bias": 0.64,
+            "gpu_material_ridge_emphasis": 0.35,
         },
     )
     values = metal_warp.struct.unpack(metal_warp._WARP_PARAMS_FORMAT, payload)
@@ -155,6 +157,8 @@ def test_pack_warp_params_uses_shell_specific_gpu_material_controls():
     assert values[35] == pytest.approx(120.0)
     assert values[36] == pytest.approx(20.0)
     assert values[37] == pytest.approx(0.45)
+    assert values[38] == pytest.approx(0.64)
+    assert values[39] == pytest.approx(0.35)
 
 
 def test_metal_shader_composes_gpu_shell_material_after_warp_sampling():
@@ -163,6 +167,8 @@ def test_metal_shader_composes_gpu_shell_material_after_warp_sampling():
     assert "gpuMaterialEnabled" in source
     assert "gpuMaterialBaseWidth" in source
     assert "gpuMaterialHeightFrac" in source
+    assert "gpuMaterialTextContrastBias" in source
+    assert "gpuMaterialRidgeEmphasis" in source
     assert "shellMaterialColorForBrightness" in source
     assert "shellMaterialAlphaForSdf" in source
     assert "composeShellMaterial" in source

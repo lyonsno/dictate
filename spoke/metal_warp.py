@@ -188,6 +188,8 @@ struct WarpParams {{
     float gpuMaterialBaseHeight; // stable final material height in pixels
     float gpuMaterialBaseCornerRadius; // stable final material corner radius in pixels
     float gpuMaterialHeightFrac; // 0..1 vertical reveal of the final material field
+    float gpuMaterialTextContrastBias; // finite text contrast basis signal
+    float gpuMaterialRidgeEmphasis; // finite ridge emphasis signal
 }};
 
 float sdStadium(float2 p, float spineHalfX, float spineHalfY, float radius) {{
@@ -209,10 +211,11 @@ float shellMaterialChoiceForBrightness(float brightness) {{
     return t * t * (3.0f - 2.0f * t);
 }}
 
-float3 shellMaterialColorForBrightness(float brightness) {{
+float3 shellMaterialColorForBrightness(float brightness, float textContrastBias) {{
     float choice = shellMaterialChoiceForBrightness(brightness);
-    float3 darkBackgroundFill = float3(0.50f, 0.51f, 0.54f);
-    float3 lightBackgroundFill = float3(0.04f, 0.04f, 0.05f);
+    float contrast = clamp(textContrastBias, 0.0f, 1.0f);
+    float3 darkBackgroundFill = mix(float3(0.42f, 0.43f, 0.46f), float3(0.56f, 0.57f, 0.60f), contrast);
+    float3 lightBackgroundFill = mix(float3(0.065f, 0.065f, 0.075f), float3(0.025f, 0.025f, 0.032f), contrast);
     return mix(darkBackgroundFill, lightBackgroundFill, choice);
 }}
 
@@ -242,7 +245,8 @@ float shellMaterialAlphaForSdf(float2 p, constant WarpParams& params) {{
     float materialScale = max(feather / 140.0f, 1.0f);
     if (fillSdf <= 0.0f) {{
         float insideD = max(-fillSdf, 0.0f);
-        float edgeRidge = exp(-pow(insideD / max(1.5f * materialScale, 1e-6f), 2.0f));
+        float ridgeScale = mix(0.75f, 1.35f, clamp(params.gpuMaterialRidgeEmphasis, 0.0f, 1.0f));
+        float edgeRidge = exp(-pow(insideD / max(1.5f * materialScale, 1e-6f), 2.0f)) * ridgeScale;
         float rawInterior = exp(sqrt(abs(fillSdf) / max(2.0f * materialScale, 1e-6f)) * -1.0f);
         float interiorFloor = 0.72f;
         float interior = clamp(interiorFloor + (1.0f - interiorFloor) * rawInterior + edgeRidge * 0.50f, 0.0f, 1.0f);
@@ -262,7 +266,10 @@ float4 composeShellMaterial(float4 warpedColor, float2 p, constant WarpParams& p
     }}
     float alpha = shellMaterialAlphaForSdf(p, params);
     if (alpha <= 0.0f) return warpedColor;
-    float3 materialColor = shellMaterialColorForBrightness(params.gpuMaterialBrightness);
+    float3 materialColor = shellMaterialColorForBrightness(
+        params.gpuMaterialBrightness,
+        params.gpuMaterialTextContrastBias
+    );
     return float4(mix(warpedColor.rgb, materialColor, alpha), warpedColor.a);
 }}
 
@@ -522,7 +529,7 @@ def _create_metal_buffer(device, data: bytes):
         return None
 
 
-_WARP_PARAMS_FORMAT = "38f"
+_WARP_PARAMS_FORMAT = "40f"
 _WARP_PARAMS_SIZE = struct.calcsize(_WARP_PARAMS_FORMAT)
 
 
@@ -572,6 +579,8 @@ def _pack_warp_params(width, height, shell_config, grid_offset_x=0.0, grid_offse
         float(shell_config.get("gpu_material_base_height_points", shell_config.get("content_height_points", height))),
         float(shell_config.get("gpu_material_base_corner_radius_points", shell_config.get("corner_radius_points", 16.0))),
         float(shell_config.get("gpu_material_height_frac", 1.0)),
+        float(shell_config.get("gpu_material_text_contrast_bias", 0.5)),
+        float(shell_config.get("gpu_material_ridge_emphasis", 0.5)),
     )
 
 

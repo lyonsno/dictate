@@ -34,6 +34,11 @@ OpticalFieldCoordinateSpace = Literal[
     "content_points",
     "recipe_local",
 ]
+OpticalFieldSignalName = Literal[
+    "background_luminance",
+    "text_contrast_bias",
+    "ridge_emphasis",
+]
 OpticalFieldMotionStrategy = Literal[
     "auto",
     "continuous",
@@ -60,6 +65,12 @@ _COORDINATE_SPACES = {
     "parent_points",
     "content_local",
     "content_points",
+}
+
+_MATERIAL_SIGNAL_NAMES = {
+    "background_luminance",
+    "text_contrast_bias",
+    "ridge_emphasis",
 }
 
 
@@ -483,6 +494,11 @@ def compile_placeholder_shell_config(request: OpticalFieldRequest) -> dict[str, 
         if request.content_frame is not None
         else None
     )
+    signals = {
+        signal.name: signal.value
+        for signal in request.signals
+        if signal.name in _MATERIAL_SIGNAL_NAMES and isinstance(signal.value, (int, float))
+    }
     scale = bounds.min_dimension
     corner_radius = min(
         scale * _float_param(params, "corner_radius_frac"),
@@ -491,7 +507,7 @@ def compile_placeholder_shell_config(request: OpticalFieldRequest) -> dict[str, 
     )
     exterior_mix = scale * _float_param(params, "exterior_mix_frac")
 
-    return {
+    config = {
         "enabled": True,
         "client_id": request.caller_id,
         "role": request.role,
@@ -538,6 +554,20 @@ def compile_placeholder_shell_config(request: OpticalFieldRequest) -> dict[str, 
             **_coordinate_metadata(request, bounds, content_frame),
         },
     }
+    if signals:
+        config.update(
+            {
+                "gpu_material_enabled": 1.0,
+                "gpu_material_brightness": float(
+                    signals.get("background_luminance", config.get("initial_brightness", 0.5))
+                ),
+                "gpu_material_text_contrast_bias": float(
+                    signals.get("text_contrast_bias", 0.5)
+                ),
+                "gpu_material_ridge_emphasis": float(signals.get("ridge_emphasis", 0.5)),
+            }
+        )
+    return config
 
 
 class OpticalFieldPlaceholderBackend:

@@ -234,6 +234,8 @@ def test_snapshot_round_trip_preserves_gpu_shell_material_controls():
             "gpu_material_base_height_points": 80.0,
             "gpu_material_base_corner_radius_points": 16.0,
             "gpu_material_height_frac": 0.33,
+            "gpu_material_text_contrast_bias": 0.64,
+            "gpu_material_ridge_emphasis": 0.35,
         },
         generation=7,
     )
@@ -247,6 +249,8 @@ def test_snapshot_round_trip_preserves_gpu_shell_material_controls():
     assert snapshot.material.gpu_material_base_height_points == pytest.approx(80.0)
     assert snapshot.material.gpu_material_base_corner_radius_points == pytest.approx(16.0)
     assert snapshot.material.gpu_material_height_frac == pytest.approx(0.33)
+    assert snapshot.material.gpu_material_text_contrast_bias == pytest.approx(0.64)
+    assert snapshot.material.gpu_material_ridge_emphasis == pytest.approx(0.35)
 
     round_trip = _snapshot_to_shell_config(snapshot)
     assert round_trip["gpu_material_enabled"] == pytest.approx(1.0)
@@ -258,6 +262,8 @@ def test_snapshot_round_trip_preserves_gpu_shell_material_controls():
     assert round_trip["gpu_material_base_height_points"] == pytest.approx(80.0)
     assert round_trip["gpu_material_base_corner_radius_points"] == pytest.approx(16.0)
     assert round_trip["gpu_material_height_frac"] == pytest.approx(0.33)
+    assert round_trip["gpu_material_text_contrast_bias"] == pytest.approx(0.64)
+    assert round_trip["gpu_material_ridge_emphasis"] == pytest.approx(0.35)
 
 
 def test_snapshot_round_trip_preserves_scar_warp_controls():
