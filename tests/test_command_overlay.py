@@ -518,6 +518,28 @@ class TestOpticalShellMaterialization:
         assert overlay._fill_hidden_until_signature is None
         overlay._fill_layer.setHidden_.assert_called_with(False)
 
+    def test_apply_ridge_masks_records_cpu_fill_rebuild_trace(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_GPU_MATERIAL_ENABLED", True)
+        monkeypatch.setattr(mod, "_start_overlay_fill_worker", lambda _work: None)
+        trace_events = []
+        monkeypatch.setattr(
+            mod,
+            "record_command_overlay_trace",
+            lambda event, **details: trace_events.append((event, details)),
+        )
+
+        overlay._apply_ridge_masks(624.0, 104.0)
+
+        assert trace_events
+        event, details = trace_events[0]
+        assert event == "overlay.cpu_fill.rebuild.requested"
+        assert details["gpu_material_enabled"] is True
+        assert details["width"] == pytest.approx(624.0)
+        assert details["height"] == pytest.approx(104.0)
+
     def test_optical_dismiss_uses_stretched_faster_reverse_timeline(
         self, mock_pyobjc
     ):

@@ -2198,6 +2198,7 @@ class CommandOverlay(NSObject):
             had_compositor=getattr(self, "_fullscreen_compositor", None) is not None,
             initial_utterance=bool(initial_utterance),
             initial_response=bool(initial_response),
+            gpu_material_enabled=bool(_COMMAND_GPU_MATERIAL_ENABLED),
         )
         self._cancel_all_timers()
         self._reset_fill_generation_latches_for_show()
@@ -2328,6 +2329,7 @@ class CommandOverlay(NSObject):
             window_alpha=self._window.alphaValue() if self._window is not None else None,
             visual_ready_timer=getattr(self, "_visual_ready_timer", None) is not None,
             fade_timer=getattr(self, "_fade_timer", None) is not None,
+            gpu_material_enabled=bool(_COMMAND_GPU_MATERIAL_ENABLED),
         )
 
     def set_brightness(self, brightness: float, immediate: bool = False) -> None:
@@ -3037,6 +3039,12 @@ class CommandOverlay(NSObject):
             last_material_brightness = getattr(self, "_last_gpu_material_brightness", -1.0)
             if callable(updater) and abs(t - last_material_brightness) > 0.005:
                 updater("gpu_material_brightness", t)
+                record_command_overlay_trace(
+                    "overlay.gpu_material.signal",
+                    key="gpu_material_brightness",
+                    value=float(t),
+                    gpu_material_enabled=True,
+                )
                 self._last_gpu_material_brightness = t
         if getattr(self, "_materialization_timer", None) is not None:
             self._apply_materialization_fill_state(
@@ -3967,6 +3975,18 @@ class CommandOverlay(NSObject):
         if callable(updater) and _COMMAND_GPU_MATERIAL_ENABLED:
             updater("gpu_material_opacity", state["opacity"])
             updater("gpu_material_height_frac", state["height_frac"])
+            record_command_overlay_trace(
+                "overlay.gpu_material.signal",
+                key="gpu_material_opacity",
+                value=float(state["opacity"]),
+                gpu_material_enabled=True,
+            )
+            record_command_overlay_trace(
+                "overlay.gpu_material.signal",
+                key="gpu_material_height_frac",
+                value=float(state["height_frac"]),
+                gpu_material_enabled=True,
+            )
         if hide_material_layers:
             for layer_name in ("_boost_layer", "_spring_tint_layer"):
                 self._set_layer_opacity_without_actions(
@@ -4419,6 +4439,20 @@ class CommandOverlay(NSObject):
                     self._fill_hidden_until_signature = appearance_key
             return
 
+        record_command_overlay_trace(
+            "overlay.cpu_fill.rebuild.requested",
+            width=float(width),
+            height=float(height),
+            total_width=float(total_w),
+            total_height=float(total_h),
+            fill_body_width=float(fill_body_w),
+            fill_body_height=float(fill_body_h),
+            brightness=float(_b),
+            brightness_step=float(_b_rounded),
+            has_compositor=bool(_has_compositor),
+            gpu_material_enabled=bool(_COMMAND_GPU_MATERIAL_ENABLED),
+            backdrop_optical_shell_enabled=bool(_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED),
+        )
         self._pending_fill_image_signature = appearance_key
         geom_cache_hit = getattr(self, '_sdf_geom_key', None) == geom_key
         cached_fallback_alpha = (
@@ -5045,6 +5079,15 @@ class CommandOverlay(NSObject):
             scroll_y = scroll_frame.origin.y
             visible_w = scroll_frame.size.width
             visible_h = scroll_frame.size.height
+            record_command_overlay_trace(
+                "overlay.cpu_text_mask.rebuild.requested",
+                width=float(fw),
+                height=float(fh),
+                visible_width=float(visible_w),
+                visible_height=float(visible_h),
+                gpu_material_enabled=bool(_COMMAND_GPU_MATERIAL_ENABLED),
+                text_punchthrough=bool(getattr(self, "_text_punchthrough", False)),
+            )
             text_x = cx + scroll_x
             visible_y = (fh - cy - content_h) + scroll_y
             text_y = visible_y - scroll_origin.y
