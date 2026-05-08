@@ -26,6 +26,10 @@ class TestSpacebarStateMachine:
         det._tap = None
         det._tap_source = None
         det._awaiting_space_release = False
+        det._shift_latched = False
+        det._enter_held = False
+        det._enter_observed = False
+        det._enter_last_down_monotonic = 0.0
         return det, on_start, on_end
 
     def test_tap_spacebar_passes_through_on_quick_release(self, input_tap_module):
@@ -151,8 +155,10 @@ class TestSpacebarStateMachine:
         det.holdTimerFired_(None)  # -> RECORDING
         det.handle_key_down(mod.SPACEBAR_KEYCODE, 0)  # repeat
 
-        # Simulate stale _enter_held from a missed Enter keyUp
+        # Simulate stale enter state from a missed Enter keyUp
         det._enter_held = True
+        det._enter_observed = True
+        det._enter_last_down_monotonic = 99.0
 
         # Quartz reports: space is up (False), enter is up (False)
         Quartz.CGEventSourceKeyState.side_effect = lambda src, keycode: False
@@ -165,6 +171,9 @@ class TestSpacebarStateMachine:
         # The critical assertion: enter_held must be False (from Quartz),
         # not True (from the stale field).
         on_end.assert_called_once_with(shift_held=False, enter_held=False)
+        # Companion fields must also be cleared when enter is corrected to False
+        assert det._enter_observed is False
+        assert det._enter_last_down_monotonic == 0.0
 
     def test_repeat_watchdog_ignores_false_release_while_repeats_are_recent(
         self, input_tap_module

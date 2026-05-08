@@ -622,6 +622,9 @@ class SpacebarHoldDetector(NSObject):
         actual_enter = _current_enter_key_state()
         if actual_enter is not None:
             self._enter_held = actual_enter
+            if not actual_enter:
+                self._enter_observed = False
+                self._enter_last_down_monotonic = 0.0
         enter_held = getattr(self, "_enter_held", False) or (
             source_state == _State.LATCHED
             and getattr(self, "_enter_latched", False)
