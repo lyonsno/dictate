@@ -713,6 +713,7 @@ class TranscriptionOverlay(NSObject):
         from spoke.optical_field import (
             OpticalFieldBounds,
             OpticalFieldProfileRef,
+            OpticalFieldPresentation,
             OpticalFieldRequest,
             OpticalFieldSlotOverride,
         )
@@ -746,6 +747,9 @@ class TranscriptionOverlay(NSObject):
             role="preview",
             state=state,
             profile=profile,
+            presentation_layer="user_preview",
+            layout_recipe="transcription-preview-pill",
+            presentation=OpticalFieldPresentation(layer="user_preview", order=30),
             visible=bool(visible),
             z_index=0,
         )

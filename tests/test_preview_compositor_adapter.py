@@ -306,6 +306,11 @@ def test_preview_materialize_snapshot_uses_finite_optical_field_contract_without
     assert optical_field["profile"] == "preview_pill"
     assert optical_field["state"] == "materialize"
     assert optical_field["slot"] == "materialize"
+    assert optical_field["resolved_presentation_layer"] == "user_preview"
+    assert optical_field["presentation_layer"] == "user_preview"
+    assert optical_field["presentation_order"] == 30
+    assert optical_field["layout_recipe"] == "transcription-preview-pill"
+    assert optical_field["visibility_scope"] == "independent"
     assert optical_field["timing_ms"]["duration_ms"] == pytest.approx(
         overlay_module._FADE_IN_S * 1000.0
     )
