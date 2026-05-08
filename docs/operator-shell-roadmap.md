@@ -319,6 +319,20 @@ persistent KV caches, MCP tool routing, and batch parallel inference.
   into runtime. It remains the cross-project memory surface.
 - **OMLX** is the inference backend. Spoke talks to it over HTTP. Model
   lifecycle, KV caches, and MCP tool routing are OMLX's responsibility.
+- **vMLX** is a second local inference backend (continuous batching, hybrid
+  SSM support). Spoke can use it via `--is-mllm` behind a separate Grapheus
+  instance. Multi-backend selection is part of the operative mode design.
 - **mlx-openai-server / mlx-lm / mlx-quant-toolkit** are upstream
   infrastructure that OMLX builds on. Spoke doesn't interact with them
   directly.
+
+## Forward reference: operative modes and consensus intent resolution
+
+The roadmap's Layer 1 (telos routing) and Layer 2 (mode detection) are being
+extended with a concrete architecture: Spoke's default home layer becomes an
+intent resolver backed by parallel consensus (N calls to a small local quant,
+no reasoning, convergence as confidence signal). Operative modes (agent harness,
+research, epistaxis front end, settings, read-aloud, tray) each own their
+system prompt, tool vocabulary, UI layout, and rocking-axis binding.
+
+Design thread and architecture: `~/dev/epistaxis/spoke-operative-modes-and-consensus-intent-resolution_2026-05-08.md`

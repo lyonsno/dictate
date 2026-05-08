@@ -527,6 +527,17 @@ recording force-stops. No cap in sidecar mode.
 | Command streaming | command overlay (slow full-spectrum hue rotation, pulsing) | off | filled mic |
 | Sticky routing | persistent route key glow + keyboard captured | off | filled mic (or distinct icon TBD) |
 
+## Forward reference: operative modes and rocking axis extension
+
+The space+shift rocking primitive (tray navigation) is being extended to cycle
+values across multiple modal axes — backend selection, model selection, operative
+mode switching. The rocking gesture stays stable; its meaning becomes contextual
+to the current operative mode. This connects to the route key grammar (Lane R in
+the ButterfingerFinalFuckers packet) and to a consensus-based intent resolution
+architecture for the default home layer.
+
+Design thread and architecture: `~/dev/epistaxis/spoke-operative-modes-and-consensus-intent-resolution_2026-05-08.md`
+
 ## Key source files
 
 - `spoke/input_tap.py` — `SpacebarHoldDetector`, CGEventTap, state machine
