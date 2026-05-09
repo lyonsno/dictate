@@ -19,3 +19,23 @@ Optical witness frame-strip manifests are developer-facing debug records, not
 consumer request payloads. They may carry internal `transition.phase` metadata
 and lifecycle snapshots for race correlation, but production requests must keep
 `progress` out of the public contract.
+
+## SDK-Backed Agent Sessions
+
+`spoke` exposes operator-owned SDK coding-agent sessions through the command
+tool surface:
+
+- `launch_agent_session`
+- `list_agent_sessions`
+- `get_agent_session_result`
+- `cancel_agent_session`
+
+The provider contract currently recognizes `claude` for Claude Agent SDK and
+`codex` for Codex SDK. Sessions are asynchronous, keep Spoke-owned ids distinct
+from provider session/thread ids, carry the requested working directory, and
+surface SDK-unavailable failures as operator-visible state rather than as raw
+terminal-command failures.
+
+Provider SDK packages are optional runtime dependencies. The command shell can
+boot without them; launching a provider whose SDK is absent produces a clear
+failed session with `sdk_unavailable=true`.
