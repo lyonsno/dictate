@@ -251,9 +251,10 @@ _AGENT_SHELL_CHROME_GRAY = 0.56
 _AGENT_SHELL_CHROME_ALPHA = 0.82
 _AGENT_SHELL_HEADER_HEIGHT = 18.0
 _AGENT_SHELL_FOOTER_HEIGHT = 16.0
-_AGENT_SHELL_HEADER_TOP_INSET = 8.0
+_AGENT_SHELL_CHROME_X = 28.0
+_AGENT_SHELL_HEADER_TOP_INSET = 10.0
 _AGENT_SHELL_FOOTER_BOTTOM_INSET = 8.0
-_AGENT_SHELL_TRANSCRIPT_GAP = 5.0
+_AGENT_SHELL_TRANSCRIPT_GAP = 12.0
 _AGENT_SHELL_VERTICAL_PAD = (
     _AGENT_SHELL_HEADER_TOP_INSET
     + _AGENT_SHELL_HEADER_HEIGHT
@@ -264,6 +265,8 @@ _AGENT_SHELL_VERTICAL_PAD = (
 )
 _USER_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_USER_TEXT_ALPHA_MIN", 0.85)
 _USER_TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_USER_TEXT_ALPHA_MAX", 0.95)
+_USER_FONT_SIZE = 13.5
+_TRANSCRIPT_TEXT_VERTICAL_INSET = 8.0
 _ASSISTANT_TEXT_ALPHA_MIN = _env("SPOKE_COMMAND_ASSISTANT_TEXT_ALPHA_MIN", 0.85)
 _ASSISTANT_TEXT_ALPHA_MAX = _env("SPOKE_COMMAND_ASSISTANT_TEXT_ALPHA_MAX", 0.95)
 _BG_ALPHA = _env("SPOKE_COMMAND_BG_ALPHA", 0.715)
@@ -2122,10 +2125,10 @@ class CommandOverlay(NSObject):
 
         from AppKit import NSTextAlignmentLeft
 
-        header_w = _OVERLAY_WIDTH - timer_w - 34.0
+        header_w = _OVERLAY_WIDTH - _AGENT_SHELL_CHROME_X - timer_w - 28.0
         self._agent_shell_header_label = NSTextField.alloc().initWithFrame_(
             NSMakeRect(
-                14.0,
+                _AGENT_SHELL_CHROME_X,
                 _OVERLAY_HEIGHT
                 - _AGENT_SHELL_HEADER_TOP_INSET
                 - _AGENT_SHELL_HEADER_HEIGHT,
@@ -2157,9 +2160,9 @@ class CommandOverlay(NSObject):
 
         self._agent_shell_footer_label = NSTextField.alloc().initWithFrame_(
             NSMakeRect(
-                14.0,
+                _AGENT_SHELL_CHROME_X,
                 _AGENT_SHELL_FOOTER_BOTTOM_INSET,
-                _OVERLAY_WIDTH - 28.0,
+                _OVERLAY_WIDTH - 2.0 * _AGENT_SHELL_CHROME_X,
                 _AGENT_SHELL_FOOTER_HEIGHT,
             )
         )
@@ -2491,7 +2494,11 @@ class CommandOverlay(NSObject):
             self._scroll_view.setFrame_(
                 NSMakeRect(48, 20, _OVERLAY_WIDTH - 96, _OVERLAY_HEIGHT - 44)
             )
-            self._reset_text_geometry(self._scroll_view.frame().size.height)
+            scroll_frame = self._scroll_view.frame()
+            self._reset_text_geometry(
+                scroll_frame.size.height,
+                scroll_frame.size.width,
+            )
             if not has_initial_transcript:
                 self._apply_ridge_masks(_OVERLAY_WIDTH, _OVERLAY_HEIGHT)
                 self._fill_image_brightness = self._brightness
@@ -2751,9 +2758,15 @@ class CommandOverlay(NSObject):
         self._utterance_text = text
         if self._text_view is None or not self._visible:
             return
+        attr_str = self._make_utterance_attributed(text)
+        self._text_view.textStorage().setAttributedString_(attr_str)
+        self._update_layout()
+
+    def _make_utterance_attributed(self, text: str):
         from AppKit import (
             NSMutableAttributedString,
             NSForegroundColorAttributeName,
+            NSFontAttributeName,
             NSShadowAttributeName,
             NSShadow,
         )
@@ -2769,6 +2782,11 @@ class CommandOverlay(NSObject):
             ),
             (0, len(text)),
         )
+        attr_str.addAttribute_value_range_(
+            NSFontAttributeName,
+            NSFont.systemFontOfSize_weight_(_USER_FONT_SIZE, 0.0),
+            (0, len(text)),
+        )
         glow = NSShadow.alloc().init()
         glow.setShadowColor_(
             NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.10)
@@ -2778,8 +2796,7 @@ class CommandOverlay(NSObject):
         attr_str.addAttribute_value_range_(
             NSShadowAttributeName, glow, (0, len(text))
         )
-        self._text_view.textStorage().setAttributedString_(attr_str)
-        self._update_layout()
+        return attr_str
 
     def _clear_agent_shell_chrome(self) -> None:
         for label in (
@@ -2794,6 +2811,42 @@ class CommandOverlay(NSObject):
         """Clear Agent Shell chrome when the visible transcript belongs to another mode."""
         self._clear_agent_shell_chrome()
         self._update_layout()
+
+    def _set_agent_shell_chrome_texts(self, header: str = "", footer: str = "") -> None:
+        header_label = getattr(self, "_agent_shell_header_label", None)
+        if header_label is not None:
+            header_label.setStringValue_(header)
+            header_label.setHidden_(not bool(header))
+        footer_label = getattr(self, "_agent_shell_footer_label", None)
+        if footer_label is not None:
+            footer_label.setStringValue_(footer)
+            footer_label.setHidden_(not bool(footer))
+        self._apply_agent_shell_chrome_theme()
+
+    def replace_transcript(
+        self,
+        *,
+        utterance: str,
+        response: str,
+        agent_shell_header: str = "",
+        agent_shell_footer: str = "",
+    ) -> None:
+        """Replace recalled transcript and chrome with one layout pass."""
+        self._utterance_text = utterance
+        self._collapsed_text = ""
+        self._response_text = ""
+        self._set_agent_shell_chrome_texts(agent_shell_header, agent_shell_footer)
+        if self._text_view is None or not self._visible:
+            self._response_text = response
+            return
+        if response:
+            self.set_response_text(response)
+        else:
+            self._text_view.textStorage().setAttributedString_(
+                self._make_utterance_attributed(utterance)
+            )
+            self._update_layout()
+            self._refresh_punchthrough_mask_if_needed()
 
     def set_agent_shell_header(self, text: str) -> None:
         """Set the Agent Shell identity line above the transcript."""
@@ -2927,11 +2980,32 @@ class CommandOverlay(NSObject):
     def _leading_response_separator(self) -> str:
         """Return the visible break before the first streamed response token.
 
-        Keep the first assistant/tool token visually separated from the user
-        prompt and any collapsed narrator/thinking line. A cramped single-line
-        handoff is especially hard to read while the optical shell is growing.
+        A faint rule keeps the handoff legible without spending several blank
+        lines of scarce overlay height.
         """
-        return "\n\n"
+        return "\n────────\n"
+
+    def _make_response_separator_attributed(self):
+        from AppKit import (
+            NSMutableAttributedString,
+            NSForegroundColorAttributeName,
+            NSFontAttributeName,
+        )
+
+        separator = self._leading_response_separator()
+        sep = NSMutableAttributedString.alloc().initWithString_(separator)
+        fg_r, fg_g, fg_b = _assistant_foreground_color_for_brightness(self._brightness)
+        sep.addAttribute_value_range_(
+            NSForegroundColorAttributeName,
+            NSColor.colorWithSRGBRed_green_blue_alpha_(fg_r, fg_g, fg_b, 0.28),
+            (0, len(separator)),
+        )
+        sep.addAttribute_value_range_(
+            NSFontAttributeName,
+            NSFont.systemFontOfSize_weight_(8.0, 0.0),
+            (0, len(separator)),
+        )
+        return sep
 
     def _refresh_punchthrough_mask_if_needed(self) -> None:
         """Keep the optical text cutout in sync after immediate text/layout edits."""
@@ -2949,27 +3023,9 @@ class CommandOverlay(NSObject):
         self._response_text += token
 
         if first_token and self._utterance_text:
-            # Add separator between utterance and response
-            from AppKit import (
-                NSMutableAttributedString,
-                NSForegroundColorAttributeName,
-                NSFontAttributeName,
+            self._text_view.textStorage().appendAttributedString_(
+                self._make_response_separator_attributed()
             )
-            separator = self._leading_response_separator()
-            sep = NSMutableAttributedString.alloc().initWithString_(separator)
-            sep.addAttribute_value_range_(
-                NSForegroundColorAttributeName,
-                NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
-                (0, len(separator)),
-            )
-            # Reset font to body size so the collapsed summary's 12pt
-            # doesn't bleed into the first response token.
-            sep.addAttribute_value_range_(
-                NSFontAttributeName,
-                NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
-                (0, len(separator)),
-            )
-            self._text_view.textStorage().appendAttributedString_(sep)
 
         # Style tool call indicators smaller (like collapsed thinking)
         # Covers: [calling tool…], [~N tokens], [screen capture · ~N tokens],
@@ -2999,44 +3055,12 @@ class CommandOverlay(NSObject):
             self._response_text = text
             return
 
-        from AppKit import (
-            NSMutableAttributedString,
-            NSForegroundColorAttributeName,
-            NSShadowAttributeName,
-            NSShadow,
-        )
+        from AppKit import NSMutableAttributedString
 
         combined = NSMutableAttributedString.alloc().initWithString_("")
 
         if self._utterance_text:
-            from AppKit import NSFontAttributeName
-            _USER_FONT_SIZE = 13.5
-            user_r, user_g, user_b = _user_text_color_for_brightness(self._brightness)
-            utt = NSMutableAttributedString.alloc().initWithString_(self._utterance_text)
-            utt.addAttribute_value_range_(
-                NSForegroundColorAttributeName,
-                NSColor.colorWithSRGBRed_green_blue_alpha_(
-                    user_r,
-                    user_g,
-                    user_b,
-                    _user_text_alpha_for_breath(0.5),
-                ),
-                (0, len(self._utterance_text)),
-            )
-            utt.addAttribute_value_range_(
-                NSFontAttributeName,
-                NSFont.systemFontOfSize_weight_(_USER_FONT_SIZE, 0.0),
-                (0, len(self._utterance_text)),
-            )
-            glow = NSShadow.alloc().init()
-            glow.setShadowColor_(
-                NSColor.colorWithSRGBRed_green_blue_alpha_(user_r, user_g, user_b, 0.10)
-            )
-            glow.setShadowOffset_((0, 0))
-            glow.setShadowBlurRadius_(2.0)
-            utt.addAttribute_value_range_(
-                NSShadowAttributeName, glow, (0, len(self._utterance_text))
-            )
+            utt = self._make_utterance_attributed(self._utterance_text)
             combined.appendAttributedString_(utt)
 
             # Re-inject collapsed thinking text if present
@@ -3044,21 +3068,6 @@ class CommandOverlay(NSObject):
                 combined.appendAttributedString_(
                     self._make_collapsed_attributed("\n\n" + self._collapsed_text)
                 )
-
-            if text:
-                separator = self._leading_response_separator()
-                sep = NSMutableAttributedString.alloc().initWithString_(separator)
-                sep.addAttribute_value_range_(
-                    NSForegroundColorAttributeName,
-                    NSColor.colorWithSRGBRed_green_blue_alpha_(1.0, 1.0, 1.0, 0.0),
-                    (0, len(separator)),
-                )
-                sep.addAttribute_value_range_(
-                    NSFontAttributeName,
-                    NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
-                    (0, len(separator)),
-                )
-                combined.appendAttributedString_(sep)
 
         self._text_view.textStorage().setAttributedString_(combined)
 
@@ -5552,17 +5561,26 @@ class CommandOverlay(NSObject):
         _scale_agent_shell_card_payload(shell_config, scale)
         return shell_config
 
-    def _reset_text_geometry(self, visible_height: float) -> None:
+    def _reset_text_geometry(
+        self,
+        visible_height: float,
+        visible_width: float | None = None,
+    ) -> None:
         """Keep the document view and text container in sync with overlay size."""
         if self._text_view is None:
             return
 
-        doc_frame = NSMakeRect(0, 0, _OVERLAY_WIDTH - 24, visible_height)
+        width = visible_width if visible_width is not None else _OVERLAY_WIDTH - 24
+        doc_frame = NSMakeRect(0, 0, width, visible_height)
         self._text_view.setFrame_(doc_frame)
+        if hasattr(self._text_view, "setTextContainerInset_"):
+            self._text_view.setTextContainerInset_(
+                (0.0, _TRANSCRIPT_TEXT_VERTICAL_INSET)
+            )
 
         container = self._text_view.textContainer()
         if container is not None and hasattr(container, "setContainerSize_"):
-            container.setContainerSize_((_OVERLAY_WIDTH - 24, 1.0e7))
+            container.setContainerSize_((width, 1.0e7))
 
     def _agent_shell_chrome_visible(self) -> bool:
         labels = (
@@ -5571,19 +5589,29 @@ class CommandOverlay(NSObject):
         )
         return any(label is not None and not label.isHidden() for label in labels)
 
+    def _transcript_scroll_width(self, chrome_visible: bool) -> float:
+        if chrome_visible:
+            return _OVERLAY_WIDTH - 2.0 * _AGENT_SHELL_CHROME_X
+        return _OVERLAY_WIDTH - 24.0
+
     def _update_layout(self) -> None:
         """Resize window and scroll to bottom after text change."""
         try:
+            chrome_visible = self._agent_shell_chrome_visible()
+            target_scroll_w = self._transcript_scroll_width(chrome_visible)
+            self._reset_text_geometry(1.0e7, target_scroll_w)
+
             layout = self._text_view.layoutManager()
             container = self._text_view.textContainer()
             if layout and container:
                 layout.ensureLayoutForTextContainer_(container)
                 text_rect = layout.usedRectForTextContainer_(container)
-                text_height = text_rect.size.height
+                raw_text_height = text_rect.size.height
+                text_height = raw_text_height + 2.0 * _TRANSCRIPT_TEXT_VERTICAL_INSET
             else:
+                raw_text_height = _OVERLAY_HEIGHT - 16
                 text_height = _OVERLAY_HEIGHT - 16
 
-            chrome_visible = self._agent_shell_chrome_visible()
             max_height = _max_overlay_height(
                 self._screen.frame().size.height,
                 agent_shell=chrome_visible,
@@ -5591,7 +5619,7 @@ class CommandOverlay(NSObject):
             vertical_pad = _AGENT_SHELL_VERTICAL_PAD if chrome_visible else 24.0
             new_height = min(max(_OVERLAY_HEIGHT, text_height + vertical_pad), max_height)
 
-            self._sync_narrator_visibility(text_height)
+            self._sync_narrator_visibility(raw_text_height)
 
             f = _OPTICAL_SHELL_FEATHER if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED else _OUTER_FEATHER
             win_frame = self._window.frame()
@@ -5617,19 +5645,40 @@ class CommandOverlay(NSObject):
                 header_y = new_height - 22.0
                 scroll_y = 20.0
                 scroll_h = new_height - 44.0
+            scroll_x = _AGENT_SHELL_CHROME_X if chrome_visible else 12.0
+            scroll_w = target_scroll_w
             self._scroll_view.setFrame_(
-                NSMakeRect(12, scroll_y, _OVERLAY_WIDTH - 24, scroll_h)
+                NSMakeRect(scroll_x, scroll_y, scroll_w, scroll_h)
             )
             if self._agent_shell_header_label is not None:
+                header_w = (
+                    _OVERLAY_WIDTH - _AGENT_SHELL_CHROME_X - 106.0
+                    if chrome_visible
+                    else _OVERLAY_WIDTH - 106.0
+                )
                 self._agent_shell_header_label.setFrame_(
-                    NSMakeRect(14.0, header_y, _OVERLAY_WIDTH - 106.0, header_h)
+                    NSMakeRect(_AGENT_SHELL_CHROME_X, header_y, header_w, header_h)
                 )
             if self._agent_shell_footer_label is not None:
+                footer_w = (
+                    _OVERLAY_WIDTH - 2.0 * _AGENT_SHELL_CHROME_X
+                    if chrome_visible
+                    else _OVERLAY_WIDTH - 28.0
+                )
                 self._agent_shell_footer_label.setFrame_(
-                    NSMakeRect(14.0, footer_y, _OVERLAY_WIDTH - 28.0, footer_h)
+                    NSMakeRect(_AGENT_SHELL_CHROME_X, footer_y, footer_w, footer_h)
                 )
             if height_changed:
-                self._apply_ridge_masks(_OVERLAY_WIDTH, new_height)
+                suppress_stale_fill = getattr(
+                    self,
+                    "_suppress_stale_fill_until_ready",
+                    False,
+                )
+                self._suppress_stale_fill_until_ready = True
+                try:
+                    self._apply_ridge_masks(_OVERLAY_WIDTH, new_height)
+                finally:
+                    self._suppress_stale_fill_until_ready = suppress_stale_fill
                 self._update_backdrop_capture_geometry()
                 shell_config = self._current_optical_shell_config()
                 if shell_config is not None and hasattr(self._backdrop_renderer, "set_live_optical_shell_config"):
@@ -5647,7 +5696,7 @@ class CommandOverlay(NSObject):
                 if self._visible:
                     self._refresh_backdrop_snapshot()
 
-            self._reset_text_geometry(max(new_height - 16, text_height))
+            self._reset_text_geometry(max(scroll_h, text_height), scroll_w)
             end = (self._text_view.string().length()
                    if hasattr(self._text_view.string(), 'length')
                    else len(self._response_text))
