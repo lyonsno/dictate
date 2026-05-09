@@ -204,6 +204,7 @@ def test_card_renderer_builds_optical_field_requests_from_rendered_cards():
     assert selected["compiled_shell_config"]["optical_field"]["content_frame"] == selected["bounds"]
     assert selected["compiled_shell_config"]["presentation_layer"] == "agent_card"
     assert selected["compiled_shell_config"]["visibility_scope"] == "independent"
+    assert selected["compiled_shell_config"]["gpu_material_enabled"] == 1.0
     assert selected["compiled_shell_config"]["optical_field"]["disturbances"] == (
         "readiness.codex-selected",
     )

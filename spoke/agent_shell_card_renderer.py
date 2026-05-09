@@ -11,6 +11,7 @@ from .optical_field import (
     OpticalFieldPresentation,
     OpticalFieldProfileRef,
     OpticalFieldRequest,
+    OpticalFieldSignal,
 )
 
 _CARD_MARGIN_POINTS = 12.0
@@ -262,6 +263,28 @@ def _disturbances_for_card(card: dict[str, Any]) -> tuple[OpticalFieldDisturbanc
     )
 
 
+def _material_signals_for_card(card: dict[str, Any]) -> tuple[OpticalFieldSignal, ...]:
+    material = _mapping(card.get("material"))
+    selected = bool(card.get("selected"))
+    brightness = _number(
+        material.get("background_luminance"),
+        0.46 if selected else 0.38,
+    )
+    text_contrast = _number(
+        material.get("text_contrast_bias"),
+        0.78 if selected else 0.66,
+    )
+    ridge_emphasis = _number(
+        material.get("ridge_emphasis"),
+        0.62 if selected else 0.48,
+    )
+    return (
+        OpticalFieldSignal(name="background_luminance", value=brightness),
+        OpticalFieldSignal(name="text_contrast_bias", value=text_contrast),
+        OpticalFieldSignal(name="ridge_emphasis", value=ridge_emphasis),
+    )
+
+
 def _request_dict(request: OpticalFieldRequest) -> dict[str, Any]:
     backend = OpticalFieldPlaceholderBackend()
     result = backend.upsert(request)
@@ -415,6 +438,7 @@ def build_agent_shell_card_optical_field_payload(
             presentation_layer="agent_card",
             layout_recipe="agent-thread-card",
             profile=OpticalFieldProfileRef(base=profile),
+            signals=_material_signals_for_card(card),
             disturbances=_disturbances_for_card(card),
             presentation=OpticalFieldPresentation(layer="agent_card", order=20),
             visibility_scope="independent",
