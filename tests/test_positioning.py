@@ -543,6 +543,93 @@ def test_iterative_positioning_uses_ensemble_seed_when_enabled(monkeypatch):
     assert "GridEnsemble: labels=A3,A3,A3,A3" in "\n".join(result["_debug_lines"])
 
 
+def test_gridpoint_ensemble_workers_share_positioning_utterance_id(monkeypatch):
+    """Threaded ensemble calls should remain one Grapheus logical request."""
+    import importlib
+
+    reposition = importlib.import_module("spoke.positioning.reposition")
+
+    seen_ids = []
+
+    monkeypatch.setenv("SPOKE_POSITIONING_GRIDPOINT_ENSEMBLE_WORKERS", "4")
+    monkeypatch.setattr(reposition, "_encode_image", lambda _image: "image")
+    monkeypatch.setattr(reposition, "_draw_overlay_outline", lambda screenshot, _overlay: screenshot)
+    monkeypatch.setattr(reposition, "_draw_grid_points", lambda image, lattice="A": image)
+
+    def fake_worker(*_args, utterance_id, lattice, **_kwargs):
+        seen_ids.append(utterance_id)
+        return {"lattice": lattice, "label": "A3", "raw": "A3", "worker": len(seen_ids)}
+
+    monkeypatch.setattr(reposition, "_pick_gridpoint_on_lattice", fake_worker)
+
+    with reposition.positioning_utterance_scope("positioning-shared"):
+        result = reposition._pick_gridpoint_ensemble(
+            Image.new("RGB", (100, 100), "white"),
+            "upper right",
+            100,
+            100,
+            {"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4},
+        )
+
+    assert result["labels"] == ["A3", "A3", "A3", "A3"]
+    assert seen_ids == ["positioning-shared"] * 4
+
+
+def test_iterative_positioning_reports_ensemble_progress_and_seed(monkeypatch):
+    """Users should see ensemble progress before the final suitability audit returns."""
+    import importlib
+
+    reposition = importlib.import_module("spoke.positioning.reposition")
+
+    image = Image.new("RGB", (100, 100), "white")
+    steps = []
+
+    monkeypatch.setenv("SPOKE_POSITIONING_GRIDPOINT_ENSEMBLE", "1")
+    monkeypatch.setattr(
+        reposition,
+        "_pick_gridpoint_ensemble",
+        lambda *args, **kwargs: {
+            "center_x": 75,
+            "center_y": 25,
+            "confidence": 0.94,
+            "schema_success_fraction": 1.0,
+            "winner_fraction": 1.0,
+            "spread_x": 0.0625,
+            "spread_y": 0.0625,
+            "labels": ["A3", "A3", "A3", "A3"],
+            "lattices": ["A", "B", "A", "B"],
+        },
+    )
+    monkeypatch.setattr(reposition, "_draw_overlay_outline", lambda _screenshot, _overlay: image)
+    monkeypatch.setattr(reposition, "_encode_image", lambda _image: "image")
+    monkeypatch.setattr(
+        reposition,
+        "_pick_suitability_audit",
+        lambda *args, **kwargs: {
+            "done": True,
+            "needs_position": False,
+            "needs_size": False,
+            "reason": "clear",
+        },
+    )
+
+    reposition.reposition_gridpoint_iterative(
+        "move to the upper right",
+        image,
+        current_overlay={"x": 0.3, "y": 0.3, "width": 0.4, "height": 0.4},
+        screen_w=100,
+        screen_h=100,
+        on_step=lambda debug, intermediate=None: steps.append((list(debug), intermediate)),
+    )
+
+    materialized = [(debug, step) for debug, step in steps if step and step.get("_intermediate")]
+    assert len(materialized) >= 2
+    assert materialized[0][1]["x"] == pytest.approx(0.30)
+    assert "sampling 4 workers" in "\n".join(materialized[0][0])
+    assert materialized[1][1]["x"] == pytest.approx(0.55)
+    assert "labels=A3,A3,A3,A3" in "\n".join(materialized[1][0])
+
+
 def test_positioning_field_margin_sanitizes_presented_candidate_without_menu_bar_guard(monkeypatch):
     """Output geometry should leave a small optical-field edge margin, not reserve the menu bar."""
     import importlib

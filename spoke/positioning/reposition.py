@@ -982,6 +982,29 @@ def _aggregate_gridpoint_ensemble_samples(
     }
 
 
+def _positioning_intermediate(
+    candidate_overlay: dict,
+    *,
+    utterance: str,
+    elapsed_s: float,
+    screen_w: int,
+    screen_h: int,
+) -> dict:
+    """Build a visible intermediate positioning result for the command overlay."""
+
+    return {
+        **_sanitize_candidate_for_field_margin(
+            candidate_overlay,
+            screen_w=screen_w,
+            screen_h=screen_h,
+        ),
+        "content_desc": utterance,
+        "utterance": utterance,
+        "elapsed_s": round(elapsed_s, 2),
+        "_intermediate": True,
+    }
+
+
 GRIDPOINT_SYSTEM = (
     "You are a screen layout system. The user wants to reposition an overlay.\n\n"
     "The image shows the current screen with 9 labeled intersection points "
@@ -1128,6 +1151,7 @@ def _pick_gridpoint_on_lattice(
     *,
     lattice: str,
     worker_index: int,
+    utterance_id: str | int | None = None,
 ) -> dict:
     """Pick one labeled point on a specific lattice image."""
 
@@ -1154,6 +1178,7 @@ def _pick_gridpoint_on_lattice(
             f"gridpoint-ensemble-{lattice}",
             mode="gridpoint-ensemble",
             iteration=worker_index,
+            utterance_id=utterance_id,
         ),
         json={
             "model": os.environ.get("SPOKE_VLM_MODEL", "qwen3.6-35b-a3b-oq8"),
@@ -1186,6 +1211,7 @@ def _pick_gridpoint_ensemble(
 
     worker_count = _gridpoint_ensemble_workers()
     lattices = _gridpoint_ensemble_lattice_sequence(worker_count)
+    utterance_id = _current_positioning_utterance_id()
     encoded_by_lattice: dict[str, str] = {}
     for lattice in sorted(set(lattices)):
         annotated = _draw_overlay_outline(screenshot, current_overlay)
@@ -1207,6 +1233,7 @@ def _pick_gridpoint_ensemble(
                     bearing,
                     lattice=lattice,
                     worker_index=index,
+                    utterance_id=utterance_id,
                 )
             )
         for future in concurrent.futures.as_completed(futures):
@@ -1215,6 +1242,7 @@ def _pick_gridpoint_ensemble(
             except Exception as exc:
                 samples.append({"lattice": "?", "label": None, "raw": repr(exc), "worker": -1})
 
+    samples.sort(key=lambda sample: int(sample.get("worker") or 0))
     _pick_gridpoint_ensemble._last_samples = samples
     return _aggregate_gridpoint_ensemble_samples(samples, screen_w=screen_w, screen_h=screen_h)
 
@@ -1876,6 +1904,21 @@ def reposition_gridpoint_iterative(
     label = None
     ensemble = None
     if _positioning_gridpoint_ensemble_enabled():
+        workers = _gridpoint_ensemble_workers()
+        lattices = _gridpoint_ensemble_lattice_sequence(workers)
+        reposition_gridpoint_iterative._last_debug.append(
+            "GridEnsemble: sampling %d workers across lattices=%s"
+            % (workers, ",".join(lattices))
+        )
+        _report(
+            _positioning_intermediate(
+                current_overlay,
+                utterance=utterance,
+                elapsed_s=time.time() - t0,
+                screen_w=screen_w,
+                screen_h=screen_h,
+            )
+        )
         ensemble = _pick_gridpoint_ensemble(
             screenshot,
             utterance,
@@ -1942,6 +1985,16 @@ def reposition_gridpoint_iterative(
         )
 
     candidate = _candidate_from_center(cx, cy, cur_w, cur_h, screen_w=screen_w, screen_h=screen_h)
+    if ensemble is not None:
+        _report(
+            _positioning_intermediate(
+                candidate,
+                utterance=utterance,
+                elapsed_s=time.time() - t0,
+                screen_w=screen_w,
+                screen_h=screen_h,
+            )
+        )
     max_rounds = max(1, int(os.environ.get("SPOKE_POSITIONING_AUDIT_ROUNDS", "3")))
 
     for iteration in range(1, max_rounds + 1):
