@@ -44,8 +44,8 @@ from Foundation import NSMakeRect, NSObject, NSTimer
 _NS_COMMAND_KEY_MASK = 1 << 20
 _NS_KEY_DOWN_MASK = 1 << 10
 _RECORDING_LOAD_SHED_RELEASE_DELAY_S = 0.36
-_AGENT_SHELL_PROVIDERS = {"codex", "claude-code"}
-_AGENT_SHELL_SELECTABLE_PROVIDERS = {"codex"}
+_AGENT_SHELL_PROVIDERS = {"codex", "claude-code", "gemini-cli"}
+_AGENT_SHELL_SELECTABLE_PROVIDERS = {"codex", "claude-code", "gemini-cli"}
 _AGENT_SHELL_OVERLAY_SNAPSHOTS_PREF = "agent_shell_overlay_snapshots"
 _AGENT_SHELL_SESSION_CATALOG_LIMIT = 12
 
@@ -104,6 +104,8 @@ def _format_command_http_error(exc) -> str:
 def _agent_shell_provider_label(provider: str | None) -> str:
     if provider == "claude-code":
         return "Claude Code"
+    if provider == "gemini-cli":
+        return "Gemini CLI"
     if provider == "codex":
         return "Codex"
     return "Agent Shell"
@@ -173,6 +175,7 @@ from .agent_backend_presenter import (
 )
 from .agent_backends import AgentBackendManager
 from .agent_shell import AgentShellState, route_agent_shell_input
+from .agent_shell_primitives import build_agent_shell_primitives
 from .agent_thread_cards import card_display_contract
 from .subagents import SubagentManager, run_search_subagent_query
 from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas, get_tool_schemas
@@ -3775,6 +3778,7 @@ class SpokeAppDelegate(NSObject):
         provider: str,
         entry: dict,
         *,
+        selected_provider: str | None,
         selected_provider_session_id: str | None,
     ) -> dict:
         provider_session_id = entry.get("provider_session_id")
@@ -3806,29 +3810,131 @@ class SpokeAppDelegate(NSObject):
             "bearing": bearing,
             "activity_line": raw_card.get("activity_line") or "Ready to read",
             "latest_response": latest_response,
-            "selected": provider_session_id == selected_provider_session_id,
+            "selected": (
+                provider == selected_provider
+                and provider_session_id == selected_provider_session_id
+            ),
         }
         if "updated_sequence" in raw_card:
             card["updated_sequence"] = raw_card["updated_sequence"]
         card["display"] = card_display_contract(card, selected=card["selected"])
         return card
 
+    def _agent_shell_card_key(self, card: dict) -> tuple[str, str]:
+        provider = card.get("provider")
+        provider = provider if isinstance(provider, str) else ""
+        identifier = card.get("provider_session_id") or card.get("thread_id") or card.get("id")
+        identifier = identifier if isinstance(identifier, str) else ""
+        return provider, identifier
+
+    def _agent_shell_live_backend_cards_snapshot(
+        self,
+        *,
+        selected_provider: str | None,
+        selected_provider_session_id: str | None,
+    ) -> list[dict]:
+        manager = getattr(self, "_agent_backend_manager", None)
+        list_sessions = getattr(manager, "list_sessions", None)
+        if not callable(list_sessions):
+            return []
+        try:
+            sessions = list_sessions()
+        except Exception:
+            logger.exception("Failed to list Agent Shell backend sessions for cards")
+            return []
+        if not isinstance(sessions, list):
+            return []
+
+        cards: list[dict] = []
+        for session in sessions:
+            if not isinstance(session, dict):
+                continue
+            provider = session.get("provider")
+            if provider not in _AGENT_SHELL_PROVIDERS:
+                continue
+            session_id = session.get("id")
+            provider_session_id = session.get("provider_session_id")
+            if not isinstance(provider_session_id, str) or not provider_session_id:
+                provider_session_id = (
+                    session_id if isinstance(session_id, str) and session_id else ""
+                )
+            if not provider_session_id:
+                continue
+            entry = {"provider_session_id": provider_session_id}
+            prompt = session.get("prompt")
+            if isinstance(prompt, str) and prompt:
+                entry["last_utterance"] = prompt
+            result = session.get("result")
+            if isinstance(result, str) and result:
+                entry["last_response"] = result
+            thread_card = self._sanitize_agent_shell_thread_card(session.get("thread_card"))
+            if thread_card:
+                thread_card.setdefault("provider", provider)
+                thread_card.setdefault("provider_session_id", provider_session_id)
+                thread_card.setdefault("thread_id", provider_session_id)
+                entry["thread_card"] = thread_card
+            card = self._agent_shell_catalog_card(
+                provider,
+                entry,
+                selected_provider=selected_provider,
+                selected_provider_session_id=selected_provider_session_id,
+            )
+            if provider == selected_provider and not card["selected"]:
+                record = self._agent_shell_session_record(provider)
+                active_ids = {
+                    value
+                    for value in (
+                        record.get("active_spoke_session_id"),
+                        record.get("spoke_session_id"),
+                    )
+                    if isinstance(value, str) and value
+                }
+                if isinstance(session_id, str) and session_id in active_ids:
+                    card["selected"] = True
+                    card["display"] = card_display_contract(card, selected=True)
+            cards.append(card)
+        return cards
+
     def _agent_shell_thread_cards_snapshot(self, provider: str | None) -> list[dict]:
         if provider not in _AGENT_SHELL_PROVIDERS:
             return []
-        record = self._agent_shell_session_record(provider)
+        selected_provider = provider
+        record = self._agent_shell_session_record(selected_provider)
         selected_provider_session_id = record.get("provider_session_id")
         if not isinstance(selected_provider_session_id, str):
             selected_provider_session_id = None
-        catalog = self._sanitize_agent_shell_catalog(record.get("sessions"))
-        return [
-            self._agent_shell_catalog_card(
-                provider,
-                entry,
-                selected_provider_session_id=selected_provider_session_id,
-            )
-            for entry in catalog
-        ]
+        cards: list[dict] = []
+        index_by_key: dict[tuple[str, str], int] = {}
+        for catalog_provider in ("codex", "claude-code", "gemini-cli"):
+            catalog_record = self._agent_shell_session_record(catalog_provider)
+            catalog = self._sanitize_agent_shell_catalog(catalog_record.get("sessions"))
+            for entry in catalog:
+                card = self._agent_shell_catalog_card(
+                    catalog_provider,
+                    entry,
+                    selected_provider=selected_provider,
+                    selected_provider_session_id=selected_provider_session_id,
+                )
+                key = self._agent_shell_card_key(card)
+                if not key[1]:
+                    continue
+                index_by_key[key] = len(cards)
+                cards.append(card)
+
+        for card in self._agent_shell_live_backend_cards_snapshot(
+            selected_provider=selected_provider,
+            selected_provider_session_id=selected_provider_session_id,
+        ):
+            key = self._agent_shell_card_key(card)
+            if not key[1]:
+                continue
+            existing_index = index_by_key.get(key)
+            if existing_index is None:
+                index_by_key[key] = len(cards)
+                cards.append(card)
+            else:
+                cards[existing_index] = card
+        return cards
 
     def _agent_shell_current_catalog_entry(self, record: dict) -> dict[str, str] | None:
         provider_session_id = record.get("provider_session_id")
@@ -3986,7 +4092,7 @@ class SpokeAppDelegate(NSObject):
         surface = dict(self._agent_shell_chrome_snapshot(provider))
         cards = self._agent_shell_thread_cards_snapshot(provider)
         if cards:
-            surface["agent_shell_cards"] = cards
+            surface["agent_shell_primitives"] = build_agent_shell_primitives(cards)
         return surface
 
     def _remember_agent_shell_chrome(
@@ -4014,7 +4120,7 @@ class SpokeAppDelegate(NSObject):
 
     def _agent_shell_state(self, provider: str) -> AgentShellState:
         record = self._agent_shell_session_record(provider)
-        spoke_session_id = record.get("spoke_session_id")
+        spoke_session_id = record.get("active_spoke_session_id") or record.get("spoke_session_id")
         provider_session_id = record.get("provider_session_id")
         return AgentShellState(
             active=True,
@@ -4033,6 +4139,11 @@ class SpokeAppDelegate(NSObject):
         record = self._agent_shell_session_record(provider)
         if isinstance(session_id, str) and session_id:
             record["spoke_session_id"] = session_id
+            state = session.get("state")
+            if state in {"queued", "running", "cancelling"}:
+                record["active_spoke_session_id"] = session_id
+            elif record.get("active_spoke_session_id") == session_id:
+                record["active_spoke_session_id"] = None
         if isinstance(provider_session_id, str) and provider_session_id:
             if record.get("provider_session_id") != provider_session_id:
                 record["last_utterance"] = None
@@ -4167,6 +4278,9 @@ class SpokeAppDelegate(NSObject):
         if decision.kind == "mode_control" and decision.control_action == "switch_provider":
             self._complete_agent_shell_mode_control(decision.provider, token)
             return True
+        if decision.kind == "mode_control" and decision.control_action == "cancel_active_run":
+            self._complete_agent_shell_cancel_control(decision.provider, token)
+            return True
         return False
 
     def _complete_agent_shell_mode_control(self, provider: str | None, token: int) -> None:
@@ -4196,6 +4310,75 @@ class SpokeAppDelegate(NSObject):
             False,
         )
 
+    def _agent_shell_active_session_id(self, provider: str | None) -> str | None:
+        if provider not in _AGENT_SHELL_PROVIDERS:
+            return None
+        record = self._agent_shell_session_record(provider)
+        manager = getattr(self, "_agent_backend_manager", None)
+        if manager is None:
+            return None
+        for candidate in (
+            record.get("active_spoke_session_id"),
+            record.get("spoke_session_id"),
+        ):
+            if not isinstance(candidate, str) or not candidate:
+                continue
+            latest = manager.get_session(candidate)
+            if isinstance(latest, dict) and latest.get("state") in {
+                "queued",
+                "running",
+                "cancelling",
+            }:
+                return candidate
+        return None
+
+    def _clear_agent_shell_active_session(
+        self,
+        provider: str | None,
+        session_id: str | None,
+    ) -> None:
+        if provider not in _AGENT_SHELL_PROVIDERS or not session_id:
+            return
+        record = self._agent_shell_session_record(provider)
+        if record.get("active_spoke_session_id") == session_id:
+            record["active_spoke_session_id"] = None
+
+    def _cancel_active_agent_shell_run(self, provider: str | None) -> str | None:
+        session_id = self._agent_shell_active_session_id(provider)
+        if session_id is None:
+            return None
+        manager = getattr(self, "_agent_backend_manager", None)
+        if manager is None:
+            return None
+        manager.cancel(session_id)
+        self._clear_agent_shell_active_session(provider, session_id)
+        return session_id
+
+    def _complete_agent_shell_cancel_control(
+        self,
+        provider: str | None,
+        token: int,
+    ) -> None:
+        if provider not in _AGENT_SHELL_PROVIDERS:
+            self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                "commandFailed:",
+                {"token": token, "error": "No Agent Shell backend is selected"},
+                False,
+            )
+            return
+        label = _agent_shell_provider_label(provider)
+        cancelled = self._cancel_active_agent_shell_run(provider)
+        response = (
+            f"Cancelling {label} run."
+            if cancelled is not None
+            else f"No active {label} run to cancel."
+        )
+        self.performSelectorOnMainThread_withObject_waitUntilDone_(
+            "commandComplete:",
+            {"token": token, "response": response},
+            False,
+        )
+
     def _start_agent_shell_provider_turn(
         self,
         decision,
@@ -4210,6 +4393,7 @@ class SpokeAppDelegate(NSObject):
                 False,
             )
             return
+        self._cancel_active_agent_shell_run(provider)
         self._command_turn_route = "agent_shell"
         self._command_turn_provider = provider
         self._command_turn_token = token
@@ -5529,33 +5713,36 @@ class SpokeAppDelegate(NSObject):
 
     def _agent_shell_menu_state(self) -> dict:
         selected = getattr(self, "_agent_shell_provider", "off") or "off"
-        if selected not in {"off", "codex", "claude-code"}:
+        if selected not in {"off", "codex", "claude-code", "gemini-cli"}:
             selected = "off"
-        codex_record = self._agent_shell_session_record("codex")
-        current_codex_session = codex_record.get("provider_session_id")
-        codex_sessions = self._sanitize_agent_shell_catalog(
-            codex_record.get("sessions")
-        )
         items = [
             ("off", "Off", selected == "off", True),
-            ("codex", "Codex", selected == "codex", True),
-            ("codex-new-session", "Codex: New Session", False, True),
-            ("claude-code", "Claude Code", selected == "claude-code", False),
         ]
-        for entry in codex_sessions:
-            provider_session_id = entry["provider_session_id"]
-            label_source = entry.get("last_utterance") or provider_session_id
-            label_source = label_source.strip().replace("\n", " ")
-            if len(label_source) > 48:
-                label_source = f"{label_source[:45]}..."
-            items.append(
-                (
-                    f"codex-session:{provider_session_id}",
-                    f"Codex: {label_source}",
-                    selected == "codex" and provider_session_id == current_codex_session,
-                    True,
+        for provider in ("codex", "claude-code", "gemini-cli"):
+            label = _agent_shell_provider_label(provider)
+            record = self._agent_shell_session_record(provider)
+            current_session = record.get("provider_session_id")
+            items.append((provider, label, selected == provider, True))
+            items.append((f"{provider}-new-session", f"{label}: New Session", False, True))
+            for entry in self._sanitize_agent_shell_catalog(record.get("sessions")):
+                provider_session_id = entry["provider_session_id"]
+                label_source = entry.get("last_utterance") or provider_session_id
+                label_source = label_source.strip().replace("\n", " ")
+                if len(label_source) > 48:
+                    label_source = f"{label_source[:45]}..."
+                legacy_id = (
+                    f"codex-session:{provider_session_id}"
+                    if provider == "codex"
+                    else f"{provider}-session:{provider_session_id}"
                 )
-            )
+                items.append(
+                    (
+                        legacy_id,
+                        f"{label}: {label_source}",
+                        selected == provider and provider_session_id == current_session,
+                        True,
+                    )
+                )
         return {
             "title": "Agent Shell",
             "items": items,
@@ -5586,23 +5773,21 @@ class SpokeAppDelegate(NSObject):
                     "response": _command_overlay_recall_preview(response),
                     "agent_shell_header": chrome.get("agent_shell_header", ""),
                     "agent_shell_footer": chrome.get("agent_shell_footer", ""),
+                    "agent_shell_primitives": chrome.get("agent_shell_primitives", []),
                 }
-                cards = chrome.get("agent_shell_cards")
-                if cards:
-                    kwargs["agent_shell_cards"] = cards
                 replace_transcript(**kwargs)
             else:
                 if agent_shell_provider is None:
                     clear_chrome = getattr(overlay, "clear_agent_shell_chrome", None)
                     if callable(clear_chrome):
                         clear_chrome()
-                    set_cards = getattr(overlay, "set_agent_shell_cards", None)
-                    if callable(set_cards):
-                        set_cards([])
+                    set_primitives = getattr(overlay, "set_agent_shell_primitives", None)
+                    if callable(set_primitives):
+                        set_primitives([])
                 else:
-                    set_cards = getattr(overlay, "set_agent_shell_cards", None)
-                    if callable(set_cards):
-                        set_cards(chrome.get("agent_shell_cards", []))
+                    set_primitives = getattr(overlay, "set_agent_shell_primitives", None)
+                    if callable(set_primitives):
+                        set_primitives(chrome.get("agent_shell_primitives", []))
                 overlay.set_utterance(utterance)
                 overlay.set_response_text(_command_overlay_recall_preview(response))
             if agent_shell_provider is not None:
@@ -5620,26 +5805,43 @@ class SpokeAppDelegate(NSObject):
             logger.exception("Repaint command overlay after Agent Shell selection failed")
 
     def _apply_agent_shell_selection(self, provider: str) -> None:
+        new_session_provider = None
         if provider == "codex-new-session":
-            old_record = self._agent_shell_session_record("codex")
+            new_session_provider = "codex"
+        elif provider.endswith("-new-session"):
+            candidate = provider.removesuffix("-new-session")
+            if candidate in _AGENT_SHELL_PROVIDERS:
+                new_session_provider = candidate
+        if new_session_provider is not None:
+            label = _agent_shell_provider_label(new_session_provider)
+            old_record = self._agent_shell_session_record(new_session_provider)
             catalog = self._sanitize_agent_shell_catalog(old_record.get("sessions"))
             record = self._empty_agent_shell_session_record()
             record["sessions"] = catalog
-            self._agent_shell_sessions["codex"] = record
-            self._agent_shell_provider = "codex"
-            self._save_preference("agent_shell_provider", "codex")
+            self._agent_shell_sessions[new_session_provider] = record
+            self._agent_shell_provider = new_session_provider
+            self._save_preference("agent_shell_provider", new_session_provider)
             self._persist_agent_shell_sessions()
             if self._menubar is not None:
-                self._menubar.set_status_text("Agent Shell: Codex new session")
+                self._menubar.set_status_text(f"Agent Shell: {label} new session")
             self._repaint_visible_command_overlay_for_current_route()
             return
+        session_provider = None
+        provider_session_id = None
         if provider.startswith("codex-session:"):
+            session_provider = "codex"
             provider_session_id = provider.removeprefix("codex-session:")
-            record = self._agent_shell_session_record("codex")
+        elif "-session:" in provider:
+            candidate, provider_session_id = provider.split("-session:", 1)
+            if candidate in _AGENT_SHELL_PROVIDERS:
+                session_provider = candidate
+        if session_provider is not None and provider_session_id:
+            label = _agent_shell_provider_label(session_provider)
+            record = self._agent_shell_session_record(session_provider)
             for entry in self._sanitize_agent_shell_catalog(record.get("sessions")):
                 if entry.get("provider_session_id") != provider_session_id:
                     continue
-                self._agent_shell_provider = "codex"
+                self._agent_shell_provider = session_provider
                 record["spoke_session_id"] = None
                 record["provider_session_id"] = provider_session_id
                 record["last_utterance"] = entry.get("last_utterance")
@@ -5650,13 +5852,13 @@ class SpokeAppDelegate(NSObject):
                     entry.get("thread_card")
                 ) or None
                 self._upsert_agent_shell_catalog_entry(record)
-                self._save_preference("agent_shell_provider", "codex")
+                self._save_preference("agent_shell_provider", session_provider)
                 self._persist_agent_shell_sessions()
                 if self._menubar is not None:
-                    self._menubar.set_status_text("Agent Shell: Codex")
+                    self._menubar.set_status_text(f"Agent Shell: {label}")
                 self._repaint_visible_command_overlay_for_current_route()
                 return
-        provider = provider if provider in {"off", "codex"} else "off"
+        provider = provider if provider in {"off", "codex", "claude-code", "gemini-cli"} else "off"
         self._agent_shell_provider = provider
         self._save_preference("agent_shell_provider", provider)
         if self._menubar is not None:

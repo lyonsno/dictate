@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import signal
 import threading
 import time
 from pathlib import Path
@@ -181,6 +182,161 @@ class _QuietRunningAgentBackendManager:
         return {"state": "cancelled"}
 
 
+class _PreemptiveAgentBackendManager:
+    def __init__(self):
+        self.launched: list[dict] = []
+        self.cancelled: list[str] = []
+
+    def launch(self, **kwargs):
+        self.launched.append(kwargs)
+        provider = kwargs["provider"]
+        return {
+            "id": f"agent-backend-{provider}-new",
+            "provider": provider,
+            "state": "completed",
+            "provider_session_id": f"{provider}-provider-new",
+            "result": "replacement complete",
+            "error": None,
+        }
+
+    def get_session(self, session_id):
+        if session_id.endswith("-old"):
+            return {
+                "id": session_id,
+                "provider": "gemini-cli",
+                "state": "running",
+                "provider_session_id": "gemini-provider-old",
+                "result": None,
+                "error": None,
+            }
+        return {
+            "id": session_id,
+            "provider": "gemini-cli",
+            "state": "completed",
+            "provider_session_id": "gemini-provider-new",
+            "result": "replacement complete",
+            "error": None,
+        }
+
+    def cancel(self, session_id):
+        self.cancelled.append(session_id)
+        return {"id": session_id, "state": "cancelling"}
+
+
+class _FakeAcpClient:
+    def __init__(self, *, provider: str):
+        self.provider = provider
+        self.requests: list[tuple[str, dict]] = []
+        self.notifications: list[tuple[str, dict]] = []
+        self.started = False
+        self.closed = False
+
+    def start(self):
+        self.started = True
+
+    def close(self):
+        self.closed = True
+
+    def notify(self, method, params=None):
+        self.notifications.append((method, params or {}))
+
+    def request(
+        self,
+        method,
+        params=None,
+        *,
+        timeout=30.0,
+        notification_sink=None,
+        request_handler=None,
+    ):
+        params = params or {}
+        self.requests.append((method, params))
+        if method == "initialize":
+            return {"protocolVersion": 1, "agentCapabilities": {}}, []
+        if method in {"session/new", "session/load"}:
+            mode_map = {
+                "codex": "full-access",
+                "claude-code": "bypassPermissions",
+                "gemini-cli": "default",
+            }
+            mode_id = mode_map[self.provider]
+            return {
+                "sessionId": f"{self.provider}-session-1",
+                "modes": {
+                    "currentModeId": "default",
+                    "availableModes": [
+                        {"id": "default", "name": "Default"},
+                        {"id": mode_id, "name": mode_id},
+                    ],
+                },
+                "models": {"currentModelId": "test-model", "availableModels": []},
+            }, []
+        if method == "session/set_mode":
+            return {}, []
+        if method == "session/prompt":
+            if notification_sink is not None:
+                notification_sink(
+                    {
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": params["sessionId"],
+                            "update": {
+                                "sessionUpdate": "agent_thought_chunk",
+                                "content": {"type": "text", "text": "reading"},
+                            },
+                        },
+                    }
+                )
+                notification_sink(
+                    {
+                        "method": "session/update",
+                        "params": {
+                            "sessionId": params["sessionId"],
+                            "update": {
+                                "sessionUpdate": "agent_message_chunk",
+                                "content": {"type": "text", "text": "done"},
+                            },
+                        },
+                    }
+                )
+            return {"stopReason": "end_turn"}, []
+        raise AssertionError(f"unexpected ACP request: {method}")
+
+
+class _BlockingAcpClient(_FakeAcpClient):
+    def __init__(self, *, provider: str):
+        super().__init__(provider=provider)
+        self.prompt_started = threading.Event()
+        self.cancel_seen = threading.Event()
+
+    def notify(self, method, params=None):
+        super().notify(method, params)
+        if method == "session/cancel":
+            self.cancel_seen.set()
+
+    def request(
+        self,
+        method,
+        params=None,
+        *,
+        timeout=30.0,
+        notification_sink=None,
+        request_handler=None,
+    ):
+        if method != "session/prompt":
+            return super().request(
+                method,
+                params,
+                timeout=timeout,
+                notification_sink=notification_sink,
+                request_handler=request_handler,
+            )
+        self.requests.append((method, params or {}))
+        self.prompt_started.set()
+        assert self.cancel_seen.wait(timeout=2)
+        return {"stopReason": "cancelled"}, []
+
+
 def _make_agent_shell_delegate(main_module):
     delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
     delegate._transcription_token = 0
@@ -234,12 +390,20 @@ class TestAgentBackendManager:
 
         monkeypatch.setenv("OPENAI_API_KEY", "forbidden")
         monkeypatch.setenv("CODEX_API_KEY", "forbidden")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "forbidden")
+        monkeypatch.setenv("GEMINI_API_KEY", "forbidden")
+        monkeypatch.setenv("GOOGLE_API_KEY", "forbidden")
+        monkeypatch.setenv("GOOGLE_GENAI_API_KEY", "forbidden")
         monkeypatch.setenv("CODEX_HOME", "/tmp/codex-home")
 
         env = _subscription_only_env()
 
         assert "OPENAI_API_KEY" not in env
         assert "CODEX_API_KEY" not in env
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "GEMINI_API_KEY" not in env
+        assert "GOOGLE_API_KEY" not in env
+        assert "GOOGLE_GENAI_API_KEY" not in env
         assert env["CODEX_HOME"] == "/tmp/codex-home"
 
     def test_codex_backend_rejects_non_chatgpt_login_status(self, monkeypatch):
@@ -252,6 +416,272 @@ class TestAgentBackendManager:
 
         with pytest.raises(AgentBackendUnavailable, match="ChatGPT subscription"):
             _require_codex_subscription_login("/usr/local/bin/codex", {})
+
+    def test_claude_backend_requires_subscription_auth_status(self, monkeypatch):
+        from spoke.agent_backends import (
+            AgentBackendUnavailable,
+            _require_claude_subscription_login,
+        )
+
+        def fake_status(_claude_path, _env):
+            return {
+                "loggedIn": True,
+                "authMethod": "console",
+                "apiProvider": "firstParty",
+                "subscriptionType": "max",
+            }
+
+        monkeypatch.setattr("spoke.agent_backends._claude_auth_status", fake_status)
+
+        with pytest.raises(AgentBackendUnavailable, match="subscription auth"):
+            _require_claude_subscription_login("/opt/homebrew/bin/claude", {})
+
+    def test_claude_stream_events_preserve_session_output_and_limit_shape(self):
+        from spoke.agent_backends import _events_from_claude_stream_event
+
+        init_events = _events_from_claude_stream_event(
+            {
+                "type": "system",
+                "subtype": "init",
+                "cwd": "/tmp/spoke",
+                "session_id": "claude-thread-1",
+                "model": "claude-opus-4-6[1m]",
+                "claude_code_version": "2.1.81",
+                "apiKeySource": "none",
+            }
+        )
+        assistant_events = _events_from_claude_stream_event(
+            {
+                "type": "assistant",
+                "session_id": "claude-thread-1",
+                "message": {
+                    "content": [{"type": "text", "text": "Claude docked."}],
+                },
+            }
+        )
+        limit_events = _events_from_claude_stream_event(
+            {
+                "type": "rate_limit_event",
+                "rate_limit_info": {
+                    "rateLimitType": "five_hour",
+                    "status": "allowed",
+                    "isUsingOverage": False,
+                },
+            }
+        )
+
+        assert [(event.kind, event.text, event.data) for event in init_events] == [
+            (
+                "session_metadata",
+                "/tmp/spoke",
+                {
+                    "provider_session_id": "claude-thread-1",
+                    "cwd": "/tmp/spoke",
+                    "model": "claude-opus-4-6[1m]",
+                    "cli_version": "2.1.81",
+                    "credential_source": "none",
+                },
+            )
+        ]
+        assert [(event.kind, event.text, event.data) for event in assistant_events] == [
+            (
+                "agent_message",
+                "Claude docked.",
+                {"type": "agent_message", "text": "Claude docked."},
+            )
+        ]
+        assert [(event.kind, event.text, event.data) for event in limit_events] == [
+            (
+                "usage_limits",
+                "",
+                {
+                    "rate_limit_type": "five_hour",
+                    "status": "allowed",
+                    "is_using_overage": False,
+                },
+            )
+        ]
+
+    def test_claude_command_uses_bypass_permissions_fallback_contract(self):
+        from spoke.agent_backends import _claude_command
+
+        command = _claude_command(
+            claude_path="/usr/local/bin/claude",
+            resume_id=None,
+        )
+
+        assert "--permission-mode" in command
+        assert command[command.index("--permission-mode") + 1] == "bypassPermissions"
+        assert "dontAsk" not in command
+
+    def test_claude_acp_resolver_uses_zed_npx_adapter_package(self, monkeypatch):
+        from spoke.agent_backends import _resolve_acp_command
+
+        monkeypatch.setattr(
+            "spoke.agent_backends.shutil.which",
+            lambda name, *args, **kwargs: "/usr/local/bin/npx" if name == "npx" else None,
+        )
+        monkeypatch.setattr("spoke.agent_backends._executable_file", lambda _path: False)
+
+        command = _resolve_acp_command("claude-code", {"PATH": "/usr/local/bin"})
+
+        assert command == (
+            "/usr/local/bin/npx",
+            "-y",
+            "@zed-industries/claude-agent-acp",
+        )
+
+    def test_codex_acp_resolver_uses_zed_npx_adapter_package(self, monkeypatch):
+        from spoke.agent_backends import _resolve_acp_command
+
+        monkeypatch.setattr(
+            "spoke.agent_backends.shutil.which",
+            lambda name, *args, **kwargs: "/usr/local/bin/npx" if name == "npx" else None,
+        )
+        monkeypatch.setattr("spoke.agent_backends._executable_file", lambda _path: False)
+
+        command = _resolve_acp_command("codex", {"PATH": "/usr/local/bin"})
+
+        assert command == (
+            "/usr/local/bin/npx",
+            "-y",
+            "@zed-industries/codex-acp",
+        )
+
+    def test_gemini_stream_events_preserve_session_tool_and_stats_shape(self):
+        from spoke.agent_backends import _events_from_gemini_stream_event
+
+        init_events = _events_from_gemini_stream_event(
+            {
+                "type": "init",
+                "session_id": "gemini-thread-1",
+                "model": "auto-gemini-3",
+            },
+            cwd="/tmp/spoke",
+        )
+        assistant_events = _events_from_gemini_stream_event(
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": "Gemini docked.",
+                "delta": True,
+            },
+            cwd="/tmp/spoke",
+        )
+        tool_events = _events_from_gemini_stream_event(
+            {
+                "type": "tool_use",
+                "tool_name": "run_shell_command",
+                "tool_id": "tool-1",
+                "parameters": {"command": "pwd", "description": "Print cwd."},
+            },
+            cwd="/tmp/spoke",
+        )
+        result_events = _events_from_gemini_stream_event(
+            {
+                "type": "result",
+                "status": "success",
+                "stats": {
+                    "duration_ms": 3116,
+                    "tool_calls": 1,
+                    "models": {"gemini-3-flash-preview": {"total_tokens": 10}},
+                },
+            },
+            cwd="/tmp/spoke",
+        )
+
+        assert [(event.kind, event.text, event.data) for event in init_events] == [
+            (
+                "session_metadata",
+                "/tmp/spoke",
+                {
+                    "provider_session_id": "gemini-thread-1",
+                    "cwd": "/tmp/spoke",
+                    "model": "auto-gemini-3",
+                },
+            )
+        ]
+        assert [(event.kind, event.text) for event in assistant_events] == [
+            ("agent_message", "Gemini docked.")
+        ]
+        assert [(event.kind, event.text, event.data["tool_name"]) for event in tool_events] == [
+            ("tool_use", "run_shell_command: pwd", "run_shell_command")
+        ]
+        assert [(event.kind, event.data["tool_calls"]) for event in result_events] == [
+            ("usage_limits", 1)
+        ]
+
+    def test_gemini_command_wraps_prompt_for_compact_operator_shell(self):
+        from spoke.agent_backends import _gemini_command
+
+        command = _gemini_command(
+            gemini_path="/usr/local/bin/gemini",
+            prompt="Inspect the Agent Shell backend.",
+            resume_id=None,
+        )
+
+        prompt = command[2]
+        assert "compact operator shell" in prompt
+        assert "do not print an implementation plan" in prompt.lower()
+        assert "Inspect the Agent Shell backend." in prompt
+        assert "--approval-mode" in command
+        assert command[command.index("--approval-mode") + 1] == "plan"
+        assert "yolo" not in command
+
+    @pytest.mark.parametrize(
+        ("provider", "mode_id"),
+        [
+            ("codex", "full-access"),
+            ("claude-code", "bypassPermissions"),
+            ("gemini-cli", "default"),
+        ],
+    )
+    def test_acp_backend_sets_provider_default_mode(self, provider, mode_id):
+        from spoke.agent_backends import _run_acp_session_with_client
+
+        client = _FakeAcpClient(provider=provider)
+        events = []
+
+        result = _run_acp_session_with_client(
+            provider=provider,
+            prompt="hello",
+            cwd="/tmp/spoke",
+            resume_id=None,
+            cancel_check=lambda: False,
+            event_sink=events.append,
+            client=client,
+            timeout=1,
+        )
+
+        assert result.session_id == f"{provider}-session-1"
+        assert result.final_response == "done"
+        assert ("session/set_mode", {"sessionId": f"{provider}-session-1", "modeId": mode_id}) in client.requests
+        assert any(event.kind == "reasoning" and event.text == "reading" for event in events)
+        assert any(
+            event.kind == "session_metadata"
+            and event.data["transport"] == "acp"
+            and event.data["mode"] == mode_id
+            for event in events
+        )
+
+    def test_acp_backend_cancel_uses_session_cancel_not_process_signal(self):
+        from spoke.agent_backends import _run_acp_session_with_client
+
+        client = _BlockingAcpClient(provider="codex")
+
+        result = _run_acp_session_with_client(
+            provider="codex",
+            prompt="stop this",
+            cwd="/tmp/spoke",
+            resume_id=None,
+            cancel_check=lambda: client.prompt_started.is_set(),
+            event_sink=None,
+            client=client,
+            timeout=1,
+        )
+
+        assert result.session_id == "codex-session-1"
+        assert ("session/cancel", {"sessionId": "codex-session-1"}) in client.notifications
 
     def test_codex_json_item_events_preserve_tool_loop_shape(self):
         from spoke.agent_backends import _event_from_codex_item
@@ -624,6 +1054,96 @@ class TestAgentBackendManager:
         assert result["result"] == "Plan complete."
         assert result["result_preview"] == "Plan complete."
 
+    def test_launch_accepts_claude_code_through_shared_session_contract(self, tmp_path):
+        from spoke.agent_backends import AgentBackendManager, AgentBackendRunResult
+
+        calls = []
+        _DeferredThread.created = []
+
+        def fake_runner(provider, prompt, cwd, resume_id, cancel_check, event_sink):
+            calls.append((provider, prompt, cwd, resume_id, cancel_check()))
+            return AgentBackendRunResult(
+                provider=provider,
+                session_id="claude-thread-123",
+                final_response="Claude plan complete.",
+            )
+
+        manager = AgentBackendManager(
+            backend_runner=fake_runner,
+            thread_factory=_DeferredThread,
+        )
+
+        launched = manager.launch(
+            provider="claude-code",
+            prompt="inspect the failing tests",
+            cwd=str(tmp_path),
+            resume_id="prior-claude-session",
+        )
+        assert launched["id"] == "agent-backend-claude-code-1"
+        assert launched["provider"] == "claude-code"
+
+        _DeferredThread.created[-1].run_now()
+
+        result = manager.get_session(launched["id"])
+        assert calls == [
+            (
+                "claude-code",
+                "inspect the failing tests",
+                str(tmp_path),
+                "prior-claude-session",
+                False,
+            )
+        ]
+        assert result["state"] == "completed"
+        assert result["provider_session_id"] == "claude-thread-123"
+        assert result["thread_card"]["provider"] == "claude-code"
+        assert result["thread_card"]["latest_response"] == "Claude plan complete."
+
+    def test_launch_accepts_gemini_cli_through_shared_session_contract(self, tmp_path):
+        from spoke.agent_backends import AgentBackendManager, AgentBackendRunResult
+
+        calls = []
+        _DeferredThread.created = []
+
+        def fake_runner(provider, prompt, cwd, resume_id, cancel_check, event_sink):
+            calls.append((provider, prompt, cwd, resume_id, cancel_check()))
+            return AgentBackendRunResult(
+                provider=provider,
+                session_id="gemini-thread-123",
+                final_response="Gemini plan complete.",
+            )
+
+        manager = AgentBackendManager(
+            backend_runner=fake_runner,
+            thread_factory=_DeferredThread,
+        )
+
+        launched = manager.launch(
+            provider="gemini-cli",
+            prompt="inspect the failing tests",
+            cwd=str(tmp_path),
+            resume_id="prior-gemini-session",
+        )
+        assert launched["id"] == "agent-backend-gemini-cli-1"
+        assert launched["provider"] == "gemini-cli"
+
+        _DeferredThread.created[-1].run_now()
+
+        result = manager.get_session(launched["id"])
+        assert calls == [
+            (
+                "gemini-cli",
+                "inspect the failing tests",
+                str(tmp_path),
+                "prior-gemini-session",
+                False,
+            )
+        ]
+        assert result["state"] == "completed"
+        assert result["provider_session_id"] == "gemini-thread-123"
+        assert result["thread_card"]["provider"] == "gemini-cli"
+        assert result["thread_card"]["latest_response"] == "Gemini plan complete."
+
     def test_backend_unavailable_is_visible_without_looking_like_terminal_failure(self):
         from spoke.agent_backends import (
             AgentBackendManager,
@@ -704,6 +1224,53 @@ class TestAgentBackendManager:
         assert result["state"] == "cancelled"
         assert result["result"] is None
         assert result["provider_session_id"] is None
+
+    def test_cancel_terminates_registered_backend_process_group(self, monkeypatch):
+        from spoke.agent_backends import (
+            AgentBackendEvent,
+            AgentBackendManager,
+            AgentBackendRunResult,
+        )
+
+        started = threading.Event()
+        release = threading.Event()
+        killpg = MagicMock()
+        monkeypatch.setattr("os.killpg", killpg)
+
+        def fake_runner(provider, prompt, cwd, resume_id, cancel_check, event_sink):
+            event_sink(
+                AgentBackendEvent(
+                    kind="_process_started",
+                    data={"pid": 12345, "pgid": 67890},
+                )
+            )
+            started.set()
+            while not cancel_check() and not release.wait(0.01):
+                pass
+            return AgentBackendRunResult(
+                provider=provider,
+                session_id="gemini-thread-123",
+                final_response="Should be discarded",
+            )
+
+        manager = AgentBackendManager(backend_runner=fake_runner)
+
+        launched = manager.launch(
+            provider="gemini-cli",
+            prompt="run recon",
+            cwd="/tmp/project",
+        )
+        assert started.wait(1)
+
+        cancelled = manager.cancel(launched["id"])
+        release.set()
+
+        assert cancelled["state"] == "cancelling"
+        killpg.assert_called_once_with(67890, signal.SIGTERM)
+        assert all(
+            event["kind"] != "_process_started"
+            for event in manager.get_session(launched["id"])["backend_events"]
+        )
 
 
 class TestAgentBackendToolDispatch:
@@ -1115,6 +1682,41 @@ class TestAgentShellRouting:
         assert decision.control_action == "switch_provider"
         assert decision.provider == "claude-code"
 
+    def test_active_agent_shell_recognizes_gemini_cli_as_distinct_cli_backend(self):
+        from spoke.agent_shell import AgentShellState, route_agent_shell_input
+
+        state = AgentShellState(active=True, provider="codex", cwd="/tmp/project")
+
+        decision = route_agent_shell_input("switch to Gemini CLI", state)
+
+        assert decision.kind == "mode_control"
+        assert decision.control_action == "switch_provider"
+        assert decision.provider == "gemini-cli"
+
+    def test_active_agent_shell_cancel_text_stays_with_selected_provider(self):
+        from spoke.agent_shell import AgentShellState, route_agent_shell_input
+
+        decision = route_agent_shell_input(
+            "cancel agent",
+            AgentShellState(active=True, provider="gemini-cli", cwd="/tmp/project"),
+        )
+
+        assert decision.kind == "provider_message"
+        assert decision.control_action is None
+        assert decision.text == "cancel agent"
+        assert decision.provider == "gemini-cli"
+
+    def test_active_agent_shell_cancel_words_inside_message_do_not_trigger_control(self):
+        from spoke.agent_shell import AgentShellState, route_agent_shell_input
+
+        decision = route_agent_shell_input(
+            "stop using backend jargon and explain the run loop plainly",
+            AgentShellState(active=True, provider="gemini-cli", cwd="/tmp/project"),
+        )
+
+        assert decision.kind == "provider_message"
+        assert decision.text == "stop using backend jargon and explain the run loop plainly"
+
     def test_inactive_agent_shell_leaves_input_for_normal_assistant(self):
         from spoke.agent_shell import AgentShellState, route_agent_shell_input
 
@@ -1164,29 +1766,42 @@ class TestAgentShellMenuState:
                 ("off", "Off", False, True),
                 ("codex", "Codex", True, True),
                 ("codex-new-session", "Codex: New Session", False, True),
-                ("claude-code", "Claude Code", False, False),
+                ("claude-code", "Claude Code", False, True),
+                ("claude-code-new-session", "Claude Code: New Session", False, True),
+                ("gemini-cli", "Gemini CLI", False, True),
+                ("gemini-cli-new-session", "Gemini CLI: New Session", False, True),
             ],
         }
 
-    def test_delegate_exposes_agent_shell_session_catalog_menu_items(
+    def test_delegate_exposes_agent_shell_session_catalog_menu_items_for_each_provider(
         self, monkeypatch, main_module
     ):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
-        delegate._agent_shell_provider = "codex"
+        delegate._agent_shell_provider = "claude-code"
         delegate._agent_backend_manager = MagicMock()
         delegate._agent_shell_sessions = {
             "codex": {
-                "provider_session_id": "codex-thread-2",
+                "provider_session_id": "codex-thread-1",
                 "sessions": [
                     {
                         "provider_session_id": "codex-thread-1",
                         "last_utterance": "first codex question",
                         "last_response": "first codex answer",
                     },
+                ],
+            },
+            "claude-code": {
+                "provider_session_id": "claude-thread-2",
+                "sessions": [
                     {
-                        "provider_session_id": "codex-thread-2",
-                        "last_utterance": "second codex question",
-                        "last_response": "second codex answer",
+                        "provider_session_id": "claude-thread-1",
+                        "last_utterance": "first claude question",
+                        "last_response": "first claude answer",
+                    },
+                    {
+                        "provider_session_id": "claude-thread-2",
+                        "last_utterance": "second claude question",
+                        "last_response": "second claude answer",
                     },
                 ],
             }
@@ -1194,32 +1809,46 @@ class TestAgentShellMenuState:
 
         assert delegate._agent_shell_menu_state()["items"] == [
             ("off", "Off", False, True),
-            ("codex", "Codex", True, True),
+            ("codex", "Codex", False, True),
             ("codex-new-session", "Codex: New Session", False, True),
-            ("claude-code", "Claude Code", False, False),
             ("codex-session:codex-thread-1", "Codex: first codex question", False, True),
-            ("codex-session:codex-thread-2", "Codex: second codex question", True, True),
+            ("claude-code", "Claude Code", True, True),
+            ("claude-code-new-session", "Claude Code: New Session", False, True),
+            (
+                "claude-code-session:claude-thread-1",
+                "Claude Code: first claude question",
+                False,
+                True,
+            ),
+            (
+                "claude-code-session:claude-thread-2",
+                "Claude Code: second claude question",
+                True,
+                True,
+            ),
+            ("gemini-cli", "Gemini CLI", False, True),
+            ("gemini-cli-new-session", "Gemini CLI: New Session", False, True),
         ]
 
-    def test_agent_shell_new_codex_session_clears_active_record_but_keeps_catalog(
+    def test_agent_shell_new_provider_session_clears_active_record_but_keeps_catalog(
         self, monkeypatch, main_module
     ):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
-        delegate._agent_shell_provider = "codex"
+        delegate._agent_shell_provider = "claude-code"
         delegate._agent_backend_manager = MagicMock()
         delegate._agent_shell_sessions = {
-            "codex": {
+            "claude-code": {
                 "spoke_session_id": "spoke-old",
-                "provider_session_id": "codex-thread-2",
-                "last_utterance": "second codex question",
-                "last_response": "second codex answer",
+                "provider_session_id": "claude-thread-2",
+                "last_utterance": "second claude question",
+                "last_response": "second claude answer",
                 "last_header": "Worktree: old-tree",
                 "last_footer": "model gpt-5.5 | cwd /tmp/old",
                 "sessions": [
                     {
-                        "provider_session_id": "codex-thread-2",
-                        "last_utterance": "second codex question",
-                        "last_response": "second codex answer",
+                        "provider_session_id": "claude-thread-2",
+                        "last_utterance": "second claude question",
+                        "last_response": "second claude answer",
                         "last_header": "Worktree: old-tree",
                         "last_footer": "model gpt-5.5 | cwd /tmp/old",
                     }
@@ -1237,10 +1866,10 @@ class TestAgentShellMenuState:
         delegate._sync_command_overlay_brightness = MagicMock()
         delegate._detector = MagicMock()
 
-        delegate._apply_agent_shell_selection("codex-new-session")
+        delegate._apply_agent_shell_selection("claude-code-new-session")
 
-        record = delegate._agent_shell_sessions["codex"]
-        assert delegate._agent_shell_provider == "codex"
+        record = delegate._agent_shell_sessions["claude-code"]
+        assert delegate._agent_shell_provider == "claude-code"
         assert record["spoke_session_id"] is None
         assert record["provider_session_id"] is None
         assert record["last_utterance"] is None
@@ -1249,36 +1878,38 @@ class TestAgentShellMenuState:
         assert record["last_footer"] is None
         assert record["sessions"] == [
             {
-                "provider_session_id": "codex-thread-2",
-                "last_utterance": "second codex question",
-                "last_response": "second codex answer",
+                "provider_session_id": "claude-thread-2",
+                "last_utterance": "second claude question",
+                "last_response": "second claude answer",
                 "last_header": "Worktree: old-tree",
                 "last_footer": "model gpt-5.5 | cwd /tmp/old",
             }
         ]
-        delegate._menubar.set_status_text.assert_called_with("Agent Shell: Codex new session")
+        delegate._menubar.set_status_text.assert_called_with(
+            "Agent Shell: Claude Code new session"
+        )
 
-    def test_agent_shell_session_selection_restores_catalog_snapshot(
+    def test_agent_shell_provider_session_selection_restores_catalog_snapshot(
         self, monkeypatch, main_module
     ):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         delegate._agent_shell_provider = "off"
         delegate._agent_backend_manager = MagicMock()
         delegate._agent_shell_sessions = {
-            "codex": {
-                "provider_session_id": "codex-thread-2",
-                "last_utterance": "second codex question",
-                "last_response": "second codex answer",
+            "claude-code": {
+                "provider_session_id": "claude-thread-2",
+                "last_utterance": "second claude question",
+                "last_response": "second claude answer",
                 "sessions": [
                     {
-                        "provider_session_id": "codex-thread-1",
-                        "last_utterance": "first codex question",
-                        "last_response": "first codex answer",
+                        "provider_session_id": "claude-thread-1",
+                        "last_utterance": "first claude question",
+                        "last_response": "first claude answer",
                     },
                     {
-                        "provider_session_id": "codex-thread-2",
-                        "last_utterance": "second codex question",
-                        "last_response": "second codex answer",
+                        "provider_session_id": "claude-thread-2",
+                        "last_utterance": "second claude question",
+                        "last_response": "second claude answer",
                     },
                 ],
             }
@@ -1287,30 +1918,30 @@ class TestAgentShellMenuState:
         delegate._menubar = MagicMock()
         delegate._command_overlay = None
 
-        delegate._apply_agent_shell_selection("codex-session:codex-thread-1")
+        delegate._apply_agent_shell_selection("claude-code-session:claude-thread-1")
 
-        assert delegate._agent_shell_provider == "codex"
-        record = delegate._agent_shell_sessions["codex"]
-        assert record["provider_session_id"] == "codex-thread-1"
-        assert record["last_utterance"] == "first codex question"
-        assert record["last_response"] == "first codex answer"
+        assert delegate._agent_shell_provider == "claude-code"
+        record = delegate._agent_shell_sessions["claude-code"]
+        assert record["provider_session_id"] == "claude-thread-1"
+        assert record["last_utterance"] == "first claude question"
+        assert record["last_response"] == "first claude answer"
         assert delegate._save_preference.call_args_list[-1].args == (
             "agent_shell_overlay_snapshots",
             {
-                "codex": {
-                    "provider_session_id": "codex-thread-1",
-                    "last_utterance": "first codex question",
-                    "last_response": "first codex answer",
+                "claude-code": {
+                    "provider_session_id": "claude-thread-1",
+                    "last_utterance": "first claude question",
+                    "last_response": "first claude answer",
                     "sessions": [
                         {
-                            "provider_session_id": "codex-thread-1",
-                            "last_utterance": "first codex question",
-                            "last_response": "first codex answer",
+                            "provider_session_id": "claude-thread-1",
+                            "last_utterance": "first claude question",
+                            "last_response": "first claude answer",
                         },
                         {
-                            "provider_session_id": "codex-thread-2",
-                            "last_utterance": "second codex question",
-                            "last_response": "second codex answer",
+                            "provider_session_id": "claude-thread-2",
+                            "last_utterance": "second claude question",
+                            "last_response": "second claude answer",
                         },
                     ],
                 }
@@ -1405,6 +2036,160 @@ class TestAgentShellMenuState:
         assert cards[1]["display"]["show_latest_response"] is True
         assert cards[1]["display"]["primary_text"] == "second codex answer"
 
+    def test_agent_shell_thread_cards_snapshot_aggregates_persisted_provider_catalogs_after_restart(
+        self, main_module
+    ):
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "claude-code"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_backend_manager.list_sessions.return_value = []
+        delegate._agent_shell_sessions = {
+            "codex": {
+                "provider_session_id": "codex-thread-1",
+                "sessions": [
+                    {
+                        "provider_session_id": "codex-thread-1",
+                        "last_utterance": "codex restart question",
+                        "last_response": "codex restart answer",
+                    },
+                ],
+            },
+            "claude-code": {
+                "provider_session_id": "claude-thread-1",
+                "sessions": [
+                    {
+                        "provider_session_id": "claude-thread-1",
+                        "last_utterance": "claude restart question",
+                        "last_response": "claude restart answer",
+                    },
+                ],
+            },
+            "gemini-cli": {
+                "provider_session_id": "gemini-thread-1",
+                "sessions": [
+                    {
+                        "provider_session_id": "gemini-thread-1",
+                        "last_utterance": "gemini restart question",
+                        "last_response": "gemini restart answer",
+                    },
+                ],
+            },
+        }
+
+        cards = delegate._agent_shell_thread_cards_snapshot("claude-code")
+
+        assert [card["provider"] for card in cards] == [
+            "codex",
+            "claude-code",
+            "gemini-cli",
+        ]
+        assert [card["provider_session_id"] for card in cards] == [
+            "codex-thread-1",
+            "claude-thread-1",
+            "gemini-thread-1",
+        ]
+        assert [card["selected"] for card in cards] == [False, True, False]
+        assert cards[0]["display"]["display_state"] == "inactive"
+        assert cards[0]["display"]["show_latest_response"] is False
+        assert cards[1]["display"]["display_state"] == "selected_resting"
+        assert cards[1]["display"]["primary_text"] == "claude restart answer"
+        assert cards[2]["display"]["display_state"] == "inactive"
+
+    def test_agent_shell_thread_cards_snapshot_merges_live_backend_public_sessions(
+        self, main_module
+    ):
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_shell_sessions = {
+            "codex": {
+                "provider_session_id": "codex-thread-1",
+                "sessions": [
+                    {
+                        "provider_session_id": "codex-thread-1",
+                        "last_utterance": "persisted codex",
+                        "last_response": "persisted codex answer",
+                    },
+                ],
+            }
+        }
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_backend_manager.list_sessions.return_value = [
+            {
+                "id": "agent-backend-gemini-cli-1",
+                "provider": "gemini-cli",
+                "state": "running",
+                "provider_session_id": "gemini-thread-live",
+                "thread_card": {
+                    "thread_id": "agent-backend-gemini-cli-1",
+                    "provider": "gemini-cli",
+                    "provider_session_id": "gemini-thread-live",
+                    "title": "live gemini work",
+                    "readiness": "working",
+                    "bearing": "Session: live backend work",
+                    "activity_line": "Running focused tests",
+                    "latest_response": "",
+                    "updated_sequence": 4,
+                },
+            }
+        ]
+
+        cards = delegate._agent_shell_thread_cards_snapshot("codex")
+
+        assert [card["provider_session_id"] for card in cards] == [
+            "codex-thread-1",
+            "gemini-thread-live",
+        ]
+        assert cards[0]["selected"] is True
+        assert cards[1]["provider"] == "gemini-cli"
+        assert cards[1]["selected"] is False
+        assert cards[1]["readiness"] == "working"
+        assert cards[1]["display"]["display_state"] == "inactive"
+        assert cards[1]["display"]["show_latest_response"] is False
+
+    def test_switching_provider_session_keeps_inactive_catalog_cards_visible(
+        self, main_module
+    ):
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "codex"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_backend_manager.list_sessions.return_value = []
+        delegate._agent_shell_sessions = {
+            "codex": {
+                "provider_session_id": "codex-thread-1",
+                "sessions": [
+                    {
+                        "provider_session_id": "codex-thread-1",
+                        "last_utterance": "codex question",
+                        "last_response": "codex answer",
+                    },
+                ],
+            },
+            "gemini-cli": {
+                "provider_session_id": "gemini-thread-1",
+                "sessions": [
+                    {
+                        "provider_session_id": "gemini-thread-1",
+                        "last_utterance": "gemini question",
+                        "last_response": "gemini answer",
+                    },
+                ],
+            },
+        }
+        delegate._command_overlay = None
+        delegate._save_preference = MagicMock()
+        delegate._menubar = MagicMock()
+
+        delegate._apply_agent_shell_selection("gemini-cli-session:gemini-thread-1")
+        cards = delegate._agent_shell_thread_cards_snapshot("gemini-cli")
+
+        assert [card["provider_session_id"] for card in cards] == [
+            "codex-thread-1",
+            "gemini-thread-1",
+        ]
+        assert [card["selected"] for card in cards] == [False, True]
+        assert cards[0]["display"]["display_state"] == "inactive"
+        assert cards[1]["display"]["display_state"] == "selected_resting"
+
     def test_agent_shell_chrome_events_persist_to_provider_record(self, main_module):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
         delegate._transcription_token = 7
@@ -1420,6 +2205,43 @@ class TestAgentShellMenuState:
         record = delegate._agent_shell_sessions["codex"]
         assert record["last_header"] == "Worktree: codex-spinal-tap"
         assert record["last_footer"] == "model gpt-5.5 | cwd /tmp/spoke"
+
+    def test_agent_shell_surface_snapshot_exposes_card_primitives(self, main_module):
+        delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+        delegate._agent_shell_provider = "claude-code"
+        delegate._agent_backend_manager = MagicMock()
+        delegate._agent_backend_manager.list_sessions.return_value = []
+        delegate._agent_shell_sessions = {
+            "claude-code": {
+                "provider_session_id": "claude-thread-1",
+                "sessions": [
+                    {
+                        "provider_session_id": "claude-thread-1",
+                        "last_utterance": "claude question",
+                        "last_response": "claude answer",
+                    },
+                    {
+                        "provider_session_id": "claude-thread-2",
+                        "last_utterance": "other claude question",
+                        "last_response": "other claude answer",
+                    },
+                ],
+            }
+        }
+
+        surface = delegate._agent_shell_surface_snapshot("claude-code")
+
+        assert "agent_shell_cards" not in surface
+        primitives = surface["agent_shell_primitives"]
+        assert [primitive["provider_session_id"] for primitive in primitives] == [
+            "claude-thread-1",
+            "claude-thread-2",
+        ]
+        assert [primitive["kind"] for primitive in primitives] == [
+            "selected_thread",
+            "thread_card",
+        ]
+        assert primitives[0]["display"]["show_latest_response"] is True
 
     def test_recalling_agent_shell_snapshot_restores_persisted_chrome(self, main_module):
         delegate = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
@@ -1472,6 +2294,7 @@ class TestAgentShellMenuState:
             response="local response",
             agent_shell_header="",
             agent_shell_footer="",
+            agent_shell_primitives=[],
         )
 
     def test_repaint_visible_overlay_replaces_transcript_in_one_batch(self, main_module):
@@ -1501,6 +2324,7 @@ class TestAgentShellMenuState:
             response="hello from codex",
             agent_shell_header="Worktree: codex-spinal-tap",
             agent_shell_footer="model gpt-5.5 | cwd /tmp/spoke",
+            agent_shell_primitives=[],
         )
         delegate._command_overlay.set_utterance.assert_not_called()
         delegate._command_overlay.set_response_text.assert_not_called()
@@ -1844,3 +2668,63 @@ class TestAgentShellDelegateDispatch:
         calls = delegate.performSelectorOnMainThread_withObject_waitUntilDone_.call_args_list
         assert calls[-1].args[0] == "commandComplete:"
         assert "Agent Shell switched to Codex" in calls[-1].args[1]["response"]
+
+    def test_agent_shell_cancel_text_is_sent_as_replacement_message(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
+        delegate = _make_agent_shell_delegate(main_module)
+        delegate._agent_shell_provider = "gemini-cli"
+        delegate._agent_backend_manager = _PreemptiveAgentBackendManager()
+        delegate._agent_shell_sessions = {
+            "gemini-cli": {
+                "spoke_session_id": "agent-backend-gemini-cli-old",
+                "active_spoke_session_id": "agent-backend-gemini-cli-old",
+                "provider_session_id": "gemini-provider-old",
+                "sessions": [],
+            }
+        }
+
+        delegate._send_text_as_command("cancel this agent run")
+
+        assert delegate._agent_backend_manager.cancelled == [
+            "agent-backend-gemini-cli-old"
+        ]
+        assert delegate._agent_backend_manager.launched == [
+            {
+                "provider": "gemini-cli",
+                "prompt": "cancel this agent run",
+                "cwd": str(Path.cwd()),
+                "resume_id": "gemini-provider-old",
+            }
+        ]
+
+    def test_agent_shell_new_message_preempts_active_provider_run(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setattr(main_module.threading, "Thread", _ImmediateThread)
+        delegate = _make_agent_shell_delegate(main_module)
+        delegate._agent_shell_provider = "gemini-cli"
+        delegate._agent_backend_manager = _PreemptiveAgentBackendManager()
+        delegate._agent_shell_sessions = {
+            "gemini-cli": {
+                "spoke_session_id": "agent-backend-gemini-cli-old",
+                "active_spoke_session_id": "agent-backend-gemini-cli-old",
+                "provider_session_id": "gemini-provider-old",
+                "sessions": [],
+            }
+        }
+
+        delegate._send_text_as_command("look at the next file")
+
+        assert delegate._agent_backend_manager.cancelled == [
+            "agent-backend-gemini-cli-old"
+        ]
+        assert delegate._agent_backend_manager.launched == [
+            {
+                "provider": "gemini-cli",
+                "prompt": "look at the next file",
+                "cwd": str(Path.cwd()),
+                "resume_id": "gemini-provider-old",
+            }
+        ]

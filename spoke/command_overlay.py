@@ -2830,14 +2830,22 @@ class CommandOverlay(NSObject):
         response: str,
         agent_shell_header: str = "",
         agent_shell_footer: str = "",
+        agent_shell_primitives: list[dict] | None = None,
     ) -> None:
         """Replace recalled transcript and chrome with one layout pass."""
         self._utterance_text = utterance
         self._collapsed_text = ""
         self._response_text = ""
+        if agent_shell_primitives is not None:
+            self._agent_shell_primitives = [
+                dict(primitive)
+                for primitive in agent_shell_primitives
+                if isinstance(primitive, dict)
+            ]
         self._set_agent_shell_chrome_texts(agent_shell_header, agent_shell_footer)
         if self._text_view is None or not self._visible:
             self._response_text = response
+            self._push_agent_shell_payload()
             return
         if response:
             self.set_response_text(response)
@@ -2847,6 +2855,7 @@ class CommandOverlay(NSObject):
             )
             self._update_layout()
             self._refresh_punchthrough_mask_if_needed()
+            self._push_agent_shell_payload()
 
     def set_agent_shell_header(self, text: str) -> None:
         """Set the Agent Shell identity line above the transcript."""

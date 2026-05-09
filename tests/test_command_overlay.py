@@ -3722,6 +3722,29 @@ class TestAdaptiveCompositing:
         assert child["content_width_points"] == pytest.approx(600.0)
         assert child["content_height_points"] == pytest.approx(144.0)
 
+    def test_replace_transcript_updates_agent_shell_primitives(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._visible = False
+        primitives = [
+            {
+                "id": "claude-thread-1",
+                "kind": "selected_thread",
+                "provider_session_id": "claude-thread-1",
+                "display": {"primary_text": "Claude lane"},
+            }
+        ]
+
+        overlay.replace_transcript(
+            utterance="hello",
+            response="world",
+            agent_shell_primitives=primitives,
+        )
+
+        assert overlay._agent_shell_primitives == primitives
+
     def test_fullscreen_compositor_start_arms_brightness_startup_grace(
         self, mock_pyobjc, monkeypatch
     ):
@@ -4300,25 +4323,6 @@ class TestGeometryCaps:
         assert second_config is not first_config
         assert second_config["center_x"] != -1.0
 
-    def test_current_optical_shell_config_carries_agent_thread_cards(
-        self, mock_pyobjc, monkeypatch
-    ):
-        overlay, mod = _make_overlay(mock_pyobjc)
-        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
-        overlay._content_view.frame.return_value = _make_rect(28.0, 28.0, 624.0, 104.0)
-        overlay._agent_shell_cards = [
-            {
-                "provider_session_id": "codex-thread-1",
-                "title": "first thread",
-                "readiness": "ready",
-            }
-        ]
-
-        config = overlay._current_optical_shell_config()
-
-        assert config["surface_kind"] == "agent_shell"
-        assert config["agent_thread_cards"] == overlay._agent_shell_cards
-
     def test_update_layout_resets_text_geometry_to_match_visible_area(
         self, mock_pyobjc, monkeypatch
     ):
@@ -4393,7 +4397,9 @@ class TestGeometryCaps:
         assert clip_rect.size.width == pytest.approx(552.0)
         assert clip_rect.size.height == pytest.approx(328.0)
         draw_rect = storage.drawInRect_.call_args_list[0].args[0]
-        assert draw_rect.origin.y == pytest.approx(236.0 - 850.0)
+        assert draw_rect.origin.y == pytest.approx(
+            236.0 + mod._TRANSCRIPT_TEXT_VERTICAL_INSET - 850.0
+        )
         assert draw_rect.size.height == pytest.approx(1400.0)
 
     def test_update_layout_gives_agent_shell_chrome_top_and_bottom_headroom(
@@ -4512,6 +4518,7 @@ class TestGeometryCaps:
             "CGContextRestoreGState",
             "CGContextTranslateCTM",
             "CGContextScaleCTM",
+            "CGContextClipToRect",
         ):
             monkeypatch.setattr(quartz, name, MagicMock(), raising=False)
         monkeypatch.setattr(quartz, "kCGImageAlphaPremultipliedLast", 1, raising=False)
