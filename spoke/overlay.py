@@ -714,6 +714,7 @@ class TranscriptionOverlay(NSObject):
             OpticalFieldBounds,
             OpticalFieldProfileRef,
             OpticalFieldRequest,
+            OpticalFieldSignal,
             OpticalFieldSlotOverride,
         )
 
@@ -740,12 +741,17 @@ class TranscriptionOverlay(NSObject):
             width=float(geometry.content_width_points),
             height=float(geometry.content_height_points),
         )
+        rms = float(getattr(self, "_text_amplitude", 0.0))
+        signals = (
+            OpticalFieldSignal(name="audio_rms", value=rms),
+        )
         return OpticalFieldRequest(
             caller_id="preview.transcription",
             bounds=bounds,
             role="preview",
             state=state,
             profile=profile,
+            signals=signals,
             visible=bool(visible),
             z_index=0,
         )
@@ -868,7 +874,6 @@ class TranscriptionOverlay(NSObject):
         self._set_text_view_content("")
         self._content_view.layer().setBackgroundColor_(None)
         self._clear_fill_override(opacity=_BG_ALPHA_MIN)
-        self._window.setAlphaValue_(0.0)
 
         # Reset to default size (window includes feather margin)
         screen_frame = self._screen.frame()
@@ -888,18 +893,11 @@ class TranscriptionOverlay(NSObject):
         self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
         self._reset_text_geometry(_OVERLAY_HEIGHT - 16, scroll_to_top=True)
 
+        # Window stays fully present — House/compositor owns the materialize
+        # lifecycle envelope via the optical field contract.
+        self._window.setAlphaValue_(1.0)
         self._publish_preview_compositor_snapshot(visible=True, state="materialize")
         self._window.orderFrontRegardless()
-
-        # Fade in using stepped timer
-        self._fade_step = 0
-        self._fade_from = 0.0
-        self._fade_target = 1.0
-        self._fade_direction = 1  # fading in
-        interval = _FADE_IN_S / _FADE_STEPS
-        self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            interval, self, "fadeStep:", None, True
-        )
         logger.info("Overlay show")
 
     def set_brightness(self, brightness: float, immediate: bool = False) -> None:
@@ -917,7 +915,10 @@ class TranscriptionOverlay(NSObject):
         self._tray_mode = False
         self._cancel_typewriter()
         self._hide_and_release_preview_compositor_client()
-        self._start_fade_out(duration=fade_duration)
+        # House/compositor owns the dismiss envelope — consumer does not
+        # start a private fade-out timer.  Order the window out so it no
+        # longer captures events; the compositor handles the visual dismiss.
+        self._window.orderOut_(None)
         logger.info("Overlay hide")
 
     def order_out(self) -> None:
@@ -1264,36 +1265,15 @@ class TranscriptionOverlay(NSObject):
         # amplitude ticks where only the color changes and the text is stable.
         self._update_text_color_inplace(displayed, base_color, ontology_color, color_key)
 
-        # SDF fill breathes with amplitude.  On light backgrounds the fill
-        # is relatively MORE assertive (because the glow is dimming the same
-        # area).  On dark backgrounds the fill is subtle (the glow carries
-        # the visual).  Phase shift: fill uses squared response so it leads
-        # the glow — visible before the glow builds up, and at low RMS the
-        # fill is already present against the undimmed background.
-        # On dark backgrounds use linear response so soft sounds register.
-        # On light backgrounds use squared so the fill leads the glow.
-        fill_drive = _lerp(scaled, scaled * scaled, t)
-        fill_min = _lerp(0.06, 0.84, t)   # light: 2x rest presence — much more material
-        fill_max = _lerp(0.92, 0.99, t)   # saturates near-full on both backgrounds
-        fill_opacity = _lerp(fill_min, fill_max, fill_drive)
-        if hasattr(self, '_fill_layer') and self._fill_layer is not None:
-            self._fill_layer.setOpacity_(min(fill_opacity, 0.96))
-            # Rebuild the fill image when brightness changes enough to
-            # affect the baked color.
-            last_t = getattr(self, '_fill_image_brightness', -1.0)
-            if abs(t - last_t) > 0.03:
-                self._fill_image_brightness = t
-                # Recompute the full SDF + fill image at the current overlay
-                # size.  Using _update_fill_image with a stale SDF caused
-                # corner distortion when the overlay had resized since the
-                # SDF was last computed.
-                content = getattr(self, '_content_view', None)
-                if content:
-                    try:
-                        cf = content.frame()
-                        self._apply_ridge_masks(cf.size.width, cf.size.height)
-                    except Exception:
-                        pass
+        # Fill material (opacity, SDF rebuild) is House-owned.  The consumer
+        # provides audio_rms as a signal in the optical field request; House
+        # maps that signal into fill/ridge/material behavior through recipes.
+        # Publish a rest snapshot so the compositor receives the updated RMS.
+        if (
+            not getattr(self, "_tray_mode", False)
+            and not getattr(self, "_recovery_mode", False)
+        ):
+            self._publish_preview_compositor_snapshot(visible=True, state="rest")
 
     def update_glow_amplitude(self, opacity: float, cap_factor: float = 1.0) -> None:
         """Update inner and outer glow opacity to match the screen glow.

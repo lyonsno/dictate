@@ -230,7 +230,7 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_dark_background_uses_light_text_and_sets_fill_opacity(self, mock_pyobjc):
+    def test_dark_background_uses_light_text_and_provides_rms_signal(self, mock_pyobjc):
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
@@ -249,8 +249,10 @@ class TestAdaptiveOverlayCompositing:
                     text_color_args = call[0]
             assert text_color_args is not None
 
-            # Fill layer opacity should be set
-            assert overlay._fill_layer.setOpacity_.called
+            # Fill opacity is House-owned — consumer does not call
+            # setOpacity_ directly.  The amplitude is available as
+            # _text_amplitude for inclusion in optical field signals.
+            assert overlay._text_amplitude > 0.0
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -272,20 +274,20 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_light_background_fill_is_opaque(self, mock_pyobjc):
-        """On bright backgrounds, the fill layer becomes near-opaque to support the cutout."""
+    def test_light_background_amplitude_flows_as_signal(self, mock_pyobjc):
+        """On bright backgrounds, the consumer provides amplitude as a signal
+        rather than directly driving fill layer opacity."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
             overlay = self._make_overlay(mod)
             overlay.set_brightness(1.0, immediate=True)
 
-            overlay._fill_layer.reset_mock()
             overlay.update_text_amplitude(10.0)
 
-            # Fill layer opacity should be high on light backgrounds
-            fill_opacity = overlay._fill_layer.setOpacity_.call_args[0][0]
-            assert fill_opacity > 0.8  # near-opaque fill
+            # Consumer stores smoothed amplitude for inclusion in optical
+            # field signals — does not call setOpacity_ directly.
+            assert overlay._text_amplitude > 0.0
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -306,25 +308,24 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_fill_opacity_responds_to_amplitude(self, mock_pyobjc):
-        """The SDF fill should breathe with amplitude — low at silence, high when speaking."""
+    def test_smoothed_amplitude_responds_to_input(self, mock_pyobjc):
+        """The smoothed amplitude should track input — low at silence, high when speaking.
+        The consumer stores the smoothed value; House uses it via the audio_rms signal."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
             overlay = self._make_overlay(mod)
 
             # Low amplitude
-            overlay._fill_layer.reset_mock()
             overlay._text_amplitude = 0.0
             overlay.update_text_amplitude(0.0)
-            alpha_silent = overlay._fill_layer.setOpacity_.call_args[0][0]
+            amp_silent = overlay._text_amplitude
 
             # High amplitude
-            overlay._fill_layer.reset_mock()
             overlay.update_text_amplitude(10.0)
-            alpha_loud = overlay._fill_layer.setOpacity_.call_args[0][0]
+            amp_loud = overlay._text_amplitude
 
-            assert alpha_loud > alpha_silent + 0.3
+            assert amp_loud > amp_silent
         finally:
             sys.modules.pop("spoke.overlay", None)
 

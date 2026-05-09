@@ -35,6 +35,7 @@ OpticalFieldCoordinateSpace = Literal[
     "recipe_local",
 ]
 OpticalFieldSignalName = Literal[
+    "audio_rms",
     "background_luminance",
     "text_contrast_bias",
     "ridge_emphasis",
@@ -92,6 +93,7 @@ _COORDINATE_SPACES = {
 }
 
 _MATERIAL_SIGNAL_NAMES = {
+    "audio_rms",
     "background_luminance",
     "text_contrast_bias",
     "ridge_emphasis",
