@@ -796,6 +796,14 @@ def _scale_agent_shell_card_payload(shell_config: dict, scale: float) -> None:
     shell_config["agent_shell_card_optical_fields"] = optical_fields
 
 
+def _without_agent_shell_card_optical_fields(shell_config: dict | None) -> dict | None:
+    if shell_config is None:
+        return None
+    stripped = dict(shell_config)
+    stripped.pop("agent_shell_card_optical_fields", None)
+    return stripped
+
+
 def _materialized_optical_shell_config(
     shell_config: dict,
     progress: float,
@@ -2323,6 +2331,93 @@ class CommandOverlay(NSObject):
         )
         return config
 
+    def _release_agent_shell_card_clients(self, active_client_ids: set[str]) -> None:
+        clients = getattr(self, "_agent_shell_card_clients", None)
+        if not isinstance(clients, dict):
+            return
+        identities = getattr(self, "_agent_shell_card_client_identities", None)
+        if not isinstance(identities, dict):
+            identities = {}
+            self._agent_shell_card_client_identities = identities
+        for client_id in set(clients) - active_client_ids:
+            client = clients.pop(client_id, None)
+            identities.pop(client_id, None)
+            release = getattr(client, "release", None)
+            if callable(release):
+                try:
+                    release()
+                except Exception:
+                    logger.debug(
+                        "Failed to release Agent Shell card client %s",
+                        client_id,
+                        exc_info=True,
+                    )
+
+    def _publish_agent_shell_card_clients(self, shell_config: dict | None) -> None:
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        host = getattr(compositor, "_host", None)
+        register = getattr(host, "register_client", None)
+        window = getattr(self, "_window", None)
+        content_view = getattr(self, "_content_view", None)
+        if (
+            shell_config is None
+            or host is None
+            or not callable(register)
+            or window is None
+            or content_view is None
+        ):
+            self._release_agent_shell_card_clients(set())
+            return
+        try:
+            from spoke.fullscreen_compositor import (
+                OverlayClientIdentity,
+                _agent_shell_card_surface_configs,
+            )
+
+            surfaces = _agent_shell_card_surface_configs(shell_config)
+        except Exception:
+            logger.debug("Failed to build Agent Shell card client configs", exc_info=True)
+            return
+        if not surfaces:
+            self._release_agent_shell_card_clients(set())
+            return
+
+        clients = getattr(self, "_agent_shell_card_clients", None)
+        if not isinstance(clients, dict):
+            clients = {}
+            self._agent_shell_card_clients = clients
+        identities = getattr(self, "_agent_shell_card_client_identities", None)
+        if not isinstance(identities, dict):
+            identities = {}
+            self._agent_shell_card_client_identities = identities
+
+        active_client_ids: set[str] = set()
+        for client_id, surface in surfaces.items():
+            if not isinstance(client_id, str) or not client_id:
+                continue
+            active_client_ids.add(client_id)
+            identity = OverlayClientIdentity(
+                client_id=client_id,
+                display_id=getattr(host, "display_id", "unknown"),
+                role="assistant",
+            )
+            client = clients.get(client_id)
+            if client is None or identities.get(client_id) != identity:
+                client = register(identity, window=window, content_view=content_view)
+                clients[client_id] = client
+                identities[client_id] = identity
+            updater = getattr(client, "update_shell_config", None)
+            if callable(updater):
+                try:
+                    updater(surface)
+                except Exception:
+                    logger.debug(
+                        "Failed to publish Agent Shell card client %s",
+                        client_id,
+                        exc_info=True,
+                    )
+        self._release_agent_shell_card_clients(active_client_ids)
+
     def set_agent_shell_primitives(self, primitives: list[dict] | None) -> None:
         self._agent_shell_primitives = [
             dict(primitive) for primitive in (primitives or []) if isinstance(primitive, dict)
@@ -2333,14 +2428,18 @@ class CommandOverlay(NSObject):
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is None:
             return
-        shell_config = self._current_optical_shell_config()
+        shell_config = self._display_local_optical_shell_config()
+        if shell_config is None:
+            shell_config = self._current_optical_shell_config()
         if shell_config is None:
             return
         if not getattr(self, "_visible", False):
             shell_config = dict(shell_config)
             shell_config["visible"] = False
+        self._publish_agent_shell_card_clients(shell_config)
+        parent_shell_config = _without_agent_shell_card_optical_fields(shell_config)
         try:
-            compositor.update_shell_config(shell_config)
+            compositor.update_shell_config(parent_shell_config)
         except Exception:
             logger.debug("Failed to push Agent Shell card payload", exc_info=True)
 
@@ -5144,8 +5243,12 @@ class CommandOverlay(NSObject):
             final_shell_config = self._display_local_optical_shell_config()
             if final_shell_config is None:
                 return
+            agent_shell_card_config = dict(final_shell_config)
+            parent_final_shell_config = _without_agent_shell_card_optical_fields(
+                final_shell_config
+            )
             start_shell_config = _materialized_optical_shell_config(
-                final_shell_config,
+                parent_final_shell_config,
                 0.0,
             )
             compositor = start_overlay_compositor(
@@ -5159,8 +5262,9 @@ class CommandOverlay(NSObject):
             )
             if compositor is not None:
                 self._fullscreen_compositor = compositor
+                self._publish_agent_shell_card_clients(agent_shell_card_config)
                 self._cancel_brightness_sampling()
-                self._brightness_target = final_shell_config["initial_brightness"]
+                self._brightness_target = parent_final_shell_config["initial_brightness"]
                 self._brightness_sample_tick = (
                     -_BRIGHTNESS_COMPOSITOR_STARTUP_GRACE_TICKS
                 )
@@ -5196,12 +5300,12 @@ class CommandOverlay(NSObject):
                     False,
                 )
                 self._materialization_progress = 0.0
-                self._deferred_materialization_shell_config = dict(final_shell_config)
+                self._deferred_materialization_shell_config = dict(parent_final_shell_config)
                 self._suppress_stale_fill_until_ready = True
                 sampled_brightness = self._seed_brightness_from_optical_compositor()
                 if sampled_brightness is not None:
-                    final_shell_config["initial_brightness"] = sampled_brightness
-                    final_shell_config["gpu_material_brightness"] = sampled_brightness
+                    parent_final_shell_config["initial_brightness"] = sampled_brightness
+                    parent_final_shell_config["gpu_material_brightness"] = sampled_brightness
                     start_shell_config["initial_brightness"] = sampled_brightness
                     start_shell_config["gpu_material_brightness"] = sampled_brightness
                     self._deferred_materialization_shell_config[

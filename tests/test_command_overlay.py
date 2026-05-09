@@ -3744,6 +3744,76 @@ class TestAdaptiveCompositing:
         assert child["content_width_points"] == pytest.approx(600.0)
         assert child["content_height_points"] == pytest.approx(144.0)
 
+    def test_agent_shell_payload_publishes_cards_as_registered_sibling_clients(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._content_view.frame.return_value = _make_rect(28.0, 28.0, 624.0, 156.0)
+        overlay._agent_shell_primitives = [
+            {
+                "id": "codex-thread-1",
+                "kind": "thread_card",
+                "provider": "codex",
+                "provider_session_id": "codex-thread-1",
+                "selected": False,
+                "readiness": "ready",
+                "display": {
+                    "primary_text": "Codex lane",
+                    "secondary_text": "ready",
+                },
+                "geometry": {"preferred_width": 180.0, "preferred_height": 44.0},
+                "material": {"style": "quiet_chip"},
+            }
+        ]
+
+        class FakeClient:
+            def __init__(self, client_id):
+                self.client_id = client_id
+                self.configs = []
+                self.released = False
+
+            def update_shell_config(self, config):
+                self.configs.append(dict(config))
+                return True
+
+            def release(self):
+                self.released = True
+
+        class FakeHost:
+            display_id = "display-1"
+
+            def __init__(self):
+                self.clients = {}
+
+            def register_client(self, identity, *, window, content_view):
+                client = self.clients.get(identity.client_id)
+                if client is None:
+                    client = FakeClient(identity.client_id)
+                    self.clients[identity.client_id] = client
+                return client
+
+        class FakeCompositor:
+            def __init__(self):
+                self._host = FakeHost()
+                self.parent_configs = []
+
+            def update_shell_config(self, config):
+                self.parent_configs.append(dict(config))
+                return True
+
+        compositor = FakeCompositor()
+        overlay._fullscreen_compositor = compositor
+
+        overlay._push_agent_shell_payload()
+
+        card_client = compositor._host.clients["agent.card.codex-thread-1"]
+        assert card_client.configs[-1]["client_id"] == "agent.card.codex-thread-1"
+        assert card_client.configs[-1]["surface_attachment"] == "sibling"
+        assert card_client.configs[-1]["visibility_scope"] == "independent"
+        assert card_client.configs[-1]["text"]["primary"] == "Codex lane"
+        assert "agent_shell_card_optical_fields" not in compositor.parent_configs[-1]
+
     def test_replace_transcript_updates_agent_shell_primitives(
         self, mock_pyobjc, monkeypatch
     ):
