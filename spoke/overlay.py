@@ -13,6 +13,7 @@ import logging
 import math
 import os
 import threading
+import time
 
 import objc
 from AppKit import (
@@ -37,6 +38,7 @@ from Foundation import NSMakeRect, NSObject, NSTimer
 from Quartz import CAGradientLayer, CALayer, CAShapeLayer, CGPathCreateWithRoundedRect, CGAffineTransformIdentity
 
 from .dedup import ontology_term_spans
+from . import optical_transition as _house_transition
 
 logger = logging.getLogger(__name__)
 
@@ -453,6 +455,10 @@ class TranscriptionOverlay(NSObject):
         self._preview_compositor_generation = 0
         self._last_preview_visible_geometry = None
         self._preview_warp_tuning_overrides: dict[str, float] = {}
+        self._preview_materialization_timer: NSTimer | None = None
+        self._preview_materialization_final_shell_config: dict | None = None
+        self._preview_materialization_direction = 1
+        self._preview_materialization_started_at = 0.0
 
         # Recovery mode state
         self._recovery_mode = False
@@ -807,6 +813,7 @@ class TranscriptionOverlay(NSObject):
             state=state,
         )
         shell_config = compile_placeholder_shell_config(request)
+        self._last_preview_shell_config = shell_config
         self._preview_compositor_generation += 1
         snapshot = OverlayRenderSnapshot(
             identity=identity,
@@ -824,6 +831,7 @@ class TranscriptionOverlay(NSObject):
         return published
 
     def _release_preview_compositor_client(self) -> None:
+        self._cancel_preview_materialization_animation()
         client = getattr(self, "_preview_compositor_client", None)
         self._preview_compositor_client = None
         self._preview_compositor_identity = None
@@ -837,9 +845,79 @@ class TranscriptionOverlay(NSObject):
         if callable(stop):
             stop()
 
-    def _hide_and_release_preview_compositor_client(self) -> None:
+    def _cancel_preview_materialization_animation(self) -> None:
+        timer = getattr(self, "_preview_materialization_timer", None)
+        if timer is not None:
+            try:
+                timer.invalidate()
+            except Exception:
+                logger.debug("Failed to cancel preview materialization timer", exc_info=True)
+        self._preview_materialization_timer = None
+
+    def _preview_materialization_duration(self, direction: int) -> float:
+        return _FADE_IN_S if direction >= 0 else _FADE_OUT_S
+
+    def _start_preview_materialization_animation(
+        self,
+        shell_config: dict,
+        *,
+        direction: int = 1,
+    ) -> None:
+        """Drive preview compositor geometry through the shared House runner."""
+        self._cancel_preview_materialization_animation()
+        self._preview_materialization_final_shell_config = dict(shell_config)
+        self._preview_materialization_direction = 1 if direction >= 0 else -1
+        self._preview_materialization_started_at = time.perf_counter()
+        self._publish_preview_materialization_frame(
+            0.0 if self._preview_materialization_direction > 0 else 1.0
+        )
+        self._preview_materialization_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0 / 60.0,
+            self,
+            "previewMaterializationStep:",
+            None,
+            True,
+        )
+
+    def _publish_preview_materialization_frame(self, progress: float) -> None:
+        shell_config = getattr(self, "_preview_materialization_final_shell_config", None)
+        client = getattr(self, "_preview_compositor_client", None)
+        if shell_config is None or client is None:
+            return
+        updater = getattr(client, "update_shell_config", None)
+        if not callable(updater):
+            return
+        try:
+            updater(_house_transition.materialized_shell_config(shell_config, progress))
+        except Exception:
+            logger.debug("Failed to update preview materialization shell", exc_info=True)
+
+    def previewMaterializationStep_(self, timer) -> None:
+        if getattr(self, "_preview_materialization_timer", None) is not timer:
+            return
+        shell_config = getattr(self, "_preview_materialization_final_shell_config", None)
+        client = getattr(self, "_preview_compositor_client", None)
+        if shell_config is None or client is None:
+            self._cancel_preview_materialization_animation()
+            return
+        direction = getattr(self, "_preview_materialization_direction", 1)
+        duration = max(self._preview_materialization_duration(direction), 1e-6)
+        elapsed = max(time.perf_counter() - getattr(self, "_preview_materialization_started_at", 0.0), 0.0)
+        raw = min(max(elapsed / duration, 0.0), 1.0)
+        progress = raw if direction > 0 else 1.0 - raw
+        self._publish_preview_materialization_frame(progress)
+        if raw >= 1.0:
+            self._cancel_preview_materialization_animation()
+            if direction < 0:
+                self._release_preview_compositor_client()
+
+    def _hide_and_release_preview_compositor_client(self, *, animate: bool = False) -> None:
         if getattr(self, "_preview_compositor_client", None) is not None:
-            self._publish_preview_compositor_snapshot(visible=False)
+            published = self._publish_preview_compositor_snapshot(visible=False)
+            shell_config = getattr(self, "_last_preview_shell_config", None)
+            if animate and published and shell_config is not None:
+                self._start_preview_materialization_animation(shell_config, direction=-1)
+                return
         self._release_preview_compositor_client()
 
     def show(self) -> None:
@@ -888,7 +966,10 @@ class TranscriptionOverlay(NSObject):
         self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
         self._reset_text_geometry(_OVERLAY_HEIGHT - 16, scroll_to_top=True)
 
-        self._publish_preview_compositor_snapshot(visible=True, state="materialize")
+        if self._publish_preview_compositor_snapshot(visible=True, state="materialize"):
+            shell_config = getattr(self, "_last_preview_shell_config", None)
+            if shell_config is not None:
+                self._start_preview_materialization_animation(shell_config, direction=1)
         self._window.orderFrontRegardless()
 
         # Fade in using stepped timer
@@ -916,7 +997,7 @@ class TranscriptionOverlay(NSObject):
         self._visible = False
         self._tray_mode = False
         self._cancel_typewriter()
-        self._hide_and_release_preview_compositor_client()
+        self._hide_and_release_preview_compositor_client(animate=True)
         self._start_fade_out(duration=fade_duration)
         logger.info("Overlay hide")
 

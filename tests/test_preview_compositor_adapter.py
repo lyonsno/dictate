@@ -43,6 +43,9 @@ class _FakeWindow:
     def setAlphaValue_(self, alpha):
         self.alpha = alpha
 
+    def alphaValue(self):
+        return self.alpha if self.alpha is not None else 1.0
+
     def orderFrontRegardless(self):
         self.ordered_front = True
 
@@ -183,10 +186,15 @@ class _FakeClient:
     def __init__(self, identity):
         self.identity = identity
         self.published = []
+        self.shell_updates = []
         self.release_calls = 0
 
     def publish(self, snapshot):
         self.published.append(snapshot)
+        return True
+
+    def update_shell_config(self, shell_config):
+        self.shell_updates.append(shell_config)
         return True
 
     def release(self):
@@ -374,6 +382,131 @@ def test_preview_show_has_fill_ready_before_first_materialize_request(
     snapshot = host.clients["preview.transcription"].published[-1]
     assert snapshot.visible is True
     assert dict(snapshot.optical_field)["state"] == "materialize"
+
+
+def test_preview_show_starts_shared_house_materialization_runner(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+    started = []
+
+    def _record_start(shell_config, *, direction=1):
+        started.append((shell_config, direction))
+
+    overlay.set_compositor_registry(registry)
+    monkeypatch.setattr(
+        overlay,
+        "_start_preview_materialization_animation",
+        _record_start,
+        raising=False,
+    )
+
+    overlay.show()
+
+    assert len(started) == 1
+    shell_config, direction = started[0]
+    assert direction == 1
+    assert shell_config["client_id"] == "preview.transcription"
+    assert shell_config["role"] == "preview"
+    assert shell_config["optical_field"]["state"] == "materialize"
+
+
+def test_preview_hide_starts_shared_house_dismiss_runner_before_release(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+    started = []
+
+    def _record_start(shell_config, *, direction=1):
+        started.append((shell_config, direction))
+
+    overlay.set_compositor_registry(registry)
+    assert overlay._publish_preview_compositor_snapshot(visible=True) is True
+    monkeypatch.setattr(
+        overlay,
+        "_start_preview_materialization_animation",
+        _record_start,
+        raising=False,
+    )
+
+    overlay.hide()
+
+    assert len(started) == 1
+    shell_config, direction = started[0]
+    assert direction == -1
+    assert shell_config["client_id"] == "preview.transcription"
+    assert shell_config["role"] == "preview"
+    assert shell_config["optical_field"]["state"] == "dismiss"
+    assert host.clients["preview.transcription"].release_calls == 0
+
+
+def test_preview_materialization_runner_updates_shared_compositor_client(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+
+    overlay.set_compositor_registry(registry)
+    assert overlay._publish_preview_compositor_snapshot(visible=True) is True
+    shell_config = overlay._last_preview_shell_config
+    preview_client = host.clients["preview.transcription"]
+
+    overlay._start_preview_materialization_animation(shell_config, direction=1)
+
+    assert preview_client.shell_updates[-1]["client_id"] == "preview.transcription"
+    assert preview_client.shell_updates[-1]["role"] == "preview"
+    assert preview_client.shell_updates[-1]["content_height_points"] < shell_config[
+        "content_height_points"
+    ]
+
+    timer = overlay._preview_materialization_timer
+    overlay._preview_materialization_started_at = 0.0
+    monkeypatch.setattr(overlay_module.time, "perf_counter", lambda: overlay_module._FADE_IN_S)
+
+    overlay.previewMaterializationStep_(timer)
+
+    assert preview_client.shell_updates[-1]["content_height_points"] == pytest.approx(
+        shell_config["content_height_points"]
+    )
+    assert overlay._preview_materialization_timer is None
+
+
+def test_preview_dismiss_runner_releases_after_shared_frame_completion(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+    overlay = _make_overlay(overlay_module, monkeypatch)
+    host = _FakeHost()
+    registry = _FakeRegistry(host)
+
+    overlay.set_compositor_registry(registry)
+    assert overlay._publish_preview_compositor_snapshot(visible=True) is True
+    assert overlay._publish_preview_compositor_snapshot(visible=False) is True
+    shell_config = overlay._last_preview_shell_config
+    preview_client = host.clients["preview.transcription"]
+
+    overlay._start_preview_materialization_animation(shell_config, direction=-1)
+    assert preview_client.release_calls == 0
+
+    timer = overlay._preview_materialization_timer
+    overlay._preview_materialization_started_at = 0.0
+    monkeypatch.setattr(overlay_module.time, "perf_counter", lambda: overlay_module._FADE_OUT_S)
+
+    overlay.previewMaterializationStep_(timer)
+
+    assert preview_client.shell_updates[-1]["content_height_points"] < shell_config[
+        "content_height_points"
+    ]
+    assert preview_client.release_calls == 1
+    assert overlay._preview_materialization_timer is None
 
 
 def test_preview_warp_tuning_updates_visible_shared_snapshot(

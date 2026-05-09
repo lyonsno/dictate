@@ -52,6 +52,7 @@ from .overlay import (
     _post_overlay_result_to_main,
     _start_overlay_fill_worker,
 )
+from . import optical_transition as _house_transition
 from .optical_shell_metrics import OpticalShellMetrics
 
 logger = logging.getLogger(__name__)
@@ -1049,6 +1050,173 @@ def _hidden_dismiss_main_shell_config(shell_config: dict) -> dict:
     config["mip_blur_strength"] = 0.0
     config["cleanup_blur_radius_points"] = 0.0
     return config
+
+
+# Shared House transition runner.  Keep the historical private names as
+# command-overlay compatibility shims, but make the optical choreography itself
+# live in `spoke.optical_transition` so consumers can ride the same bus.
+_OPTICAL_MATERIALIZATION_BASE_S = _house_transition.OPTICAL_MATERIALIZATION_BASE_S
+_OPTICAL_MATERIALIZATION_BASE_SPREAD_END = (
+    _house_transition.OPTICAL_MATERIALIZATION_BASE_SPREAD_END
+)
+_OPTICAL_MATERIALIZATION_SEAM_OPEN_SPEEDUP = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEAM_OPEN_SPEEDUP
+)
+_OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE = (
+    _house_transition.OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE
+)
+_OPTICAL_MATERIALIZATION_SEAM_OPEN_S = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEAM_OPEN_S
+)
+_OPTICAL_MATERIALIZATION_S = _house_transition.OPTICAL_MATERIALIZATION_S
+_OPTICAL_MATERIALIZATION_DISMISS_S = (
+    _house_transition.OPTICAL_MATERIALIZATION_DISMISS_S
+)
+_OPTICAL_MATERIALIZATION_PUCKER_TAIL_S = (
+    _house_transition.OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
+)
+_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS = (
+    _house_transition.OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
+)
+_OPTICAL_MATERIALIZATION_PUCKER_PREARM_TAIL_PROGRESS = (
+    _house_transition.OPTICAL_MATERIALIZATION_PUCKER_PREARM_TAIL_PROGRESS
+)
+_OPTICAL_MATERIALIZATION_SEAM_LATCH_START = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEAM_LATCH_START
+)
+_OPTICAL_MATERIALIZATION_SEAM_LATCH_INTENSITY = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEAM_LATCH_INTENSITY
+)
+_OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC
+)
+_OPTICAL_MATERIALIZATION_SEAM_LENGTH_CLOSED_FRAC = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEAM_LENGTH_CLOSED_FRAC
+)
+_OPTICAL_MATERIALIZATION_SEAM_THICKNESS_FRAC = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEAM_THICKNESS_FRAC
+)
+_OPTICAL_MATERIALIZATION_SEAM_FOCUS_FRAC = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEAM_FOCUS_FRAC
+)
+_OPTICAL_MATERIALIZATION_SEAM_VERTICAL_GRIP = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEAM_VERTICAL_GRIP
+)
+_OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP
+)
+_OPTICAL_MATERIALIZATION_SEAM_AXIS_ROTATION = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEAM_AXIS_ROTATION
+)
+_OPTICAL_MATERIALIZATION_SEAM_MIRRORED_LIP = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEAM_MIRRORED_LIP
+)
+_OPTICAL_MATERIALIZATION_SEAM_FIELD_HEIGHT_FRAC = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEAM_FIELD_HEIGHT_FRAC
+)
+_OPTICAL_MATERIALIZATION_SEAM_FIELD_MIN_HEIGHT_POINTS = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEAM_FIELD_MIN_HEIGHT_POINTS
+)
+_DISMISS_SEAM_CLIENT_ID = _house_transition.DISMISS_SEAM_CLIENT_ID
+_DISMISS_RADIAL_PUCKER_CLIENT_ID = (
+    _house_transition.DISMISS_RADIAL_PUCKER_CLIENT_ID
+)
+_OPTICAL_MATERIALIZATION_RADIAL_PUCKER_INTENSITY = (
+    _house_transition.OPTICAL_MATERIALIZATION_RADIAL_PUCKER_INTENSITY
+)
+_OPTICAL_MATERIALIZATION_RADIAL_AREA_MULTIPLIER = (
+    _house_transition.OPTICAL_MATERIALIZATION_RADIAL_AREA_MULTIPLIER
+)
+_OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN = (
+    _house_transition.OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN
+)
+_OPTICAL_MATERIALIZATION_PUCKER_GAIN_PEAK_AT = (
+    _house_transition.OPTICAL_MATERIALIZATION_PUCKER_GAIN_PEAK_AT
+)
+_OPTICAL_MATERIALIZATION_RADIAL_CYCLES = (
+    _house_transition.OPTICAL_MATERIALIZATION_RADIAL_CYCLES
+)
+_OPTICAL_MATERIALIZATION_RADIAL_DAMPING = (
+    _house_transition.OPTICAL_MATERIALIZATION_RADIAL_DAMPING
+)
+_OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S = (
+    _house_transition.OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S
+)
+_OPTICAL_MATERIALIZATION_BODY_READY = (
+    _house_transition.OPTICAL_MATERIALIZATION_BODY_READY
+)
+_OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC
+)
+_OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC
+)
+_OPTICAL_MATERIALIZATION_SPREAD_END = (
+    _house_transition.OPTICAL_MATERIALIZATION_SPREAD_END
+)
+_OPTICAL_MATERIALIZATION_BLOOM_START = (
+    _house_transition.OPTICAL_MATERIALIZATION_BLOOM_START
+)
+_OPTICAL_MATERIALIZATION_MAG_SEED_FRAC = (
+    _house_transition.OPTICAL_MATERIALIZATION_MAG_SEED_FRAC
+)
+_OPTICAL_MATERIALIZATION_MAG_ACCEL_END = (
+    _house_transition.OPTICAL_MATERIALIZATION_MAG_ACCEL_END
+)
+_OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT = (
+    _house_transition.OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT
+)
+_OPTICAL_MATERIALIZATION_MAG_OVERSHOOT = (
+    _house_transition.OPTICAL_MATERIALIZATION_MAG_OVERSHOOT
+)
+_OPTICAL_MATERIAL_FILL_START = _house_transition.OPTICAL_MATERIAL_FILL_START
+_OPTICAL_MATERIAL_FILL_SOLID_AT = (
+    _house_transition.OPTICAL_MATERIAL_FILL_SOLID_AT
+)
+_OPTICAL_MATERIAL_FILL_FULL_AT = _house_transition.OPTICAL_MATERIAL_FILL_FULL_AT
+_OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC = (
+    _house_transition.OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC
+)
+_OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS = (
+    _house_transition.OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS
+)
+_OPTICAL_MATERIALIZATION_SEAM_OVERLAP_START_PROGRESS = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEAM_OVERLAP_START_PROGRESS
+)
+_OPTICAL_MATERIALIZATION_SEAM_PEAK_PROGRESS = (
+    _house_transition.OPTICAL_MATERIALIZATION_SEAM_PEAK_PROGRESS
+)
+_materialized_optical_shell_config = _house_transition.materialized_shell_config
+_materialization_fill_state = _house_transition.materialization_fill_state
+_dismiss_materialization_fill_state = (
+    _house_transition.dismiss_materialization_fill_state
+)
+_dismiss_pucker_amount = _house_transition.dismiss_pucker_amount
+_dismiss_pucker_tail_progress_for_close_progress = (
+    _house_transition.dismiss_pucker_tail_progress_for_close_progress
+)
+_dismiss_seam_latch_amount = _house_transition.dismiss_seam_latch_amount
+_seam_pucker_tuning_defaults = _house_transition.seam_pucker_tuning_defaults
+_dismiss_pucker_amplitude_multiplier = (
+    _house_transition.dismiss_pucker_amplitude_multiplier
+)
+_apply_dismiss_seam_latch_fields = (
+    _house_transition.apply_dismiss_seam_latch_fields
+)
+_dismiss_seam_tuning_for_close_progress = (
+    _house_transition.dismiss_seam_tuning_for_close_progress
+)
+_dismiss_seam_latch_shell_config = (
+    _house_transition.dismiss_seam_latch_shell_config
+)
+_apply_dismiss_radial_pucker_fields = (
+    _house_transition.apply_dismiss_radial_pucker_fields
+)
+_dismiss_pucker_shell_config = _house_transition.dismiss_pucker_shell_config
+_dismiss_radial_pucker_shell_config = (
+    _house_transition.dismiss_radial_pucker_shell_config
+)
+_hidden_dismiss_main_shell_config = _house_transition.hidden_dismiss_main_shell_config
 
 
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
