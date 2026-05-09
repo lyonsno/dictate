@@ -52,6 +52,10 @@ from .overlay import (
     _post_overlay_result_to_main,
     _start_overlay_fill_worker,
 )
+from .agent_shell_card_renderer import (
+    build_agent_shell_card_optical_field_payload,
+    build_agent_shell_card_render_payload,
+)
 from .optical_shell_metrics import OpticalShellMetrics
 
 logger = logging.getLogger(__name__)
@@ -686,6 +690,88 @@ def _command_optical_shell_config(
         "debug_grid_spacing_points": _COMMAND_BACKDROP_OPTICAL_SHELL_DEBUG_GRID_SPACING_POINTS,
         "cleanup_blur_radius_points": _COMMAND_BACKDROP_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS,
     }
+
+
+def _scale_rect_payload(rect: dict, scale: float) -> dict:
+    scaled = dict(rect)
+    for key in ("x", "y", "width", "height"):
+        if key in scaled and isinstance(scaled[key], numbers.Real):
+            scaled[key] = float(scaled[key]) * scale
+    return scaled
+
+
+def _scale_card_shell_payload(payload: dict, scale: float) -> dict:
+    scaled = dict(payload)
+    for key in (
+        "center_x",
+        "center_y",
+        "content_width_points",
+        "content_height_points",
+        "corner_radius_points",
+        "band_width_points",
+        "tail_width_points",
+    ):
+        if key in scaled and isinstance(scaled[key], numbers.Real):
+            scaled[key] = float(scaled[key]) * scale
+    optical_field = scaled.get("optical_field")
+    if isinstance(optical_field, dict):
+        optical_field = dict(optical_field)
+        for field_key in ("bounds", "content_frame", "target_bounds"):
+            if isinstance(optical_field.get(field_key), dict):
+                optical_field[field_key] = _scale_rect_payload(optical_field[field_key], scale)
+        transition = optical_field.get("transition")
+        if isinstance(transition, dict):
+            transition = dict(transition)
+            for field_key in ("previous_bounds", "presented_bounds", "target_bounds"):
+                if isinstance(transition.get(field_key), dict):
+                    transition[field_key] = _scale_rect_payload(transition[field_key], scale)
+            optical_field["transition"] = transition
+        scaled["optical_field"] = optical_field
+    return scaled
+
+
+def _scale_agent_shell_card_payload(shell_config: dict, scale: float) -> None:
+    renderer = shell_config.get("agent_shell_card_renderer")
+    if isinstance(renderer, dict):
+        renderer = dict(renderer)
+        cards = renderer.get("cards")
+        if isinstance(cards, list):
+            renderer["cards"] = [
+                {
+                    **card,
+                    "frame": _scale_rect_payload(card["frame"], scale)
+                    if isinstance(card, dict) and isinstance(card.get("frame"), dict)
+                    else card.get("frame") if isinstance(card, dict) else None,
+                }
+                for card in cards
+                if isinstance(card, dict)
+            ]
+        transcript_frame = renderer.get("transcript_frame")
+        if isinstance(transcript_frame, dict):
+            renderer["transcript_frame"] = _scale_rect_payload(transcript_frame, scale)
+        shell_config["agent_shell_card_renderer"] = renderer
+
+    optical_fields = shell_config.get("agent_shell_card_optical_fields")
+    if not isinstance(optical_fields, dict):
+        return
+    optical_fields = dict(optical_fields)
+    requests = optical_fields.get("requests")
+    if isinstance(requests, list):
+        scaled_requests = []
+        for request in requests:
+            if not isinstance(request, dict):
+                continue
+            scaled_request = dict(request)
+            if isinstance(scaled_request.get("bounds"), dict):
+                scaled_request["bounds"] = _scale_rect_payload(scaled_request["bounds"], scale)
+            if isinstance(scaled_request.get("compiled_shell_config"), dict):
+                scaled_request["compiled_shell_config"] = _scale_card_shell_payload(
+                    scaled_request["compiled_shell_config"],
+                    scale,
+                )
+            scaled_requests.append(scaled_request)
+        optical_fields["requests"] = scaled_requests
+    shell_config["agent_shell_card_optical_fields"] = optical_fields
 
 
 def _materialized_optical_shell_config(
@@ -1471,6 +1557,7 @@ class CommandOverlay(NSObject):
         self._thinking_inverted = False  # False = glowing number, True = cutout
         self._narrator_label = None  # NSTextField for narrator summary
         self._narrator_shimmer_active = False
+        self._agent_shell_primitives = []
 
         # Adaptive compositing defaults dark until we sample the screen.
         self._brightness = 0.0
@@ -2106,16 +2193,68 @@ class CommandOverlay(NSObject):
     def _current_optical_shell_config(self) -> dict[str, float | bool] | None:
         content = getattr(self, "_content_view", None)
         if content is None or not hasattr(content, "frame"):
-            return _command_optical_shell_config()
+            return self._attach_agent_shell_surface_payload(
+                _command_optical_shell_config()
+            )
         try:
             frame = content.frame()
             width = frame.size.width
             height = frame.size.height
         except Exception:
-            return _command_optical_shell_config()
+            return self._attach_agent_shell_surface_payload(
+                _command_optical_shell_config()
+            )
         if not isinstance(width, numbers.Real) or not isinstance(height, numbers.Real):
-            return _command_optical_shell_config()
-        return _command_optical_shell_config(width, height)
+            return self._attach_agent_shell_surface_payload(
+                _command_optical_shell_config()
+            )
+        return self._attach_agent_shell_surface_payload(
+            _command_optical_shell_config(width, height)
+        )
+
+    def _attach_agent_shell_surface_payload(self, config):
+        if config is None:
+            return None
+        primitives = getattr(self, "_agent_shell_primitives", None)
+        if not (isinstance(primitives, list) and primitives):
+            return config
+        config = dict(config)
+        config["surface_kind"] = "agent_shell"
+        config["agent_shell_primitives"] = [
+            dict(primitive) for primitive in primitives if isinstance(primitive, dict)
+        ]
+        config["agent_shell_card_renderer"] = build_agent_shell_card_render_payload(
+            config["agent_shell_primitives"],
+            content_width_points=float(config.get("content_width_points", 0.0)),
+            content_height_points=float(config.get("content_height_points", 0.0)),
+        )
+        config["agent_shell_card_optical_fields"] = (
+            build_agent_shell_card_optical_field_payload(
+                config["agent_shell_card_renderer"]
+            )
+        )
+        return config
+
+    def set_agent_shell_primitives(self, primitives: list[dict] | None) -> None:
+        self._agent_shell_primitives = [
+            dict(primitive) for primitive in (primitives or []) if isinstance(primitive, dict)
+        ]
+        self._push_agent_shell_payload()
+
+    def _push_agent_shell_payload(self) -> None:
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is None:
+            return
+        shell_config = self._current_optical_shell_config()
+        if shell_config is None:
+            return
+        if not getattr(self, "_visible", False):
+            shell_config = dict(shell_config)
+            shell_config["visible"] = False
+        try:
+            compositor.update_shell_config(shell_config)
+        except Exception:
+            logger.debug("Failed to push Agent Shell card payload", exc_info=True)
 
     def _apply_backdrop_pulse_style(self, breath: float) -> None:
         layer = getattr(self, "_backdrop_layer", None)
@@ -5268,6 +5407,7 @@ class CommandOverlay(NSObject):
             height=float(shell_config.get("content_height_points", 1.0)),
             corner_radius=float(shell_config.get("corner_radius_points", 1.0)),
         )
+        _scale_agent_shell_card_payload(shell_config, scale)
         return shell_config
 
     def _reset_text_geometry(self, visible_height: float) -> None:

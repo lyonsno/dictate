@@ -3539,6 +3539,84 @@ class TestAdaptiveCompositing:
         assert shell_config["center_x"] == pytest.approx(640.0)
         assert shell_config["center_y"] == pytest.approx(1160.0)
 
+    def test_current_optical_shell_config_consumes_agent_shell_primitives(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._content_view.frame.return_value = _make_rect(28.0, 28.0, 624.0, 156.0)
+        primitives = [
+            {
+                "id": "codex-thread-1",
+                "kind": "thread_card",
+                "provider": "codex",
+                "provider_session_id": "codex-thread-1",
+                "selected": False,
+                "readiness": "ready",
+                "latest_response": "",
+                "display": {
+                    "primary_text": "Codex lane",
+                    "secondary_text": "ready",
+                    "show_latest_response": False,
+                },
+                "geometry": {
+                    "anchor": "bottom",
+                    "preferred_width": 180.0,
+                    "preferred_height": 44.0,
+                },
+                "material": {"style": "quiet_chip"},
+            }
+        ]
+
+        overlay.set_agent_shell_primitives(primitives)
+        config = overlay._current_optical_shell_config()
+
+        assert config["surface_kind"] == "agent_shell"
+        assert config["agent_shell_primitives"] == primitives
+        assert config["agent_shell_card_renderer"]["surface_kind"] == "agent_shell_card_primitives"
+        rendered = config["agent_shell_card_renderer"]["cards"][0]
+        assert rendered["primitive_id"] == "codex-thread-1"
+        assert rendered["frame"]["width"] == pytest.approx(300.0)
+        request = config["agent_shell_card_optical_fields"]["requests"][0]
+        assert request["caller_id"] == "agent.card.codex-thread-1"
+        assert request["text"]["primary"] == "Codex lane"
+        assert request["compiled_shell_config"]["presentation_layer"] == "agent_card"
+
+    def test_display_local_optical_shell_config_scales_agent_shell_card_requests(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._content_view.frame.return_value = _make_rect(28.0, 28.0, 624.0, 156.0)
+        overlay._agent_shell_primitives = [
+            {
+                "id": "codex-thread-1",
+                "kind": "thread_card",
+                "provider": "codex",
+                "provider_session_id": "codex-thread-1",
+                "selected": False,
+                "readiness": "ready",
+                "display": {
+                    "primary_text": "Codex lane",
+                    "secondary_text": "ready",
+                },
+                "geometry": {"preferred_width": 180.0, "preferred_height": 44.0},
+                "material": {"style": "quiet_chip"},
+            }
+        ]
+
+        config = overlay._display_local_optical_shell_config()
+        request = config["agent_shell_card_optical_fields"]["requests"][0]
+        child = request["compiled_shell_config"]
+
+        assert request["bounds"]["x"] == pytest.approx(24.0)
+        assert request["bounds"]["y"] == pytest.approx(24.0)
+        assert request["bounds"]["width"] == pytest.approx(600.0)
+        assert child["center_x"] == pytest.approx(324.0)
+        assert child["center_y"] == pytest.approx(96.0)
+        assert child["content_width_points"] == pytest.approx(600.0)
+        assert child["content_height_points"] == pytest.approx(144.0)
+
     def test_fullscreen_compositor_start_arms_brightness_startup_grace(
         self, mock_pyobjc, monkeypatch
     ):

@@ -449,6 +449,105 @@ def test_host_arbitrates_sibling_surfaces_by_presentation_order_then_z_index(mon
     ]
 
 
+def test_host_keeps_agent_shell_card_surfaces_independent_of_parent_visibility(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
+    client = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(253),
+        content_view=object(),
+    )
+
+    shell_config = {
+        "client_id": "assistant.command",
+        "center_x": 300.0,
+        "center_y": 200.0,
+        "visible": True,
+        "content_width_points": 420.0,
+        "content_height_points": 160.0,
+        "corner_radius_points": 16.0,
+        "band_width_points": 8.0,
+        "tail_width_points": 12.0,
+        "agent_shell_card_optical_fields": {
+            "surface_kind": "agent_shell_card_optical_fields",
+            "requests": [
+                {
+                    "caller_id": "agent.card.codex-thread-1",
+                    "text": {"primary": "Codex lane", "secondary": "ready"},
+                    "compiled_shell_config": {
+                        "client_id": "agent.card.codex-thread-1",
+                        "role": "agent_card",
+                        "presentation_layer": "agent_card",
+                        "presentation_order": 20,
+                        "visibility_scope": "independent",
+                        "center_x": 162.0,
+                        "center_y": 48.0,
+                        "content_width_points": 300.0,
+                        "content_height_points": 72.0,
+                        "corner_radius_points": 8.0,
+                        "band_width_points": 3.0,
+                        "tail_width_points": 2.0,
+                        "z_index": 101,
+                        "optical_field": {
+                            "caller_id": "agent.card.codex-thread-1",
+                            "profile": "agent_card",
+                            "bounds": {"x": 12.0, "y": 12.0, "width": 300.0, "height": 72.0},
+                        },
+                    },
+                }
+            ],
+        },
+    }
+
+    assert client.update_shell_config(shell_config)
+    configs = _FakeFullScreenCompositor.instances[0].updated_configs[-1]
+    assert [config["client_id"] for config in configs] == [
+        "assistant.command",
+        "agent.card.codex-thread-1",
+    ]
+    assert configs[1]["surface_attachment"] == "sibling"
+    assert configs[1]["visibility_scope"] == "independent"
+    assert configs[1]["text"]["primary"] == "Codex lane"
+
+    shell_config["visible"] = False
+    assert client.update_shell_config(shell_config)
+    hidden_parent_configs = _FakeFullScreenCompositor.instances[0].updated_configs[-1]
+    assert [config["client_id"] for config in hidden_parent_configs] == [
+        "agent.card.codex-thread-1",
+    ]
+
+
+def test_agent_shell_card_text_overlay_specs_use_card_bounds_and_text_payload(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+
+    specs = fullscreen_compositor._agent_shell_card_text_overlay_specs(
+        [
+            {
+                "client_id": "agent.card.codex-thread-1",
+                "role": "agent_card",
+                "center_x": 400.0,
+                "center_y": 240.0,
+                "content_width_points": 300.0,
+                "content_height_points": 72.0,
+                "text": {"primary": "Codex lane", "secondary": "ready"},
+            }
+        ],
+        screen_width_points=1000.0,
+        screen_height_points=700.0,
+        scale=1.0,
+    )
+
+    assert specs == [
+        {
+            "client_id": "agent.card.codex-thread-1",
+            "text": "Codex lane\nready",
+            "font_size": 13.0,
+            "foreground_color": (0.92, 0.95, 1.0, 0.98),
+            "frame": {"x": 265.0, "y": 219.0, "width": 270.0, "height": 42.0},
+        }
+    ]
+
+
 def test_host_batches_multi_client_updates_into_one_publish(monkeypatch):
     fullscreen_compositor = _reset_fake_compositor(monkeypatch)
     registry = fullscreen_compositor.OverlayCompositorRegistry()
