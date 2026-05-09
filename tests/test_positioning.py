@@ -293,6 +293,30 @@ def test_parse_split_audit_responses_keep_and_clamp_dimensions():
     assert size == {"width": "KEEP", "height": 1, "reason": "make it short"}
 
 
+def test_parse_split_audit_recovers_coordinates_from_truncated_json():
+    """Useful actuator coordinates should survive clipped reason text."""
+    from spoke.positioning.reposition import (
+        _parse_center_audit_response,
+        _parse_size_audit_response,
+    )
+
+    center = _parse_center_audit_response(
+        '```json\n{"center_x": "864", "center_y": "1050", '
+        '"reason": "The bottom line is the target and this response was clipped',
+        screen_w=1728,
+        screen_h=1117,
+    )
+    assert center == {"center_x": 864, "center_y": 1050, "reason": ""}
+
+    size = _parse_size_audit_response(
+        '```json\n{"width": "1400", "height": "50", '
+        '"reason": "The terminal input gutter is wide and this response was clipped',
+        screen_w=1728,
+        screen_h=1117,
+    )
+    assert size == {"width": 1400, "height": 50, "reason": ""}
+
+
 def test_iterative_split_audit_combines_center_and_size_before_rerender(monkeypatch):
     """Each split audit round should inspect the latest combined candidate."""
     import importlib

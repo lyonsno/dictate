@@ -1341,6 +1341,22 @@ def _coerce_pixel_or_keep(value, *, limit: int, minimum: int) -> int | str:
     return max(minimum, min(limit, parsed))
 
 
+def _extract_jsonish_field(raw: str, field: str):
+    """Recover a simple JSON field from clipped model output."""
+
+    match = re.search(
+        rf'"{re.escape(field)}"\s*:\s*("KEEP"|"-?\d+(?:\.\d+)?"|-?\d+(?:\.\d+)?)',
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    value = match.group(1).strip()
+    if len(value) >= 2 and value[0] == value[-1] == '"':
+        return value[1:-1]
+    return value
+
+
 def _parse_suitability_audit_response(raw: str) -> dict[str, bool | str]:
     """Parse a suitability response into a bounded correction decision."""
 
@@ -1372,19 +1388,17 @@ def _parse_center_audit_response(
 
     result: dict[str, int | str] = {"center_x": "KEEP", "center_y": "KEEP", "reason": ""}
     payload = _extract_json_object(raw)
-    if not payload:
-        return result
     result["center_x"] = _coerce_pixel_or_keep(
-        payload.get("center_x"),
+        payload.get("center_x") if payload else _extract_jsonish_field(raw, "center_x"),
         limit=screen_w,
         minimum=0,
     )
     result["center_y"] = _coerce_pixel_or_keep(
-        payload.get("center_y"),
+        payload.get("center_y") if payload else _extract_jsonish_field(raw, "center_y"),
         limit=screen_h,
         minimum=0,
     )
-    reason = payload.get("reason", "")
+    reason = payload.get("reason", "") if payload else ""
     if reason is not None:
         result["reason"] = str(reason).strip()
     return result
@@ -1400,11 +1414,17 @@ def _parse_size_audit_response(
 
     result: dict[str, int | str] = {"width": "KEEP", "height": "KEEP", "reason": ""}
     payload = _extract_json_object(raw)
-    if not payload:
-        return result
-    result["width"] = _coerce_pixel_or_keep(payload.get("width"), limit=screen_w, minimum=1)
-    result["height"] = _coerce_pixel_or_keep(payload.get("height"), limit=screen_h, minimum=1)
-    reason = payload.get("reason", "")
+    result["width"] = _coerce_pixel_or_keep(
+        payload.get("width") if payload else _extract_jsonish_field(raw, "width"),
+        limit=screen_w,
+        minimum=1,
+    )
+    result["height"] = _coerce_pixel_or_keep(
+        payload.get("height") if payload else _extract_jsonish_field(raw, "height"),
+        limit=screen_h,
+        minimum=1,
+    )
+    reason = payload.get("reason", "") if payload else ""
     if reason is not None:
         result["reason"] = str(reason).strip()
     return result
