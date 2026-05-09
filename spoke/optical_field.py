@@ -399,7 +399,12 @@ class OpticalFieldSelectedHandoff:
 
 @dataclass(frozen=True)
 class OpticalFieldRequest:
-    """Stable request contract consumed by future UI lanes."""
+    """Stable request contract consumed by future UI lanes.
+
+    ``bounds`` is the desired target envelope.  ``target_bounds`` is exposed as
+    a consumer-facing alias for lanes whose semantic model distinguishes desired
+    geometry from House-owned current/presented geometry.
+    """
 
     caller_id: str
     bounds: OpticalFieldBounds
@@ -429,6 +434,27 @@ class OpticalFieldRequest:
     visibility_scope: OpticalFieldVisibilityScope = "independent"
     visible: bool = True
     z_index: int = 0
+
+    @classmethod
+    def from_target_bounds(
+        cls,
+        *,
+        caller_id: str,
+        target_bounds: OpticalFieldBounds,
+        role: str,
+        **kwargs: Any,
+    ) -> "OpticalFieldRequest":
+        """Construct a request using the semantic-positioning target name."""
+
+        if "bounds" in kwargs:
+            raise ValueError("from_target_bounds accepts target_bounds instead of bounds")
+        return cls(caller_id=caller_id, bounds=target_bounds, role=role, **kwargs)
+
+    @property
+    def target_bounds(self) -> OpticalFieldBounds:
+        """Desired target bounds; alias for request ``bounds``."""
+
+        return self.bounds
 
     def __post_init__(self) -> None:
         if not self.caller_id:

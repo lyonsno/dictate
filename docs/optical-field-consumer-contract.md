@@ -18,7 +18,10 @@ state, and confidence.
 - `caller_id`: stable caller identity for the optical presence.
 - `continuity_key`: stable identity across materialize/rest/retarget/dismiss
   when it differs from `caller_id`; defaults to `caller_id`.
-- `bounds`: optical envelope requested by the consumer.
+- `bounds`: desired target optical envelope requested by the consumer. Semantic
+  positioning lanes may call this `target_bounds`; the request object exposes a
+  `target_bounds` alias/helper, while the constructor keeps `bounds` for
+  compatibility with existing consumers.
 - `content_frame`: legible/rendered content area when it differs from the
   optical envelope; defaults to `bounds`.
 - `coordinate_space`: explicit custody marker for geometry units. The contract
@@ -50,7 +53,9 @@ state, and confidence.
 `OpticalFieldMotionIntent` is data only. A semantic positioning consumer may
 request `strategy="auto"` or a named strategy such as `squirt` or
 `dematerialize_rematerialize`, but House owns the overlap metric, thresholds,
-coalescing, and visual phase.
+coalescing, and visual phase. Consumers normally leave `overlap_threshold` at
+the profile default; overriding it is an expert implementation escape hatch,
+not VLM-authored semantic output.
 
 `OpticalFieldSignal` carries finite semantic/material inputs such as
 `audio_rms`, `background_luminance`, `pending_resolution`, or
@@ -92,7 +97,8 @@ presentation role, explicit coordinate-space metadata, content frames, layout
 recipes, selected/handoff continuity, and finite readiness/activity signals.
 Card/provider truth remains owned by card contracts, not by House.
 
-Semantic positioning should emit desired geometry, source/display freshness,
-provisional/final status, confidence, `motion.strategy`, and continuity. The VLM
-continues to choose targets; House chooses whether the visual motion retargets,
-coalesces, snaps, or rematerializes.
+Semantic positioning should emit desired geometry (`bounds`/`target_bounds`),
+source/display freshness, provisional/final status, confidence,
+`motion.strategy`, and continuity. The VLM continues to choose targets; House
+chooses whether the visual motion retargets, coalesces, snaps, or
+rematerializes.

@@ -70,6 +70,20 @@ def test_placeholder_backend_preserves_contract_identity_and_profile_slot_metada
     assert "progress" not in shell_config["optical_field"]
 
 
+def test_request_target_bounds_alias_names_desired_geometry_for_consumers():
+    target = OpticalFieldBounds(x=12.0, y=24.0, width=360.0, height=120.0)
+
+    request = OpticalFieldRequest.from_target_bounds(
+        caller_id="assistant.semantic",
+        target_bounds=target,
+        role="assistant_shell",
+        state="retarget",
+    )
+
+    assert request.bounds == target
+    assert request.target_bounds == target
+
+
 def test_profile_slots_override_independently_without_leaking_between_lifecycle_states():
     backend = OpticalFieldPlaceholderBackend()
     profile = OpticalFieldProfileRef(

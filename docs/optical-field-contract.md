@@ -75,6 +75,7 @@ support these lifecycle states:
 - `rest`
 - `resize`
 - `recenter`
+- `retarget`
 - `dismiss`
 - `hidden`
 
@@ -82,7 +83,8 @@ The backend keeps primitive-owned transition state for each caller:
 
 - `previous_bounds`: the bounds a new transition starts from
 - `presented_bounds`: the latest sampled visual bounds currently on screen
-- `target_bounds`: the latest accepted desired bounds
+- `target_bounds`: the latest accepted desired bounds; on
+  `OpticalFieldRequest`, this is the consumer-facing alias for request `bounds`
 - `target_request`: the latest accepted request data
 - `pending_request`: always `None` in the default coalescing mailbox
 
@@ -127,10 +129,13 @@ bounds. The metric is:
 intersection_area(current, target) / min(current_area, target_area)
 ```
 
-The default overlap threshold is `0.50`. Ratios greater than the threshold
-preserve the same optical presence and use the profile-selected same-presence
-strategy, currently `squirt`. Ratios less than or equal to the threshold resolve
-to `dematerialize_rematerialize`. `continuity="new_presence"` or
+The default overlap threshold is `0.50` and belongs to House/profile policy.
+Consumers normally request `auto` and do not author the threshold from semantic
+or VLM output; an explicit threshold is an expert override for bounded
+implementation experiments. Ratios greater than the threshold preserve the same
+optical presence and use the profile-selected same-presence strategy, currently
+`squirt`. Ratios less than or equal to the threshold resolve to
+`dematerialize_rematerialize`. `continuity="new_presence"` or
 `continuity="replace"` also resolves to `dematerialize_rematerialize`, even when
 the rectangles overlap.
 
