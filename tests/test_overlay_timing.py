@@ -33,12 +33,12 @@ class TestOverlayTiming:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_fade_out_lingers_longer_through_fast_finalization(self, mock_pyobjc):
-        """Fade-out should linger a bit longer now that final injection lands quickly."""
+    def test_fade_out_clears_quickly_after_fast_finalization(self, mock_pyobjc):
+        """Fade-out should clear quickly once final injection lands."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
-            assert mod._FADE_OUT_S == 0.315
+            assert mod._FADE_OUT_S == pytest.approx(0.18)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -47,7 +47,7 @@ class TestOverlayTiming:
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
-            assert mod._FADE_IN_S == pytest.approx(0.4)
+            assert mod._FADE_IN_S == pytest.approx(0.25)
         finally:
             sys.modules.pop("spoke.overlay", None)
 

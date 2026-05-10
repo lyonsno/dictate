@@ -352,6 +352,7 @@ def test_preview_adapter_publishes_through_optical_field_contract(
     snapshot = host.clients["preview.transcription"].published[-1]
     assert snapshot.optical_field["caller_id"] == "preview.transcription"
     assert snapshot.optical_field["profile"] == "preview_pill"
+    assert snapshot.optical_field["flow_axis"] == "vertical_scroll"
     assert snapshot.optical_field["state"] == "rest"
     assert snapshot.optical_field["slot"] == "rest"
     assert snapshot.optical_field["progress"] == pytest.approx(1.0)
@@ -370,6 +371,7 @@ def test_preview_adapter_publishes_through_optical_field_contract(
     assert snapshot.material.y_squeeze == pytest.approx(
         overlay_module._PREVIEW_OPTICAL_SHELL_Y_SQUEEZE
     )
+    assert snapshot.material.y_squeeze > snapshot.material.x_squeeze
     assert snapshot.material.gpu_material_enabled == pytest.approx(0.0)
     assert snapshot.material.gpu_material_opacity == pytest.approx(0.0)
 
@@ -408,11 +410,26 @@ def test_preview_materialization_clock_is_not_the_old_twelve_frame_fade(
 ):
     overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
 
-    assert overlay_module._preview_fade_steps_for_duration(overlay_module._FADE_IN_S) >= 48
+    assert overlay_module._preview_fade_steps_for_duration(overlay_module._FADE_IN_S) >= 30
     assert (
         1.0 / overlay_module._preview_fade_steps_for_duration(1.0)
         <= 1.0 / 120.0
     )
+
+
+def test_preview_default_warp_is_oriented_for_vertical_scroll(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
+
+    tuning = overlay_module._preview_warp_tuning_defaults()
+
+    assert tuning["x_squeeze"] == pytest.approx(1.814143483232)
+    assert tuning["y_squeeze"] == pytest.approx(3.203601371951)
+    assert tuning["inflation_x_radii"] == pytest.approx(2.297589557927)
+    assert tuning["inflation_y_radii"] == pytest.approx(1.606088033537)
+    assert tuning["y_squeeze"] > tuning["x_squeeze"]
+    assert tuning["inflation_x_radii"] > tuning["inflation_y_radii"]
 
 
 def test_preview_materialization_owns_geometry_but_keeps_fill_hidden(
@@ -463,10 +480,10 @@ def test_preview_warp_defaults_match_live_tuner_baseline(mock_pyobjc, monkeypatc
     tuning = overlay.preview_warp_tuning_snapshot()
 
     assert tuning["core_magnification"] == pytest.approx(2.5)
-    assert tuning["x_squeeze"] == pytest.approx(3.203601371951)
-    assert tuning["y_squeeze"] == pytest.approx(1.814143483232)
-    assert tuning["inflation_x_radii"] == pytest.approx(1.606088033537)
-    assert tuning["inflation_y_radii"] == pytest.approx(2.297589557927)
+    assert tuning["x_squeeze"] == pytest.approx(1.814143483232)
+    assert tuning["y_squeeze"] == pytest.approx(3.203601371951)
+    assert tuning["inflation_x_radii"] == pytest.approx(2.297589557927)
+    assert tuning["inflation_y_radii"] == pytest.approx(1.606088033537)
     assert tuning["bleed_zone_frac"] == pytest.approx(0.702946360518)
     assert tuning["exterior_mix_width_points"] == pytest.approx(26.980754573171)
     assert tuning["ring_amplitude_points"] == pytest.approx(35.369188262195)

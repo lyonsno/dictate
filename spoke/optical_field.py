@@ -171,6 +171,7 @@ _BASE_PROFILES: dict[str, dict[str, float | str | bool]] = {
         "mip_blur_strength": 1.0,
     },
     "preview_pill": {
+        "flow_axis": "vertical_scroll",
         "corner_radius_frac": 0.50,
         "core_magnification": 1.08,
         "band_width_frac": 0.055,
@@ -311,6 +312,8 @@ def _base_shell_config(
             ),
         },
     }
+    if "flow_axis" in params:
+        config["optical_field"]["flow_axis"] = str(params["flow_axis"])
     for key in (
         "initial_brightness",
         "min_brightness",
@@ -354,6 +357,8 @@ def _with_optical_field_sidecar(
             ),
         }
     )
+    if "flow_axis" in config.get("optical_field", {}):
+        optical_field["flow_axis"] = str(config["optical_field"]["flow_axis"])
     config["optical_field"] = optical_field
     return config
 

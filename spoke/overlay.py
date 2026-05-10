@@ -79,8 +79,8 @@ _OVERLAY_MAX_HEIGHT = _env("SPOKE_PREVIEW_OVERLAY_MAX_HEIGHT", 300.0)
 _COMMAND_OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 230.0)
 _EXPAND_UPWARD = _env_bool("SPOKE_PREVIEW_EXPAND_UPWARD", True)
 _FONT_SIZE = 16.0
-_FADE_IN_S = 0.4  # fast ease-in so the overlay feels ready as soon as it appears
-_FADE_OUT_S = 0.315  # 75% longer fade keeps the preview legible through fast handoff
+_FADE_IN_S = 0.25  # preview must feel immediate even while Whisper is active
+_FADE_OUT_S = 0.18  # fast enough to clear the operator's way without popping
 _FADE_STEPS = 12  # number of steps for manual fade animation
 _PREVIEW_VISUAL_FPS = _env("SPOKE_PREVIEW_VISUAL_FPS", 144.0)
 _TYPEWRITER_INTERVAL = 0.02 / 0.75  # seconds between characters (~37.5 chars/sec)
@@ -136,11 +136,14 @@ _PREVIEW_OPTICAL_SHELL_BLEED_ZONE_FRAC = _env(
 _PREVIEW_OPTICAL_SHELL_EXTERIOR_MIX_WIDTH_POINTS = _env(
     "SPOKE_PREVIEW_OPTICAL_SHELL_EXTERIOR_MIX_WIDTH_POINTS", 26.980754573171
 )
+# Preview's dominant background motion is vertical scroll.  The stronger
+# squeeze belongs on that flow axis, while the wider field margin belongs
+# horizontally around the pill so scrolled content parts and rejoins cleanly.
 _PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII = _env(
-    "SPOKE_PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII", 1.606088033537
+    "SPOKE_PREVIEW_OPTICAL_SHELL_INFLATION_X_RADII", 2.297589557927
 )
 _PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII = _env(
-    "SPOKE_PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII", 2.297589557927
+    "SPOKE_PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII", 1.606088033537
 )
 _PREVIEW_OPTICAL_SHELL_CORE_MAGNIFICATION = _env(
     "SPOKE_PREVIEW_OPTICAL_SHELL_CORE_MAGNIFICATION", 2.5
@@ -160,10 +163,10 @@ _PREVIEW_OPTICAL_SHELL_TAIL_AMPLITUDE_POINTS = _env(
     (_PREVIEW_OPTICAL_SHELL_TAIL_MM / 10.0) * _POINTS_PER_CM * 0.75,
 )
 _PREVIEW_OPTICAL_SHELL_X_SQUEEZE = _env(
-    "SPOKE_PREVIEW_OPTICAL_SHELL_X_SQUEEZE", 3.203601371951
+    "SPOKE_PREVIEW_OPTICAL_SHELL_X_SQUEEZE", 1.814143483232
 )
 _PREVIEW_OPTICAL_SHELL_Y_SQUEEZE = _env(
-    "SPOKE_PREVIEW_OPTICAL_SHELL_Y_SQUEEZE", 1.814143483232
+    "SPOKE_PREVIEW_OPTICAL_SHELL_Y_SQUEEZE", 3.203601371951
 )
 _PREVIEW_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS = _env(
     "SPOKE_PREVIEW_OPTICAL_SHELL_CLEANUP_BLUR_RADIUS", 0.75
@@ -755,6 +758,7 @@ class TranscriptionOverlay(NSObject):
             "gpu_material_enabled": material.gpu_material_enabled,
             "gpu_material_opacity": material.gpu_material_opacity,
             "cleanup_blur_radius_points": material.cleanup_blur_radius_points,
+            "flow_axis": "vertical_scroll",
         }
         # The preview pill already has hand-tuned proportions.  Express them as
         # normalized profile overrides so the renderer consumes the same House
