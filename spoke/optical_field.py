@@ -316,6 +316,8 @@ def _base_shell_config(
         "min_brightness",
         "x_squeeze",
         "y_squeeze",
+        "gpu_material_enabled",
+        "gpu_material_opacity",
         "cleanup_blur_radius_points",
         "cleanup_blur_strength",
     ):

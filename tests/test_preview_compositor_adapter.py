@@ -370,6 +370,8 @@ def test_preview_adapter_publishes_through_optical_field_contract(
     assert snapshot.material.y_squeeze == pytest.approx(
         overlay_module._PREVIEW_OPTICAL_SHELL_Y_SQUEEZE
     )
+    assert snapshot.material.gpu_material_enabled == pytest.approx(0.0)
+    assert snapshot.material.gpu_material_opacity == pytest.approx(0.0)
 
 
 def test_preview_dismiss_uses_reusable_pressure_sidecars(
@@ -413,7 +415,7 @@ def test_preview_materialization_clock_is_not_the_old_twelve_frame_fade(
     )
 
 
-def test_preview_materialization_owns_and_scales_fill_layer(
+def test_preview_materialization_owns_geometry_but_keeps_fill_hidden(
     mock_pyobjc, monkeypatch
 ):
     overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
@@ -441,7 +443,7 @@ def test_preview_materialization_owns_and_scales_fill_layer(
 
     assert overlay._preview_materialization_active is False
     assert overlay._fill_layer.values["transform.scale.y"] == pytest.approx(1.0)
-    assert overlay._fill_layer._opacity == pytest.approx(1.0)
+    assert overlay._fill_layer._opacity == pytest.approx(0.0)
 
     assert overlay._publish_preview_compositor_snapshot(
         visible=True,
@@ -451,7 +453,7 @@ def test_preview_materialization_owns_and_scales_fill_layer(
 
     assert overlay._preview_materialization_active is False
     assert overlay._fill_layer.values["transform.scale.y"] == pytest.approx(1.0)
-    assert overlay._fill_layer._opacity == pytest.approx(1.0)
+    assert overlay._fill_layer._opacity == pytest.approx(0.0)
 
 
 def test_preview_warp_defaults_match_live_tuner_baseline(mock_pyobjc, monkeypatch):
@@ -470,7 +472,7 @@ def test_preview_warp_defaults_match_live_tuner_baseline(mock_pyobjc, monkeypatc
     assert tuning["ring_amplitude_points"] == pytest.approx(35.369188262195)
 
 
-def test_preview_fill_sdf_body_matches_preview_rect_without_growing_warp(
+def test_preview_fill_sdf_body_is_skipped_without_changing_warp_geometry(
     mock_pyobjc, monkeypatch
 ):
     overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
@@ -498,8 +500,8 @@ def test_preview_fill_sdf_body_matches_preview_rect_without_growing_warp(
     overlay._apply_ridge_masks(600.0, 80.0)
     geometry = overlay._preview_compositor_geometry_snapshot()
 
-    assert observed_sdf[-1][2] == pytest.approx(600.0)
-    assert observed_sdf[-1][3] == pytest.approx(80.0)
+    assert observed_sdf == []
+    assert observed_alpha == []
     assert overlay._fill_layer.frame().size.width == pytest.approx(
         600.0 + 2 * overlay_module._OUTER_FEATHER
     )

@@ -75,6 +75,8 @@ class OpticalShellMaterialSnapshot:
     exterior_mix_width_points: float | None = None
     x_squeeze: float | None = None
     y_squeeze: float | None = None
+    gpu_material_enabled: float = 1.0
+    gpu_material_opacity: float = 1.0
     cleanup_blur_radius_points: float = 0.0
     debug_visualize: bool = False
     debug_grid_spacing_points: float = 18.0
@@ -1329,6 +1331,8 @@ def _snapshot_from_shell_config(
         exterior_mix_width_points=_optional_float("exterior_mix_width_points"),
         x_squeeze=_optional_float("x_squeeze"),
         y_squeeze=_optional_float("y_squeeze"),
+        gpu_material_enabled=float(config.get("gpu_material_enabled", 1.0)),
+        gpu_material_opacity=float(config.get("gpu_material_opacity", 1.0)),
         cleanup_blur_radius_points=float(config.get("cleanup_blur_radius_points", 0.0)),
         debug_visualize=bool(config.get("debug_visualize", False)),
         debug_grid_spacing_points=float(config.get("debug_grid_spacing_points", 18.0)),
