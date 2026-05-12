@@ -694,6 +694,7 @@ def test_optical_shell_pipeline_uses_warp_kernel(monkeypatch):
             18.0,
             mod._WARP_X_SQUEEZE,
             mod._WARP_Y_SQUEEZE,
+            1.0,
         ]
     )
 
@@ -1529,6 +1530,7 @@ def test_optical_shell_kernel_uses_single_depth_remap_curve():
     assert "float capsuleSdf = sdCapsule(p, spineHalf, capsuleRadius);" in source
     assert "depthRemap" in source
     assert "vec2(scaleX, scaleY)" in source
+    assert "trunkSrc - capsuleN * mag" in source
     assert "capsuleN * pushAmount" in source
 
 
@@ -1541,6 +1543,48 @@ def test_optical_shell_kernel_accepts_live_axis_squeeze_args():
     assert "float ySqueeze" in source
     assert "pow(max(scale, 0.0), xSqueeze)" in source
     assert "pow(max(scale, 0.0), ySqueeze)" in source
+
+
+def test_optical_shell_kernel_contains_superposition_split_witness():
+    mod = _import_module()
+
+    source = mod._SHELL_WARP_KERNEL_SOURCE
+
+    assert "float superpositionSplit" in source
+    assert "left half is current trunk exterior magnification" in source
+    assert "d.x < width * 0.5 ? trunkSrc : normalSrc" in source
+
+
+def test_apply_optical_shell_warp_passes_superposition_split_from_config(monkeypatch):
+    mod = _import_module()
+
+    class FakeImage:
+        pass
+
+    image = FakeImage()
+    extent = _make_rect(0.0, 0.0, 680.0, 160.0)
+    kernel = MagicMock()
+    kernel.applyWithExtent_roiCallback_inputImage_arguments_.return_value = image
+    monkeypatch.setattr(mod, "_shell_warp_kernel", lambda: kernel)
+
+    mod._apply_optical_shell_warp_ci_image(
+        image,
+        extent,
+        {
+            "content_width_points": 600.0,
+            "content_height_points": 80.0,
+            "corner_radius_points": 16.0,
+            "core_magnification": 2.8,
+            "band_width_points": 11.338583,
+            "tail_width_points": 7.086614,
+            "ring_amplitude_points": 132.0,
+            "tail_amplitude_points": 4.0,
+            "superposition_split": 0.0,
+        },
+    )
+
+    args = kernel.applyWithExtent_roiCallback_inputImage_arguments_.call_args[0][3]
+    assert args[-1] == pytest.approx(0.0)
 
 
 def test_optical_shell_kernel_avoids_global_center_depth_mix():

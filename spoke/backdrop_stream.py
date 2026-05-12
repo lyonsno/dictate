@@ -105,6 +105,9 @@ _WARP_Y_SQUEEZE = 1.5
 # Strength is a fraction of the corner radius; higher = stronger lens.
 _WARP_EXTERIOR_MAG_STRENGTH = 0.6   # visible lens effect around boundary
 _WARP_EXTERIOR_MAG_DECAY = 2.0     # fast falloff to keep it near the boundary
+_WARP_SUPERPOSITION_SPLIT = os.environ.get(
+    "SPOKE_BACKDROP_WARP_SUPERPOSITION_SPLIT", "1"
+).strip() not in ("", "0")
 
 _SHELL_WARP_KERNEL = None
 
@@ -244,7 +247,8 @@ kernel vec2 opticalShellWarp(
     float ringAmplitudePoints,
     float tailAmplitudePoints,
     float xSqueeze,
-    float ySqueeze
+    float ySqueeze,
+    float superpositionSplit
 ) {
     vec2 d = destCoord();
     vec2 c = vec2(width * 0.5, height * 0.5);
@@ -278,16 +282,31 @@ kernel vec2 opticalShellWarp(
     float scaleX = pow(max(scale, 0.0), xSqueeze);
     float scaleY = pow(max(scale, 0.0), ySqueeze);
 
-    // Interior: radial scaling from center.
-    // Exterior: push along capsule normal (outward from surface).
-    // This makes content deflect around the pill rather than toward center.
-    vec2 src;
+    vec2 trunkSrc = c + p * vec2(scaleX, scaleY);
+    if (capsuleSdf > 0.0) {
+        float exteriorT = max(capsuleSdf, 0.0);
+        float seamRamp = smoothstep(0.0, 2.0, exteriorT);
+        float magDecay = exp(-exteriorT / capsuleRadius * %(ext_mag_decay)s);
+        float tipDist = max(abs(p.x) - spineHalf, 0.0);
+        float tipAtten = 1.0 - smoothstep(0.0, capsuleRadius * 0.8, tipDist);
+        float mag = %(ext_mag_strength)s * capsuleRadius * seamRamp * magDecay * tipAtten;
+        trunkSrc = trunkSrc - capsuleN * mag;
+    }
+
+    vec2 normalSrc;
     if (capsuleSdf <= 0.0) {
-        src = c + p * vec2(scaleX, scaleY);
+        normalSrc = c + p * vec2(scaleX, scaleY);
     } else {
         float pushAmount = curveBoost * capsuleRadius * 0.15
             * exp(-capsuleSdf * 0.4);
-        src = d + capsuleN * pushAmount;
+        normalSrc = d + capsuleN * pushAmount;
+    }
+
+    // Smoke-only witness: left half is current trunk exterior magnification,
+    // right half is the 1f3e7eac capsule-normal exterior push.
+    vec2 src = normalSrc;
+    if (superpositionSplit >= 0.5) {
+        src = d.x < width * 0.5 ? trunkSrc : normalSrc;
     }
     src = clamp(src, vec2(0.0, 0.0), vec2(width, height));
     return src;
@@ -750,6 +769,7 @@ def _apply_optical_shell_warp_ci_image(ci_image, extent, shell_config):
         float(shell_config.get("tail_amplitude_points", 4.0)),
         float(shell_config.get("x_squeeze", _WARP_X_SQUEEZE)),
         float(shell_config.get("y_squeeze", _WARP_Y_SQUEEZE)),
+        float(shell_config.get("superposition_split", 1.0 if _WARP_SUPERPOSITION_SPLIT else 0.0)),
     ]
     try:
         candidate = warp_kernel.applyWithExtent_roiCallback_inputImage_arguments_(
