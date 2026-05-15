@@ -1606,6 +1606,7 @@ class _ScreenCaptureKitBackdropRenderer:
         self._current_display = None
         self._current_display_frame = None
         self._current_content = None
+        self._stream_point_pixel_scale = None
         self._window_number = None
         self._lock = threading.Lock()
         self._ci_context = None
@@ -1683,6 +1684,7 @@ class _ScreenCaptureKitBackdropRenderer:
         self._startup_requested = False
         self._pending_signature = None
         self._applied_signature = None
+        self._stream_point_pixel_scale = None
         self._clear_live_content()
         if stream is None:
             return
@@ -1846,6 +1848,12 @@ class _ScreenCaptureKitBackdropRenderer:
                 pass
         return self._current_backing_scale()
 
+    def _active_point_pixel_scale(self) -> float:
+        scale = getattr(self, "_stream_point_pixel_scale", None)
+        if scale is not None and scale > 0.0:
+            return float(scale)
+        return self._current_backing_scale()
+
     def _match_display(self, content):
         try:
             displays = list(content.displays())
@@ -1891,11 +1899,13 @@ class _ScreenCaptureKitBackdropRenderer:
         bridge = _load_screencapturekit_bridge()
         SCStreamConfiguration = bridge["SCStreamConfiguration"]
         config = SCStreamConfiguration.alloc().init()
+        point_pixel_scale = self._current_point_pixel_scale(content_filter)
+        self._stream_point_pixel_scale = point_pixel_scale
         _configure_stream_geometry(
             config,
             content_rect=self._current_content_rect(content_filter),
             capture_rect=capture_rect,
-            point_pixel_scale=self._current_point_pixel_scale(content_filter),
+            point_pixel_scale=point_pixel_scale,
         )
         return config
 
@@ -1924,6 +1934,7 @@ class _ScreenCaptureKitBackdropRenderer:
                 logger.info("SCK: display matched, frame=%r", self._current_display_frame)
                 content_filter = self._build_filter(content, self._current_display, window_number)
                 config = self._build_configuration(content_filter, capture_rect)
+                point_pixel_scale = self._active_point_pixel_scale()
                 SCStream = bridge["SCStream"]
                 stream = SCStream.alloc().initWithFilter_configuration_delegate_(
                     content_filter,
@@ -1978,7 +1989,7 @@ class _ScreenCaptureKitBackdropRenderer:
                 self._applied_signature = self._signature_for(
                     window_number,
                     capture_rect,
-                    self._current_backing_scale(),
+                    point_pixel_scale,
                 )
                 stream.startCaptureWithCompletionHandler_(started)
             except Exception:
@@ -1992,17 +2003,18 @@ class _ScreenCaptureKitBackdropRenderer:
     def _update_stream(self, *, window_number, capture_rect):
         if self._stream is None or self._current_display is None:
             return
-        signature = self._signature_for(window_number, capture_rect, self._current_backing_scale())
-        if signature == self._applied_signature or signature == self._pending_signature:
-            return
-        self._clear_live_content()
-        self._pending_signature = signature
         try:
             content_filter = self._build_filter(
                 self._current_content if self._current_content is not None else SimpleNamespace(windows=lambda: []),
                 self._current_display,
                 window_number,
             )
+            point_pixel_scale = self._current_point_pixel_scale(content_filter)
+            signature = self._signature_for(window_number, capture_rect, point_pixel_scale)
+            if signature == self._applied_signature or signature == self._pending_signature:
+                return
+            self._clear_live_content()
+            self._pending_signature = signature
             config = self._build_configuration(content_filter, capture_rect)
             self._window_number = window_number
 
@@ -2087,7 +2099,7 @@ class _ScreenCaptureKitBackdropRenderer:
                                 # SCK delivers frames at Retina pixel scale.
                                 # The shell config dimensions are in points.
                                 # Scale them to match the CIImage extent.
-                                scale = self._current_backing_scale()
+                                scale = self._active_point_pixel_scale()
                                 scaled_config = dict(optical_shell_config)
                                 for k in ("content_width_points", "content_height_points",
                                           "corner_radius_points", "band_width_points",
@@ -2187,7 +2199,7 @@ class _ScreenCaptureKitBackdropRenderer:
                                 if ios_obj is not None and w > 0 and h > 0:
                                     if dl_diag < 3:
                                         logger.info("SCK dl-submit[%d]: IOSurface ok, %dx%d", dl_diag, w, h)
-                                    scale = self._current_backing_scale()
+                                    scale = self._active_point_pixel_scale()
                                     scaled_cfg = dict(optical_shell_config)
                                     for k in ("content_width_points", "content_height_points",
                                               "corner_radius_points", "band_width_points",
@@ -2254,7 +2266,7 @@ class _ScreenCaptureKitBackdropRenderer:
                 _sck_timer.end("pre_blur")
 
                 _sck_timer.begin("warp")
-                scale = self._current_backing_scale()
+                scale = self._active_point_pixel_scale()
                 scaled_cfg = dict(optical_shell_config)
                 for k in ("content_width_points", "content_height_points",
                           "corner_radius_points", "band_width_points",

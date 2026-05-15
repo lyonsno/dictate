@@ -270,6 +270,62 @@ def test_consume_sample_buffer_optical_shell_direct_ciimage_path(monkeypatch):
     renderer._publish_live_sample_buffer.assert_not_called()
 
 
+def test_consume_sample_buffer_optical_shell_uses_stream_pixel_scale(monkeypatch):
+    mod = _import_module()
+
+    extent = _make_rect(0.0, 0.0, 150.0, 75.0)
+    fake_ci_image = MagicMock()
+    fake_ci_image.extent.return_value = extent
+    fake_ci_image.imageByClampingToExtent.return_value = fake_ci_image
+    fake_ci_image.imageByCroppingToRect_.return_value = fake_ci_image
+    fake_quartz = types.ModuleType("Quartz")
+    fake_quartz.CIImage = MagicMock()
+    monkeypatch.setitem(sys.modules, "Quartz", fake_quartz)
+
+    bridge = {
+        "SCStreamOutputTypeScreen": 7,
+        "CMSampleBufferGetImageBuffer": MagicMock(return_value="pixel-buf"),
+        "_CIImage_from_sample_buffer": MagicMock(return_value=fake_ci_image),
+    }
+    monkeypatch.setattr(mod, "_load_screencapturekit_bridge", lambda: bridge)
+    apply_warp = MagicMock(return_value=fake_ci_image)
+    monkeypatch.setattr(mod, "_apply_optical_shell_warp_ci_image", apply_warp)
+
+    renderer = mod._ScreenCaptureKitBackdropRenderer.__new__(
+        mod._ScreenCaptureKitBackdropRenderer
+    )
+    renderer._blur_radius_points = 0.0
+    renderer._sample_buffer_callback = MagicMock()
+    renderer._frame_callback = MagicMock()
+    renderer._optical_shell_config = {
+        "enabled": True,
+        "content_width_points": 100.0,
+        "content_height_points": 50.0,
+        "corner_radius_points": 10.0,
+        "band_width_points": 4.0,
+        "tail_width_points": 3.0,
+    }
+    renderer._stream_point_pixel_scale = 1.5
+    renderer._publish_live_sample_buffer = MagicMock()
+    renderer._publish_live_image = MagicMock()
+    renderer._screen = MagicMock()
+    renderer._screen.backingScaleFactor.return_value = 2.0
+    renderer._ci_context = MagicMock()
+    renderer._ci_context.createCGImage_fromRect_.return_value = "cg-image"
+    renderer._lock = mod.threading.Lock()
+    renderer._latest_image = None
+    renderer._publish_image_count = 0
+
+    renderer._consume_sample_buffer("live-sample", 7)
+
+    scaled_config = apply_warp.call_args.args[2]
+    assert scaled_config["content_width_points"] == pytest.approx(150.0)
+    assert scaled_config["content_height_points"] == pytest.approx(75.0)
+    assert scaled_config["corner_radius_points"] == pytest.approx(15.0)
+    assert scaled_config["band_width_points"] == pytest.approx(6.0)
+    assert scaled_config["tail_width_points"] == pytest.approx(4.5)
+
+
 def test_consume_sample_buffer_optical_shell_reuses_gaussian_blur_filter(monkeypatch):
     mod = _import_module()
 
