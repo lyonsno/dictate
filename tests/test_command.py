@@ -64,6 +64,31 @@ class TestCommandClient:
         from spoke.command import _SYSTEM_PROMPT
         assert "literal:<exact text to speak>" in _SYSTEM_PROMPT
 
+    def test_system_prompt_defaults_to_text_output(self):
+        from spoke.command import _SYSTEM_PROMPT
+
+        assert "Output mode: by default your response is displayed as text on screen" in _SYSTEM_PROMPT
+        assert "do NOT call read_aloud unless the user explicitly asks" in _SYSTEM_PROMPT
+        assert "anything the user would want to read, copy, or reference later" in _SYSTEM_PROMPT
+
+    def test_system_prompt_preserves_exact_read_aloud_ref_flow(self):
+        from spoke.command import _SYSTEM_PROMPT
+
+        assert "prefer refs over regenerated text" in _SYSTEM_PROMPT
+        assert "If reading something visible, call capture_context first" in _SYSTEM_PROMPT
+        assert "read_aloud with a block ref" in _SYSTEM_PROMPT
+        assert "Do not pretend read_aloud is limited to visible text" in _SYSTEM_PROMPT
+
+    def test_system_prompt_keeps_wallace_as_tool_command(self):
+        from spoke.command import _SYSTEM_PROMPT
+
+        assert "WALLACE" in _SYSTEM_PROMPT
+        assert "This is a COMMAND, not a name" in _SYSTEM_PROMPT
+        assert "two sequential tool calls" in _SYSTEM_PROMPT
+        assert "Step 1: Call capture_context" in _SYSTEM_PROMPT
+        assert "Step 2: Call read_aloud" in _SYSTEM_PROMPT
+        assert "Do NOT respond with text" in _SYSTEM_PROMPT
+
     def test_system_prompt_mentions_subagent_control_tools(self):
         """The main operator prompt should describe the subagent control surface."""
         from spoke.command import _SYSTEM_PROMPT
