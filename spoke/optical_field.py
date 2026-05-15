@@ -554,6 +554,7 @@ _BASE_PROFILES: dict[str, dict[str, float | str | bool]] = {
         "bleed_zone_frac": 0.70,
         "exterior_mix_frac": 0.16,
         "mip_blur_strength": 1.0,
+        "flow_axis": "vertical_scroll",
     },
     "agent_card": {
         "corner_radius_frac": 0.34,
@@ -608,6 +609,12 @@ def _merged_profile_params(profile: OpticalFieldProfileRef, slot_name: str) -> d
 
 
 def _float_param(params: Mapping[str, Any], key: str) -> float:
+    return float(params[key])
+
+
+def _optional_float_param(params: Mapping[str, Any], key: str) -> float | None:
+    if key not in params:
+        return None
     return float(params[key])
 
 
@@ -893,6 +900,9 @@ def compile_placeholder_shell_config(
 
     optical_field = _with_transition_metadata(metadata, request, transition)
     optical_field = _with_motion_metadata(optical_field, request, transition)
+    if "flow_axis" in params:
+        optical_field = dict(optical_field)
+        optical_field["flow_axis"] = str(params["flow_axis"])
 
     config = {
         "enabled": True,
@@ -917,6 +927,19 @@ def compile_placeholder_shell_config(
         "mip_blur_strength": _float_param(params, "mip_blur_strength"),
         "optical_field": optical_field,
     }
+    for key in (
+        "initial_brightness",
+        "min_brightness",
+        "x_squeeze",
+        "y_squeeze",
+        "gpu_material_enabled",
+        "gpu_material_opacity",
+        "cleanup_blur_radius_points",
+        "cleanup_blur_strength",
+    ):
+        value = _optional_float_param(params, key)
+        if value is not None:
+            config[key] = value
     if signals:
         config.update(
             {

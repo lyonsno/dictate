@@ -287,6 +287,8 @@ def test_preview_adapter_publishes_preview_transcription_snapshot_without_starti
         (80.0 + overlay_module._PREVIEW_OPTICAL_SHELL_INFLATION_Y_RADII * 16.0) * 2.0
     )
     assert snapshot.material.initial_brightness == pytest.approx(0.37)
+    assert snapshot.material.gpu_material_enabled == pytest.approx(0.0)
+    assert snapshot.material.gpu_material_opacity == pytest.approx(0.0)
 
 
 def test_preview_materialize_snapshot_uses_finite_optical_field_contract_without_progress(
@@ -304,6 +306,7 @@ def test_preview_materialize_snapshot_uses_finite_optical_field_contract_without
     optical_field = dict(snapshot.optical_field)
     assert optical_field["caller_id"] == "preview.transcription"
     assert optical_field["profile"] == "preview_pill"
+    assert optical_field["flow_axis"] == "vertical_scroll"
     assert optical_field["state"] == "materialize"
     assert optical_field["slot"] == "materialize"
     assert optical_field["timing_ms"]["duration_ms"] == pytest.approx(
@@ -345,6 +348,7 @@ def test_preview_dismiss_keeps_last_visible_geometry_instead_of_hidden_origin(
     optical_field = dict(dismiss_snapshot.optical_field)
     assert optical_field["state"] == "dismiss"
     assert optical_field["slot"] == "dismiss"
+    assert optical_field["flow_axis"] == "vertical_scroll"
     assert optical_field["timing_ms"]["duration_ms"] == pytest.approx(
         overlay_module._FADE_OUT_S * 1000.0
     )
@@ -352,7 +356,7 @@ def test_preview_dismiss_keeps_last_visible_geometry_instead_of_hidden_origin(
     assert "phase" not in optical_field
 
 
-def test_preview_show_has_fill_ready_before_first_materialize_request(
+def test_preview_show_skips_default_sdf_fill_before_first_materialize_request(
     mock_pyobjc, monkeypatch
 ):
     overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
@@ -370,7 +374,8 @@ def test_preview_show_has_fill_ready_before_first_materialize_request(
     overlay.set_compositor_registry(registry)
     overlay.show()
 
-    assert overlay._fill_layer.contents == "first-fill-image"
+    assert getattr(overlay._fill_layer, "contents", None) is None
+    assert overlay._fill_layer._opacity == pytest.approx(0.0)
     snapshot = host.clients["preview.transcription"].published[-1]
     assert snapshot.visible is True
     assert dict(snapshot.optical_field)["state"] == "materialize"
@@ -413,16 +418,18 @@ def test_preview_warp_defaults_match_live_tuner_baseline(mock_pyobjc, monkeypatc
     tuning = overlay.preview_warp_tuning_snapshot()
 
     assert tuning["core_magnification"] == pytest.approx(2.5)
-    assert tuning["x_squeeze"] == pytest.approx(3.203601371951)
-    assert tuning["y_squeeze"] == pytest.approx(1.814143483232)
-    assert tuning["inflation_x_radii"] == pytest.approx(1.606088033537)
-    assert tuning["inflation_y_radii"] == pytest.approx(2.297589557927)
+    assert tuning["x_squeeze"] == pytest.approx(1.814143483232)
+    assert tuning["y_squeeze"] == pytest.approx(3.203601371951)
+    assert tuning["inflation_x_radii"] == pytest.approx(2.297589557927)
+    assert tuning["inflation_y_radii"] == pytest.approx(1.606088033537)
+    assert tuning["y_squeeze"] > tuning["x_squeeze"]
+    assert tuning["inflation_x_radii"] > tuning["inflation_y_radii"]
     assert tuning["bleed_zone_frac"] == pytest.approx(0.702946360518)
     assert tuning["exterior_mix_width_points"] == pytest.approx(26.980754573171)
     assert tuning["ring_amplitude_points"] == pytest.approx(35.369188262195)
 
 
-def test_preview_fill_sdf_body_matches_preview_rect_without_growing_warp(
+def test_preview_fill_sdf_body_is_skipped_without_changing_warp_geometry(
     mock_pyobjc, monkeypatch
 ):
     overlay_module, _compositor_module = _import_overlay_and_compositor(mock_pyobjc)
@@ -450,8 +457,8 @@ def test_preview_fill_sdf_body_matches_preview_rect_without_growing_warp(
     overlay._apply_ridge_masks(600.0, 80.0)
     geometry = overlay._preview_compositor_geometry_snapshot()
 
-    assert observed_sdf[-1][2] == pytest.approx(600.0)
-    assert observed_sdf[-1][3] == pytest.approx(80.0)
+    assert observed_sdf == []
+    assert observed_alpha == []
     assert overlay._fill_layer.frame().size.width == pytest.approx(
         600.0 + 2 * overlay_module._OUTER_FEATHER
     )

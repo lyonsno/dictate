@@ -184,6 +184,22 @@ def test_backend_upsert_and_remove_are_stable_by_caller_id():
     assert backend.remove("preview") is False
 
 
+def test_preview_profile_declares_vertical_scroll_flow_axis():
+    backend = OpticalFieldPlaceholderBackend()
+    backend.upsert(
+        OpticalFieldRequest(
+            caller_id="preview",
+            bounds=OpticalFieldBounds(x=0.0, y=0.0, width=600.0, height=80.0),
+            role="preview",
+            state="rest",
+            profile=OpticalFieldProfileRef(base="preview_pill"),
+        )
+    )
+
+    (shell_config,) = backend.compile_shell_configs()
+    assert shell_config["optical_field"]["flow_axis"] == "vertical_scroll"
+
+
 def test_placeholder_configs_survive_fullscreen_compositor_snapshot_round_trip():
     from spoke.fullscreen_compositor import (
         OverlayClientIdentity,

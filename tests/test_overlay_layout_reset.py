@@ -325,7 +325,7 @@ def test_show_clears_stale_tray_background_and_fill_override(mock_pyobjc, monkey
 
     assert overlay._content_view.layer().backgroundColor() is None
     assert overlay._fill_override_rgb is None
-    assert overlay._fill_layer.opacity() == pytest.approx(overlay_module._BG_ALPHA_MIN)
+    assert overlay._fill_layer.opacity() == pytest.approx(0.0)
 
 
 def test_show_tray_keeps_content_background_clear(mock_pyobjc, monkeypatch):

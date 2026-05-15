@@ -33,12 +33,12 @@ class TestOverlayTiming:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_fade_out_lingers_longer_through_fast_finalization(self, mock_pyobjc):
-        """Fade-out should linger a bit longer now that final injection lands quickly."""
+    def test_fade_out_clears_quickly_after_fast_finalization(self, mock_pyobjc):
+        """Preview fade-out should clear quickly once final injection lands."""
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
-            assert mod._FADE_OUT_S == 0.315
+            assert mod._FADE_OUT_S == pytest.approx(0.18)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -47,7 +47,7 @@ class TestOverlayTiming:
         sys.modules.pop("spoke.overlay", None)
         mod = importlib.import_module("spoke.overlay")
         try:
-            assert mod._FADE_IN_S == pytest.approx(0.4)
+            assert mod._FADE_IN_S == pytest.approx(0.25)
         finally:
             sys.modules.pop("spoke.overlay", None)
 
@@ -179,6 +179,11 @@ class TestOverlayTiming:
 class TestAdaptiveOverlayCompositing:
     """Overlay bg/text cross-fades between dark and light with brightness."""
 
+    def _import_overlay_with_sdf_fill(self, monkeypatch):
+        sys.modules.pop("spoke.overlay", None)
+        monkeypatch.setenv("SPOKE_PREVIEW_SDF_FILL_ENABLED", "1")
+        return importlib.import_module("spoke.overlay")
+
     def _make_overlay(self, mod):
         mod._start_overlay_fill_worker = lambda work: work()
         overlay = mod.TranscriptionOverlay.__new__(mod.TranscriptionOverlay)
@@ -230,9 +235,8 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_dark_background_uses_light_text_and_sets_fill_opacity(self, mock_pyobjc):
-        sys.modules.pop("spoke.overlay", None)
-        mod = importlib.import_module("spoke.overlay")
+    def test_dark_background_uses_light_text_and_sets_fill_opacity(self, mock_pyobjc, monkeypatch):
+        mod = self._import_overlay_with_sdf_fill(monkeypatch)
         try:
             overlay = self._make_overlay(mod)
             overlay.set_brightness(0.0, immediate=True)
@@ -254,10 +258,9 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_light_background_text_is_white_on_dark_fill(self, mock_pyobjc):
+    def test_light_background_text_is_white_on_dark_fill(self, mock_pyobjc, monkeypatch):
         """On bright backgrounds, text is white against the dark fill."""
-        sys.modules.pop("spoke.overlay", None)
-        mod = importlib.import_module("spoke.overlay")
+        mod = self._import_overlay_with_sdf_fill(monkeypatch)
         try:
             overlay = self._make_overlay(mod)
             overlay.set_brightness(1.0, immediate=True)
@@ -272,10 +275,9 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_light_background_fill_is_opaque(self, mock_pyobjc):
+    def test_light_background_fill_is_opaque(self, mock_pyobjc, monkeypatch):
         """On bright backgrounds, the fill layer becomes near-opaque to support the cutout."""
-        sys.modules.pop("spoke.overlay", None)
-        mod = importlib.import_module("spoke.overlay")
+        mod = self._import_overlay_with_sdf_fill(monkeypatch)
         try:
             overlay = self._make_overlay(mod)
             overlay.set_brightness(1.0, immediate=True)
@@ -289,9 +291,8 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_light_background_preview_text_reaches_true_white(self, mock_pyobjc):
-        sys.modules.pop("spoke.overlay", None)
-        mod = importlib.import_module("spoke.overlay")
+    def test_light_background_preview_text_reaches_true_white(self, mock_pyobjc, monkeypatch):
+        mod = self._import_overlay_with_sdf_fill(monkeypatch)
         try:
             overlay = self._make_overlay(mod)
             overlay.set_brightness(1.0, immediate=True)
@@ -306,10 +307,9 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_fill_opacity_responds_to_amplitude(self, mock_pyobjc):
+    def test_fill_opacity_responds_to_amplitude(self, mock_pyobjc, monkeypatch):
         """The SDF fill should breathe with amplitude — low at silence, high when speaking."""
-        sys.modules.pop("spoke.overlay", None)
-        mod = importlib.import_module("spoke.overlay")
+        mod = self._import_overlay_with_sdf_fill(monkeypatch)
         try:
             overlay = self._make_overlay(mod)
 
@@ -338,8 +338,7 @@ class TestAdaptiveOverlayCompositing:
             sys.modules.pop("spoke.overlay", None)
 
     def test_same_appearance_reuses_fill_image(self, mock_pyobjc, monkeypatch):
-        sys.modules.pop("spoke.overlay", None)
-        mod = importlib.import_module("spoke.overlay")
+        mod = self._import_overlay_with_sdf_fill(monkeypatch)
         try:
             overlay = self._make_overlay(mod)
             overlay._fill_layer = MagicMock()
@@ -361,8 +360,7 @@ class TestAdaptiveOverlayCompositing:
             sys.modules.pop("spoke.overlay", None)
 
     def test_fill_generation_is_not_run_synchronously(self, mock_pyobjc, monkeypatch):
-        sys.modules.pop("spoke.overlay", None)
-        mod = importlib.import_module("spoke.overlay")
+        mod = self._import_overlay_with_sdf_fill(monkeypatch)
         try:
             overlay = self._make_overlay(mod)
             overlay._fill_layer = MagicMock()
@@ -381,10 +379,9 @@ class TestAdaptiveOverlayCompositing:
         finally:
             sys.modules.pop("spoke.overlay", None)
 
-    def test_text_color_contrasts_with_fill(self, mock_pyobjc):
+    def test_text_color_contrasts_with_fill(self, mock_pyobjc, monkeypatch):
         """Text should be dark on light fill (dark bg) and white on dark fill (light bg)."""
-        sys.modules.pop("spoke.overlay", None)
-        mod = importlib.import_module("spoke.overlay")
+        mod = self._import_overlay_with_sdf_fill(monkeypatch)
         try:
             # Dark background → light fill → dark text
             overlay = self._make_overlay(mod)
