@@ -1154,6 +1154,26 @@ class TestExecuteToolIntegration:
         assert parsed.get("edited_range") is None
         assert f.read_text(encoding="utf-8") == original
 
+    def test_execute_edit_file_rejects_overlapping_matches_as_not_unique(self, tmp_path):
+        mod = _import_tools()
+        f = tmp_path / "edit.txt"
+        original = "aaa\n"
+        f.write_text(original, encoding="utf-8")
+
+        result = mod.execute_tool(
+            "edit_file",
+            {"file": str(f), "old_string": "aa", "new_string": "b"},
+        )
+        parsed = json.loads(result)
+        assert parsed.get("status") == "error"
+        assert parsed.get("applied") is False
+        assert parsed.get("file") == str(f)
+        assert parsed.get("failure_reason") == "not_unique"
+        assert parsed.get("match_count") == 2
+        assert parsed.get("normalization_applied") == []
+        assert parsed.get("edited_range") is None
+        assert f.read_text(encoding="utf-8") == original
+
     def test_execute_edit_file_rejects_missing_old_string(self, tmp_path):
         mod = _import_tools()
         f = tmp_path / "edit.txt"

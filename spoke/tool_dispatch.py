@@ -982,6 +982,15 @@ def _normalize_match_text(text: str, *, normalize_trailing_whitespace: bool = Tr
     return normalized
 
 
+def _count_overlapping_occurrences(text: str, needle: str) -> int:
+    count = 0
+    start = text.find(needle)
+    while start != -1:
+        count += 1
+        start = text.find(needle, start + 1)
+    return count
+
+
 def _normalize_text_for_comparison(
     text: str,
     *,
@@ -1575,6 +1584,17 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
 
         normalize_trailing_whitespace = _should_normalize_trailing_whitespace(file_path)
         newline_style = _preferred_newline_style(raw_content)
+        exact_match_count = _count_overlapping_occurrences(raw_content, old_string)
+        if exact_match_count > 1:
+            return finish(_edit_result(
+                status="error",
+                file_path=file_path,
+                match_count=exact_match_count,
+                failure_reason="not_unique",
+                normalization_applied=[],
+                edited_range=None,
+            ))
+
         indent_matches = _find_indentation_aware_matches(
             raw_content,
             old_string,
@@ -1641,7 +1661,7 @@ def _execute_edit_file(arguments: dict) -> dict[str, Any]:
             normalize_trailing_whitespace=normalize_trailing_whitespace,
         )
 
-        match_count = normalized_content.count(normalized_old)
+        match_count = _count_overlapping_occurrences(normalized_content, normalized_old)
         if match_count == 0:
             return finish(_edit_result(
                 status="error",
