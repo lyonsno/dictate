@@ -3310,27 +3310,27 @@ class TestAdaptiveCompositing:
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
-    def test_assistant_foreground_flips_from_dark_to_light_with_surface_brightness(self, mock_pyobjc):
+    def test_assistant_foreground_flips_from_light_to_dark_with_surface_brightness(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")
         try:
             dark = mod._assistant_foreground_color_for_brightness(0.0)
             light = mod._assistant_foreground_color_for_brightness(1.0)
 
-            assert max(dark) < 0.2
-            assert min(light) > 0.9
+            assert min(dark) > 0.9, "light text on dark backdrop"
+            assert max(light) < 0.2, "dark text on light backdrop"
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
-    def test_user_text_turns_bright_on_light_backgrounds(self, mock_pyobjc):
+    def test_user_text_turns_dark_on_light_backgrounds(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")
         try:
             dark = mod._user_text_color_for_brightness(0.0)
             light = mod._user_text_color_for_brightness(1.0)
 
-            assert max(dark) < 0.25
-            assert min(light) > 0.9
+            assert min(dark) > 0.9, "light text on dark backdrop"
+            assert max(light) < 0.2, "dark text on light backdrop"
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
@@ -3883,7 +3883,7 @@ class TestAdaptiveCompositing:
             fg = next(value for name, value, _ in frag.attrs if name == "NSForegroundColor")
             shadow = next(value for name, value, _ in frag.attrs if name == "NSShadow")
 
-            assert min(fg[:3]) > 0.9
+            assert max(fg[:3]) < 0.2, "dark text on light backdrop"
             assert fg[3] == pytest.approx(mod._ASSISTANT_TEXT_ALPHA_MAX)
             assert shadow.blur == pytest.approx(mod._ASSISTANT_BLUR_RADIUS)
             assert shadow.color[:3] != fg[:3]

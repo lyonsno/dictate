@@ -460,7 +460,8 @@ kernel void opticalShellWarp(
     // so blur should only start ramping once we're past that inflation zone
     // (i.e., inside the visible rounded shell).
     float pixelsInside = max(-capsuleSdf - capsuleRadius * 0.5f, 0.0f);
-    float baseMipLod = clamp(pixelsInside / 30.0f, 0.0f, 1.0f) * 6.0f;
+    float mipRampPixels = 30.0f * max(1.0f, params.coreMagnification / 4.0f);
+    float baseMipLod = clamp(pixelsInside / mipRampPixels, 0.0f, 1.0f) * 6.0f;
     float warpAliasOctaves = max(
         abs(log2(max(abs(scaleX), 1e-4f))),
         abs(log2(max(abs(scaleY), 1e-4f)))
