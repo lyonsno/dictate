@@ -9,6 +9,7 @@ import importlib
 import inspect
 import math
 import sys
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -3442,6 +3443,55 @@ class TestAdaptiveCompositing:
         ]
         assert overlay._brightness == pytest.approx(0.04)
         assert overlay._brightness_target == pytest.approx(0.04)
+
+    def test_visual_ready_forces_entrance_after_hard_deadline(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._materialization_progress = 0.10  # not ready
+        timer = MagicMock()
+        overlay._visual_ready_timer = timer
+        # Compositor exists but has never presented
+        compositor = MagicMock()
+        compositor.presented_count = 0
+        overlay._fullscreen_compositor = compositor
+        overlay._start_entrance_animation = MagicMock()
+        # Simulate elapsed time past the hard deadline
+        overlay._visual_ready_wait_started_at = (
+            time.perf_counter() - mod._OPTICAL_ENTRANCE_HARD_DEADLINE_S - 0.01
+        )
+
+        overlay.visualReadyStep_(timer)
+
+        overlay._start_entrance_animation.assert_called_once()
+        # Compositor should be stopped since it never presented
+        assert overlay._fullscreen_compositor is None
+
+    def test_visual_ready_does_not_force_entrance_before_hard_deadline(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._materialization_progress = 0.10  # not ready
+        timer = MagicMock()
+        overlay._visual_ready_timer = timer
+        compositor = MagicMock()
+        compositor.presented_count = 0
+        overlay._fullscreen_compositor = compositor
+        overlay._start_entrance_animation = MagicMock()
+        # Simulate elapsed time before the hard deadline but after soft timeout
+        overlay._visual_ready_wait_started_at = (
+            time.perf_counter()
+            - mod._OPTICAL_ENTRANCE_READY_TIMEOUT_S
+            - 0.01
+        )
+
+        overlay.visualReadyStep_(timer)
+
+        overlay._start_entrance_animation.assert_not_called()
+        # Compositor should still be alive
+        assert overlay._fullscreen_compositor is compositor
 
     def test_brightness_crossing_reaches_contrast_band_in_one_pulse(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)

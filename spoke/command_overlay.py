@@ -185,6 +185,13 @@ _OPTICAL_ENTRANCE_READY_TIMEOUT_S = max(
         0.2 * _PRESSURE_SLIT_SMOKE_TIME_SCALE,
     ),
 )
+_OPTICAL_ENTRANCE_HARD_DEADLINE_S = max(
+    _OPTICAL_ENTRANCE_READY_TIMEOUT_S * 2,
+    _env(
+        "SPOKE_COMMAND_OPTICAL_ENTRANCE_HARD_DEADLINE_S",
+        0.5,
+    ),
+)
 _FADE_OUT_S = 0.5 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
 _FADE_STEPS = 15
 _DISMISS_DURATION_S = 0.2 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
@@ -4054,10 +4061,26 @@ class CommandOverlay(NSObject):
             self._visual_ready_brightness_synced = True
         if not compositor_ready and elapsed < _OPTICAL_ENTRANCE_READY_TIMEOUT_S:
             return
-        if not self._optical_entrance_ready():
+        if self._optical_entrance_ready():
+            self._cancel_visual_ready_start()
+            self._start_entrance_animation()
             return
-        self._cancel_visual_ready_start()
-        self._start_entrance_animation()
+        if elapsed >= _OPTICAL_ENTRANCE_HARD_DEADLINE_S:
+            record_command_overlay_trace(
+                "overlay.visual_ready.hard_deadline",
+                elapsed=elapsed,
+                compositor_ready=compositor_ready,
+                fill_ready=self._optical_fill_ready(),
+                materialization_progress=getattr(
+                    self, "_materialization_progress", None
+                ),
+            )
+            self._cancel_visual_ready_start()
+            if not compositor_ready:
+                self._stop_fullscreen_compositor()
+                self._thaw_local_shell_layers()
+                self._start_backdrop_refresh_timer()
+            self._start_entrance_animation()
 
     def _optical_entrance_ready(self) -> bool:
         return (
