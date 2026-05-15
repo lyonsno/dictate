@@ -1379,6 +1379,8 @@ def _agent_shell_card_text_overlay_specs(
         text = _agent_shell_card_text_payload(config)
         primary = text.get("primary", "")
         secondary = text.get("secondary", "")
+        if secondary == primary:
+            secondary = ""
         if not primary and not secondary:
             continue
         try:

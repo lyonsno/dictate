@@ -58,10 +58,13 @@ def _material(*, selected: bool, readiness: str) -> dict[str, float | str]:
 
 
 def _display(display: dict[str, Any]) -> dict[str, Any]:
+    primary = _string(display.get("primary_text"))
     secondary = _string(display.get("compact_text")) or _string(display.get("bearing"))
+    if secondary == primary:
+        secondary = ""
     return {
         "display_state": _string(display.get("display_state")),
-        "primary_text": _string(display.get("primary_text")),
+        "primary_text": primary,
         "secondary_text": secondary,
         "show_latest_response": bool(display.get("show_latest_response")),
     }

@@ -66,6 +66,13 @@ def _selected(primitive: dict[str, Any]) -> bool:
     return bool(primitive.get("selected"))
 
 
+def _should_render_card_surface(primitive: dict[str, Any]) -> bool:
+    if not _selected(primitive):
+        return True
+    display = _mapping(primitive.get("display"))
+    return not bool(display.get("show_latest_response"))
+
+
 def _anchor(primitive: dict[str, Any]) -> str:
     geometry = _mapping(primitive.get("geometry"))
     anchor = _string(geometry.get("anchor"))
@@ -99,7 +106,11 @@ def _visible_primitives(
     selected = [primitive for primitive in primitives if _selected(primitive)]
     inactive = [primitive for primitive in primitives if not _selected(primitive)]
     inactive.sort(key=_priority)
-    selected_card = selected[:1]
+    selected_card = [
+        primitive
+        for primitive in selected[:1]
+        if _should_render_card_surface(primitive)
+    ]
     inactive_limit = max(0, max_count - len(selected_card))
     return inactive[:inactive_limit] + selected_card
 

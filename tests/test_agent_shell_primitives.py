@@ -75,9 +75,33 @@ def test_selected_working_primitive_hides_latest_response_and_keeps_status_prima
     assert primitive["display"] == {
         "display_state": "selected_working",
         "primary_text": "working lane · Running tests",
-        "secondary_text": "working lane · Running tests",
+        "secondary_text": "",
         "show_latest_response": False,
     }
+
+
+def test_inactive_primitive_does_not_duplicate_compact_status_as_secondary_text():
+    from spoke.agent_shell_primitives import build_agent_shell_primitives
+
+    primitive = build_agent_shell_primitives(
+        [
+            {
+                "thread_id": "codex-thread-1",
+                "provider": "codex",
+                "title": "Yeah, so I mean, I'm actually not convinced",
+                "readiness": "ready",
+                "bearing": "No durable bearing captured yet",
+                "activity_line": "Ready to read",
+                "latest_response": "Hidden inactive response.",
+                "selected": False,
+            }
+        ]
+    )[0]
+
+    assert primitive["display"]["primary_text"] == (
+        "Yeah, so I mean, I'm actually not convinced · Ready to read"
+    )
+    assert primitive["display"]["secondary_text"] == ""
 
 
 def test_inactive_primitives_hide_response_without_provider_specific_special_cases():

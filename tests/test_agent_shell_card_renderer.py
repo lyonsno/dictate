@@ -69,12 +69,42 @@ def test_card_renderer_consumes_primitives_without_reinterpreting_display_contra
         "text": "latest response codex-selected",
     }
     assert [surface["primitive_id"] for surface in payload["cards"]] == [
-        "codex-selected",
+        "codex-inactive-1",
     ]
-    selected = payload["cards"][-1]
-    assert selected["selected"] is True
-    assert selected["readiness"] == "working"
-    assert selected["material"]["prominence"] == "selected"
+    inactive = payload["cards"][-1]
+    assert inactive["selected"] is False
+    assert inactive["readiness"] == "ready"
+
+
+def test_selected_resting_response_stays_in_main_transcript_not_duplicate_card():
+    from spoke.agent_shell_card_renderer import build_agent_shell_card_render_payload
+
+    payload = build_agent_shell_card_render_payload(
+        [
+            _primitive(
+                "codex-inactive",
+                priority=5,
+                primary_text="Codex idle lane · Ready to read",
+                secondary_text="",
+            ),
+            _primitive(
+                "codex-selected",
+                selected=True,
+                show_latest_response=True,
+                primary_text="The selected thread response is already in the transcript.",
+                secondary_text="selected resting · Ready",
+            ),
+        ],
+        content_width_points=720.0,
+        content_height_points=260.0,
+    )
+
+    assert payload["main_transcript"] == {
+        "primitive_id": "codex-selected",
+        "show_latest_response": True,
+        "text": "latest response codex-selected",
+    }
+    assert [card["primitive_id"] for card in payload["cards"]] == ["codex-inactive"]
 
 
 def test_card_renderer_places_sibling_surfaces_inside_visible_content_bounds():
@@ -190,24 +220,21 @@ def test_card_renderer_builds_optical_field_requests_from_rendered_cards():
     assert optical["surface_kind"] == "agent_shell_card_optical_fields"
     requests = optical["requests"]
     assert [request["caller_id"] for request in requests] == [
-        "agent.card.codex-selected",
+        "agent.card.codex-inactive",
     ]
-    (selected,) = requests
-    assert selected["profile"] == "agent_card"
-    assert selected["role"] == "agent_card"
-    assert selected["presentation_layer"] == "agent_card"
-    assert selected["layout_recipe"] == "agent-thread-card"
-    assert selected["visibility_scope"] == "independent"
-    assert selected["z_index"] >= 200
-    assert selected["disturbances"][0]["kind"] == "readiness_pulse"
-    assert selected["compiled_shell_config"]["optical_field"]["bounds"] == selected["bounds"]
-    assert selected["compiled_shell_config"]["optical_field"]["content_frame"] == selected["bounds"]
-    assert selected["compiled_shell_config"]["presentation_layer"] == "agent_card"
-    assert selected["compiled_shell_config"]["visibility_scope"] == "independent"
-    assert selected["compiled_shell_config"]["gpu_material_enabled"] == 1.0
-    assert selected["compiled_shell_config"]["optical_field"]["disturbances"] == (
-        "readiness.codex-selected",
-    )
+    (inactive,) = requests
+    assert inactive["profile"] == "agent_card"
+    assert inactive["role"] == "agent_card"
+    assert inactive["presentation_layer"] == "agent_card"
+    assert inactive["layout_recipe"] == "agent-thread-card"
+    assert inactive["visibility_scope"] == "independent"
+    assert inactive["z_index"] < 200
+    assert inactive["disturbances"] == []
+    assert inactive["compiled_shell_config"]["optical_field"]["bounds"] == inactive["bounds"]
+    assert inactive["compiled_shell_config"]["optical_field"]["content_frame"] == inactive["bounds"]
+    assert inactive["compiled_shell_config"]["presentation_layer"] == "agent_card"
+    assert inactive["compiled_shell_config"]["visibility_scope"] == "independent"
+    assert inactive["compiled_shell_config"]["gpu_material_enabled"] == 1.0
 
 
 def test_placeholder_cards_are_smoke_readable_and_carry_text_payloads():
@@ -235,15 +262,11 @@ def test_placeholder_cards_are_smoke_readable_and_carry_text_payloads():
         content_height_points=260.0,
     )
 
-    inactive, selected = payload["cards"]
+    (inactive,) = payload["cards"]
     assert inactive["frame"]["width"] >= 300.0
     assert inactive["frame"]["height"] >= 72.0
-    assert selected["frame"]["width"] >= 420.0
-    assert selected["frame"]["height"] >= 120.0
 
     optical = build_agent_shell_card_optical_field_payload(payload)
-    inactive_request, selected_request = optical["requests"]
+    (inactive_request,) = optical["requests"]
     assert inactive_request["text"]["primary"] == inactive["primary_text"]
     assert inactive_request["text"]["secondary"] == inactive["secondary_text"]
-    assert selected_request["text"]["primary"] == selected["primary_text"]
-    assert selected_request["text"]["secondary"] == selected["secondary_text"]
