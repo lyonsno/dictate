@@ -3239,7 +3239,7 @@ class CommandOverlay(NSObject):
                     )
                     # Cache font allocation once per tick, not per character.
                     light_font = NSFont.systemFontOfSize_weight_(
-                        _FONT_SIZE, -0.2  # medium-light weight — thicker punch-through
+                        _FONT_SIZE, 0.0  # regular weight — matches _make_response_fragment
                     )
                     try:
                         # Bulk span path: 3 coarse spans (edge, center, edge)
@@ -4018,15 +4018,20 @@ class CommandOverlay(NSObject):
         except Exception:
             return
         visible_h = max(h * hf, 0.0)
+        # Width also narrows, but less aggressively — use sqrt so it
+        # converges to a point, not a horizontal line.
+        wf = _clamp01(hf ** 0.5)
+        visible_w = max(w * wf, 0.0)
+        x_offset = (w - visible_w) * 0.5
         y_offset = (h - visible_h) * 0.5
-        corner_r = min(12.0, visible_h * 0.5, w * 0.5)
+        corner_r = min(12.0, visible_h * 0.5, visible_w * 0.5)
         mask = getattr(self, "_scroll_materialization_mask", None)
         if mask is None:
             mask = CAShapeLayer.alloc().init()
             self._scroll_materialization_mask = mask
         try:
             path = CGPathCreateWithRoundedRect(
-                ((0, y_offset), (w, visible_h)), corner_r, corner_r, None
+                ((x_offset, y_offset), (visible_w, visible_h)), corner_r, corner_r, None
             )
             transaction = CATransaction
             if transaction is not None:
