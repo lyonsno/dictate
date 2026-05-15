@@ -2270,7 +2270,7 @@ class CommandOverlay(NSObject):
                 NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
             )
             self._scroll_view.setFrame_(
-                NSMakeRect(32, 10, _OVERLAY_WIDTH - 64, _OVERLAY_HEIGHT - 20)
+                NSMakeRect(24, 6, _OVERLAY_WIDTH - 48, _OVERLAY_HEIGHT - 12)
             )
             self._reset_text_geometry(self._scroll_view.frame().size.height)
             if not has_initial_transcript:
@@ -3622,8 +3622,14 @@ class CommandOverlay(NSObject):
             1.0 / _DISMISS_ANIM_FPS, self, "_entrancePopStep:", None, True
         )
 
-        # Fade in. Pulse remains deferred until fade completion so it cannot
-        # compete with first paint.
+        # Apply one pulse tick immediately so text styling (shadows, chroma)
+        # matches the settled appearance from the first visible frame.
+        try:
+            self._pulseStepInner(0.5)
+        except Exception:
+            pass
+
+        # Fade in.
         self._fade_step = 0
         self._fade_from = 0.0
         self._fade_direction = 1
