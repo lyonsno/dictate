@@ -11,9 +11,11 @@ type's action vocabulary.
 
 from __future__ import annotations
 
+import threading
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from uuid import uuid4
 
 
@@ -413,3 +415,80 @@ def text_surface_from_str(text: str, *, owner: str = "user") -> SurfaceEntry:
         payload={"text": text, "owner": owner},
         acknowledged=(owner != "assistant"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Message bus: async delivery of surfaces into the stack
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SurfaceMessage:
+    """A message delivering a surface into the stack from an async source."""
+
+    entry: SurfaceEntry
+    source: str = ""  # identifier for the producer (e.g. "agent_shell", "zetesis")
+    activate: bool = False  # whether to activate/show the stack on delivery
+    position: str = "top"  # "top" or "priority"
+
+
+class SurfaceMessageBus:
+    """Thread-safe message bus for async surface delivery into a CoordinationStack.
+
+    Producers post SurfaceMessages from any thread. The main thread drains
+    pending messages into the stack on its event loop (or via explicit drain).
+
+    Usage:
+        bus = SurfaceMessageBus(stack)
+        # From background thread:
+        bus.post(SurfaceMessage(entry=my_surface, source="zetesis"))
+        # From main thread event loop:
+        delivered = bus.drain()
+    """
+
+    def __init__(
+        self,
+        stack: CoordinationStack,
+        *,
+        on_delivery: Callable[[SurfaceEntry], None] | None = None,
+    ) -> None:
+        self._stack = stack
+        self._queue: deque[SurfaceMessage] = deque()
+        self._lock = threading.Lock()
+        self._on_delivery = on_delivery
+
+    def post(self, message: SurfaceMessage) -> None:
+        """Post a surface message from any thread. Thread-safe."""
+        with self._lock:
+            self._queue.append(message)
+
+    @property
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._queue)
+
+    def drain(self) -> list[SurfaceEntry]:
+        """Drain all pending messages into the stack. Call from main thread.
+
+        Returns the list of entries that were delivered.
+        """
+        with self._lock:
+            messages = list(self._queue)
+            self._queue.clear()
+
+        delivered: list[SurfaceEntry] = []
+        for msg in messages:
+            if msg.position == "priority":
+                self._stack.push_by_priority(msg.entry)
+            else:
+                self._stack.push(msg.entry, to_top=True)
+
+            if msg.activate:
+                self._stack.activate()
+
+            delivered.append(msg.entry)
+
+            if self._on_delivery:
+                self._on_delivery(msg.entry)
+
+        return delivered

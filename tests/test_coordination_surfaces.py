@@ -5,12 +5,16 @@ rocks through using shift+space. Each surface type has its own action
 vocabulary and compact/expanded renderers.
 """
 
+import threading
+
 from spoke.coordination_surfaces import (
     CoordinationStack,
     SurfaceAction,
     SurfaceEntry,
     SurfaceIdentity,
     SurfaceKind,
+    SurfaceMessage,
+    SurfaceMessageBus,
     SurfaceRenderer,
     SurfaceTypeRegistration,
     SurfaceTypeRegistry,
@@ -445,3 +449,78 @@ class TestRendererIntegration:
         stack.push(e)
         assert stack.compact_summary(e) == "Fallback Lane"
         assert stack.expanded_view(e) == "Fallback Lane"
+
+
+class TestSurfaceMessageBus:
+    def test_post_and_drain(self):
+        stack = CoordinationStack()
+        bus = SurfaceMessageBus(stack)
+        entry = _agent_entry("s1")
+        bus.post(SurfaceMessage(entry=entry, source="test"))
+        assert bus.pending_count == 1
+        delivered = bus.drain()
+        assert len(delivered) == 1
+        assert delivered[0] is entry
+        assert stack.size == 1
+        assert bus.pending_count == 0
+
+    def test_drain_empty(self):
+        stack = CoordinationStack()
+        bus = SurfaceMessageBus(stack)
+        assert bus.drain() == []
+
+    def test_activate_on_delivery(self):
+        stack = CoordinationStack()
+        bus = SurfaceMessageBus(stack)
+        bus.post(SurfaceMessage(entry=_finding_entry("f1"), activate=True))
+        bus.drain()
+        assert stack.active is True
+
+    def test_priority_insertion(self):
+        stack = CoordinationStack()
+        bus = SurfaceMessageBus(stack)
+        # Pre-populate stack
+        low = _agent_entry("low")
+        low.priority = 10
+        stack.push(low)
+
+        high = _finding_entry("high")
+        high.priority = 1
+        bus.post(SurfaceMessage(entry=high, position="priority"))
+        bus.drain()
+
+        # High priority should be before low
+        assert stack.entries[0].surface_id == "high"
+        assert stack.entries[1].surface_id == "low"
+
+    def test_on_delivery_callback(self):
+        stack = CoordinationStack()
+        delivered_entries = []
+        bus = SurfaceMessageBus(stack, on_delivery=delivered_entries.append)
+        entry = _agent_entry("s1")
+        bus.post(SurfaceMessage(entry=entry))
+        bus.drain()
+        assert delivered_entries == [entry]
+
+    def test_thread_safety(self):
+        """Multiple threads posting concurrently should not lose messages."""
+        stack = CoordinationStack()
+        bus = SurfaceMessageBus(stack)
+        n_threads = 10
+        n_per_thread = 50
+
+        def _poster(thread_id):
+            for i in range(n_per_thread):
+                entry = _agent_entry(f"t{thread_id}-{i}")
+                bus.post(SurfaceMessage(entry=entry, source=f"thread-{thread_id}"))
+
+        threads = [threading.Thread(target=_poster, args=(t,)) for t in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert bus.pending_count == n_threads * n_per_thread
+        delivered = bus.drain()
+        assert len(delivered) == n_threads * n_per_thread
+        assert stack.size == n_threads * n_per_thread
