@@ -4153,10 +4153,24 @@ class CommandOverlay(NSObject):
                 comp_frame_gen = getattr(comp_inner, "_latest_frame_generation", 0)
             if comp_window is not None and hasattr(comp_window, "orderFrontRegardless"):
                 comp_window.orderFrontRegardless()
+        comp_window_visible = False
+        comp_window_alpha = 0.0
+        comp_window_frame = None
+        if comp_window is not None:
+            try:
+                comp_window_visible = bool(comp_window.isVisible())
+                comp_window_alpha = float(comp_window.alphaValue())
+                f = comp_window.frame()
+                comp_window_frame = f"{f.size.width:.0f}x{f.size.height:.0f}"
+            except Exception:
+                pass
         record_command_overlay_trace(
             "overlay.enforce_window_order",
             has_compositor=compositor is not None,
             comp_window_exists=comp_window is not None,
+            comp_window_visible=comp_window_visible,
+            comp_window_alpha=comp_window_alpha,
+            comp_window_frame=comp_window_frame,
             comp_running=comp_running,
             comp_presented=comp_presented,
             comp_capture_frames=comp_capture_frames,
