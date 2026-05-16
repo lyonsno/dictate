@@ -80,7 +80,7 @@ _APPROVAL_HEADER_TEXT = "Approval needed"
 _APPROVAL_ACTION_TEXT = "Enter to run  ·  Delete to cancel  ·  speak or type to revise"
 # Branch-local smoke aid: keep every command-overlay materialization/dismiss
 # timeline coupled while tuning toward the final pressure-slit cadence.
-_PRESSURE_SLIT_SMOKE_TIME_SCALE = 2.0 / 3.0
+_PRESSURE_SLIT_SMOKE_TIME_SCALE = 1.0 / 3.0
 _FADE_IN_S = 0.16 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
 _ENTRANCE_POP_SCALE = 1.015  # ~1mm overshoot on a 600px overlay
 _ENTRANCE_POP_S = 0.15 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
@@ -189,7 +189,7 @@ _OPTICAL_ENTRANCE_HARD_DEADLINE_S = max(
     _OPTICAL_ENTRANCE_READY_TIMEOUT_S * 2,
     _env(
         "SPOKE_COMMAND_OPTICAL_ENTRANCE_HARD_DEADLINE_S",
-        0.5,
+        0.25,
     ),
 )
 _FADE_OUT_S = 0.5 * _PRESSURE_SLIT_SMOKE_TIME_SCALE
@@ -385,17 +385,17 @@ _RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
 _EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
 
 # Adaptive compositing for command output.
-_USER_TEXT_COLOR_DARK = (0.16, 0.17, 0.20)
-_USER_TEXT_COLOR_LIGHT = (0.95, 0.97, 1.0)
-_ASSISTANT_TEXT_COLOR_DARK = (0.12, 0.13, 0.16)
-_ASSISTANT_TEXT_COLOR_LIGHT = (0.95, 0.97, 1.0)
+_USER_TEXT_COLOR_DARK = (0.92, 0.94, 0.97)
+_USER_TEXT_COLOR_LIGHT = (0.10, 0.11, 0.14)
+_ASSISTANT_TEXT_COLOR_DARK = (0.92, 0.94, 0.97)
+_ASSISTANT_TEXT_COLOR_LIGHT = (0.10, 0.11, 0.14)
 _ASSISTANT_BLUR_RADIUS = _env("SPOKE_COMMAND_ASSISTANT_BLUR_RADIUS", 8.0)
 _COMMAND_RESPONSE_ANIMATION_CHAR_LIMIT = max(
     1,
     int(round(_env("SPOKE_COMMAND_RESPONSE_ANIMATION_CHAR_LIMIT", 700.0))),
 )
-_THINKING_CUTOUT_DARK = (0.05, 0.05, 0.06)
-_THINKING_CUTOUT_LIGHT = (0.80, 0.80, 0.78)
+_THINKING_CUTOUT_DARK = (0.80, 0.80, 0.78)
+_THINKING_CUTOUT_LIGHT = (0.05, 0.05, 0.06)
 
 
 def _backdrop_display_layer_class():
@@ -2216,7 +2216,8 @@ class CommandOverlay(NSObject):
         )
         self._cancel_all_timers()
         self._reset_fill_generation_latches_for_show()
-        if getattr(self, "_fullscreen_compositor", None) is not None:
+        had_compositor = getattr(self, "_fullscreen_compositor", None) is not None
+        if had_compositor:
             self._stop_fullscreen_compositor(reveal_local_shell=False)
         self._visible = True
         self._streaming = True
@@ -2269,7 +2270,7 @@ class CommandOverlay(NSObject):
                 NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
             )
             self._scroll_view.setFrame_(
-                NSMakeRect(48, 16, _OVERLAY_WIDTH - 96, _OVERLAY_HEIGHT - 32)
+                NSMakeRect(24, 6, _OVERLAY_WIDTH - 48, _OVERLAY_HEIGHT - 12)
             )
             self._reset_text_geometry(self._scroll_view.frame().size.height)
             if not has_initial_transcript:
@@ -2285,16 +2286,6 @@ class CommandOverlay(NSObject):
             self._update_backdrop_capture_geometry()
             self._apply_backdrop_pulse_style(1.0)
             self._reset_backdrop_layer()
-            if (
-                known_content_optical_start
-                and self._scroll_view is not None
-            ):
-                # Initial text should not expose the ordinary attributed-text
-                # layer before the compositor switches to punch-through text.
-                # The fallback path unhides it again if the compositor is
-                # unavailable.
-                self._scroll_view.setHidden_(True)
-
             if initial_response:
                 self._utterance_text = initial_utterance
                 self.set_response_text(initial_response)
@@ -2319,7 +2310,8 @@ class CommandOverlay(NSObject):
             else:
                 self._refresh_punchthrough_mask_if_needed()
         if not optical_shell_start:
-            self._thaw_local_shell_layers()
+            if had_compositor:
+                self._thaw_local_shell_layers()
             self._refresh_backdrop_snapshot()
         self._start_brightness_sampling()
 
@@ -2408,6 +2400,8 @@ class CommandOverlay(NSObject):
 
     def _entrancePopStep_(self, timer) -> None:
         """Ease the entrance pop back to scale 1.0."""
+        if getattr(self, "_pop_timer", None) is not timer:
+            return
         self._pop_step += 1
         t = self._pop_step / self._pop_steps
         eased = t * t * (3.0 - 2.0 * t)  # smoothstep
@@ -2453,6 +2447,8 @@ class CommandOverlay(NSObject):
 
     def _cancelAnimStep_(self, timer) -> None:
         """Animate the dismiss sequence: grow for 60ms, then shrink and fade."""
+        if getattr(self, "_cancel_timer_anim", None) is not timer:
+            return
         self._cancel_elapsed += 1.0 / _DISMISS_ANIM_FPS
         phase, scale, alpha, done = _dismiss_animation_state(self._cancel_elapsed)
         self._cancel_phase = phase
@@ -2941,6 +2937,8 @@ class CommandOverlay(NSObject):
         During fade-out, the utterance text fades at double rate so it
         disappears before the assistant response.
         """
+        if getattr(self, "_fade_timer", None) is not timer:
+            return
         self._fade_step += 1
         progress = self._fade_step / _FADE_STEPS
 
@@ -2995,13 +2993,9 @@ class CommandOverlay(NSObject):
                 self._window.setAlphaValue_(1.0)
 
     def pulseStep_(self, timer) -> None:
-        """Dual-phase pulse: user and assistant text breathe independently.
-
-        Assistant text: faster period (0.8x base), double-smoothstep for
-        extra-aggressive easing, violet-amber color oscillation.
-        User text: slower period (1.5x base), single smoothstep, blue
-        color shift, phase-offset by 0.3 and diverging naturally.
-        """
+        """Dual-phase pulse: user and assistant text breathe independently."""
+        if getattr(self, "_pulse_timer", None) is not timer:
+            return
         try:
             self._pulseStepInner()
         except Exception:
@@ -3247,7 +3241,7 @@ class CommandOverlay(NSObject):
                     )
                     # Cache font allocation once per tick, not per character.
                     light_font = NSFont.systemFontOfSize_weight_(
-                        _FONT_SIZE, -0.2  # medium-light weight — thicker punch-through
+                        _FONT_SIZE, 0.0  # regular weight — matches _make_response_fragment
                     )
                     try:
                         # Bulk span path: 3 coarse spans (edge, center, edge)
@@ -3534,6 +3528,8 @@ class CommandOverlay(NSObject):
         self._stop_dismiss_seam_compositor()
         if not preserve_radial_pucker:
             self._stop_dismiss_radial_pucker_compositor()
+        # Remove text clipping mask when materialization ends
+        self._update_scroll_materialization_mask(1.0)
 
     def _cancel_dismiss_pucker_tail_animation(
         self,
@@ -3628,8 +3624,14 @@ class CommandOverlay(NSObject):
             1.0 / _DISMISS_ANIM_FPS, self, "_entrancePopStep:", None, True
         )
 
-        # Fade in. Pulse remains deferred until fade completion so it cannot
-        # compete with first paint.
+        # Apply one pulse tick immediately so text styling (shadows, chroma)
+        # matches the settled appearance from the first visible frame.
+        try:
+            self._pulseStepInner(0.5)
+        except Exception:
+            pass
+
+        # Fade in.
         self._fade_step = 0
         self._fade_from = 0.0
         self._fade_direction = 1
@@ -3689,8 +3691,15 @@ class CommandOverlay(NSObject):
         )
         raw = _clamp01(elapsed / duration)
         progress = raw if getattr(self, "_materialization_direction", 1) > 0 else 1.0 - raw
+        prev_progress = getattr(self, "_materialization_progress", 0.0)
         self._materialization_progress = progress
         self._apply_materialization_fill_state(progress)
+        if (
+            getattr(self, "_materialization_direction", 1) > 0
+            and prev_progress < _OPTICAL_MATERIALIZATION_BODY_READY
+            and progress >= _OPTICAL_MATERIALIZATION_BODY_READY
+        ):
+            self._check_optical_entrance_readiness()
         try:
             shell_config = _materialized_optical_shell_config(final_config, progress)
             compositor_updates: list[tuple[object, dict]] = []
@@ -3992,6 +4001,70 @@ class CommandOverlay(NSObject):
                     getattr(self, layer_name, None),
                     0.0,
                 )
+        # Clip text to the slit opening so it appears revealed/covered by the warp
+        direction = getattr(self, "_materialization_direction", 1)
+        self._update_scroll_materialization_mask(state["height_frac"], direction=direction)
+
+    def _update_scroll_materialization_mask(self, height_frac: float, *, direction: int = 1) -> None:
+        """Clip the scroll view to the materialization slit geometry."""
+        scroll = getattr(self, "_scroll_view", None)
+        if scroll is None or not hasattr(scroll, "layer"):
+            return
+        layer = scroll.layer() if callable(getattr(scroll, "layer", None)) else getattr(scroll, "layer", None)
+        if layer is None:
+            return
+        hf = _clamp01(height_frac)
+        if hf >= 0.99:
+            # Fully open — remove mask and restore full alpha
+            if hasattr(layer, "setMask_"):
+                layer.setMask_(None)
+            if hasattr(scroll, "setAlphaValue_"):
+                scroll.setAlphaValue_(1.0)
+            self._scroll_materialization_mask = None
+            return
+        try:
+            frame = scroll.frame()
+            w = float(frame.size.width)
+            h = float(frame.size.height)
+        except Exception:
+            return
+        if direction >= 0:
+            # Entrance: start full width, thin horizontal slit, expand vertically.
+            # Width is always full. Height ramps with height_frac.
+            visible_w = w
+            visible_h = max(h * hf, 0.0)
+            x_offset = 0.0
+            # Also fade the scroll view in quickly during the initial squeeze
+            if hasattr(scroll, "setAlphaValue_"):
+                alpha = min(hf * 5.0, 1.0)  # fade in over first 20% of height_frac
+                scroll.setAlphaValue_(alpha)
+        else:
+            # Dismiss: collapse both axes, width slower via sqrt
+            wf = _clamp01(hf ** 0.5)
+            visible_w = max(w * wf, 0.0)
+            visible_h = max(h * hf, 0.0)
+            x_offset = (w - visible_w) * 0.5
+        y_offset = (h - visible_h) * 0.5
+        corner_r = min(12.0, visible_h * 0.5, visible_w * 0.5)
+        mask = getattr(self, "_scroll_materialization_mask", None)
+        if mask is None:
+            mask = CAShapeLayer.alloc().init()
+            self._scroll_materialization_mask = mask
+        try:
+            path = CGPathCreateWithRoundedRect(
+                ((x_offset, y_offset), (visible_w, visible_h)), corner_r, corner_r, None
+            )
+            transaction = CATransaction
+            if transaction is not None:
+                transaction.begin()
+                transaction.setDisableActions_(True)
+            mask.setPath_(path)
+            if hasattr(layer, "setMask_"):
+                layer.setMask_(mask)
+            if transaction is not None:
+                transaction.commit()
+        except Exception:
+            logger.debug("Failed to update scroll materialization mask", exc_info=True)
 
     def _schedule_visual_start(self) -> None:
         """Defer compositor startup so first paint and text do not block."""
@@ -4019,9 +4092,16 @@ class CommandOverlay(NSObject):
             self._start_backdrop_refresh_timer()
 
     def _schedule_visual_ready_start(self) -> None:
-        """Hold alpha-zero entrance until the optical compositor is coherent."""
+        """Hold alpha-zero entrance until the optical compositor is coherent.
+
+        Uses push-based readiness: the compositor, fill pipeline, and
+        materialization timer each call _check_optical_entrance_readiness()
+        when their condition becomes true.  A hard-deadline safety timer
+        forces the entrance if all three haven't arrived in time.
+        """
         self._cancel_visual_ready_start()
         self._visual_ready_brightness_synced = False
+        self._entrance_started = False
         if self._optical_compositor_has_presented():
             self._sync_optical_compositor_brightness(
                 hide_stale_fill=True,
@@ -4029,58 +4109,169 @@ class CommandOverlay(NSObject):
             )
             self._visual_ready_brightness_synced = True
             if self._optical_entrance_ready():
+                self._entrance_started = True
                 self._start_entrance_animation()
                 return
+        else:
+            compositor = getattr(self, "_fullscreen_compositor", None)
+            if compositor is not None and hasattr(compositor, "set_on_first_present"):
+                def _on_first_present():
+                    _post_overlay_result_to_main(
+                        self, "compositorDidPresent:", {}
+                    )
+                compositor.set_on_first_present(_on_first_present)
+                if self._optical_compositor_has_presented():
+                    self.compositorDidPresent_({})
+                    if getattr(self, "_entrance_started", False):
+                        return
         self._visual_ready_wait_started_at = time.perf_counter()
         self._visual_ready_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            _OPTICAL_ENTRANCE_READY_POLL_S,
+            _OPTICAL_ENTRANCE_HARD_DEADLINE_S,
             self,
-            "visualReadyStep:",
+            "visualReadyDeadline:",
             None,
-            True,
+            False,
         )
         _pin_timer_to_active_run_loop_modes(self._visual_ready_timer)
 
-    def visualReadyStep_(self, timer) -> None:
-        if getattr(self, "_visual_ready_timer", None) is not timer:
+    def _enforce_compositor_window_order(self) -> None:
+        """Ensure compositor window is visible and overlay is on top of it."""
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        comp_window = None
+        comp_running = False
+        comp_presented = 0
+        comp_capture_frames = 0
+        comp_frame_gen = 0
+        if compositor is not None:
+            host = getattr(compositor, "_host", None)
+            comp_inner = getattr(host, "_compositor", None) if host else None
+            if comp_inner is not None:
+                comp_window = getattr(comp_inner, "_window", None)
+                comp_running = getattr(comp_inner, "_running", False)
+                comp_presented = getattr(comp_inner, "_presented_count", 0)
+                comp_capture_frames = getattr(comp_inner, "_capture_frame_count", 0)
+                comp_frame_gen = getattr(comp_inner, "_latest_frame_generation", 0)
+            if comp_window is not None and hasattr(comp_window, "orderFrontRegardless"):
+                comp_window.orderFrontRegardless()
+        comp_window_visible = False
+        comp_window_alpha = 0.0
+        comp_window_frame = None
+        comp_shell_config = None
+        if comp_inner is not None:
+            configs = getattr(comp_inner, "_shell_configs", None)
+            if configs and isinstance(configs, list) and len(configs) > 0:
+                c = configs[0]
+                try:
+                    comp_shell_config = f"cx={c.get('center_x',0):.0f},cy={c.get('center_y',0):.0f},w={c.get('content_width_points',0):.0f},h={c.get('content_height_points',0):.0f},mag={c.get('core_magnification',0):.1f}"
+                except (TypeError, AttributeError):
+                    pass
+        if comp_window is not None:
+            try:
+                comp_window_visible = bool(comp_window.isVisible())
+                comp_window_alpha = float(comp_window.alphaValue())
+                f = comp_window.frame()
+                comp_window_frame = f"{f.size.width:.0f}x{f.size.height:.0f}"
+            except Exception:
+                pass
+        record_command_overlay_trace(
+            "overlay.enforce_window_order",
+            has_compositor=compositor is not None,
+            comp_window_exists=comp_window is not None,
+            comp_window_visible=comp_window_visible,
+            comp_window_alpha=comp_window_alpha,
+            comp_window_frame=comp_window_frame,
+            comp_running=comp_running,
+            comp_presented=comp_presented,
+            comp_capture_frames=comp_capture_frames,
+            comp_frame_gen=comp_frame_gen,
+            overlay_window=self._window is not None,
+            comp_shell_config=comp_shell_config,
+        )
+        if self._window is not None:
+            self._window.orderFrontRegardless()
+
+    def compositorDidPresent_(self, payload) -> None:
+        """Called on main thread when the compositor presents its first frame."""
+        self._enforce_compositor_window_order()
+        if getattr(self, "_entrance_started", False):
             return
         if not getattr(self, "_visible", False):
-            self._cancel_visual_ready_start()
             return
-        elapsed = time.perf_counter() - getattr(
-            self,
-            "_visual_ready_wait_started_at",
-            time.perf_counter(),
-        )
-        compositor_ready = self._optical_compositor_has_presented()
-        if compositor_ready and not getattr(self, "_visual_ready_brightness_synced", False):
+        if not getattr(self, "_visual_ready_brightness_synced", False):
             self._sync_optical_compositor_brightness(
                 hide_stale_fill=True,
                 refresh_fill=True,
             )
             self._visual_ready_brightness_synced = True
-        if not compositor_ready and elapsed < _OPTICAL_ENTRANCE_READY_TIMEOUT_S:
+        self._check_optical_entrance_readiness()
+
+    def _check_optical_entrance_readiness(self) -> None:
+        """Check all three readiness conditions; start entrance if met."""
+        if getattr(self, "_entrance_started", False):
             return
-        if self._optical_entrance_ready():
-            self._cancel_visual_ready_start()
-            self._start_entrance_animation()
+        if not getattr(self, "_visible", False):
             return
-        if elapsed >= _OPTICAL_ENTRANCE_HARD_DEADLINE_S:
-            record_command_overlay_trace(
-                "overlay.visual_ready.hard_deadline",
-                elapsed=elapsed,
-                compositor_ready=compositor_ready,
-                fill_ready=self._optical_fill_ready(),
-                materialization_progress=getattr(
-                    self, "_materialization_progress", None
-                ),
+        if not self._optical_entrance_ready():
+            return
+        if not getattr(self, "_visual_ready_brightness_synced", False):
+            self._sync_optical_compositor_brightness(
+                hide_stale_fill=True,
+                refresh_fill=True,
             )
+            self._visual_ready_brightness_synced = True
+        self._entrance_started = True
+        self._cancel_visual_ready_start()
+        record_command_overlay_trace(
+            "overlay.visual_ready.push",
+            elapsed=time.perf_counter() - getattr(
+                self, "_visual_ready_wait_started_at", time.perf_counter()
+            ),
+            fill_ready=self._optical_fill_ready(),
+            materialization_progress=getattr(
+                self, "_materialization_progress", None
+            ),
+        )
+        self._start_entrance_animation()
+
+    def visualReadyDeadline_(self, timer) -> None:
+        """Hard deadline — force entrance if push notifications didn't arrive."""
+        if getattr(self, "_entrance_started", False):
+            return
+        if getattr(self, "_visual_ready_timer", None) is not timer:
+            return
+        if not getattr(self, "_visible", False):
             self._cancel_visual_ready_start()
-            if not compositor_ready:
-                self._stop_fullscreen_compositor()
-                self._thaw_local_shell_layers()
-                self._start_backdrop_refresh_timer()
-            self._start_entrance_animation()
+            return
+        compositor_ready = self._optical_compositor_has_presented()
+        elapsed = time.perf_counter() - getattr(
+            self,
+            "_visual_ready_wait_started_at",
+            time.perf_counter(),
+        )
+        record_command_overlay_trace(
+            "overlay.visual_ready.hard_deadline",
+            elapsed=elapsed,
+            compositor_ready=compositor_ready,
+            fill_ready=self._optical_fill_ready(),
+            materialization_progress=getattr(
+                self, "_materialization_progress", None
+            ),
+        )
+        self._entrance_started = True
+        self._cancel_visual_ready_start()
+        if not compositor_ready:
+            self._stop_fullscreen_compositor()
+            self._thaw_local_shell_layers()
+            self._start_backdrop_refresh_timer()
+        else:
+            if not getattr(self, "_visual_ready_brightness_synced", False):
+                self._sync_optical_compositor_brightness(
+                    hide_stale_fill=True,
+                    refresh_fill=True,
+                )
+            # Ensure compositor window is visible and overlay is on top
+            self._enforce_compositor_window_order()
+        self._start_entrance_animation()
 
     def _optical_entrance_ready(self) -> bool:
         return (
@@ -4118,7 +4309,8 @@ class CommandOverlay(NSObject):
         ):
             fill_layer = getattr(self, "_fill_layer", None)
             if fill_layer is not None and hasattr(fill_layer, "setHidden_"):
-                fill_layer.setHidden_(False)
+                if getattr(self, "_fullscreen_compositor", None) is None:
+                    fill_layer.setHidden_(False)
             self._fill_hidden_until_signature = None
             record_command_overlay_trace(
                 "overlay.fill_ready.recovered_hidden_latch",
@@ -4364,7 +4556,11 @@ class CommandOverlay(NSObject):
             return
         fill_layer = getattr(self, "_fill_layer", None)
         if fill_layer is not None and hasattr(fill_layer, "setHidden_"):
-            fill_layer.setHidden_(False)
+            # Only unhide the fill layer if the compositor is not rendering.
+            # When the compositor is active, the fill layer stays hidden to
+            # prevent the rectangular AppKit layer from flashing through.
+            if getattr(self, "_fullscreen_compositor", None) is None:
+                fill_layer.setHidden_(False)
         self._fill_hidden_until_signature = None
         self._start_deferred_materialization_if_ready()
 
@@ -4662,6 +4858,8 @@ class CommandOverlay(NSObject):
             self._queued_fill_request = None
             self._apply_ridge_masks(*queued)
 
+        self._check_optical_entrance_readiness()
+
     def _update_backdrop_capture_geometry(self):
         if self._window is None or self._content_view is None or self._screen is None:
             return None
@@ -4906,7 +5104,10 @@ class CommandOverlay(NSObject):
                     except Exception:
                         pass
                     self._metal_display_link_renderer = None
-                self._enable_text_punchthrough(True)
+                # Fill layer is hidden during compositor mode, so punch-through
+                # text (which renders via the fill mask) would be invisible.
+                # Keep the live NSTextView visible for direct text rendering.
+                self._enable_text_punchthrough(False)
                 # Force one compositor-owned fill image rebuild with the
                 # current geometry. Brightness-only updates skip this path
                 # while the compositor owns live optical sampling.
@@ -5160,8 +5361,7 @@ class CommandOverlay(NSObject):
         for layer_name in ("_fill_layer", "_boost_layer", "_spring_tint_layer"):
             layer = getattr(self, layer_name, None)
             self._set_layer_opacity_without_actions(layer, 0.0)
-            if layer_name != "_fill_layer":
-                self._set_layer_hidden_without_actions(layer, True)
+            self._set_layer_hidden_without_actions(layer, True)
         scroll = getattr(self, "_scroll_view", None)
         if scroll is not None and hasattr(scroll, "setHidden_"):
             try:
@@ -5178,8 +5378,7 @@ class CommandOverlay(NSObject):
         for layer_name in ("_fill_layer", "_boost_layer", "_spring_tint_layer"):
             layer = getattr(self, layer_name, None)
             self._set_layer_opacity_without_actions(layer, 1.0)
-            if layer_name != "_fill_layer":
-                self._set_layer_hidden_without_actions(layer, False)
+            self._set_layer_hidden_without_actions(layer, False)
         scroll = getattr(self, "_scroll_view", None)
         if scroll is not None and hasattr(scroll, "setHidden_"):
             try:

@@ -459,8 +459,23 @@ kernel void opticalShellWarp(
     // The warp shell is inflated by capsuleRadius beyond the fill boundary,
     // so blur should only start ramping once we're past that inflation zone
     // (i.e., inside the visible rounded shell).
-    float pixelsInside = max(-capsuleSdf - capsuleRadius * 0.5f, 0.0f);
-    float baseMipLod = clamp(pixelsInside / 30.0f, 0.0f, 1.0f) * 6.0f;
+    // Three concentric zones follow the capsule SDF (rounded rectangle):
+    //   Outer band (~2mm): intentional gradient from crisp warp to flat interior.
+    //     Mip ramps from 0→max with ease-in/ease-out, and the sampled color
+    //     lerps toward the flat interior average.
+    //   Interior (everything past the band): flat average color from max mip.
+    //
+    // The band width is narrow and the easing makes it read as a designed
+    // material edge rather than an artifact of the blur kernel.
+    // Crisp warp margin: ~1mm of un-blurred warped backdrop inside
+    // the capsule boundary before the mip band begins.
+    float crispMarginPixels = 6.0f;
+    float pixelsInside = max(-capsuleSdf - crispMarginPixels, 0.0f);
+    float bandPixels = max(params.bandWidth * 0.8f, 8.0f);
+    float bandT = clamp(pixelsInside / bandPixels, 0.0f, 1.0f);
+    // Ease-in / ease-out for the band transition
+    float easedT = bandT * bandT * bandT * (bandT * (bandT * 6.0f - 15.0f) + 10.0f);
+
     float warpAliasOctaves = max(
         abs(log2(max(abs(scaleX), 1e-4f))),
         abs(log2(max(abs(scaleY), 1e-4f)))
@@ -470,17 +485,35 @@ kernel void opticalShellWarp(
         0.0f,
         {_WARP_ALIAS_MIP_BIAS_MAX}f
     );
-    float mipLod = clamp(baseMipLod + warpAliasBias, 0.0f, 6.0f)
-        * clamp(params.mipBlurStrength, 0.0f, 1.0f);
+
+    // In the band: mip ramps from 0 (at the edge) toward a medium level.
+    // Past the band: jump to max mip (flat average).
+    float bandMipLod = easedT * 4.0f + warpAliasBias;
+    float maxMipLod = 6.0f;
+    float mipLod = (bandT < 1.0f)
+        ? clamp(bandMipLod, 0.0f, maxMipLod)
+        : maxMipLod;
+    mipLod *= clamp(params.mipBlurStrength, 0.0f, 1.0f);
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
-    float4 warpedColor;
+    float2 normPt = samplePt / float2(params.width, params.height);
+
+    // Sample at the computed mip level
+    float4 bandColor;
     if (mipLod < 0.1f) {{
-        warpedColor = inTexture.sample(bilinearSampler, samplePt);
+        bandColor = inTexture.sample(bilinearSampler, samplePt);
     }} else {{
-        float2 normPt = samplePt / float2(params.width, params.height);
-        warpedColor = inTexture.sample(mipSampler, normPt, level(mipLod));
+        bandColor = inTexture.sample(mipSampler, normPt, level(mipLod));
     }}
+
+    // Sample the flat interior average (max mip — one cached texel)
+    float4 flatColor = inTexture.sample(mipSampler, normPt, level(maxMipLod));
+
+    // In the band, lerp from the mipped sample toward the flat average.
+    // At the outer edge (easedT=0): pure crisp warped sample.
+    // At the inner edge (easedT=1): pure flat average.
+    // Past the band: flat average only.
+    float4 warpedColor = mix(bandColor, flatColor, easedT);
 
     // Temporal accumulation: EMA blend tied to blur depth.
     // High mip LOD (deep interior) = heavy temporal smoothing.

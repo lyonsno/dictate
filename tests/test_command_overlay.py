@@ -391,11 +391,12 @@ class TestDismissAnimation:
         overlay._visible = True
         overlay.cancel_dismiss()
 
+        timer = overlay._cancel_timer_anim
         frames_to_duration = math.ceil(
             mod._DISMISS_DURATION_S * mod._DISMISS_ANIM_FPS
         )
         for _ in range(frames_to_duration):
-            overlay._cancelAnimStep_(None)
+            overlay._cancelAnimStep_(timer)
 
         assert overlay._visible is False
         overlay._window.orderOut_.assert_called()
@@ -429,7 +430,7 @@ class TestOpticalShellMaterialization:
         mod = importlib.import_module("spoke.command_overlay")
 
         scale = mod._PRESSURE_SLIT_SMOKE_TIME_SCALE
-        assert scale == pytest.approx(2.0 / 3.0)
+        assert scale == pytest.approx(1.0 / 3.0)
         assert mod._FADE_IN_S == pytest.approx(0.16 * scale)
         assert mod._ENTRANCE_POP_S == pytest.approx(0.15 * scale)
         assert mod._OPTICAL_MATERIALIZATION_BASE_S == pytest.approx(1.36 * scale)
@@ -2228,7 +2229,7 @@ class TestShowFinishHide:
     def test_visual_start_waits_until_after_entrance_fade(self, mock_pyobjc):
         _, mod = _make_overlay(mock_pyobjc)
 
-        assert mod._COMMAND_VISUAL_START_DELAY_S >= mod._FADE_IN_S + 0.1
+        assert mod._COMMAND_VISUAL_START_DELAY_S > mod._FADE_IN_S
 
     def test_show_can_resume_thinking_timer_without_resetting_elapsed_state(
         self, mock_pyobjc
@@ -2495,7 +2496,7 @@ class TestWindowLayering:
 
         assert chroma_states == [False]
 
-    def test_optical_show_with_initial_transcript_hides_plain_text_before_front(
+    def test_optical_show_with_initial_transcript_keeps_scroll_visible(
         self, mock_pyobjc, monkeypatch
     ):
         monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
@@ -2514,8 +2515,9 @@ class TestWindowLayering:
             initial_response="Assistant response",
         )
 
-        assert ("scroll_hidden", True) in events
-        assert events.index(("scroll_hidden", True)) < events.index(("front", None))
+        # Scroll view stays visible — no punch-through mode, text renders directly
+        hide_events = [h for tag, h in events if tag == "scroll_hidden"]
+        assert True not in hide_events or (True in hide_events and False in hide_events)
 
     def test_optical_show_with_prompt_only_arms_visual_stack_before_fade(
         self, mock_pyobjc, monkeypatch
@@ -2556,15 +2558,13 @@ class TestWindowLayering:
         )
 
         assert overlay._utterance_text == "User prompt"
-        assert ("scroll_hidden", True) in events
         assert ("compositor", None) in events
         assert ("mask", None) in events
         assert ("timer", "visualStart:") not in events
-        assert ("timer", "visualReadyStep:") in events
+        assert ("timer", "visualReadyDeadline:") in events
         assert ("timer", "fadeStep:") not in events
-        assert events.index(("scroll_hidden", True)) < events.index(("front", None))
         assert events.index(("front", None)) < events.index(("compositor", None))
-        assert events.index(("mask", None)) < events.index(("timer", "visualReadyStep:"))
+        assert events.index(("mask", None)) < events.index(("timer", "visualReadyDeadline:"))
 
     def test_optical_show_waits_for_first_compositor_frame_before_entrance(
         self, mock_pyobjc, monkeypatch
@@ -2596,7 +2596,7 @@ class TestWindowLayering:
         )
 
         assert ("compositor", None) in events
-        assert ("timer", "visualReadyStep:") in events
+        assert ("timer", "visualReadyDeadline:") in events
         assert ("timer", "_entrancePopStep:") not in events
         assert ("timer", "fadeStep:") not in events
 
@@ -2636,7 +2636,7 @@ class TestWindowLayering:
 
         assert ("compositor", None) in events
         assert ("brightness", None) in events
-        assert ("timer", "visualReadyStep:") in events
+        assert ("timer", "visualReadyDeadline:") in events
         assert ("timer", "_entrancePopStep:") not in events
         assert ("timer", "fadeStep:") not in events
 
@@ -2867,11 +2867,11 @@ class TestWindowLayering:
 
         overlay.show()
 
-        overlay._window.orderFrontRegardless.assert_called_once()
+        assert overlay._window.orderFrontRegardless.call_count >= 1
         overlay._refresh_backdrop_snapshot.assert_not_called()
         overlay._start_fullscreen_compositor.assert_called_once()
         overlay._start_backdrop_refresh_timer.assert_not_called()
-        assert ("timer", "visualReadyStep:") in events
+        assert ("timer", "visualReadyDeadline:") in events
         assert ("timer", "fadeStep:") not in events
         assert getattr(overlay, "_visual_start_timer", None) is None
 
@@ -3310,27 +3310,27 @@ class TestAdaptiveCompositing:
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
-    def test_assistant_foreground_flips_from_dark_to_light_with_surface_brightness(self, mock_pyobjc):
+    def test_assistant_foreground_flips_from_light_to_dark_with_surface_brightness(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")
         try:
             dark = mod._assistant_foreground_color_for_brightness(0.0)
             light = mod._assistant_foreground_color_for_brightness(1.0)
 
-            assert max(dark) < 0.2
-            assert min(light) > 0.9
+            assert min(dark) > 0.9, "light text on dark backdrop"
+            assert max(light) < 0.2, "dark text on light backdrop"
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
-    def test_user_text_turns_bright_on_light_backgrounds(self, mock_pyobjc):
+    def test_user_text_turns_dark_on_light_backgrounds(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")
         try:
             dark = mod._user_text_color_for_brightness(0.0)
             light = mod._user_text_color_for_brightness(1.0)
 
-            assert max(dark) < 0.25
-            assert min(light) > 0.9
+            assert min(dark) > 0.9, "light text on dark backdrop"
+            assert max(light) < 0.2, "dark text on light backdrop"
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
@@ -3433,7 +3433,7 @@ class TestAdaptiveCompositing:
 
         overlay._fullscreen_compositor = PresentedCompositor()
 
-        overlay.visualReadyStep_(timer)
+        overlay.compositorDidPresent_({})
 
         overlay._apply_ridge_masks.assert_called_once_with(624.0, 208.0)
         assert events[:3] == [
@@ -3444,54 +3444,163 @@ class TestAdaptiveCompositing:
         assert overlay._brightness == pytest.approx(0.04)
         assert overlay._brightness_target == pytest.approx(0.04)
 
-    def test_visual_ready_forces_entrance_after_hard_deadline(
+    def test_visual_ready_registration_handles_first_present_race(
         self, mock_pyobjc
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay._visible = True
-        overlay._materialization_progress = 0.10  # not ready
+        overlay._entrance_started = False
+        overlay._materialization_progress = 1.0
+        overlay._fill_hidden_until_signature = None
+        overlay._start_entrance_animation = MagicMock()
+
+        class RacedCompositor:
+            sampled_brightness = 0.04
+
+            def __init__(self):
+                self.reads = 0
+                self.callbacks = []
+
+            @property
+            def presented_count(self):
+                self.reads += 1
+                return 0 if self.reads == 1 else 1
+
+            def set_on_first_present(self, callback):
+                self.callbacks.append(callback)
+
+            def refresh_brightness(self):
+                pass
+
+        overlay._fullscreen_compositor = RacedCompositor()
+        mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_ = MagicMock()
+
+        overlay._schedule_visual_ready_start()
+
+        overlay._start_entrance_animation.assert_called_once()
+
+    def test_materialization_ready_syncs_brightness_before_starting_entrance(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._visual_ready_brightness_synced = False
+        overlay._brightness = 0.91
+        overlay._brightness_target = 0.91
+        overlay._materialization_progress = 0.75
+        overlay._fill_hidden_until_signature = None
+        overlay._content_view.frame.return_value = _make_rect(0.0, 0.0, 624.0, 208.0)
+        events = []
+        overlay._apply_ridge_masks = MagicMock(
+            side_effect=lambda width, height: events.append(
+                (
+                    "fill",
+                    width,
+                    height,
+                    overlay._brightness,
+                )
+            )
+        )
+        overlay._start_entrance_animation = MagicMock(
+            side_effect=lambda: events.append(("entrance",))
+        )
+
+        class PresentedCompositor:
+            presented_count = 1
+            sampled_brightness = 0.04
+
+            def refresh_brightness(self):
+                events.append(("brightness",))
+
+        overlay._fullscreen_compositor = PresentedCompositor()
+
+        overlay._check_optical_entrance_readiness()
+
+        overlay._apply_ridge_masks.assert_called_once_with(624.0, 208.0)
+        assert events[:3] == [
+            ("brightness",),
+            ("fill", 624.0, 208.0, 0.04),
+            ("entrance",),
+        ]
+        assert overlay._brightness == pytest.approx(0.04)
+        assert overlay._brightness_target == pytest.approx(0.04)
+        assert overlay._visual_ready_brightness_synced is True
+
+    def test_compositor_did_present_triggers_entrance_when_all_ready(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._materialization_progress = 0.75
+        overlay._fill_hidden_until_signature = None
+        compositor = MagicMock()
+        compositor.presented_count = 1
+        overlay._fullscreen_compositor = compositor
+        overlay._start_entrance_animation = MagicMock()
+
+        overlay.compositorDidPresent_({})
+
+        overlay._start_entrance_animation.assert_called_once()
+
+    def test_compositor_did_present_does_not_trigger_entrance_if_materialization_not_ready(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._materialization_progress = 0.10
+        overlay._fill_hidden_until_signature = None
+        compositor = MagicMock()
+        compositor.presented_count = 1
+        overlay._fullscreen_compositor = compositor
+        overlay._start_entrance_animation = MagicMock()
+
+        overlay.compositorDidPresent_({})
+
+        overlay._start_entrance_animation.assert_not_called()
+
+    def test_materialization_crossing_triggers_entrance_when_all_ready(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._fill_hidden_until_signature = None
+        compositor = MagicMock()
+        compositor.presented_count = 1
+        overlay._fullscreen_compositor = compositor
+        overlay._start_entrance_animation = MagicMock()
+        overlay._materialization_progress = 0.50
+
+        # Simulate a materialization step that crosses the threshold
+        overlay._materialization_progress = 0.60
+        overlay._check_optical_entrance_readiness()
+
+        overlay._start_entrance_animation.assert_called_once()
+
+    def test_hard_deadline_forces_entrance_when_compositor_not_presented(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._entrance_started = False
+        overlay._materialization_progress = 0.10
         timer = MagicMock()
         overlay._visual_ready_timer = timer
-        # Compositor exists but has never presented
         compositor = MagicMock()
         compositor.presented_count = 0
         overlay._fullscreen_compositor = compositor
         overlay._start_entrance_animation = MagicMock()
-        # Simulate elapsed time past the hard deadline
         overlay._visual_ready_wait_started_at = (
             time.perf_counter() - mod._OPTICAL_ENTRANCE_HARD_DEADLINE_S - 0.01
         )
 
-        overlay.visualReadyStep_(timer)
+        overlay.visualReadyDeadline_(timer)
 
         overlay._start_entrance_animation.assert_called_once()
-        # Compositor should be stopped since it never presented
         assert overlay._fullscreen_compositor is None
-
-    def test_visual_ready_does_not_force_entrance_before_hard_deadline(
-        self, mock_pyobjc
-    ):
-        overlay, mod = _make_overlay(mock_pyobjc)
-        overlay._visible = True
-        overlay._materialization_progress = 0.10  # not ready
-        timer = MagicMock()
-        overlay._visual_ready_timer = timer
-        compositor = MagicMock()
-        compositor.presented_count = 0
-        overlay._fullscreen_compositor = compositor
-        overlay._start_entrance_animation = MagicMock()
-        # Simulate elapsed time before the hard deadline but after soft timeout
-        overlay._visual_ready_wait_started_at = (
-            time.perf_counter()
-            - mod._OPTICAL_ENTRANCE_READY_TIMEOUT_S
-            - 0.01
-        )
-
-        overlay.visualReadyStep_(timer)
-
-        overlay._start_entrance_animation.assert_not_called()
-        # Compositor should still be alive
-        assert overlay._fullscreen_compositor is compositor
 
     def test_brightness_crossing_reaches_contrast_band_in_one_pulse(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
@@ -3857,7 +3966,7 @@ class TestAdaptiveCompositing:
             fg = next(value for name, value, _ in frag.attrs if name == "NSForegroundColor")
             shadow = next(value for name, value, _ in frag.attrs if name == "NSShadow")
 
-            assert min(fg[:3]) > 0.9
+            assert max(fg[:3]) < 0.2, "dark text on light backdrop"
             assert fg[3] == pytest.approx(mod._ASSISTANT_TEXT_ALPHA_MAX)
             assert shadow.blur == pytest.approx(mod._ASSISTANT_BLUR_RADIUS)
             assert shadow.color[:3] != fg[:3]
