@@ -4140,6 +4140,8 @@ class CommandOverlay(NSObject):
         comp_window = None
         comp_running = False
         comp_presented = 0
+        comp_capture_frames = 0
+        comp_frame_gen = 0
         if compositor is not None:
             host = getattr(compositor, "_host", None)
             comp_inner = getattr(host, "_compositor", None) if host else None
@@ -4147,6 +4149,8 @@ class CommandOverlay(NSObject):
                 comp_window = getattr(comp_inner, "_window", None)
                 comp_running = getattr(comp_inner, "_running", False)
                 comp_presented = getattr(comp_inner, "_presented_count", 0)
+                comp_capture_frames = getattr(comp_inner, "_capture_frame_count", 0)
+                comp_frame_gen = getattr(comp_inner, "_latest_frame_generation", 0)
             if comp_window is not None and hasattr(comp_window, "orderFrontRegardless"):
                 comp_window.orderFrontRegardless()
         record_command_overlay_trace(
@@ -4155,6 +4159,8 @@ class CommandOverlay(NSObject):
             comp_window_exists=comp_window is not None,
             comp_running=comp_running,
             comp_presented=comp_presented,
+            comp_capture_frames=comp_capture_frames,
+            comp_frame_gen=comp_frame_gen,
             overlay_window=self._window is not None,
         )
         if self._window is not None:
