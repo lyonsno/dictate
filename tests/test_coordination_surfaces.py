@@ -14,6 +14,8 @@ from spoke.coordination_surfaces import (
     SurfaceRenderer,
     SurfaceTypeRegistration,
     SurfaceTypeRegistry,
+    build_default_registry,
+    surface_actions_to_resolver_intents,
     text_surface_from_str,
 )
 
@@ -325,6 +327,93 @@ class TestLegacyBridge:
         assert stack.primary.payload["text"] == "second"
         stack.rock_down()
         assert stack.primary.payload["text"] == "first"
+
+
+class TestVoiceActionRouting:
+    def test_action_vocabulary_switches_with_primary(self):
+        """When the primary surface changes, the action vocabulary changes."""
+        reg = SurfaceTypeRegistry()
+        reg.register(SurfaceTypeRegistration(
+            kind=SurfaceKind.AGENT_THREAD,
+            actions=[
+                SurfaceAction(name="start", phrases=["start this", "go"]),
+                SurfaceAction(name="cancel", phrases=["cancel", "stop"]),
+            ],
+        ))
+        reg.register(SurfaceTypeRegistration(
+            kind=SurfaceKind.FINDING,
+            actions=[
+                SurfaceAction(name="accept", phrases=["accept"]),
+                SurfaceAction(name="defer", phrases=["defer", "later"]),
+                SurfaceAction(name="navigate", phrases=["show me", "go to commit"]),
+            ],
+        ))
+        stack = CoordinationStack(registry=reg)
+        stack.push(_agent_entry("s1"), to_top=False)
+        stack.push(_finding_entry("f1"), to_top=False)
+        stack.activate()
+
+        # Primary is agent thread (index 0)
+        vocab = stack.action_vocabulary()
+        assert len(vocab) == 2
+        assert {a.name for a in vocab} == {"start", "cancel"}
+
+        # Rock down to finding
+        stack.rock_down()
+        vocab = stack.action_vocabulary()
+        assert len(vocab) == 3
+        assert {a.name for a in vocab} == {"accept", "defer", "navigate"}
+
+    def test_surface_actions_to_resolver_intents(self):
+        actions = [
+            SurfaceAction(name="accept", phrases=["accept", "ok"], description="Accept the finding"),
+            SurfaceAction(name="defer", phrases=["defer"], description="Defer for later"),
+        ]
+        intents = surface_actions_to_resolver_intents(actions)
+        assert len(intents) == 2
+        assert intents[0]["id"] == "accept"
+        assert intents[0]["description"] == "Accept the finding"
+        assert intents[0]["examples"] == ("accept", "ok")
+        assert intents[1]["id"] == "defer"
+
+    def test_resolver_intents_without_description_uses_name(self):
+        actions = [SurfaceAction(name="dismiss", phrases=["dismiss"])]
+        intents = surface_actions_to_resolver_intents(actions)
+        assert intents[0]["description"] == "dismiss"
+
+    def test_default_registry_all_kinds_have_actions(self):
+        """Every surface kind in the default registry has at least one action."""
+        reg = build_default_registry()
+        for kind in SurfaceKind:
+            actions = reg.actions_for(kind)
+            assert len(actions) >= 1, f"{kind} has no actions in default registry"
+
+    def test_default_registry_all_kinds_have_dismiss(self):
+        """Every surface kind should support dismiss as a universal action."""
+        reg = build_default_registry()
+        for kind in SurfaceKind:
+            actions = reg.actions_for(kind)
+            names = {a.name for a in actions}
+            assert "dismiss" in names, f"{kind} missing dismiss action"
+
+    def test_default_registry_voice_routing_end_to_end(self):
+        """Simulate: push agent thread, activate, get vocabulary, convert to intents."""
+        reg = build_default_registry()
+        stack = CoordinationStack(registry=reg)
+        stack.push(_agent_entry("codex-1"))
+        stack.activate()
+
+        vocab = stack.action_vocabulary()
+        intents = surface_actions_to_resolver_intents(vocab)
+
+        # Should have agent thread actions
+        intent_ids = {i["id"] for i in intents}
+        assert "start" in intent_ids
+        assert "cancel" in intent_ids
+        assert "dismiss" in intent_ids
+        # Each intent should have examples for the resolver
+        for intent in intents:
+            assert len(intent["examples"]) >= 1
 
 
 class TestRendererIntegration:

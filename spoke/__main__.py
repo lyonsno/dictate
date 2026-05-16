@@ -157,6 +157,7 @@ from .coordination_surfaces import (
     SurfaceEntry,
     SurfaceKind,
     SurfaceTypeRegistry,
+    build_default_registry,
     text_surface_from_str,
 )
 from .subagents import SubagentManager, run_search_subagent_query
@@ -1189,7 +1190,7 @@ class SpokeAppDelegate(NSObject):
         self._tray_active: bool = False
         self._tray_tool_result: dict | None = None
         # Typed coordination surface stack (new backing store, coexists during migration)
-        self._surface_registry = SurfaceTypeRegistry()
+        self._surface_registry = build_default_registry()
         self._coordination_stack = CoordinationStack(registry=self._surface_registry)
 
         # Recovery mode state (implementation detail of tray)

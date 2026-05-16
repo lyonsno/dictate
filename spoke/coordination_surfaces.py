@@ -305,6 +305,103 @@ class CoordinationStack:
 # ---------------------------------------------------------------------------
 
 
+def surface_actions_to_resolver_intents(actions: list[SurfaceAction]) -> list[dict]:
+    """Convert surface actions to the shape expected by ConsensusResolver.
+
+    Returns a list of dicts with keys: id, description, examples.
+    This avoids a hard import dependency on consensus_resolver (which may
+    not be on main yet) while producing compatible data.
+    """
+    return [
+        {
+            "id": action.name,
+            "description": action.description or action.name,
+            "examples": tuple(action.phrases),
+        }
+        for action in actions
+    ]
+
+
+def build_default_registry() -> SurfaceTypeRegistry:
+    """Build the default surface type registry with action vocabularies.
+
+    Action vocabularies define what voice commands are available when each
+    surface type is primary. The consensus resolver classifies utterances
+    against these.
+    """
+    reg = SurfaceTypeRegistry()
+
+    reg.register(SurfaceTypeRegistration(
+        kind=SurfaceKind.AGENT_THREAD,
+        actions=[
+            SurfaceAction("start", ["start this", "go", "run it"], "Start or resume the agent"),
+            SurfaceAction("status", ["what did it just do", "status", "what's happening"], "Show current status"),
+            SurfaceAction("output", ["show me the output", "show output", "read it"], "Show recent output"),
+            SurfaceAction("cancel", ["cancel", "stop", "kill it"], "Cancel the running agent"),
+            SurfaceAction("dismiss", ["dismiss", "close", "done"], "Remove from stack"),
+        ],
+    ))
+
+    reg.register(SurfaceTypeRegistration(
+        kind=SurfaceKind.METADOSIS,
+        actions=[
+            SurfaceAction("update", ["update the thesis", "update"], "Update the artifact"),
+            SurfaceAction("blocking", ["what's blocking this", "blockers"], "Show blockers"),
+            SurfaceAction("broadcast", ["send this to all lanes", "broadcast"], "Broadcast to lanes"),
+            SurfaceAction("dismiss", ["dismiss", "close"], "Remove from stack"),
+        ],
+    ))
+
+    reg.register(SurfaceTypeRegistration(
+        kind=SurfaceKind.ZETESIS_RESULT,
+        actions=[
+            SurfaceAction("read", ["read this", "read it"], "Read the result aloud"),
+            SurfaceAction("act", ["act on this", "do it"], "Act on the result"),
+            SurfaceAction("dismiss", ["dismiss", "close", "done"], "Remove from stack"),
+        ],
+    ))
+
+    reg.register(SurfaceTypeRegistration(
+        kind=SurfaceKind.FINDING,
+        actions=[
+            SurfaceAction("accept", ["accept", "ok", "acknowledge"], "Accept the finding"),
+            SurfaceAction("defer", ["defer", "later", "not now"], "Defer for later"),
+            SurfaceAction("navigate", ["navigate to the commit", "show me", "go to"], "Navigate to source"),
+            SurfaceAction("dismiss", ["dismiss", "close"], "Remove from stack"),
+        ],
+    ))
+
+    reg.register(SurfaceTypeRegistration(
+        kind=SurfaceKind.PERCEPTASIA_VIEW,
+        actions=[
+            SurfaceAction("show_attractors", ["show me the attractors", "attractors"], "Show attractors"),
+            SurfaceAction("zoom", ["zoom in", "zoom in on this"], "Zoom into selection"),
+            SurfaceAction("hot", ["what's hot", "what's active"], "Show hot/active items"),
+            SurfaceAction("dismiss", ["dismiss", "close"], "Remove from stack"),
+        ],
+    ))
+
+    reg.register(SurfaceTypeRegistration(
+        kind=SurfaceKind.METAMORPHOSIS_RESULT,
+        actions=[
+            SurfaceAction("confirm", ["confirm", "ok", "looks good"], "Confirm the mutation"),
+            SurfaceAction("revert", ["revert", "undo", "roll back"], "Revert the mutation"),
+            SurfaceAction("dismiss", ["dismiss", "close"], "Remove from stack"),
+        ],
+    ))
+
+    reg.register(SurfaceTypeRegistration(
+        kind=SurfaceKind.TEXT,
+        actions=[
+            SurfaceAction("send", ["send", "send this", "to assistant"], "Send to assistant"),
+            SurfaceAction("paste", ["paste", "insert"], "Paste at cursor"),
+            SurfaceAction("dismiss", ["dismiss", "delete", "close"], "Remove from stack"),
+        ],
+    ))
+
+    return reg
+
+
 def text_surface_from_str(text: str, *, owner: str = "user") -> SurfaceEntry:
     """Create a TEXT surface entry from a raw string (legacy tray compat)."""
     return SurfaceEntry(
