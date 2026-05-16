@@ -4137,12 +4137,26 @@ class CommandOverlay(NSObject):
     def _enforce_compositor_window_order(self) -> None:
         """Ensure compositor window is visible and overlay is on top of it."""
         compositor = getattr(self, "_fullscreen_compositor", None)
+        comp_window = None
+        comp_running = False
+        comp_presented = 0
         if compositor is not None:
             host = getattr(compositor, "_host", None)
             comp_inner = getattr(host, "_compositor", None) if host else None
-            comp_window = getattr(comp_inner, "_window", None) if comp_inner else None
+            if comp_inner is not None:
+                comp_window = getattr(comp_inner, "_window", None)
+                comp_running = getattr(comp_inner, "_running", False)
+                comp_presented = getattr(comp_inner, "_presented_count", 0)
             if comp_window is not None and hasattr(comp_window, "orderFrontRegardless"):
                 comp_window.orderFrontRegardless()
+        record_command_overlay_trace(
+            "overlay.enforce_window_order",
+            has_compositor=compositor is not None,
+            comp_window_exists=comp_window is not None,
+            comp_running=comp_running,
+            comp_presented=comp_presented,
+            overlay_window=self._window is not None,
+        )
         if self._window is not None:
             self._window.orderFrontRegardless()
 
