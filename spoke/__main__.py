@@ -3266,6 +3266,24 @@ class SpokeAppDelegate(NSObject):
         if entry.owner == "assistant" and not entry.acknowledged:
             entry.acknowledged = True
 
+    def _add_surface(
+        self,
+        surface: SurfaceEntry,
+        *,
+        activate: bool = True,
+        position: str = "top",
+    ) -> SurfaceEntry:
+        """Push a typed coordination surface into the stack.
+
+        This is the new primary entry point for adding surfaces. Legacy
+        text entries should use _add_tray_entry which delegates here.
+        """
+        to_top = (position == "top")
+        self._coordination_stack.push(surface, to_top=to_top)
+        if activate:
+            self._coordination_stack.activate()
+        return surface
+
     def _add_tray_entry(
         self,
         text: str,
@@ -3289,6 +3307,13 @@ class SpokeAppDelegate(NSObject):
         else:
             self._tray_stack.append(entry)
             self._tray_index = len(self._tray_stack) - 1
+
+        # Dual-write: also push to typed coordination stack
+        self._add_surface(
+            text_surface_from_str(text, owner=owner),
+            activate=activate,
+            position=position,
+        )
 
         if activate:
             self._tray_active = True
