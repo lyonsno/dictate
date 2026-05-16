@@ -360,10 +360,12 @@ class FullScreenCompositor:
                     self._shell_configs[0],
                     self._sampled_brightness,
                 )
-            # Reset temporal accumulation so the first frame doesn't
-            # blend with stale content from a previous compositor session.
+            # Reset temporal accumulation and presented count so the first
+            # frame doesn't blend with stale content and readiness checks
+            # correctly wait for the new session's first present.
             if self._pipeline is not None:
                 self._pipeline.reset_temporal_state()
+            self._presented_count = 0
             self._create_fullscreen_window()
             self._start_display_link()
             self._running = True

@@ -4100,16 +4100,6 @@ class CommandOverlay(NSObject):
         self._cancel_visual_ready_start()
         self._visual_ready_brightness_synced = False
         self._entrance_started = False
-        # Ensure compositor window is visible and overlay is on top of it.
-        compositor = getattr(self, "_fullscreen_compositor", None)
-        if compositor is not None:
-            host = getattr(compositor, "_host", None)
-            comp_inner = getattr(host, "_compositor", None) if host else None
-            comp_window = getattr(comp_inner, "_window", None) if comp_inner else None
-            if comp_window is not None and hasattr(comp_window, "orderFrontRegardless"):
-                comp_window.orderFrontRegardless()
-            if self._window is not None:
-                self._window.orderFrontRegardless()
         if self._optical_compositor_has_presented():
             self._sync_optical_compositor_brightness(
                 hide_stale_fill=True,
@@ -4144,6 +4134,17 @@ class CommandOverlay(NSObject):
 
     def compositorDidPresent_(self, payload) -> None:
         """Called on main thread when the compositor presents its first frame."""
+        # Ensure compositor window is visible and overlay is on top of it
+        # now that the compositor has actually rendered content.
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is not None:
+            host = getattr(compositor, "_host", None)
+            comp_inner = getattr(host, "_compositor", None) if host else None
+            comp_window = getattr(comp_inner, "_window", None) if comp_inner else None
+            if comp_window is not None and hasattr(comp_window, "orderFrontRegardless"):
+                comp_window.orderFrontRegardless()
+            if self._window is not None:
+                self._window.orderFrontRegardless()
         if getattr(self, "_entrance_started", False):
             return
         if not getattr(self, "_visible", False):
