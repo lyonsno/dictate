@@ -289,6 +289,61 @@ def test_stack_speculum_smoke_harness_registers_visible_tray_client(
     assert "phase" not in config["optical_field"]
 
 
+def test_stack_speculum_smoke_diagnostic_preserves_materialization_seam_geometry(
+    mock_pyobjc,
+    monkeypatch,
+):
+    overlay, mod = _make_overlay(mock_pyobjc)
+    monkeypatch.setattr(mod, "_STACK_SPECULUM_SMOKE_ENABLED", True)
+
+    request = overlay._stack_speculum_smoke_request({"z_index": 0}, state="materialize")
+    adapter = mod.OpticalLifecycleAdapter()
+    result = adapter.upsert(request)
+    assert result.accepted
+
+    frame = adapter.frame_at("stack.speculum.demo", 0.0)
+    assert frame is not None
+    raw = frame.shell_configs[0]
+    diagnostic = overlay._stack_speculum_smoke_diagnostic_config(raw)
+
+    assert diagnostic["content_width_points"] == pytest.approx(
+        raw["content_width_points"]
+    )
+    assert diagnostic["content_height_points"] == pytest.approx(
+        raw["content_height_points"]
+    )
+    assert diagnostic["content_height_points"] < request.bounds.height * 0.10
+
+
+def test_stack_speculum_smoke_diagnostic_does_not_repaint_dismiss_sidecars(
+    mock_pyobjc,
+    monkeypatch,
+):
+    overlay, mod = _make_overlay(mock_pyobjc)
+    monkeypatch.setattr(mod, "_STACK_SPECULUM_SMOKE_ENABLED", True)
+
+    request = overlay._stack_speculum_smoke_request({"z_index": 0}, state="dismiss")
+    adapter = mod.OpticalLifecycleAdapter()
+    result = adapter.upsert(request)
+    assert result.accepted
+
+    frame = adapter.frame_at("stack.speculum.demo", 0.42)
+    assert frame is not None
+    radial = next(
+        config
+        for config in frame.shell_configs
+        if str(config.get("client_id", "")).endswith(".dismiss_radial_pucker")
+    )
+    diagnostic = overlay._stack_speculum_smoke_diagnostic_config(radial)
+
+    assert diagnostic["client_id"].endswith(".dismiss_radial_pucker")
+    assert diagnostic.get("debug_visualize") is not True
+    assert diagnostic.get("gpu_material_enabled") != 1.0
+    assert diagnostic["content_width_points"] == pytest.approx(
+        radial["content_width_points"]
+    )
+
+
 def test_stack_speculum_smoke_harness_traces_diagnostic_lifecycle(
     mock_pyobjc,
     monkeypatch,

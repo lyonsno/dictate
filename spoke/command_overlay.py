@@ -1549,8 +1549,17 @@ class CommandOverlay(NSObject):
     def _stack_speculum_smoke_diagnostic_config(self, config: dict) -> dict:
         """Make the opt-in tray-consumer smoke legible instead of merely present."""
         diagnostic = dict(config)
-        width = max(float(diagnostic.get("content_width_points", 0.0)), 160.0)
-        height = max(float(diagnostic.get("content_height_points", 0.0)), 48.0)
+        client_id = str(diagnostic.get("client_id", _STACK_SPECULUM_CLIENT_ID))
+        optical_field = diagnostic.get("optical_field")
+        if isinstance(optical_field, dict):
+            diagnostic["optical_field"] = {
+                **optical_field,
+                "smoke_diagnostic": True,
+            }
+        if client_id != _STACK_SPECULUM_CLIENT_ID:
+            return diagnostic
+        width = max(float(diagnostic.get("content_width_points", 0.0)), 1.0)
+        height = max(float(diagnostic.get("content_height_points", 0.0)), 1.0)
         diagnostic.update(
             {
                 "content_width_points": width,
@@ -1585,12 +1594,6 @@ class CommandOverlay(NSObject):
                 "gpu_material_ridge_emphasis": 1.0,
             }
         )
-        optical_field = diagnostic.get("optical_field")
-        if isinstance(optical_field, dict):
-            diagnostic["optical_field"] = {
-                **optical_field,
-                "smoke_diagnostic": True,
-            }
         return diagnostic
 
     def _start_stack_speculum_smoke_lifecycle(
