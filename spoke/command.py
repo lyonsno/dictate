@@ -699,7 +699,7 @@ class CommandClient:
         return messages
 
     def _supports_multimodal_tool_content(self) -> bool:
-        """Whether the current backend is likely to accept image tool content."""
+        """Whether the current backend accepts image-bearing tool content."""
         explicit = _env_flag("SPOKE_COMMAND_MULTIMODAL")
         if explicit is not None:
             return explicit
@@ -710,11 +710,6 @@ class CommandClient:
             or "gemini" in model
             or "gpt-4.1" in model
             or "gpt-4o" in model
-            or "vision" in model
-            or "vlm" in model
-            or "qwen3-vl" in model
-            or "qwen3.5-vl" in model
-            or re.search(r"(^|[-_/])vl($|[-_/])", model) is not None
         )
 
     def _normalize_tool_result(self, tool_result: Any) -> tuple[Any, str]:

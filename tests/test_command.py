@@ -249,6 +249,20 @@ class TestCommandClient:
 
         assert client._supports_multimodal_tool_content() is True
 
+    def test_local_vlm_name_without_capability_signal_remains_text_only(self, monkeypatch):
+        """Local VLM-shaped model names are not a backend capability contract."""
+        monkeypatch.delenv("SPOKE_COMMAND_MULTIMODAL", raising=False)
+        from spoke.command import CommandClient
+
+        client = CommandClient(
+            base_url="http://localhost:8001",
+            model="qwen3-vl-8b",
+            api_key="key",
+            history_path=None,
+        )
+
+        assert client._supports_multimodal_tool_content() is False
+
     def test_custom_system_prompt_override(self):
         """Subagents should be able to supply a distinct system prompt."""
         from spoke.command import CommandClient
@@ -549,14 +563,16 @@ class TestStreamCommand:
             ],
         }
 
-    def test_local_step_model_remains_text_only_without_capability_signal(self):
-        """Local Step by name alone should not be treated as a multimodal backend."""
+    @pytest.mark.parametrize("model", ["step-3p5-flash-mixedp-final", "qwen3-vl-8b"])
+    def test_local_model_remains_text_only_without_capability_signal(self, model, monkeypatch):
+        """Local model names alone should not be treated as multimodal capability."""
+        monkeypatch.delenv("SPOKE_COMMAND_MULTIMODAL", raising=False)
         from spoke.command import CommandClient
         from spoke.tool_dispatch import get_tool_schemas
 
         client = CommandClient(
             base_url="http://localhost:8001",
-            model="step-3p5-flash-mixedp-final",
+            model=model,
             api_key="key",
         )
 
