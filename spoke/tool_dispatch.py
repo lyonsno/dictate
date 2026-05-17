@@ -106,6 +106,14 @@ _CAPTURE_CONTEXT_SCHEMA = {
                         "Text-only backends ignore this flag."
                     ),
                 },
+                "include_text": {
+                    "type": "boolean",
+                    "description": (
+                        "For multimodal capture, opt into the structured "
+                        "window/OCR/accessibility text summary. Defaults false "
+                        "so vision-capable captures are image-only."
+                    ),
+                },
             },
             "required": [],
         },
@@ -512,12 +520,18 @@ def _execute_capture_context(
     scene_cache: SceneCaptureCache | None = None,
     *,
     skip_ocr: bool | None = None,
+    skip_ax: bool | None = None,
 ) -> Any:
     """Execute capture_context and return the SceneCapture."""
     from spoke.scene_capture import capture_context
 
     scope = arguments.get("scope", "active_window")
-    return capture_context(scope=scope, cache=scene_cache, skip_ocr=skip_ocr)
+    return capture_context(
+        scope=scope,
+        cache=scene_cache,
+        skip_ocr=skip_ocr,
+        skip_ax=skip_ax,
+    )
 
 
 def _capture_context_result_dict(
@@ -577,11 +591,12 @@ def _capture_context_multimodal_result(
     capture: Any,
     *,
     include_image: bool = True,
+    include_text: bool = False,
 ) -> dict[str, Any]:
     summary = _capture_context_result_dict(capture, include_image=False)
-    parts: list[dict[str, Any]] = [
-        {"type": "text", "text": json.dumps(summary)}
-    ]
+    parts: list[dict[str, Any]] = []
+    if include_text:
+        parts.append({"type": "text", "text": json.dumps(summary)})
     model_image_path = getattr(capture, "model_image_path", None)
     if include_image and model_image_path:
         try:
@@ -604,15 +619,38 @@ def _capture_context_multimodal_result(
                 model_image_path,
                 exc_info=True,
             )
+    if not parts:
+        parts.append(
+            {
+                "type": "text",
+                "text": json.dumps(
+                    {
+                        "scene_ref": getattr(capture, "scene_ref", None),
+                        "image_attached": False,
+                        "warning": "capture_context did not attach a model image",
+                    }
+                ),
+            }
+        )
+    log_summary = (
+        summary
+        if include_text
+        else {
+            "scene_ref": getattr(capture, "scene_ref", None),
+            "scope": getattr(capture, "scope", None),
+            "image_attached": any(part.get("type") == "image_url" for part in parts),
+            "model_image_size": list(getattr(capture, "model_image_size", ()) or ()),
+        }
+    )
     logger.info(
         "capture_context: multimodal payload scene_ref=%s image_attached=%s image_path=%r",
         summary.get("scene_ref"),
-        len(parts) > 1,
+        any(part.get("type") == "image_url" for part in parts),
         model_image_path,
     )
     return {
         "content": parts,
-        "log_text": json.dumps(summary),
+        "log_text": json.dumps(log_summary),
     }
 
 
@@ -2000,29 +2038,36 @@ def execute_tool(
     """
     if name == "capture_context":
         requested_include_image = arguments.get("include_image")
+        include_text = bool(arguments.get("include_text", False))
         wants_image = (
             tool_output_mode == "multimodal"
             if requested_include_image is None
             else bool(requested_include_image)
         )
         include_image = wants_image and tool_output_mode == "multimodal"
-        skip_ocr = include_image and (
-            os.environ.get("SPOKE_SKIP_OCR", "").lower() in ("1", "true", "yes")
+        image_only = include_image and not include_text
+        skip_ocr = image_only or (
+            include_image
+            and os.environ.get("SPOKE_SKIP_OCR", "").lower() in ("1", "true", "yes")
         )
+        skip_ax = True if image_only else False
         capture = _execute_capture_context(
             arguments,
             scene_cache=scene_cache,
             skip_ocr=skip_ocr,
+            skip_ax=skip_ax,
         )
         if capture is None:
             return json.dumps({"error": "Capture failed"})
         logger.info(
-            "capture_context: tool_output_mode=%s requested_include_image=%r wants_image=%s include_image=%s skip_ocr=%s scene_ref=%s app=%r title=%r",
+            "capture_context: tool_output_mode=%s requested_include_image=%r include_text=%s wants_image=%s include_image=%s skip_ocr=%s skip_ax=%s scene_ref=%s app=%r title=%r",
             tool_output_mode,
             requested_include_image,
+            include_text,
             wants_image,
             include_image,
             skip_ocr,
+            skip_ax,
             getattr(capture, "scene_ref", None),
             getattr(capture, "app_name", None),
             getattr(capture, "window_title", None),
@@ -2031,6 +2076,7 @@ def execute_tool(
             return _capture_context_multimodal_result(
                 capture,
                 include_image=include_image,
+                include_text=include_text or not include_image,
             )
         return json.dumps(
             _capture_context_result_dict(capture, include_image=include_image)

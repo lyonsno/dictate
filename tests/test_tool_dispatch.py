@@ -463,8 +463,67 @@ class TestExecuteTool:
 
         assert mock_capture.call_args.kwargs["skip_ocr"] is True
 
-    def test_multimodal_capture_context_summary_omits_local_model_image_path(self, tmp_path):
-        """Multimodal text summaries should describe the scene, not a local path."""
+    def test_execute_capture_context_multimodal_image_mode_is_image_only_by_default(
+        self, tmp_path
+    ):
+        """Default multimodal image capture should not send OCR/AX/window metadata."""
+        mod = _import_tools()
+        sc_mod = importlib.import_module("spoke.scene_capture")
+        cache = sc_mod.SceneCaptureCache(max_captures=5)
+        model_image = tmp_path / "scene-test-model.png"
+        model_image.write_bytes(b"abc")
+
+        fake_capture = sc_mod.SceneCapture(
+            scene_ref="scene-test",
+            created_at=time.time(),
+            scope="active_window",
+            app_name="Safari",
+            bundle_id="com.apple.Safari",
+            window_title="donut_day_deals_and_freebies.jpg",
+            image_path="/tmp/test.png",
+            image_size=(2560, 1440),
+            model_image_size=(853, 480),
+            ocr_text="iStock.com/Magone",
+            ocr_blocks=[
+                sc_mod.OCRBlock(
+                    ref="scene-test:block-0",
+                    text="donut_day_deals_and_freebies.jpg",
+                    bbox=(0, 0, 50, 20),
+                    confidence=0.99,
+                )
+            ],
+            ax_hints=[
+                sc_mod.AXHint(
+                    ref="scene-test:focus",
+                    role="AXImage",
+                    label="donut_day_deals_and_freebies.jpg",
+                )
+            ],
+            model_image_path=str(model_image),
+            model_image_media_type="image/png",
+        )
+
+        with patch("spoke.scene_capture.capture_context", return_value=fake_capture) as mock_capture:
+            result = mod.execute_tool(
+                name="capture_context",
+                arguments={"scope": "active_window"},
+                scene_cache=cache,
+                tool_output_mode="multimodal",
+            )
+
+        assert mock_capture.call_args.kwargs["skip_ocr"] is True
+        assert mock_capture.call_args.kwargs["skip_ax"] is True
+        assert result["content"] == [
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,YWJj"},
+            }
+        ]
+        assert "donut_day_deals" not in result["log_text"]
+        assert "iStock" not in result["log_text"]
+
+    def test_multimodal_capture_context_text_summary_omits_local_model_image_path(self, tmp_path):
+        """Opt-in multimodal text summaries should describe the scene, not a local path."""
         mod = _import_tools()
         sc_mod = importlib.import_module("spoke.scene_capture")
         model_image = tmp_path / "scene-test-model.png"
@@ -487,11 +546,59 @@ class TestExecuteTool:
             model_image_media_type="image/png",
         )
 
-        result = mod._capture_context_multimodal_result(fake_capture)
+        result = mod._capture_context_multimodal_result(fake_capture, include_text=True)
         summary = json.loads(result["content"][0]["text"])
 
         assert "model_image" not in summary
         assert result["content"][1]["image_url"]["url"] == "data:image/png;base64,YWJj"
+
+    def test_execute_capture_context_multimodal_include_text_preserves_summary_path(self, tmp_path):
+        """include_text=true opts metadata, OCR, and AX text back into multimodal capture."""
+        mod = _import_tools()
+        sc_mod = importlib.import_module("spoke.scene_capture")
+        model_image = tmp_path / "scene-test-model.png"
+        model_image.write_bytes(b"abc")
+
+        fake_capture = sc_mod.SceneCapture(
+            scene_ref="scene-test",
+            created_at=time.time(),
+            scope="active_window",
+            app_name="Safari",
+            bundle_id="com.apple.Safari",
+            window_title="Test Page",
+            image_path="/tmp/test.png",
+            image_size=(2560, 1440),
+            model_image_size=(853, 480),
+            ocr_text="Hello World",
+            ocr_blocks=[
+                sc_mod.OCRBlock(
+                    ref="scene-test:block-0",
+                    text="Hello World",
+                    bbox=(0, 0, 50, 20),
+                    confidence=0.99,
+                )
+            ],
+            ax_hints=[
+                sc_mod.AXHint(ref="scene-test:focus", role="AXTextField", label="Search")
+            ],
+            model_image_path=str(model_image),
+            model_image_media_type="image/png",
+        )
+
+        with patch("spoke.scene_capture.capture_context", return_value=fake_capture) as mock_capture:
+            result = mod.execute_tool(
+                name="capture_context",
+                arguments={"scope": "active_window", "include_text": True},
+                tool_output_mode="multimodal",
+            )
+
+        assert mock_capture.call_args.kwargs["skip_ocr"] is False
+        assert mock_capture.call_args.kwargs["skip_ax"] is False
+        assert [part["type"] for part in result["content"]] == ["text", "image_url"]
+        summary = json.loads(result["content"][0]["text"])
+        assert summary["window_title"] == "Test Page"
+        assert summary["ocr_blocks"][0]["text"] == "Hello World"
+        assert summary["ax_hints"][0]["label"] == "Search"
 
     def test_execute_capture_context_multimodal_honors_explicit_include_image_false(self, tmp_path):
         """Explicitly disabling image attachment should win even on multimodal backends."""

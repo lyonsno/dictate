@@ -110,6 +110,23 @@ _HISTORY_PATH = Path.home() / ".config" / "spoke" / "history.json"
 _XML_CONTENT_MARKERS = ("<function=", "<tool_call>")
 
 
+def _normalize_max_history(value: int) -> int | None:
+    """Return None for append-only history, otherwise a positive turn cap."""
+    return value if value > 0 else None
+
+
+def _env_flag(name: str) -> bool | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
 def _rough_tool_result_tokens(text: str) -> int:
     """Approximate token count for a tool result."""
     return int(len(text.split()) * 1.3)
@@ -370,11 +387,12 @@ class CommandClient:
             or os.environ.get("SPOKE_COMMAND_API_KEY")
             or os.environ.get("OMLX_SERVER_API_KEY", "")
         )
-        self._max_history = (
+        raw_max_history = (
             max_history
             if max_history is not None
             else int(os.environ.get("SPOKE_COMMAND_HISTORY", str(_DEFAULT_RING_BUFFER_SIZE)))
         )
+        self._max_history = _normalize_max_history(raw_max_history)
         # Thinking: enabled by default, disable with SPOKE_COMMAND_THINKING=0
         self._enable_thinking = os.environ.get("SPOKE_COMMAND_THINKING", "1") != "0"
         self._system_prompt = system_prompt or _SYSTEM_PROMPT
@@ -618,7 +636,7 @@ class CommandClient:
                 if normalized:
                     normalized[0] = {**normalized[0], "_overlay_response": overlay_response}
         self._history.append(normalized)
-        while len(self._history) > self._max_history:
+        while self._max_history is not None and len(self._history) > self._max_history:
             # Evict the oldest non-summary turn.  Summary turns
             # (produced by compact_history) are the highest-value
             # context in the buffer and should survive until the
@@ -682,6 +700,9 @@ class CommandClient:
 
     def _supports_multimodal_tool_content(self) -> bool:
         """Whether the current backend is likely to accept image tool content."""
+        explicit = _env_flag("SPOKE_COMMAND_MULTIMODAL")
+        if explicit is not None:
+            return explicit
         model = self._model.lower()
         base_url = self._base_url.lower()
         return (
@@ -689,6 +710,11 @@ class CommandClient:
             or "gemini" in model
             or "gpt-4.1" in model
             or "gpt-4o" in model
+            or "vision" in model
+            or "vlm" in model
+            or "qwen3-vl" in model
+            or "qwen3.5-vl" in model
+            or re.search(r"(^|[-_/])vl($|[-_/])", model) is not None
         )
 
     def _normalize_tool_result(self, tool_result: Any) -> tuple[Any, str]:
@@ -706,6 +732,44 @@ class CommandClient:
             return tool_result, tool_result
         serialized = json.dumps(tool_result)
         return serialized, serialized
+
+    def _tool_result_image_parts(self, tool_content: Any) -> list[dict[str, Any]]:
+        """Return multimodal image parts from an OpenAI-style tool result."""
+        if not isinstance(tool_content, list):
+            return []
+        image_parts: list[dict[str, Any]] = []
+        for part in tool_content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") in {"image_url", "input_image"}:
+                image_parts.append(part)
+        return image_parts
+
+    def _tool_image_bridge_message(
+        self,
+        *,
+        tool_name: str,
+        tool_call_id: str,
+        tool_content: Any,
+    ) -> dict[str, Any] | None:
+        image_parts = self._tool_result_image_parts(tool_content)
+        if not image_parts:
+            return None
+        return {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        f"Use the attached image returned by {tool_name} "
+                        f"({tool_call_id}) for visual reasoning. Do not infer "
+                        "visual details from filenames, OCR, URLs, or window "
+                        "metadata."
+                    ),
+                },
+                *image_parts,
+            ],
+        }
 
     def _tool_executor_supports_output_mode(
         self,
@@ -880,6 +944,13 @@ class CommandClient:
                     "content": tool_content,
                 }
             )
+            image_bridge = self._tool_image_bridge_message(
+                tool_name=fn_name,
+                tool_call_id=call["id"],
+                tool_content=tool_content,
+            )
+            if image_bridge is not None:
+                messages.append(image_bridge)
 
         return messages, visible_response, False
 

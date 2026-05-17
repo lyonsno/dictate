@@ -219,6 +219,36 @@ class TestCommandClient:
         assert client._api_key == "env-key"
         assert client._max_history == 20
 
+    def test_zero_history_env_disables_ring_eviction(self, monkeypatch):
+        """SPOKE_COMMAND_HISTORY=0 should keep history append-only for cache smoke."""
+        monkeypatch.setenv("SPOKE_COMMAND_HISTORY", "0")
+        from spoke.command import CommandClient
+
+        client = CommandClient(history_path=None)
+        for i in range(25):
+            client.append_history_pair(f"q{i}", f"a{i}")
+
+        assert client._max_history is None
+        assert len(client._history) == 25
+        assert client._history[0] == [
+            {"role": "user", "content": "q0"},
+            {"role": "assistant", "content": "a0"},
+        ]
+
+    def test_local_vlm_env_enables_multimodal_tool_output(self, monkeypatch):
+        """Local OMLX VLM smoke can opt into image-bearing tool output explicitly."""
+        monkeypatch.setenv("SPOKE_COMMAND_MULTIMODAL", "1")
+        from spoke.command import CommandClient
+
+        client = CommandClient(
+            base_url="http://localhost:8001",
+            model="local-text-model",
+            api_key="key",
+            history_path=None,
+        )
+
+        assert client._supports_multimodal_tool_content() is True
+
     def test_custom_system_prompt_override(self):
         """Subagents should be able to supply a distinct system prompt."""
         from spoke.command import CommandClient
@@ -490,11 +520,28 @@ class TestStreamCommand:
             )
 
         assert tool_calls[0]["tool_output_mode"] == "multimodal"
-        assert request_bodies[1]["messages"][-1] == {
+        assert request_bodies[1]["messages"][-2] == {
             "role": "tool",
             "tool_call_id": "call_1",
             "content": [
                 {"type": "text", "text": '{"scene_ref":"scene-test"}'},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,QUJD"},
+                },
+            ],
+        }
+        assert request_bodies[1]["messages"][-1] == {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": (
+                        "Use the attached image returned by capture_context "
+                        "(call_1) for visual reasoning. Do not infer visual "
+                        "details from filenames, OCR, URLs, or window metadata."
+                    ),
+                },
                 {
                     "type": "image_url",
                     "image_url": {"url": "data:image/png;base64,QUJD"},

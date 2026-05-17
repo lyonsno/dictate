@@ -401,6 +401,35 @@ class TestCaptureContext:
         assert capture.ocr_blocks == []
         run_ocr.assert_not_called()
 
+    def test_capture_context_skips_ax_when_requested(self, tmp_path):
+        mod = _import_module()
+        raw_image = object()
+        model_image = object()
+
+        with (
+            patch.object(mod, "_generate_scene_ref", return_value="scene-test"),
+            patch.object(
+                mod,
+                "_capture_active_window",
+                return_value=(
+                    raw_image,
+                    "Safari",
+                    "com.apple.Safari",
+                    "Test Page",
+                ),
+            ),
+            patch.object(mod, "_image_dimensions", return_value=(2560, 1440)),
+            patch.object(mod, "_downsample_image", return_value=model_image),
+            patch.object(mod, "_save_image", return_value=True),
+            patch.object(mod, "_run_ocr", return_value=("Hello", [])),
+            patch.object(mod, "_collect_ax_hints") as collect_ax,
+        ):
+            capture = mod.capture_context(cache_dir=str(tmp_path), skip_ax=True)
+
+        assert capture is not None
+        assert capture.ax_hints == []
+        collect_ax.assert_not_called()
+
 
 class TestCaptureActiveWindow:
     def test_ax_selected_window_refreshes_app_metadata(self):
