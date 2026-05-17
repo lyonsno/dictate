@@ -1513,7 +1513,7 @@ class CommandOverlay(NSObject):
         height = 132.0
         margin = 44.0
         x = max(24.0, screen_w - width - margin)
-        y = max(24.0, screen_h - height - 180.0)
+        y = max(24.0, screen_h - height - 96.0)
         bounds = OpticalFieldBounds(x=x, y=y, width=width, height=height)
         content_frame = OpticalFieldBounds(
             x=x + 16.0,

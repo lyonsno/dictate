@@ -226,6 +226,7 @@ def test_stack_speculum_smoke_request_is_tray_hud_consumer(mock_pyobjc, monkeypa
     assert request.profile.params["core_magnification"] >= 1.18
     assert request.profile.params["ring_amplitude_frac"] >= 0.18
     assert request.profile.params["tail_amplitude_frac"] >= 0.07
+    assert request.bounds.y >= 840.0
     assert request.layout_recipe == "deck"
     assert request.z_index == 24
 

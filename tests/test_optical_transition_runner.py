@@ -152,7 +152,7 @@ def test_small_surface_dismiss_radial_pucker_stays_near_own_footprint():
     assert radial["content_width_points"] == pytest.approx(
         radial["content_height_points"]
     )
-    assert radial["content_width_points"] <= card_shell["content_width_points"] * 2.0
+    assert radial["content_width_points"] <= card_shell["content_width_points"] * 1.35
     assert radial["content_width_points"] >= card_shell["content_width_points"] * 1.2
     assert radial["corner_radius_points"] == pytest.approx(
         radial["content_width_points"] * 0.5
