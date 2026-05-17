@@ -1069,6 +1069,73 @@ class TestOpticalShellMaterialization:
         overlay._fill_layer.setOpacity_.assert_called()
         assert overlay._window.setAlphaValue_.call_args is None
 
+    def test_materialization_step_consumes_house_transition_runner(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        timer = MagicMock()
+        runner_calls = []
+
+        class FakeRunner:
+            def __init__(self, final_shell_config, *, direction, client_id, role, z_index):
+                self.final_shell_config = dict(final_shell_config)
+                self.direction = direction
+                self.client_id = client_id
+                self.role = role
+                self.z_index = z_index
+                self.duration_s = 10.0
+
+            def frame_at(self, elapsed_s):
+                runner_calls.append(elapsed_s)
+                return SimpleNamespace(
+                    progress=0.62,
+                    main_config={"client_id": "assistant.command", "frame": "main"},
+                    seam_config={"client_id": "assistant.command.dismiss_seam"},
+                    radial_config={"client_id": "assistant.command.dismiss_radial_pucker"},
+                    complete=False,
+                    body_ready=True,
+                )
+
+        monkeypatch.setattr(mod._house_transition, "OpticalTransitionRunner", FakeRunner)
+        monkeypatch.setattr(mod.time, "perf_counter", lambda: 4.0)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = timer
+        overlay._materialization_final_shell_config = {
+            "client_id": "assistant.command",
+            "role": "assistant",
+            "z_index": 0,
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        overlay._materialization_direction = -1
+        overlay._materialization_started_at = 1.5
+        overlay._materialization_runner = FakeRunner(
+            overlay._materialization_final_shell_config,
+            direction=-1,
+            client_id="assistant.command",
+            role="assistant",
+            z_index=0,
+        )
+        overlay._apply_materialization_fill_state = MagicMock()
+        overlay._set_layer_hidden_without_actions = MagicMock()
+        overlay._ensure_dismiss_radial_pucker_compositor = MagicMock(
+            return_value=MagicMock()
+        )
+        overlay._ensure_dismiss_seam_compositor = MagicMock(return_value=MagicMock())
+        overlay._publish_shared_compositor_configs = MagicMock(return_value=True)
+
+        overlay.materializationStep_(timer)
+
+        assert runner_calls == [pytest.approx(2.5)]
+        overlay._apply_materialization_fill_state.assert_called_with(0.62)
+        configs = [config for _compositor, config in overlay._publish_shared_compositor_configs.call_args.args[0]]
+        assert {"client_id": "assistant.command.dismiss_radial_pucker"} in configs
+        assert {"client_id": "assistant.command.dismiss_seam"} in configs
+        assert {"client_id": "assistant.command", "frame": "main"} in configs
+
     def test_optical_fade_out_keeps_window_opaque_until_reverse_collapse_finishes(
         self, mock_pyobjc
     ):

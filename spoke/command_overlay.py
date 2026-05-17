@@ -52,6 +52,7 @@ from .overlay import (
     _post_overlay_result_to_main,
     _start_overlay_fill_worker,
 )
+from . import optical_transition as _house_transition
 from .optical_shell_metrics import OpticalShellMetrics
 
 logger = logging.getLogger(__name__)
@@ -695,367 +696,35 @@ def _command_optical_shell_config(
     }
 
 
-def _materialized_optical_shell_config(
-    shell_config: dict,
-    progress: float,
-) -> dict:
-    """Return a transient shell config for fluid entrance/dismissal.
-
-    The materialization path only changes the compositor warp envelope. It does
-    not touch the SDF fill geometry, which keeps entrance animation from
-    rebuilding expensive masks every visible frame.
-    """
-    config = dict(shell_config)
-    p = _clamp01(progress)
-    if p >= 1.0:
-        return config
-
-    base_w = max(float(config.get("content_width_points", 1.0)), 1.0)
-    base_h = max(float(config.get("content_height_points", 1.0)), 1.0)
-    base_radius = max(float(config.get("corner_radius_points", 1.0)), 1.0)
-    config["_materialization_base_width_points"] = base_w
-    config["_materialization_base_height_points"] = base_h
-    config["_materialization_base_corner_radius_points"] = base_radius
-    _with_gpu_material_basis(
-        config,
-        width=base_w,
-        height=base_h,
-        corner_radius=base_radius,
-        progress=p,
-    )
-
-    spread_t = _snap_ease_in(p / _OPTICAL_MATERIALIZATION_SPREAD_END)
-    bloom_t = _snap_ease_in(
-        (p - _OPTICAL_MATERIALIZATION_BLOOM_START)
-        / max(1.0 - _OPTICAL_MATERIALIZATION_BLOOM_START, 1e-6)
-    )
-    seed_w = max(24.0, min(base_w * _OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC, 72.0))
-    seed_h = max(2.5, min(base_h * _OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC, 7.0))
-    width = _lerp(seed_w, base_w, spread_t)
-    height = _lerp(seed_h, base_h, bloom_t)
-
-    config["content_width_points"] = width
-    config["content_height_points"] = height
-    config["corner_radius_points"] = min(base_radius, height * 0.5)
-    if "core_magnification" in config:
-        base_mag = max(float(config.get("core_magnification", 1.0)), 0.0)
-        seed_mag = base_mag * _OPTICAL_MATERIALIZATION_MAG_SEED_FRAC
-        if p <= _OPTICAL_MATERIALIZATION_MAG_ACCEL_END:
-            t = _clamp01(p / _OPTICAL_MATERIALIZATION_MAG_ACCEL_END)
-            config["core_magnification"] = _lerp(
-                seed_mag,
-                base_mag * 0.82,
-                _snap_ease_in(t),
-            )
-        elif p <= _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT:
-            t = _clamp01(
-                (p - _OPTICAL_MATERIALIZATION_MAG_ACCEL_END)
-                / (
-                    _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT
-                    - _OPTICAL_MATERIALIZATION_MAG_ACCEL_END
-                )
-            )
-            config["core_magnification"] = _lerp(
-                base_mag * 0.82,
-                base_mag * _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT,
-                _snap_ease_in(t),
-            )
-        else:
-            t = _clamp01(
-                (p - _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT)
-                / max(1.0 - _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT, 1e-6)
-            )
-            config["core_magnification"] = _lerp(
-                base_mag * _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT,
-                base_mag,
-                _snap_ease_in(t),
-            )
-    for key in ("band_width_points", "tail_width_points"):
-        if key in config:
-            config[key] = max(1.0, float(config[key]) * _lerp(0.25, 1.0, p))
-    for key in ("ring_amplitude_points", "tail_amplitude_points"):
-        if key in config:
-            config[key] = float(config[key]) * _lerp(0.35, 1.0, p)
-    config["continuous_present"] = True
-    return config
-
-
-def _materialization_fill_state(progress: float) -> dict[str, float]:
-    p = _clamp01(progress)
-    if p <= _OPTICAL_MATERIAL_FILL_START:
-        opacity = 0.0
-    else:
-        opacity = _smoothstep(
-            (p - _OPTICAL_MATERIAL_FILL_START)
-            / max(_OPTICAL_MATERIAL_FILL_SOLID_AT - _OPTICAL_MATERIAL_FILL_START, 1e-6)
-        )
-    height = _lerp(
-        _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
-        1.0,
-        _clamp01(
-            (p - _OPTICAL_MATERIAL_FILL_SOLID_AT)
-            / max(_OPTICAL_MATERIAL_FILL_FULL_AT - _OPTICAL_MATERIAL_FILL_SOLID_AT, 1e-6)
-        )
-        ** 3.0,
-    )
-    warp_bloom = _snap_ease_in(
-        (p - _OPTICAL_MATERIALIZATION_BLOOM_START)
-        / max(1.0 - _OPTICAL_MATERIALIZATION_BLOOM_START, 1e-6)
-    )
-    # The local fill is visually inside the compositor warp; never let it
-    # become taller than the field that is currently opening around it.
-    height = min(height, max(_OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC, warp_bloom))
-    return {
-        "opacity": _clamp01(opacity),
-        "height_frac": _clamp01(height),
-    }
-
-
-def _dismiss_materialization_fill_state(progress: float) -> dict[str, float]:
-    """Keep the visible shell body alive until the seam sidecar owns dismissal."""
-    p = _clamp01(progress)
-    if p <= _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS:
-        return {
-            "opacity": 0.0,
-            "height_frac": _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
-        }
-    state = _materialization_fill_state(p)
-    return {
-        "opacity": state["opacity"],
-        "height_frac": state["height_frac"],
-    }
-
-
-def _dismiss_pucker_amount(progress: float) -> float:
-    """Signed radial ringdown: an underdamped pucker after the seam vanishes."""
-    p = _clamp01(progress)
-    return math.exp(-_OPTICAL_MATERIALIZATION_RADIAL_DAMPING * p) * math.cos(
-        2.0 * math.pi * _OPTICAL_MATERIALIZATION_RADIAL_CYCLES * p
-    )
-
-
-def _dismiss_pucker_tail_progress_for_close_progress(close_progress: float) -> float:
-    """Advance the radial tail while the shell is visually shrinking away."""
-    start = max(_OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS, 1e-6)
-    phase = _clamp01((start - _clamp01(close_progress)) / start)
-    return _lerp(
-        0.0,
-        _OPTICAL_MATERIALIZATION_PUCKER_PREARM_TAIL_PROGRESS,
-        phase,
-    )
-
-
-def _dismiss_seam_latch_amount(progress: float) -> float:
-    """Positive seam pucker already present at latch start, deeper at closure."""
-    p = _clamp01(progress)
-    start = max(_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS, 1e-6)
-    t = _clamp01((start - p) / start)
-    return _lerp(
-        _OPTICAL_MATERIALIZATION_SEAM_LATCH_START,
-        1.0,
-        1.0 - (1.0 - t) ** 3.0,
-    )
-
-
-def _seam_pucker_tuning_defaults() -> dict[str, float]:
-    return {
-        "preview_progress": _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS * 0.45,
-        "seam_latch_start": _OPTICAL_MATERIALIZATION_SEAM_LATCH_START,
-        "seam_latch_intensity": _OPTICAL_MATERIALIZATION_SEAM_LATCH_INTENSITY,
-        "scar_seam_length_frac": _OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC,
-        "scar_seam_thickness_frac": _OPTICAL_MATERIALIZATION_SEAM_THICKNESS_FRAC,
-        "scar_seam_focus_frac": _OPTICAL_MATERIALIZATION_SEAM_FOCUS_FRAC,
-        "scar_vertical_grip": _OPTICAL_MATERIALIZATION_SEAM_VERTICAL_GRIP,
-        "scar_horizontal_grip": _OPTICAL_MATERIALIZATION_SEAM_HORIZONTAL_GRIP,
-        "scar_axis_rotation": _OPTICAL_MATERIALIZATION_SEAM_AXIS_ROTATION,
-        "scar_mirrored_lip": _OPTICAL_MATERIALIZATION_SEAM_MIRRORED_LIP,
-    }
-
-
-def _dismiss_pucker_amplitude_multiplier(progress: float) -> float:
-    """Diagnostic gain envelope: quick visibility peak, long elastic decay."""
-    p = _clamp01(progress)
-    peak_at = max(_OPTICAL_MATERIALIZATION_PUCKER_GAIN_PEAK_AT, 1e-6)
-    if p <= peak_at:
-        t = p / peak_at
-        return _lerp(
-            1.0,
-            _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN,
-            1.0 - (1.0 - t) ** 3.0,
-        )
-    t = (p - peak_at) / max(1.0 - peak_at, 1e-6)
-    return _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN * math.exp(-5.0 * t)
-
-
-def _apply_dismiss_seam_latch_fields(
-    config: dict,
-    progress: float,
-    tuning: dict[str, float] | None = None,
-) -> dict:
-    """Apply the crisp seam latch while the slit is still zipping closed."""
-    updated = dict(config)
-    settings = _seam_pucker_tuning_defaults()
-    if tuning:
-        for key, value in tuning.items():
-            if key in settings:
-                settings[key] = float(value)
-    p = _clamp01(progress)
-    overlap_start = max(_OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS, 1e-6)
-    t = _clamp01((overlap_start - p) / overlap_start)
-    base_h = max(
-        float(
-            updated.get(
-                "_materialization_base_height_points",
-                updated.get("content_height_points", 1.0),
-            )
-        ),
-        1.0,
-    )
-    current_h = max(float(updated.get("content_height_points", 1.0)), 1.0)
-    seam_field_h = max(
-        current_h,
-        min(
-            base_h,
-            max(
-                _OPTICAL_MATERIALIZATION_SEAM_FIELD_MIN_HEIGHT_POINTS,
-                base_h * _OPTICAL_MATERIALIZATION_SEAM_FIELD_HEIGHT_FRAC,
-            ),
-        ),
-    )
-    amount = _lerp(
-        settings["seam_latch_start"],
-        1.0,
-        1.0 - (1.0 - t) ** 3.0,
-    ) * settings["seam_latch_intensity"]
-    updated["content_height_points"] = seam_field_h
-    updated["corner_radius_points"] = min(
-        max(float(updated.get("corner_radius_points", 1.0)), 1.0),
-        seam_field_h * 0.5,
-    )
-    updated["cleanup_blur_radius_points"] = 0.0
-    updated["mip_blur_strength"] = 0.0
-    updated["warp_mode"] = 3.0 if settings["scar_mirrored_lip"] >= 0.5 else 1.0
-    updated["scar_amount"] = amount
-    updated["scar_seam_length_frac"] = settings["scar_seam_length_frac"]
-    updated["scar_seam_thickness_frac"] = settings["scar_seam_thickness_frac"]
-    updated["scar_seam_focus_frac"] = settings["scar_seam_focus_frac"]
-    updated["scar_vertical_grip"] = settings["scar_vertical_grip"]
-    updated["scar_horizontal_grip"] = settings["scar_horizontal_grip"]
-    updated["scar_axis_rotation"] = settings["scar_axis_rotation"]
-    updated["scar_mirrored_lip"] = settings["scar_mirrored_lip"]
-    updated["x_squeeze"] = 1.0
-    updated["y_squeeze"] = 1.0
-    updated["ring_amplitude_points"] = 0.0
-    updated["tail_amplitude_points"] = 0.0
-    updated["continuous_present"] = True
-    return updated
-
-
-def _dismiss_seam_tuning_for_close_progress(
-    close_progress: float,
-    tuning: dict[str, float] | None = None,
-) -> dict[str, float]:
-    """Map close progress onto the seam tuner path without firing peak too early."""
-    settings = _seam_pucker_tuning_defaults()
-    if tuning:
-        for key, value in tuning.items():
-            if key in settings:
-                settings[key] = float(value)
-    p = _clamp01(close_progress)
-    arm_start = max(_OPTICAL_MATERIALIZATION_SEAM_OVERLAP_START_PROGRESS, 1e-6)
-    peak = max(_OPTICAL_MATERIALIZATION_SEAM_PEAK_PROGRESS, 1e-6)
-    if p >= peak:
-        arm_phase = _smoothstep((arm_start - p) / max(arm_start - peak, 1e-6))
-        settings["preview_progress"] = 0.0
-        settings["seam_latch_intensity"] *= arm_phase
-        settings["scar_seam_length_frac"] = _OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC
-        return settings
-
-    phase = _clamp01((peak - p) / peak)
-    settings["preview_progress"] = _lerp(
-        0.0,
-        _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS,
-        phase,
-    )
-    settings["scar_seam_length_frac"] = _lerp(
-        _OPTICAL_MATERIALIZATION_SEAM_LENGTH_FRAC,
-        _OPTICAL_MATERIALIZATION_SEAM_LENGTH_CLOSED_FRAC,
-        phase,
-    )
-    return settings
-
-
-def _dismiss_seam_latch_shell_config(
-    final_shell_config: dict,
-    progress: float,
-    tuning: dict[str, float] | None = None,
-) -> dict:
-    """Return the full-width seam field layered over the close animation."""
-    config = dict(final_shell_config)
-    config["client_id"] = _DISMISS_SEAM_CLIENT_ID
-    config["role"] = "assistant"
-    config["visible"] = True
-    config["z_index"] = 10
-    seam_tuning = _dismiss_seam_tuning_for_close_progress(progress, tuning)
-    return _apply_dismiss_seam_latch_fields(
-        config,
-        seam_tuning["preview_progress"],
-        seam_tuning,
-    )
-
-
-def _apply_dismiss_radial_pucker_fields(config: dict, progress: float) -> dict:
-    """Apply the post-close radial underdamped pucker without blur."""
-    updated = dict(config)
-    amount = (
-        _dismiss_pucker_amount(progress)
-        * _OPTICAL_MATERIALIZATION_RADIAL_PUCKER_INTENSITY
-        * _dismiss_pucker_amplitude_multiplier(progress)
-    )
-    updated["cleanup_blur_radius_points"] = 0.0
-    updated["mip_blur_strength"] = 0.0
-    updated["warp_mode"] = 2.0
-    updated["scar_amount"] = amount
-    updated["x_squeeze"] = 1.0
-    updated["y_squeeze"] = 1.0
-    updated["ring_amplitude_points"] = 0.0
-    updated["tail_amplitude_points"] = 0.0
-    updated["continuous_present"] = True
-    return updated
-
-
-def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
-    """Return the radial underdamped scar that releases after dismiss closes."""
-    base_w = max(float(shell_config.get("content_width_points", 1.0)), 1.0)
-    base_h = max(float(shell_config.get("content_height_points", 1.0)), 1.0)
-    config = _materialized_optical_shell_config(shell_config, 0.0)
-    base_diameter = max(560.0, min(base_w * 0.52, base_h * 2.9))
-    diameter = base_diameter * math.sqrt(_OPTICAL_MATERIALIZATION_RADIAL_AREA_MULTIPLIER)
-    config["content_width_points"] = diameter
-    config["content_height_points"] = diameter
-    config["corner_radius_points"] = diameter * 0.5
-    config["core_magnification"] = 1.0
-    return _apply_dismiss_radial_pucker_fields(config, progress)
-
-
-def _dismiss_radial_pucker_shell_config(shell_config: dict, progress: float) -> dict:
-    """Return the radial scar as an independent compositor client."""
-    config = _dismiss_pucker_shell_config(shell_config, progress)
-    config["client_id"] = _DISMISS_RADIAL_PUCKER_CLIENT_ID
-    config["role"] = "assistant"
-    config["visible"] = True
-    config["z_index"] = 9
-    return config
-
-
-def _hidden_dismiss_main_shell_config(shell_config: dict) -> dict:
-    """Keep the main client registered without drawing a default shell frame."""
-    config = _materialized_optical_shell_config(shell_config, 0.0)
-    config["visible"] = False
-    config["continuous_present"] = True
-    config["mip_blur_strength"] = 0.0
-    config["cleanup_blur_radius_points"] = 0.0
-    return config
+# House-owned pressure-slit choreography. CommandOverlay keeps legacy private
+# names as compatibility aliases while consuming the shared primitive module.
+_materialized_optical_shell_config = _house_transition.materialized_shell_config
+_materialization_fill_state = _house_transition.materialization_fill_state
+_dismiss_materialization_fill_state = (
+    _house_transition.dismiss_materialization_fill_state
+)
+_dismiss_pucker_amount = _house_transition.dismiss_pucker_amount
+_dismiss_pucker_tail_progress_for_close_progress = (
+    _house_transition.dismiss_pucker_tail_progress_for_close_progress
+)
+_dismiss_seam_latch_amount = _house_transition.dismiss_seam_latch_amount
+_seam_pucker_tuning_defaults = _house_transition.seam_pucker_tuning_defaults
+_dismiss_pucker_amplitude_multiplier = (
+    _house_transition.dismiss_pucker_amplitude_multiplier
+)
+_apply_dismiss_seam_latch_fields = _house_transition.apply_dismiss_seam_latch_fields
+_dismiss_seam_tuning_for_close_progress = (
+    _house_transition.dismiss_seam_tuning_for_close_progress
+)
+_dismiss_seam_latch_shell_config = _house_transition.dismiss_seam_latch_shell_config
+_apply_dismiss_radial_pucker_fields = (
+    _house_transition.apply_dismiss_radial_pucker_fields
+)
+_dismiss_pucker_shell_config = _house_transition.dismiss_pucker_shell_config
+_dismiss_radial_pucker_shell_config = (
+    _house_transition.dismiss_radial_pucker_shell_config
+)
+_hidden_dismiss_main_shell_config = _house_transition.hidden_dismiss_main_shell_config
 
 
 def _fill_compositing_filter_for_brightness(brightness: float) -> str | None:
@@ -3525,6 +3194,7 @@ class CommandOverlay(NSObject):
         if timer is not None:
             timer.invalidate()
             self._materialization_timer = None
+        self._materialization_runner = None
         self._stop_dismiss_seam_compositor()
         if not preserve_radial_pucker:
             self._stop_dismiss_radial_pucker_compositor()
@@ -3649,17 +3319,29 @@ class CommandOverlay(NSObject):
         self._materialization_direction = 1 if direction >= 0 else -1
         self._materialization_progress = 0.0 if self._materialization_direction > 0 else 1.0
         self._materialization_started_at = time.perf_counter()
+        self._materialization_runner = _house_transition.OpticalTransitionRunner(
+            self._materialization_final_shell_config,
+            direction=self._materialization_direction,
+            client_id=str(
+                self._materialization_final_shell_config.get(
+                    "client_id",
+                    "assistant.command",
+                )
+            ),
+            role=str(
+                self._materialization_final_shell_config.get("role", "assistant")
+            ),
+            z_index=int(self._materialization_final_shell_config.get("z_index", 0)),
+        )
         self._clear_punchthrough_mask_for_materialization()
         if self._materialization_direction < 0:
             self._apply_materialization_fill_state(self._materialization_progress)
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is not None:
             try:
+                seed_frame = self._materialization_runner.frame_at(0.0)
                 compositor.update_shell_config(
-                    _materialized_optical_shell_config(
-                        self._materialization_final_shell_config,
-                        self._materialization_progress,
-                    )
+                    seed_frame.main_config
                 )
             except Exception:
                 logger.debug("Failed to seed command materialization shell", exc_info=True)
@@ -3678,19 +3360,24 @@ class CommandOverlay(NSObject):
         if getattr(self, "_materialization_timer", None) is not timer:
             return
         final_config = getattr(self, "_materialization_final_shell_config", None)
+        runner = getattr(self, "_materialization_runner", None)
         compositor = getattr(self, "_fullscreen_compositor", None)
         if final_config is None or compositor is None:
             self._cancel_materialization_animation()
             self._materialization_progress = 1.0
             return
+        if runner is None:
+            runner = _house_transition.OpticalTransitionRunner(
+                final_config,
+                direction=getattr(self, "_materialization_direction", 1),
+                client_id=str(final_config.get("client_id", "assistant.command")),
+                role=str(final_config.get("role", "assistant")),
+                z_index=int(final_config.get("z_index", 0)),
+            )
+            self._materialization_runner = runner
         elapsed = max(time.perf_counter() - getattr(self, "_materialization_started_at", 0.0), 0.0)
-        duration = (
-            _OPTICAL_MATERIALIZATION_S
-            if getattr(self, "_materialization_direction", 1) > 0
-            else _OPTICAL_MATERIALIZATION_DISMISS_S
-        )
-        raw = _clamp01(elapsed / duration)
-        progress = raw if getattr(self, "_materialization_direction", 1) > 0 else 1.0 - raw
+        frame = runner.frame_at(elapsed)
+        progress = frame.progress
         prev_progress = getattr(self, "_materialization_progress", 0.0)
         self._materialization_progress = progress
         self._apply_materialization_fill_state(progress)
@@ -3701,46 +3388,31 @@ class CommandOverlay(NSObject):
         ):
             self._check_optical_entrance_readiness()
         try:
-            shell_config = _materialized_optical_shell_config(final_config, progress)
             compositor_updates: list[tuple[object, dict]] = []
             if getattr(self, "_materialization_direction", 1) < 0:
-                if progress <= _OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS:
+                if frame.radial_config is not None:
                     self._set_layer_hidden_without_actions(
                         getattr(self, "_backdrop_layer", None),
                         True,
                     )
-                    pucker_progress = _dismiss_pucker_tail_progress_for_close_progress(
-                        progress
+                    self._pucker_tail_progress_offset = _clamp01(
+                        _dismiss_pucker_tail_progress_for_close_progress(progress)
                     )
-                    self._pucker_tail_progress_offset = _clamp01(pucker_progress)
                     radial_compositor = self._ensure_dismiss_radial_pucker_compositor()
                     if radial_compositor is not None:
-                        compositor_updates.append(
-                            (
-                                radial_compositor,
-                                _dismiss_radial_pucker_shell_config(
-                                    final_config,
-                                    pucker_progress,
-                                ),
-                            )
-                        )
-                if progress <= _OPTICAL_MATERIALIZATION_SEAM_OVERLAP_START_PROGRESS:
+                        compositor_updates.append((radial_compositor, frame.radial_config))
+                if frame.seam_config is not None:
                     seam_compositor = self._ensure_dismiss_seam_compositor()
                     if seam_compositor is not None:
-                        compositor_updates.append(
-                            (
-                                seam_compositor,
-                                _dismiss_seam_latch_shell_config(final_config, progress),
-                            )
-                        )
+                        compositor_updates.append((seam_compositor, frame.seam_config))
                 else:
                     self._stop_dismiss_seam_compositor()
-            compositor_updates.append((compositor, shell_config))
+            compositor_updates.append((compositor, frame.main_config))
             if not self._publish_shared_compositor_configs(compositor_updates):
                 self._publish_individual_compositor_configs(compositor_updates)
         except Exception:
             logger.debug("Failed to update command materialization shell", exc_info=True)
-        if raw >= 1.0:
+        if frame.complete:
             self._cancel_materialization_animation(
                 preserve_radial_pucker=getattr(self, "_materialization_direction", 1) < 0
             )
