@@ -1730,12 +1730,23 @@ class CommandOverlay(NSObject):
             text.setVerticallyResizable_(False)
             content.addSubview_(text)
             window.setContentView_(content)
-        except Exception:
+        except Exception as exc:
+            record_command_overlay_trace(
+                "stack_speculum.content.create_failed",
+                error=type(exc).__name__,
+            )
             logger.debug("Failed to create Stack Speculum smoke content window", exc_info=True)
             return None
         self._stack_speculum_smoke_content_window = window
         self._stack_speculum_smoke_content_text = text
         self._stack_speculum_smoke_content_view = content
+        self._stack_speculum_smoke_content_visible = False
+        record_command_overlay_trace(
+            "stack_speculum.content.created",
+            width=float(frame.size.width),
+            height=float(frame.size.height),
+            level=_COMMAND_OVERLAY_WINDOW_LEVEL + 2,
+        )
         return window
 
     def _update_stack_speculum_smoke_content(self, config: dict, *, body_ready: bool) -> None:
@@ -1744,6 +1755,14 @@ class CommandOverlay(NSObject):
             if window is not None:
                 try:
                     window.orderOut_(None)
+                    if getattr(self, "_stack_speculum_smoke_content_visible", False):
+                        record_command_overlay_trace(
+                            "stack_speculum.content.hide",
+                            reason="body_not_ready"
+                            if not body_ready
+                            else "config_not_visible",
+                        )
+                    self._stack_speculum_smoke_content_visible = False
                 except Exception:
                     logger.debug("Failed to hide Stack Speculum smoke content", exc_info=True)
             return
@@ -1754,7 +1773,20 @@ class CommandOverlay(NSObject):
         try:
             window.setFrame_display_(frame, True)
             window.setAlphaValue_(1.0)
-            window.orderFront_(None)
+            if hasattr(window, "orderFrontRegardless"):
+                window.orderFrontRegardless()
+            else:
+                window.orderFront_(None)
+            if not getattr(self, "_stack_speculum_smoke_content_visible", False):
+                record_command_overlay_trace(
+                    "stack_speculum.content.show",
+                    x=float(frame.origin.x),
+                    y=float(frame.origin.y),
+                    width=float(frame.size.width),
+                    height=float(frame.size.height),
+                    text_len=len(_STACK_SPECULUM_CONTENT_TEXT),
+                )
+            self._stack_speculum_smoke_content_visible = True
         except Exception:
             logger.debug("Failed to update Stack Speculum smoke content", exc_info=True)
 
@@ -1833,9 +1865,16 @@ class CommandOverlay(NSObject):
         self._stack_speculum_smoke_content_window = None
         self._stack_speculum_smoke_content_text = None
         self._stack_speculum_smoke_content_view = None
+        was_visible = bool(getattr(self, "_stack_speculum_smoke_content_visible", False))
+        self._stack_speculum_smoke_content_visible = False
         if window is not None:
             try:
                 window.orderOut_(None)
+                if was_visible:
+                    record_command_overlay_trace(
+                        "stack_speculum.content.hide",
+                        reason="stop",
+                    )
             except Exception:
                 logger.debug("Failed to stop Stack Speculum smoke content", exc_info=True)
 

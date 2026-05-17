@@ -409,6 +409,9 @@ def test_stack_speculum_smoke_content_window_tracks_main_field_after_body_ready(
         def orderFront_(self, sender):
             self.ordered_front = True
 
+        def orderFrontRegardless(self):
+            self.ordered_front_regardless = True
+
         def orderOut_(self, sender):
             self.ordered_out = True
 
@@ -484,9 +487,43 @@ def test_stack_speculum_smoke_content_window_tracks_main_field_after_body_ready(
 
     assert windows
     assert windows[0].ignores_mouse is True
-    assert windows[0].ordered_front is True
+    assert windows[0].ordered_front_regardless is True
     assert overlay._stack_speculum_smoke_content_text.string.startswith("Stack Speculum")
     assert "House optical consumer" in overlay._stack_speculum_smoke_content_text.string
+
+
+def test_stack_speculum_smoke_content_traces_visibility_transitions(
+    mock_pyobjc,
+    monkeypatch,
+):
+    overlay, mod = _make_overlay(mock_pyobjc)
+    monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+    events = []
+    monkeypatch.setattr(
+        mod,
+        "record_command_overlay_trace",
+        lambda event, **fields: events.append((event, fields)),
+    )
+
+    config = {
+        "client_id": "stack.speculum.demo",
+        "center_x": 1666.0,
+        "center_y": 852.0,
+        "content_width_points": 420.0,
+        "content_height_points": 132.0,
+    }
+
+    overlay._update_stack_speculum_smoke_content(config, body_ready=True)
+    overlay._update_stack_speculum_smoke_content(config, body_ready=True)
+    overlay._update_stack_speculum_smoke_content(config, body_ready=False)
+
+    event_names = [event for event, _ in events]
+    assert event_names.count("stack_speculum.content.show") == 1
+    assert event_names.count("stack_speculum.content.hide") == 1
+    show_fields = next(fields for event, fields in events if event == "stack_speculum.content.show")
+    assert show_fields["width"] == pytest.approx(420.0)
+    assert show_fields["height"] == pytest.approx(132.0)
+    assert show_fields["text_len"] == len(mod._STACK_SPECULUM_CONTENT_TEXT)
 
 
 def test_stack_speculum_smoke_harness_traces_diagnostic_lifecycle(
