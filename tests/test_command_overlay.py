@@ -222,7 +222,10 @@ def test_stack_speculum_smoke_request_is_tray_hud_consumer(mock_pyobjc, monkeypa
     assert request.state == "materialize"
     assert request.presentation.layer == "hud"
     assert request.presentation.order == 50
-    assert request.profile.base == "quiet_chip"
+    assert request.profile.base == "agent_card"
+    assert request.profile.params["core_magnification"] >= 1.18
+    assert request.profile.params["ring_amplitude_frac"] >= 0.18
+    assert request.profile.params["tail_amplitude_frac"] >= 0.07
     assert request.layout_recipe == "deck"
     assert request.z_index == 24
 
@@ -276,9 +279,64 @@ def test_stack_speculum_smoke_harness_registers_visible_tray_client(
     assert config["client_id"] == "stack.speculum.demo"
     assert config["role"] == "tray"
     assert config["presentation_layer"] == "hud"
+    assert config["debug_visualize"] is True
+    assert config["debug_grid_spacing_points"] <= 16.0
+    assert config["core_magnification"] >= 1.18
+    assert config["ring_amplitude_points"] >= 17.0
     assert config["optical_field"]["caller_id"] == "stack.speculum.demo"
     assert "progress" not in config["optical_field"]
     assert "phase" not in config["optical_field"]
+
+
+def test_stack_speculum_smoke_harness_traces_diagnostic_lifecycle(
+    mock_pyobjc,
+    monkeypatch,
+):
+    overlay, mod = _make_overlay(mock_pyobjc)
+    monkeypatch.setattr(mod, "_STACK_SPECULUM_SMOKE_ENABLED", True)
+    events = []
+    monkeypatch.setattr(
+        mod,
+        "record_command_overlay_trace",
+        lambda event, **fields: events.append((event, fields)),
+    )
+
+    class FakeClient:
+        def __init__(self, client_id, role):
+            self._client_id = client_id
+            self.role = role
+            self._host = object()
+
+        def update_shell_config(self, config):
+            return True
+
+        def stop(self):
+            pass
+
+    def fake_start_overlay_compositor(**kwargs):
+        return FakeClient(kwargs["client_id"], kwargs["role"])
+
+    import spoke.fullscreen_compositor as fullscreen_compositor
+
+    monkeypatch.setattr(
+        fullscreen_compositor,
+        "start_overlay_compositor",
+        fake_start_overlay_compositor,
+    )
+
+    overlay._start_stack_speculum_smoke_lifecycle({"z_index": 0}, direction=1)
+    overlay._stack_speculum_smoke_compositor_updates(0.2)
+    overlay._stop_stack_speculum_smoke_compositors()
+
+    event_names = [event for event, _ in events]
+    assert "stack_speculum.smoke.start" in event_names
+    assert "stack_speculum.smoke.frame" in event_names
+    assert "stack_speculum.smoke.stop" in event_names
+    frame_event = next(
+        fields for event, fields in events if event == "stack_speculum.smoke.frame"
+    )
+    assert frame_event["client_ids"] == ["stack.speculum.demo"]
+    assert frame_event["debug_visualize"] is True
 
 
 def test_quartz_backdrop_renderer_blurs_snapshot_before_render(mock_pyobjc, monkeypatch):

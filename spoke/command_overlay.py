@@ -1509,8 +1509,8 @@ class CommandOverlay(NSObject):
         screen_frame = self._screen.frame()
         screen_w = float(getattr(screen_frame.size, "width", 1440.0))
         screen_h = float(getattr(screen_frame.size, "height", 900.0))
-        width = 360.0
-        height = 96.0
+        width = 420.0
+        height = 132.0
         margin = 44.0
         x = max(24.0, screen_w - width - margin)
         y = max(24.0, screen_h - height - 180.0)
@@ -1528,11 +1528,70 @@ class CommandOverlay(NSObject):
             role="tray",
             state=state,
             presentation=OpticalFieldPresentation(layer="hud", order=50),
-            profile=OpticalFieldProfileRef(base="quiet_chip"),
+            profile=OpticalFieldProfileRef(
+                base="agent_card",
+                params={
+                    "core_magnification": 1.22,
+                    "band_width_frac": 0.095,
+                    "tail_width_frac": 0.070,
+                    "ring_amplitude_frac": 0.20,
+                    "tail_amplitude_frac": 0.08,
+                    "bleed_zone_frac": 0.82,
+                    "exterior_mix_frac": 0.24,
+                    "mip_blur_strength": 1.0,
+                },
+            ),
             layout_recipe="deck",
             motion=OpticalFieldMotionIntent(strategy="auto"),
             z_index=int(final_shell_config.get("z_index", 0)) + 20,
         )
+
+    def _stack_speculum_smoke_diagnostic_config(self, config: dict) -> dict:
+        """Make the opt-in tray-consumer smoke legible instead of merely present."""
+        diagnostic = dict(config)
+        width = max(float(diagnostic.get("content_width_points", 0.0)), 160.0)
+        height = max(float(diagnostic.get("content_height_points", 0.0)), 48.0)
+        diagnostic.update(
+            {
+                "content_width_points": width,
+                "content_height_points": height,
+                "corner_radius_points": min(
+                    max(float(diagnostic.get("corner_radius_points", 0.0)), 18.0),
+                    width * 0.5,
+                    height * 0.5,
+                ),
+                "core_magnification": max(
+                    float(diagnostic.get("core_magnification", 0.0)),
+                    1.18,
+                ),
+                "ring_amplitude_points": max(
+                    float(diagnostic.get("ring_amplitude_points", 0.0)),
+                    18.0,
+                ),
+                "tail_amplitude_points": max(
+                    float(diagnostic.get("tail_amplitude_points", 0.0)),
+                    8.0,
+                ),
+                "mip_blur_strength": max(
+                    float(diagnostic.get("mip_blur_strength", 0.0)),
+                    1.0,
+                ),
+                "debug_visualize": True,
+                "debug_grid_spacing_points": 12.0,
+                "gpu_material_enabled": 1.0,
+                "gpu_material_brightness": 0.82,
+                "gpu_material_opacity": 0.72,
+                "gpu_material_text_contrast_bias": 0.9,
+                "gpu_material_ridge_emphasis": 1.0,
+            }
+        )
+        optical_field = diagnostic.get("optical_field")
+        if isinstance(optical_field, dict):
+            diagnostic["optical_field"] = {
+                **optical_field,
+                "smoke_diagnostic": True,
+            }
+        return diagnostic
 
     def _start_stack_speculum_smoke_lifecycle(
         self,
@@ -1550,7 +1609,21 @@ class CommandOverlay(NSObject):
         )
         result = adapter.upsert(request)
         if not result.accepted:
+            record_command_overlay_trace(
+                "stack_speculum.smoke.rejected",
+                reason=str(result.reason),
+                direction=direction,
+            )
             return
+        record_command_overlay_trace(
+            "stack_speculum.smoke.start",
+            direction=direction,
+            client_id=request.caller_id,
+            role=request.role,
+            presentation_layer=request.presentation.layer if request.presentation else None,
+            width=request.bounds.width,
+            height=request.bounds.height,
+        )
         self._stack_speculum_smoke_adapter = adapter
         self._stack_speculum_smoke_base_config = dict(final_shell_config)
         updates = self._stack_speculum_smoke_compositor_updates(0.0)
@@ -1599,11 +1672,26 @@ class CommandOverlay(NSObject):
         updates: list[tuple[object, dict]] = []
         active_client_ids = set()
         for config in frame.shell_configs:
+            config = self._stack_speculum_smoke_diagnostic_config(config)
             client_id = str(config.get("client_id", _STACK_SPECULUM_CLIENT_ID))
             active_client_ids.add(client_id)
             compositor = self._ensure_stack_speculum_smoke_compositor(config)
             if compositor is not None:
                 updates.append((compositor, config))
+        if frame.shell_configs:
+            record_command_overlay_trace(
+                "stack_speculum.smoke.frame",
+                elapsed_s=elapsed_s,
+                client_ids=sorted(active_client_ids),
+                configs=len(frame.shell_configs),
+                body_ready=frame.body_ready,
+                complete=frame.complete,
+                debug_visualize=all(
+                    bool(config.get("debug_visualize")) for _, config in updates
+                )
+                if updates
+                else False,
+            )
         for client_id, compositor in list(
             getattr(self, "_stack_speculum_smoke_compositors", {}).items()
         ):
@@ -1617,7 +1705,13 @@ class CommandOverlay(NSObject):
         return updates
 
     def _stop_stack_speculum_smoke_compositors(self) -> None:
-        for compositor in list(getattr(self, "_stack_speculum_smoke_compositors", {}).values()):
+        clients = getattr(self, "_stack_speculum_smoke_compositors", {})
+        if clients or getattr(self, "_stack_speculum_smoke_adapter", None) is not None:
+            record_command_overlay_trace(
+                "stack_speculum.smoke.stop",
+                clients=sorted(str(client_id) for client_id in clients),
+            )
+        for compositor in list(clients.values()):
             try:
                 compositor.stop()
             except Exception:
