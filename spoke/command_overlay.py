@@ -83,6 +83,12 @@ _OVERLAY_HEIGHT = _env("SPOKE_COMMAND_OVERLAY_HEIGHT", 80.0)
 _COMMAND_OVERLAY_WINDOW_LEVEL = _OVERLAY_WINDOW_LEVEL + 1
 _STACK_SPECULUM_SMOKE_ENABLED = _env_bool("SPOKE_STACK_SPECULUM_SMOKE", False)
 _STACK_SPECULUM_CLIENT_ID = "stack.speculum.demo"
+_STACK_SPECULUM_CONTENT_INSET = 18.0
+_STACK_SPECULUM_CONTENT_TEXT = (
+    "Stack Speculum\n"
+    "House optical consumer\n"
+    "tray/HUD lifecycle proof"
+)
 _OVERLAY_BOTTOM_MARGIN = _env("SPOKE_COMMAND_OVERLAY_BOTTOM_MARGIN", 230.0)
 _OVERLAY_TOP_MARGIN = _env("SPOKE_COMMAND_OVERLAY_TOP_MARGIN", 100.0)
 _OVERLAY_CORNER_RADIUS = _env("SPOKE_COMMAND_OVERLAY_CORNER_RADIUS", 16.0)
@@ -1662,6 +1668,96 @@ class CommandOverlay(NSObject):
             clients[client_id] = compositor
         return compositor
 
+    def _stack_speculum_smoke_content_frame(self, config: dict):
+        width = max(float(config.get("content_width_points", 0.0)), 1.0)
+        height = max(float(config.get("content_height_points", 0.0)), 1.0)
+        center_x = float(config.get("center_x", 0.0))
+        center_y = float(config.get("center_y", 0.0))
+        return NSMakeRect(
+            center_x - width * 0.5,
+            center_y - height * 0.5,
+            width,
+            height,
+        )
+
+    def _ensure_stack_speculum_smoke_content_window(self, config: dict):
+        window = getattr(self, "_stack_speculum_smoke_content_window", None)
+        if window is not None:
+            return window
+        frame = self._stack_speculum_smoke_content_frame(config)
+        try:
+            window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+                frame,
+                0,
+                NSBackingStoreBuffered,
+                False,
+            )
+            window.setLevel_(_COMMAND_OVERLAY_WINDOW_LEVEL + 2)
+            window.setOpaque_(False)
+            window.setBackgroundColor_(NSColor.clearColor())
+            window.setIgnoresMouseEvents_(True)
+            window.setHasShadow_(False)
+            window.setCollectionBehavior_(
+                NSWindowCollectionBehaviorCanJoinAllSpaces
+                | NSWindowCollectionBehaviorStationary
+                | NSWindowCollectionBehaviorFullScreenAuxiliary
+            )
+
+            content = NSView.alloc().initWithFrame_(
+                NSMakeRect(0, 0, frame.size.width, frame.size.height)
+            )
+            content.setWantsLayer_(True)
+            text_frame = NSMakeRect(
+                _STACK_SPECULUM_CONTENT_INSET,
+                _STACK_SPECULUM_CONTENT_INSET,
+                max(frame.size.width - 2 * _STACK_SPECULUM_CONTENT_INSET, 1.0),
+                max(frame.size.height - 2 * _STACK_SPECULUM_CONTENT_INSET, 1.0),
+            )
+            text = NSTextView.alloc().initWithFrame_(text_frame)
+            text.setEditable_(False)
+            text.setSelectable_(False)
+            text.setDrawsBackground_(False)
+            text.setTextColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(0.95, 0.97, 1.0, 0.86)
+            )
+            text.setFont_(NSFont.systemFontOfSize_weight_(14.0, 0.15))
+            text.setString_(_STACK_SPECULUM_CONTENT_TEXT)
+            try:
+                text.textContainer().setWidthTracksTextView_(True)
+            except Exception:
+                pass
+            text.setHorizontallyResizable_(False)
+            text.setVerticallyResizable_(False)
+            content.addSubview_(text)
+            window.setContentView_(content)
+        except Exception:
+            logger.debug("Failed to create Stack Speculum smoke content window", exc_info=True)
+            return None
+        self._stack_speculum_smoke_content_window = window
+        self._stack_speculum_smoke_content_text = text
+        self._stack_speculum_smoke_content_view = content
+        return window
+
+    def _update_stack_speculum_smoke_content(self, config: dict, *, body_ready: bool) -> None:
+        if not body_ready or not bool(config.get("visible", True)):
+            window = getattr(self, "_stack_speculum_smoke_content_window", None)
+            if window is not None:
+                try:
+                    window.orderOut_(None)
+                except Exception:
+                    logger.debug("Failed to hide Stack Speculum smoke content", exc_info=True)
+            return
+        window = self._ensure_stack_speculum_smoke_content_window(config)
+        if window is None:
+            return
+        frame = self._stack_speculum_smoke_content_frame(config)
+        try:
+            window.setFrame_display_(frame, True)
+            window.setAlphaValue_(1.0)
+            window.orderFront_(None)
+        except Exception:
+            logger.debug("Failed to update Stack Speculum smoke content", exc_info=True)
+
     def _stack_speculum_smoke_compositor_updates(
         self,
         elapsed_s: float,
@@ -1674,13 +1770,21 @@ class CommandOverlay(NSObject):
             return []
         updates: list[tuple[object, dict]] = []
         active_client_ids = set()
+        main_config: dict | None = None
         for config in frame.shell_configs:
             config = self._stack_speculum_smoke_diagnostic_config(config)
             client_id = str(config.get("client_id", _STACK_SPECULUM_CLIENT_ID))
             active_client_ids.add(client_id)
+            if client_id == _STACK_SPECULUM_CLIENT_ID:
+                main_config = config
             compositor = self._ensure_stack_speculum_smoke_compositor(config)
             if compositor is not None:
                 updates.append((compositor, config))
+        if main_config is not None:
+            self._update_stack_speculum_smoke_content(
+                main_config,
+                body_ready=frame.body_ready,
+            )
         if frame.shell_configs:
             record_command_overlay_trace(
                 "stack_speculum.smoke.frame",
@@ -1722,6 +1826,18 @@ class CommandOverlay(NSObject):
         self._stack_speculum_smoke_compositors = {}
         self._stack_speculum_smoke_adapter = None
         self._stack_speculum_smoke_base_config = None
+        self._stop_stack_speculum_smoke_content_window()
+
+    def _stop_stack_speculum_smoke_content_window(self) -> None:
+        window = getattr(self, "_stack_speculum_smoke_content_window", None)
+        self._stack_speculum_smoke_content_window = None
+        self._stack_speculum_smoke_content_text = None
+        self._stack_speculum_smoke_content_view = None
+        if window is not None:
+            try:
+                window.orderOut_(None)
+            except Exception:
+                logger.debug("Failed to stop Stack Speculum smoke content", exc_info=True)
 
     def _stop_dismiss_radial_pucker_compositor(self) -> None:
         compositor = getattr(self, "_dismiss_radial_pucker_compositor", None)

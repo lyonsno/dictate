@@ -344,6 +344,151 @@ def test_stack_speculum_smoke_diagnostic_does_not_repaint_dismiss_sidecars(
     )
 
 
+def test_stack_speculum_smoke_content_waits_for_body_ready(
+    mock_pyobjc,
+    monkeypatch,
+):
+    overlay, mod = _make_overlay(mock_pyobjc)
+    monkeypatch.setattr(mod, "_STACK_SPECULUM_SMOKE_ENABLED", True)
+
+    overlay._start_stack_speculum_smoke_lifecycle({"z_index": 0}, direction=1)
+    overlay._stack_speculum_smoke_compositor_updates(0.0)
+
+    assert getattr(overlay, "_stack_speculum_smoke_content_window", None) is None
+
+
+def test_stack_speculum_smoke_content_window_tracks_main_field_after_body_ready(
+    mock_pyobjc,
+    monkeypatch,
+):
+    overlay, mod = _make_overlay(mock_pyobjc)
+
+    windows = []
+
+    class FakeWindow:
+        def __init__(self):
+            self.calls = []
+            self.frame = None
+
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithContentRect_styleMask_backing_defer_(self, frame, *args):
+            self.frame = frame
+            return self
+
+        def setLevel_(self, value):
+            self.level = value
+
+        def setOpaque_(self, value):
+            self.calls.append(("opaque", value))
+
+        def setBackgroundColor_(self, value):
+            self.background = value
+
+        def setIgnoresMouseEvents_(self, value):
+            self.ignores_mouse = value
+
+        def setHasShadow_(self, value):
+            self.has_shadow = value
+
+        def setCollectionBehavior_(self, value):
+            self.collection_behavior = value
+
+        def setContentView_(self, value):
+            self.content_view = value
+
+        def setFrame_display_(self, frame, display):
+            self.frame = frame
+            self.display = display
+
+        def setAlphaValue_(self, value):
+            self.alpha = value
+
+        def orderFront_(self, sender):
+            self.ordered_front = True
+
+        def orderOut_(self, sender):
+            self.ordered_out = True
+
+    class FakeView:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithFrame_(self, frame):
+            self.frame = frame
+            return self
+
+        def setWantsLayer_(self, value):
+            self.wants_layer = value
+
+        def addSubview_(self, view):
+            self.subview = view
+
+    class FakeText:
+        @classmethod
+        def alloc(cls):
+            return cls()
+
+        def initWithFrame_(self, frame):
+            self.frame = frame
+            return self
+
+        def setEditable_(self, value):
+            self.editable = value
+
+        def setSelectable_(self, value):
+            self.selectable = value
+
+        def setDrawsBackground_(self, value):
+            self.draws_background = value
+
+        def setTextColor_(self, value):
+            self.text_color = value
+
+        def setFont_(self, value):
+            self.font = value
+
+        def setString_(self, value):
+            self.string = value
+
+        def textContainer(self):
+            return MagicMock()
+
+        def setHorizontallyResizable_(self, value):
+            self.horizontally_resizable = value
+
+        def setVerticallyResizable_(self, value):
+            self.vertically_resizable = value
+
+    def fake_window_alloc():
+        window = FakeWindow()
+        windows.append(window)
+        return window
+
+    monkeypatch.setattr(mod.NSWindow, "alloc", fake_window_alloc)
+    monkeypatch.setattr(mod.NSView, "alloc", FakeView.alloc)
+    monkeypatch.setattr(mod.NSTextView, "alloc", FakeText.alloc)
+    monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+
+    config = {
+        "client_id": "stack.speculum.demo",
+        "center_x": 1666.0,
+        "center_y": 852.0,
+        "content_width_points": 420.0,
+        "content_height_points": 132.0,
+    }
+    overlay._update_stack_speculum_smoke_content(config, body_ready=True)
+
+    assert windows
+    assert windows[0].ignores_mouse is True
+    assert windows[0].ordered_front is True
+    assert overlay._stack_speculum_smoke_content_text.string.startswith("Stack Speculum")
+    assert "House optical consumer" in overlay._stack_speculum_smoke_content_text.string
+
+
 def test_stack_speculum_smoke_harness_traces_diagnostic_lifecycle(
     mock_pyobjc,
     monkeypatch,
