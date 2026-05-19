@@ -768,6 +768,51 @@ class TestOpticalShellMaterialization:
         assert ("scroll-alpha", 0.0) in events
         assert ("materialize", None, expected_start) in events
 
+    def test_show_during_dismiss_does_not_restore_full_open_mask_before_retarget(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "initial_brightness": 0.35,
+            "gpu_material_brightness": 0.35,
+        }
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+        overlay._materialization_progress = 0.47
+        overlay._materialization_final_shell_config = dict(shell_config)
+        overlay._display_local_optical_shell_config = MagicMock(return_value=shell_config)
+        overlay._apply_ridge_masks = MagicMock()
+        overlay._apply_surface_theme = MagicMock()
+        overlay._refresh_punchthrough_mask_if_needed = MagicMock()
+        overlay._schedule_visual_ready_start = MagicMock()
+        overlay._optical_fill_ready = MagicMock(return_value=True)
+        mask_progresses = []
+        def _record_mask_progress(*args, **kwargs):
+            progress = kwargs.get("progress", args[0] if args else None)
+            mask_progresses.append(progress)
+
+        overlay._update_scroll_materialization_mask = MagicMock(
+            side_effect=_record_mask_progress
+        )
+
+        overlay.show(
+            initial_utterance="ask again",
+            initial_response="answer again",
+            start_thinking_timer=False,
+        )
+
+        expected_start = mod._summon_retarget_progress_for_dismiss_progress(0.47)
+        assert expected_start < 1.0
+        assert mask_progresses
+        assert 1.0 not in mask_progresses
+
     def test_body_ready_dismiss_retarget_is_capped_below_full_open_flash(
         self, mock_pyobjc
     ):

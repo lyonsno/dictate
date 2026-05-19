@@ -2270,7 +2270,9 @@ class CommandOverlay(NSObject):
             summon_retarget_progress = retarget_progress_for_dismiss(
                 dismiss_reversal_progress
             ).summon_start_progress
-        self._cancel_all_timers()
+        self._cancel_all_timers(
+            preserve_materialization_mask=summon_retarget_progress is not None
+        )
         self._reset_fill_generation_latches_for_show()
         had_compositor = getattr(self, "_fullscreen_compositor", None) is not None
         if had_compositor and summon_retarget_progress is None:
@@ -3588,6 +3590,7 @@ class CommandOverlay(NSObject):
         self,
         *,
         preserve_radial_pucker: bool = False,
+        restore_scroll_mask: bool = True,
     ) -> None:
         timer = getattr(self, "_materialization_timer", None)
         if timer is not None:
@@ -3597,7 +3600,8 @@ class CommandOverlay(NSObject):
         if not preserve_radial_pucker:
             self._stop_dismiss_radial_pucker_compositor()
         # Remove text clipping mask when materialization ends
-        self._update_scroll_materialization_mask(1.0)
+        if restore_scroll_mask:
+            self._update_scroll_materialization_mask(1.0)
 
     def _cancel_dismiss_pucker_tail_animation(
         self,
@@ -3622,7 +3626,7 @@ class CommandOverlay(NSObject):
             self._pop_timer.invalidate()
             self._pop_timer = None
 
-    def _cancel_all_timers(self) -> None:
+    def _cancel_all_timers(self, *, preserve_materialization_mask: bool = False) -> None:
         self._cancel_dismiss_animation()
         self._cancel_entrance_pop()
         self._cancel_fade()
@@ -3632,7 +3636,9 @@ class CommandOverlay(NSObject):
         self._cancel_backdrop_refresh()
         self._cancel_visual_start()
         self._cancel_visual_ready_start()
-        self._cancel_materialization_animation()
+        self._cancel_materialization_animation(
+            restore_scroll_mask=not preserve_materialization_mask
+        )
         self._stop_dismiss_seam_compositor()
         self._cancel_dismiss_pucker_tail_animation()
         self._stop_thinking_timer()
@@ -3733,7 +3739,11 @@ class CommandOverlay(NSObject):
         start_progress: float | None = None,
     ) -> None:
         """Animate the compositor geometry from/to a pressure slit."""
-        self._cancel_materialization_animation()
+        self._cancel_materialization_animation(
+            restore_scroll_mask=not (
+                direction >= 0 and start_progress is not None
+            )
+        )
         self._cancel_dismiss_pucker_tail_animation()
         self._deferred_materialization_shell_config = None
         self._deferred_materialization_start_progress = None
