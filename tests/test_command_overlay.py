@@ -694,11 +694,14 @@ class TestOpticalShellMaterialization:
         assert kwargs["start_progress"] <= mod._OPTICAL_MATERIALIZATION_SPREAD_END
         assert kwargs["start_progress"] < dismiss_progress
 
-    def test_body_ready_dismiss_retarget_can_resume_late_summon_progress(
+    def test_body_ready_dismiss_retarget_is_capped_below_full_open_flash(
         self, mock_pyobjc
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
-        assert mod._summon_retarget_progress_for_dismiss_progress(0.72) == pytest.approx(0.72)
+        retarget_progress = mod._summon_retarget_progress_for_dismiss_progress(0.72)
+
+        assert retarget_progress == pytest.approx(mod._OPTICAL_MATERIALIZATION_BODY_READY)
+        assert retarget_progress < 0.72
 
     def test_pre_body_dismiss_retarget_cannot_publish_late_summon_magnification(
         self, mock_pyobjc

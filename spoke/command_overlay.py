@@ -793,7 +793,7 @@ def _summon_retarget_progress_for_dismiss_progress(progress: float) -> float:
     p = _clamp01(progress)
     if p < _OPTICAL_MATERIALIZATION_BODY_READY:
         return min(p, _OPTICAL_MATERIALIZATION_SPREAD_END)
-    return p
+    return min(p, _OPTICAL_MATERIALIZATION_BODY_READY)
 
 
 def _materialization_fill_state(progress: float) -> dict[str, float]:
