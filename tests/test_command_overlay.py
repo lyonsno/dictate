@@ -618,6 +618,53 @@ class TestOpticalShellMaterialization:
         overlay._window.orderOut_.assert_called_once_with(None)
         overlay._window.setAlphaValue_.assert_any_call(0.0)
 
+    def test_show_during_optical_dismiss_retargets_existing_body_instead_of_restart(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "initial_brightness": 0.35,
+            "gpu_material_brightness": 0.35,
+        }
+        compositor = MagicMock()
+        overlay._fullscreen_compositor = compositor
+        overlay._visible = False
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+        overlay._materialization_progress = 0.42
+        overlay._materialization_final_shell_config = dict(shell_config)
+        overlay._display_local_optical_shell_config = MagicMock(return_value=shell_config)
+        overlay._start_materialization_animation = MagicMock()
+
+        import spoke.fullscreen_compositor as fullscreen_compositor
+
+        start_overlay_compositor = MagicMock(return_value=MagicMock())
+        monkeypatch.setattr(
+            fullscreen_compositor,
+            "start_overlay_compositor",
+            start_overlay_compositor,
+        )
+
+        overlay.show(
+            initial_utterance="ask",
+            initial_response="answer",
+            start_thinking_timer=False,
+        )
+
+        assert overlay._fullscreen_compositor is compositor
+        compositor.stop.assert_not_called()
+        start_overlay_compositor.assert_not_called()
+        overlay._start_materialization_animation.assert_called_once_with(
+            shell_config,
+            start_progress=pytest.approx(0.42),
+        )
+
     def test_materialization_choreographs_core_magnification_overshoot(self, mock_pyobjc):
         mod = importlib.import_module("spoke.command_overlay")
         base = {

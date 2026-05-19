@@ -1,4 +1,4 @@
-# Smoke env — Operation Warp Speed
+# Smoke env — Warpstorm Pit Boss: slitgate readable-body repair
 export SPOKE_COMMAND_URL="http://localhost:8001"
 export SPOKE_COMMAND_API_KEY="1234"
 export OMLX_SERVER_API_KEY="1234"
@@ -17,8 +17,9 @@ export SPOKE_COMMAND_OVERLAY_WIDTH="1200.0"
 export SPOKE_COMMAND_OVERLAY_HEIGHT="160.0"
 export SPOKE_COMMAND_OVERLAY_CORNER_RADIUS="32.0"
 export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED="1"
+export SPOKE_STACK_SPECULUM_SMOKE="0"
 export SPOKE_COMMAND_GPU_MATERIAL_ENABLED="0"
-export SPOKE_COMMAND_OVERLAY_TRACE_PATH="/tmp/spoke-main-stage-peep-show-command-overlay-trace.jsonl"
+export SPOKE_COMMAND_OVERLAY_TRACE_PATH="/tmp/warpstorm-pit-boss-slitgate-command-overlay-trace.jsonl"
 export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_CORE_MAGNIFICATION="14.0"
 export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_BAND_MM="2.0"
 export SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_TAIL_MM="1.25"

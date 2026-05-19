@@ -1509,6 +1509,8 @@ class CommandOverlay(NSObject):
         self._materialization_direction = 1
         self._materialization_final_shell_config: dict | None = None
         self._deferred_materialization_shell_config: dict | None = None
+        self._deferred_materialization_start_progress: float | None = None
+        self._optical_lifecycle_trajectory = "idle_closed"
         self._pucker_tail_timer: NSTimer | None = None
         self._pucker_tail_started_at = 0.0
         self._pucker_tail_progress_offset = 0.0
@@ -2211,13 +2213,15 @@ class CommandOverlay(NSObject):
             "overlay.show.begin",
             was_visible=bool(getattr(self, "_visible", False)),
             had_compositor=getattr(self, "_fullscreen_compositor", None) is not None,
+            dismiss_reversal_progress=self._optical_dismiss_reversal_progress(),
             initial_utterance=bool(initial_utterance),
             initial_response=bool(initial_response),
         )
+        dismiss_reversal_progress = self._optical_dismiss_reversal_progress()
         self._cancel_all_timers()
         self._reset_fill_generation_latches_for_show()
         had_compositor = getattr(self, "_fullscreen_compositor", None) is not None
-        if had_compositor:
+        if had_compositor and dismiss_reversal_progress is None:
             self._stop_fullscreen_compositor(reveal_local_shell=False)
         self._visible = True
         self._streaming = True
@@ -2299,7 +2303,15 @@ class CommandOverlay(NSObject):
             # Arm the optical compositor while the command window is still
             # alpha-zero. Live/promptless starts need this too: under load a
             # deferred compositor can otherwise expose a naked pre-warp frame.
-            self._start_fullscreen_compositor()
+            if (
+                dismiss_reversal_progress is not None
+                and getattr(self, "_fullscreen_compositor", None) is not None
+            ):
+                self._retarget_fullscreen_compositor_for_show(
+                    start_progress=dismiss_reversal_progress
+                )
+            else:
+                self._start_fullscreen_compositor()
             if getattr(self, "_fullscreen_compositor", None) is None:
                 # Compositor failed to start — restore frozen fallback layers
                 # so the AppKit local shell is visible.
@@ -3574,6 +3586,22 @@ class CommandOverlay(NSObject):
         self._queued_fill_request = None
         self._fill_hidden_until_signature = None
         self._deferred_materialization_shell_config = None
+        self._deferred_materialization_start_progress = None
+
+    def _optical_dismiss_reversal_progress(self) -> float | None:
+        """Return current body progress when summon can retarget a dismiss."""
+        if getattr(self, "_fullscreen_compositor", None) is None:
+            return None
+        if getattr(self, "_pucker_tail_timer", None) is not None:
+            return 0.0
+        if getattr(self, "_materialization_timer", None) is None:
+            return None
+        if getattr(self, "_materialization_direction", 1) >= 0:
+            return None
+        try:
+            return _clamp01(float(getattr(self, "_materialization_progress", 0.0)))
+        except Exception:
+            return 0.0
 
     def _cancel_pending_optical_entrance_if_invisible(self) -> bool:
         """Tear down an alpha-zero optical entrance without playing dismiss."""
@@ -3641,15 +3669,44 @@ class CommandOverlay(NSObject):
             interval, self, "fadeStep:", None, True
         )
 
-    def _start_materialization_animation(self, final_shell_config: dict, *, direction: int = 1) -> None:
+    def _start_materialization_animation(
+        self,
+        final_shell_config: dict,
+        *,
+        direction: int = 1,
+        start_progress: float | None = None,
+    ) -> None:
         """Animate the compositor geometry from/to a pressure slit."""
         self._cancel_materialization_animation()
         self._cancel_dismiss_pucker_tail_animation()
         self._deferred_materialization_shell_config = None
+        self._deferred_materialization_start_progress = None
         self._materialization_final_shell_config = dict(final_shell_config)
         self._materialization_direction = 1 if direction >= 0 else -1
-        self._materialization_progress = 0.0 if self._materialization_direction > 0 else 1.0
-        self._materialization_started_at = time.perf_counter()
+        default_progress = 0.0 if self._materialization_direction > 0 else 1.0
+        self._materialization_progress = _clamp01(
+            default_progress if start_progress is None else float(start_progress)
+        )
+        duration = (
+            _OPTICAL_MATERIALIZATION_S
+            if self._materialization_direction > 0
+            else _OPTICAL_MATERIALIZATION_DISMISS_S
+        )
+        raw_at_start = (
+            self._materialization_progress
+            if self._materialization_direction > 0
+            else 1.0 - self._materialization_progress
+        )
+        self._materialization_started_at = time.perf_counter() - raw_at_start * duration
+        self._optical_lifecycle_trajectory = (
+            "summoning" if self._materialization_direction > 0 else "dismissing"
+        )
+        record_command_overlay_trace(
+            "overlay.materialization.start",
+            direction=self._materialization_direction,
+            start_progress=self._materialization_progress,
+            trajectory=self._optical_lifecycle_trajectory,
+        )
         self._clear_punchthrough_mask_for_materialization()
         if self._materialization_direction < 0:
             self._apply_materialization_fill_state(self._materialization_progress)
@@ -3747,6 +3804,7 @@ class CommandOverlay(NSObject):
             )
             if getattr(self, "_materialization_direction", 1) > 0:
                 self._materialization_progress = 1.0
+                self._optical_lifecycle_trajectory = "idle_open"
                 self._apply_materialization_fill_state(1.0)
                 if float(final_config.get("gpu_material_enabled", 0.0)) >= 0.5:
                     self._enable_text_punchthrough(False)
@@ -3767,6 +3825,7 @@ class CommandOverlay(NSObject):
                     self._start_pulse_timer()
             else:
                 self._materialization_progress = 0.0
+                self._optical_lifecycle_trajectory = "dismissing_pucker"
                 self._apply_materialization_fill_state(0.0)
                 self._start_dismiss_pucker_tail_animation(
                     final_config,
@@ -4600,8 +4659,16 @@ class CommandOverlay(NSObject):
         shell_config = getattr(self, "_deferred_materialization_shell_config", None)
         if shell_config is None:
             return
+        start_progress = getattr(self, "_deferred_materialization_start_progress", None)
         self._deferred_materialization_shell_config = None
-        self._start_materialization_animation(dict(shell_config))
+        self._deferred_materialization_start_progress = None
+        if start_progress is None:
+            self._start_materialization_animation(dict(shell_config))
+        else:
+            self._start_materialization_animation(
+                dict(shell_config),
+                start_progress=start_progress,
+            )
 
     def _apply_ridge_masks(self, width: float, height: float) -> None:
         """Compute SDF and apply ridge mask + build fill image.
@@ -5080,6 +5147,78 @@ class CommandOverlay(NSObject):
 
         renderer.set_sample_buffer_callback(apply_live_sample_buffer)
 
+    def _retarget_fullscreen_compositor_for_show(
+        self,
+        *,
+        start_progress: float,
+    ) -> None:
+        """Reverse an in-flight optical dismiss into a summon without restart."""
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is None:
+            return
+        final_shell_config = self._display_local_optical_shell_config()
+        if final_shell_config is None:
+            return
+        start_progress = _clamp01(float(start_progress))
+        record_command_overlay_trace(
+            "overlay.show.retarget_dismiss_to_summon",
+            start_progress=start_progress,
+        )
+        self._cancel_brightness_sampling()
+        self._brightness_target = final_shell_config["initial_brightness"]
+        self._brightness_sample_tick = -_BRIGHTNESS_COMPOSITOR_STARTUP_GRACE_TICKS
+        self._cancel_backdrop_refresh()
+        if self._backdrop_layer is not None:
+            self._backdrop_layer.setHidden_(True)
+        old_dl = getattr(self, "_metal_display_link_renderer", None)
+        if old_dl is not None:
+            try:
+                old_dl.stop()
+            except Exception:
+                pass
+            self._metal_display_link_renderer = None
+        self._enable_text_punchthrough(False)
+        self._sdf_appearance_b = -1.0
+        self._fill_image_brightness = -1.0
+        self._materialization_progress = start_progress
+        self._deferred_materialization_shell_config = dict(final_shell_config)
+        self._deferred_materialization_start_progress = start_progress
+        suppress_stale_fill = getattr(
+            self,
+            "_suppress_stale_fill_until_ready",
+            False,
+        )
+        self._suppress_stale_fill_until_ready = True
+        sampled_brightness = self._seed_brightness_from_optical_compositor()
+        if sampled_brightness is not None:
+            final_shell_config["initial_brightness"] = sampled_brightness
+            final_shell_config["gpu_material_brightness"] = sampled_brightness
+            self._deferred_materialization_shell_config[
+                "initial_brightness"
+            ] = sampled_brightness
+            self._deferred_materialization_shell_config[
+                "gpu_material_brightness"
+            ] = sampled_brightness
+        try:
+            compositor.update_shell_config(
+                _materialized_optical_shell_config(
+                    final_shell_config,
+                    start_progress,
+                )
+            )
+        except Exception:
+            logger.debug("Failed to seed retargeted command materialization", exc_info=True)
+        try:
+            content_frame = self._content_view.frame()
+            self._apply_ridge_masks(
+                content_frame.size.width,
+                content_frame.size.height,
+            )
+            self._apply_surface_theme()
+        finally:
+            self._suppress_stale_fill_until_ready = suppress_stale_fill
+        self._start_deferred_materialization_if_ready()
+
     def _start_fullscreen_compositor(self):
         """Start the full-screen compositor for zero-seam optical shell."""
         self._stop_fullscreen_compositor(reveal_local_shell=False)
@@ -5144,6 +5283,7 @@ class CommandOverlay(NSObject):
                 )
                 self._materialization_progress = 0.0
                 self._deferred_materialization_shell_config = dict(final_shell_config)
+                self._deferred_materialization_start_progress = None
                 self._suppress_stale_fill_until_ready = True
                 sampled_brightness = self._seed_brightness_from_optical_compositor()
                 if sampled_brightness is not None:
@@ -5415,6 +5555,7 @@ class CommandOverlay(NSObject):
         self._cancel_dismiss_pucker_tail_animation()
         compositor = getattr(self, "_fullscreen_compositor", None)
         self._fullscreen_compositor = None
+        self._optical_lifecycle_trajectory = "idle_closed"
         self._enable_text_punchthrough(False)
         if reveal_local_shell:
             # Unhide the old backdrop layer in case the old path resumes.
