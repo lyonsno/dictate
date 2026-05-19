@@ -520,6 +520,35 @@ class TestOpticalShellMaterialization:
         assert overlay._fill_hidden_until_signature is None
         overlay._fill_layer.setHidden_.assert_called_with(False)
 
+    def test_fill_ready_recovery_starts_deferred_materialization(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+        }
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._fill_hidden_until_signature = ("current-fill",)
+        overlay._fill_image_signature = ("current-fill",)
+        overlay._pending_fill_image_signature = None
+        overlay._queued_fill_request = None
+        overlay._fill_payload = b"payload"
+        overlay._deferred_materialization_shell_config = dict(shell_config)
+        overlay._deferred_materialization_start_progress = 0.0
+        overlay._start_materialization_animation = MagicMock()
+
+        assert overlay._optical_fill_ready() is True
+
+        overlay._start_materialization_animation.assert_called_once_with(
+            shell_config,
+            start_progress=0.0,
+        )
+        assert overlay._deferred_materialization_shell_config is None
+
     def test_optical_dismiss_uses_stretched_faster_reverse_timeline(
         self, mock_pyobjc
     ):

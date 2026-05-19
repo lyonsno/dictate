@@ -4399,6 +4399,7 @@ class CommandOverlay(NSObject):
                 "overlay.fill_ready.recovered_hidden_latch",
                 signature=str(hidden_signature),
             )
+            self._start_deferred_materialization_if_ready()
             return True
         return False
 
