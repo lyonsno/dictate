@@ -31,6 +31,21 @@ class SurfaceKind(str, Enum):
     TEXT = "text"  # legacy fallback — raw text entry
 
 
+class SurfaceDestinationKind(str, Enum):
+    """Where a stack-focused act is routed for interpretation.
+
+    The stack supplies address and cargo; it is not itself the durable writer
+    for source-owned state.
+    """
+
+    NONE = "none"
+    STACK = "stack"
+    DIAULOS = "diaulos"
+    LANE = "lane"
+    RESOLVER = "resolver"
+    SOURCE_ORGAN = "source_organ"
+
+
 @dataclass
 class SurfaceIdentity:
     """Stable identity for a coordination surface.
@@ -44,6 +59,18 @@ class SurfaceIdentity:
 
 
 @dataclass
+class SurfaceRoutingContext:
+    """Address/cargo metadata for agency-mediated stack actions."""
+
+    destination_kind: SurfaceDestinationKind = SurfaceDestinationKind.NONE
+    destination_id: str = ""
+    reread_refs: list[str] = field(default_factory=list)
+    scope: dict[str, list[str]] = field(default_factory=dict)
+    cargo: dict[str, Any] = field(default_factory=dict)
+    writeback_target: str = ""
+
+
+@dataclass
 class SurfaceEntry:
     """A single entry in the coordination surface stack.
 
@@ -54,6 +81,7 @@ class SurfaceEntry:
 
     identity: SurfaceIdentity
     payload: dict[str, Any] = field(default_factory=dict)
+    routing: SurfaceRoutingContext | None = None
     acknowledged: bool = True
     priority: int = 0  # lower = more important, for insertion ordering
 
@@ -89,6 +117,10 @@ class SurfaceAction:
     name: str  # internal action identifier
     phrases: list[str] = field(default_factory=list)  # example trigger phrases
     description: str = ""
+    interlocutor_act: str = ""
+    requires_interlocutor: bool = False
+    source_owned: bool = False
+    writeback_allowed: bool = False
 
 
 @dataclass
@@ -319,7 +351,8 @@ class CoordinationStack:
 def surface_actions_to_resolver_intents(actions: list[SurfaceAction]) -> list[dict]:
     """Convert surface actions to the shape expected by ConsensusResolver.
 
-    Returns a list of dicts with keys: id, description, examples.
+    Returns a list of dicts with keys: id, description, examples, plus
+    routing metadata consumed by agency-aware resolvers.
     This avoids a hard import dependency on consensus_resolver (which may
     not be on main yet) while producing compatible data.
     """
@@ -328,6 +361,10 @@ def surface_actions_to_resolver_intents(actions: list[SurfaceAction]) -> list[di
             "id": action.name,
             "description": action.description or action.name,
             "examples": tuple(action.phrases),
+            "interlocutor_act": action.interlocutor_act,
+            "requires_interlocutor": action.requires_interlocutor,
+            "source_owned": action.source_owned,
+            "writeback_allowed": action.writeback_allowed,
         }
         for action in actions
     ]
@@ -345,10 +382,42 @@ def build_default_registry() -> SurfaceTypeRegistry:
     reg.register(SurfaceTypeRegistration(
         kind=SurfaceKind.AGENT_THREAD,
         actions=[
-            SurfaceAction("start", ["start this", "go", "run it"], "Start or resume the agent"),
-            SurfaceAction("status", ["what did it just do", "status", "what's happening"], "Show current status"),
-            SurfaceAction("output", ["show me the output", "show output", "read it"], "Show recent output"),
-            SurfaceAction("cancel", ["cancel", "stop", "kill it"], "Cancel the running agent"),
+            SurfaceAction(
+                "start",
+                ["start this", "go", "run it"],
+                "Route start/resume request to the agent session",
+                "route_agent_start",
+                True,
+                True,
+                True,
+            ),
+            SurfaceAction(
+                "status",
+                ["what did it just do", "status", "what's happening"],
+                "Ask the agent session for current status",
+                "ask_agent_status",
+                True,
+                False,
+                False,
+            ),
+            SurfaceAction(
+                "output",
+                ["show me the output", "show output", "read it"],
+                "Ask the agent session for recent output",
+                "ask_agent_output",
+                True,
+                False,
+                False,
+            ),
+            SurfaceAction(
+                "cancel",
+                ["cancel", "stop", "kill it"],
+                "Route cancellation request to the agent session",
+                "route_agent_cancel",
+                True,
+                True,
+                True,
+            ),
             SurfaceAction("dismiss", ["dismiss", "close", "done"], "Remove from stack"),
         ],
     ))
@@ -356,9 +425,33 @@ def build_default_registry() -> SurfaceTypeRegistry:
     reg.register(SurfaceTypeRegistration(
         kind=SurfaceKind.METADOSIS,
         actions=[
-            SurfaceAction("update", ["update the thesis", "update"], "Update the artifact"),
-            SurfaceAction("blocking", ["what's blocking this", "blockers"], "Show blockers"),
-            SurfaceAction("broadcast", ["send this to all lanes", "broadcast"], "Broadcast to lanes"),
+            SurfaceAction(
+                "update",
+                ["update the thesis", "update"],
+                "Route update request to the artifact custodian",
+                "route_update_to_custodian",
+                True,
+                True,
+                True,
+            ),
+            SurfaceAction(
+                "blocking",
+                ["what's blocking this", "blockers"],
+                "Ask the artifact custodian for blockers",
+                "ask_artifact_blockers",
+                True,
+                False,
+                False,
+            ),
+            SurfaceAction(
+                "broadcast",
+                ["send this to all lanes", "broadcast"],
+                "Route broadcast request through the registered lane surface",
+                "route_broadcast_to_lanes",
+                True,
+                True,
+                True,
+            ),
             SurfaceAction("dismiss", ["dismiss", "close"], "Remove from stack"),
         ],
     ))
@@ -367,7 +460,15 @@ def build_default_registry() -> SurfaceTypeRegistry:
         kind=SurfaceKind.ZETESIS_RESULT,
         actions=[
             SurfaceAction("read", ["read this", "read it"], "Read the result aloud"),
-            SurfaceAction("act", ["act on this", "do it"], "Act on the result"),
+            SurfaceAction(
+                "act",
+                ["act on this", "do it"],
+                "Route result to the current source-owned actor",
+                "route_result_to_actor",
+                True,
+                True,
+                True,
+            ),
             SurfaceAction("dismiss", ["dismiss", "close", "done"], "Remove from stack"),
         ],
     ))
@@ -375,8 +476,24 @@ def build_default_registry() -> SurfaceTypeRegistry:
     reg.register(SurfaceTypeRegistration(
         kind=SurfaceKind.FINDING,
         actions=[
-            SurfaceAction("accept", ["accept", "ok", "acknowledge"], "Accept the finding"),
-            SurfaceAction("defer", ["defer", "later", "not now"], "Defer for later"),
+            SurfaceAction(
+                "accept",
+                ["accept", "ok", "acknowledge"],
+                "Route finding disposition through the finding owner",
+                "route_finding_disposition",
+                True,
+                True,
+                True,
+            ),
+            SurfaceAction(
+                "defer",
+                ["defer", "later", "not now"],
+                "Route finding deferral through the finding owner",
+                "route_finding_disposition",
+                True,
+                True,
+                True,
+            ),
             SurfaceAction("navigate", ["navigate to the commit", "show me", "go to"], "Navigate to source"),
             SurfaceAction("dismiss", ["dismiss", "close"], "Remove from stack"),
         ],
@@ -385,9 +502,25 @@ def build_default_registry() -> SurfaceTypeRegistry:
     reg.register(SurfaceTypeRegistration(
         kind=SurfaceKind.PERCEPTASIA_VIEW,
         actions=[
-            SurfaceAction("show_attractors", ["show me the attractors", "attractors"], "Show attractors"),
+            SurfaceAction(
+                "show_attractors",
+                ["show me the attractors", "attractors"],
+                "Ask the Perceptasia context for attractors",
+                "ask_perceptasia_context",
+                True,
+                False,
+                False,
+            ),
             SurfaceAction("zoom", ["zoom in", "zoom in on this"], "Zoom into selection"),
-            SurfaceAction("hot", ["what's hot", "what's active"], "Show hot/active items"),
+            SurfaceAction(
+                "hot",
+                ["what's hot", "what's active"],
+                "Ask the Perceptasia context for hot items",
+                "ask_perceptasia_context",
+                True,
+                False,
+                False,
+            ),
             SurfaceAction("dismiss", ["dismiss", "close"], "Remove from stack"),
         ],
     ))
@@ -395,8 +528,24 @@ def build_default_registry() -> SurfaceTypeRegistry:
     reg.register(SurfaceTypeRegistration(
         kind=SurfaceKind.METAMORPHOSIS_RESULT,
         actions=[
-            SurfaceAction("confirm", ["confirm", "ok", "looks good"], "Confirm the mutation"),
-            SurfaceAction("revert", ["revert", "undo", "roll back"], "Revert the mutation"),
+            SurfaceAction(
+                "confirm",
+                ["confirm", "ok", "looks good"],
+                "Route mutation confirmation through the source-owned surface",
+                "route_mutation_confirmation",
+                True,
+                True,
+                True,
+            ),
+            SurfaceAction(
+                "revert",
+                ["revert", "undo", "roll back"],
+                "Route mutation revert through the source-owned surface",
+                "route_mutation_revert",
+                True,
+                True,
+                True,
+            ),
             SurfaceAction("dismiss", ["dismiss", "close"], "Remove from stack"),
         ],
     ))

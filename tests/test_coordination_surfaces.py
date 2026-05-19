@@ -10,12 +10,14 @@ import threading
 from spoke.coordination_surfaces import (
     CoordinationStack,
     SurfaceAction,
+    SurfaceDestinationKind,
     SurfaceEntry,
     SurfaceIdentity,
     SurfaceKind,
     SurfaceMessage,
     SurfaceMessageBus,
     SurfaceRenderer,
+    SurfaceRoutingContext,
     SurfaceTypeRegistration,
     SurfaceTypeRegistry,
     build_default_registry,
@@ -91,6 +93,31 @@ class TestSurfaceEntry:
     def test_payload_is_kind_specific(self):
         e = _agent_entry()
         assert e.payload["bearing"] == "Working on tests"
+
+    def test_entry_can_carry_interlocutor_routing_context(self):
+        e = SurfaceEntry(
+            identity=SurfaceIdentity(
+                kind=SurfaceKind.METADOSIS,
+                surface_id="metadosis/example.md",
+                label="Example metadosis",
+            ),
+            routing=SurfaceRoutingContext(
+                destination_kind=SurfaceDestinationKind.DIAULOS,
+                destination_id="codex-stack-diaulos-border-stamp-0519",
+                reread_refs=["metadosis/example.md"],
+                scope={"metadosis": ["metadosis/example.md"]},
+                cargo={"selected_text": "operator focus"},
+                writeback_target="metadosis/example.md",
+            ),
+        )
+
+        assert e.routing is not None
+        assert e.routing.destination_kind == SurfaceDestinationKind.DIAULOS
+        assert e.routing.destination_id == "codex-stack-diaulos-border-stamp-0519"
+        assert e.routing.reread_refs == ["metadosis/example.md"]
+        assert e.routing.scope == {"metadosis": ["metadosis/example.md"]}
+        assert e.routing.cargo == {"selected_text": "operator focus"}
+        assert e.routing.writeback_target == "metadosis/example.md"
 
 
 class TestSurfaceTypeRegistry:
@@ -334,6 +361,7 @@ class TestLegacyBridge:
         assert entry.payload["owner"] == "user"
         assert entry.acknowledged is True
         assert entry.label == "hello world"
+        assert entry.routing is None
 
     def test_text_surface_from_str_assistant(self):
         entry = text_surface_from_str("response", owner="assistant")
@@ -392,7 +420,15 @@ class TestVoiceActionRouting:
 
     def test_surface_actions_to_resolver_intents(self):
         actions = [
-            SurfaceAction(name="accept", phrases=["accept", "ok"], description="Accept the finding"),
+            SurfaceAction(
+                name="accept",
+                phrases=["accept", "ok"],
+                description="Accept the finding",
+                interlocutor_act="route_finding_disposition",
+                requires_interlocutor=True,
+                source_owned=True,
+                writeback_allowed=True,
+            ),
             SurfaceAction(name="defer", phrases=["defer"], description="Defer for later"),
         ]
         intents = surface_actions_to_resolver_intents(actions)
@@ -400,7 +436,12 @@ class TestVoiceActionRouting:
         assert intents[0]["id"] == "accept"
         assert intents[0]["description"] == "Accept the finding"
         assert intents[0]["examples"] == ("accept", "ok")
+        assert intents[0]["interlocutor_act"] == "route_finding_disposition"
+        assert intents[0]["requires_interlocutor"] is True
+        assert intents[0]["source_owned"] is True
+        assert intents[0]["writeback_allowed"] is True
         assert intents[1]["id"] == "defer"
+        assert intents[1]["requires_interlocutor"] is False
 
     def test_resolver_intents_without_description_uses_name(self):
         actions = [SurfaceAction(name="dismiss", phrases=["dismiss"])]
@@ -440,6 +481,35 @@ class TestVoiceActionRouting:
         # Each intent should have examples for the resolver
         for intent in intents:
             assert len(intent["examples"]) >= 1
+
+    def test_default_registry_durable_actions_route_through_source_owned_interlocutors(self):
+        reg = build_default_registry()
+
+        update = {a.name: a for a in reg.actions_for(SurfaceKind.METADOSIS)}["update"]
+        assert update.interlocutor_act == "route_update_to_custodian"
+        assert update.requires_interlocutor is True
+        assert update.source_owned is True
+        assert update.writeback_allowed is True
+
+        accept = {a.name: a for a in reg.actions_for(SurfaceKind.FINDING)}["accept"]
+        assert accept.interlocutor_act == "route_finding_disposition"
+        assert accept.requires_interlocutor is True
+        assert accept.source_owned is True
+        assert accept.writeback_allowed is True
+
+        confirm = {a.name: a for a in reg.actions_for(SurfaceKind.METAMORPHOSIS_RESULT)}["confirm"]
+        assert confirm.interlocutor_act == "route_mutation_confirmation"
+        assert confirm.requires_interlocutor is True
+        assert confirm.source_owned is True
+        assert confirm.writeback_allowed is True
+
+    def test_stack_local_dismiss_remains_non_writeback(self):
+        reg = build_default_registry()
+        for kind in SurfaceKind:
+            dismiss = {a.name: a for a in reg.actions_for(kind)}["dismiss"]
+            assert dismiss.requires_interlocutor is False
+            assert dismiss.source_owned is False
+            assert dismiss.writeback_allowed is False
 
 
 class TestRendererIntegration:
