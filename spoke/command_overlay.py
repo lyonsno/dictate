@@ -158,6 +158,14 @@ _OPTICAL_MATERIAL_FILL_FULL_AT = (
     * _OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE
 ) / _OPTICAL_MATERIALIZATION_S
 _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC = 0.011
+_OPTICAL_DISMISS_TEXT_BLOB_FRAC = 0.025
+_OPTICAL_DISMISS_TEXT_COLLAPSE_START_PROGRESS = min(
+    1.0,
+    _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS + 0.30,
+)
+_OPTICAL_DISMISS_TEXT_BLOB_AT_PROGRESS = (
+    _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS + 0.05
+)
 _OPTICAL_MATERIALIZATION_PUCKER_PREARM_START_PROGRESS = (
     _OPTICAL_MATERIAL_FILL_SOLID_AT
     + (
@@ -831,6 +839,35 @@ def _dismiss_materialization_fill_state(progress: float) -> dict[str, float]:
     return {
         "opacity": state["opacity"],
         "height_frac": state["height_frac"],
+    }
+
+
+def _dismiss_text_collapse_state(progress: float) -> dict[str, float]:
+    """Text leads the dismiss zipper and vanishes before radial pucker takes over."""
+    p = _clamp01(progress)
+    gone_at = _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
+    blob_at = _OPTICAL_DISMISS_TEXT_BLOB_AT_PROGRESS
+    collapse_start = _OPTICAL_DISMISS_TEXT_COLLAPSE_START_PROGRESS
+    blob = _OPTICAL_DISMISS_TEXT_BLOB_FRAC
+    if p <= gone_at:
+        return {
+            "width_frac": blob,
+            "height_frac": blob,
+            "alpha": 0.0,
+        }
+    if p <= blob_at:
+        fade = _smoothstep((p - gone_at) / max(blob_at - gone_at, 1e-6))
+        return {
+            "width_frac": blob,
+            "height_frac": blob,
+            "alpha": fade,
+        }
+    t = _smoothstep((p - blob_at) / max(collapse_start - blob_at, 1e-6))
+    frac = _lerp(blob, 1.0, t)
+    return {
+        "width_frac": _clamp01(frac),
+        "height_frac": _clamp01(frac),
+        "alpha": 1.0,
     }
 
 
@@ -4077,9 +4114,19 @@ class CommandOverlay(NSObject):
                 )
         # Clip text to the slit opening so it appears revealed/covered by the warp
         direction = getattr(self, "_materialization_direction", 1)
-        self._update_scroll_materialization_mask(state["height_frac"], direction=direction)
+        self._update_scroll_materialization_mask(
+            state["height_frac"],
+            direction=direction,
+            progress=progress,
+        )
 
-    def _update_scroll_materialization_mask(self, height_frac: float, *, direction: int = 1) -> None:
+    def _update_scroll_materialization_mask(
+        self,
+        height_frac: float,
+        *,
+        direction: int = 1,
+        progress: float | None = None,
+    ) -> None:
         """Clip the scroll view to the materialization slit geometry."""
         scroll = getattr(self, "_scroll_view", None)
         if scroll is None or not hasattr(scroll, "layer"):
@@ -4088,7 +4135,7 @@ class CommandOverlay(NSObject):
         if layer is None:
             return
         hf = _clamp01(height_frac)
-        if hf >= 0.99:
+        if direction >= 0 and hf >= 0.99:
             # Fully open — remove mask and restore full alpha
             if hasattr(layer, "setMask_"):
                 layer.setMask_(None)
@@ -4113,11 +4160,12 @@ class CommandOverlay(NSObject):
                 alpha = min(hf * 5.0, 1.0)  # fade in over first 20% of height_frac
                 scroll.setAlphaValue_(alpha)
         else:
-            # Dismiss: collapse both axes, width slower via sqrt
-            wf = _clamp01(hf ** 0.5)
-            visible_w = max(w * wf, 0.0)
-            visible_h = max(h * hf, 0.0)
+            text_state = _dismiss_text_collapse_state(hf if progress is None else progress)
+            visible_w = max(w * text_state["width_frac"], 0.0)
+            visible_h = max(h * text_state["height_frac"], 0.0)
             x_offset = (w - visible_w) * 0.5
+            if hasattr(scroll, "setAlphaValue_"):
+                scroll.setAlphaValue_(text_state["alpha"])
         y_offset = (h - visible_h) * 0.5
         corner_r = min(12.0, visible_h * 0.5, visible_w * 0.5)
         mask = getattr(self, "_scroll_materialization_mask", None)
