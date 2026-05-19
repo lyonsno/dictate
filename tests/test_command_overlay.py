@@ -813,6 +813,73 @@ class TestOpticalShellMaterialization:
         assert mask_progresses
         assert 1.0 not in mask_progresses
 
+    def test_show_during_dismiss_publishes_retarget_seed_before_slow_setup(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "initial_brightness": 0.35,
+            "gpu_material_brightness": 0.35,
+        }
+        compositor = MagicMock()
+        events = []
+        compositor.refresh_brightness.side_effect = (
+            lambda: events.append(("brightness-refresh",))
+        )
+        compositor.update_shell_config.side_effect = (
+            lambda config: events.append(
+                ("seed", config["content_width_points"], config["content_height_points"])
+            )
+        )
+        overlay._fullscreen_compositor = compositor
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+        overlay._materialization_progress = 0.47
+        overlay._materialization_final_shell_config = dict(shell_config)
+        overlay._display_local_optical_shell_config = MagicMock(return_value=shell_config)
+        overlay._apply_ridge_masks = MagicMock(
+            side_effect=lambda *_args: events.append(("ridge",))
+        )
+        overlay._apply_surface_theme = MagicMock(
+            side_effect=lambda: events.append(("theme",))
+        )
+        overlay._window.orderFrontRegardless.side_effect = (
+            lambda: events.append(("order-front",))
+        )
+        overlay._schedule_visual_ready_start = MagicMock(
+            side_effect=lambda: events.append(("visual-ready",))
+        )
+        overlay._start_materialization_animation = MagicMock(
+            side_effect=lambda *_args, **_kwargs: events.append(("materialize",))
+        )
+        overlay._refresh_punchthrough_mask_if_needed = MagicMock()
+        overlay._optical_fill_ready = MagicMock(return_value=True)
+
+        overlay.show(
+            initial_utterance="ask again",
+            initial_response="answer again",
+            start_thinking_timer=False,
+        )
+
+        assert events[0][0] == "seed"
+        seed_index = next(i for i, event in enumerate(events) if event[0] == "seed")
+        for slow_event in ("ridge", "theme", "order-front", "visual-ready"):
+            matching = [i for i, event in enumerate(events) if event[0] == slow_event]
+            if matching:
+                assert seed_index < matching[0]
+        assert seed_index < next(
+            i for i, event in enumerate(events) if event[0] == "materialize"
+        )
+        assert seed_index < next(
+            i for i, event in enumerate(events) if event[0] == "brightness-refresh"
+        )
+
     def test_body_ready_dismiss_retarget_is_capped_below_full_open_flash(
         self, mock_pyobjc
     ):

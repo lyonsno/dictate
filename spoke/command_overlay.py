@@ -2270,10 +2270,21 @@ class CommandOverlay(NSObject):
             summon_retarget_progress = retarget_progress_for_dismiss(
                 dismiss_reversal_progress
             ).summon_start_progress
+        retarget_quarantined = False
+        if (
+            summon_retarget_progress is not None
+            and getattr(self, "_fullscreen_compositor", None) is not None
+        ):
+            retarget_quarantined = self._quarantine_optical_retarget_for_show(
+                dismiss_progress=dismiss_reversal_progress,
+                start_progress=summon_retarget_progress,
+            )
         self._cancel_all_timers(
             preserve_materialization_mask=summon_retarget_progress is not None
         )
-        self._reset_fill_generation_latches_for_show()
+        self._reset_fill_generation_latches_for_show(
+            preserve_deferred_materialization=retarget_quarantined
+        )
         had_compositor = getattr(self, "_fullscreen_compositor", None) is not None
         if had_compositor and summon_retarget_progress is None:
             self._stop_fullscreen_compositor(reveal_local_shell=False)
@@ -2363,9 +2374,16 @@ class CommandOverlay(NSObject):
                 summon_retarget_progress is not None
                 and getattr(self, "_fullscreen_compositor", None) is not None
             ):
-                self._retarget_fullscreen_compositor_for_show(
-                    dismiss_progress=dismiss_reversal_progress,
+                if not retarget_quarantined:
+                    retarget_quarantined = self._quarantine_optical_retarget_for_show(
+                        dismiss_progress=dismiss_reversal_progress,
+                        start_progress=summon_retarget_progress,
+                    )
+                self._start_deferred_materialization_if_ready()
+                record_command_overlay_trace(
+                    "overlay.show.retarget_quarantine.slow_setup_resume",
                     start_progress=summon_retarget_progress,
+                    quarantined=retarget_quarantined,
                 )
             else:
                 self._start_fullscreen_compositor()
@@ -3643,12 +3661,17 @@ class CommandOverlay(NSObject):
         self._cancel_dismiss_pucker_tail_animation()
         self._stop_thinking_timer()
 
-    def _reset_fill_generation_latches_for_show(self) -> None:
+    def _reset_fill_generation_latches_for_show(
+        self,
+        *,
+        preserve_deferred_materialization: bool = False,
+    ) -> None:
         self._pending_fill_image_signature = None
         self._queued_fill_request = None
         self._fill_hidden_until_signature = None
-        self._deferred_materialization_shell_config = None
-        self._deferred_materialization_start_progress = None
+        if not preserve_deferred_materialization:
+            self._deferred_materialization_shell_config = None
+            self._deferred_materialization_start_progress = None
 
     def _optical_dismiss_reversal_progress(self) -> float | None:
         """Return current body progress when summon can retarget a dismiss."""
@@ -5239,20 +5262,25 @@ class CommandOverlay(NSObject):
 
         renderer.set_sample_buffer_callback(apply_live_sample_buffer)
 
-    def _retarget_fullscreen_compositor_for_show(
+    def _quarantine_optical_retarget_for_show(
         self,
         *,
         dismiss_progress: float | None = None,
         start_progress: float,
-    ) -> None:
-        """Reverse an in-flight optical dismiss into a summon without restart."""
+    ) -> bool:
+        """Give summon-during-dismiss presentation authority before slow setup."""
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is None:
-            return
+            return False
         final_shell_config = self._display_local_optical_shell_config()
         if final_shell_config is None:
-            return
+            return False
         start_progress = _clamp01(float(start_progress))
+        record_command_overlay_trace(
+            "overlay.show.retarget_quarantine.begin",
+            dismiss_progress=dismiss_progress,
+            start_progress=start_progress,
+        )
         record_command_overlay_trace(
             "overlay.show.retarget_dismiss_to_summon",
             dismiss_progress=dismiss_progress,
@@ -5283,16 +5311,12 @@ class CommandOverlay(NSObject):
             False,
         )
         self._suppress_stale_fill_until_ready = True
-        sampled_brightness = self._seed_brightness_from_optical_compositor()
-        if sampled_brightness is not None:
-            final_shell_config["initial_brightness"] = sampled_brightness
-            final_shell_config["gpu_material_brightness"] = sampled_brightness
-            self._deferred_materialization_shell_config[
-                "initial_brightness"
-            ] = sampled_brightness
-            self._deferred_materialization_shell_config[
-                "gpu_material_brightness"
-            ] = sampled_brightness
+        self._stop_dismiss_seam_compositor()
+        self._stop_dismiss_radial_pucker_compositor()
+        record_command_overlay_trace(
+            "overlay.show.retarget_quarantine.sidecars_quiesced",
+            start_progress=start_progress,
+        )
         try:
             compositor.update_shell_config(
                 _materialized_optical_shell_config(
@@ -5300,18 +5324,25 @@ class CommandOverlay(NSObject):
                     start_progress,
                 )
             )
+            record_command_overlay_trace(
+                "overlay.show.retarget_quarantine.seed_published",
+                start_progress=start_progress,
+            )
         except Exception:
             logger.debug("Failed to seed retargeted command materialization", exc_info=True)
-        try:
-            content_frame = self._content_view.frame()
-            self._apply_ridge_masks(
-                content_frame.size.width,
-                content_frame.size.height,
-            )
-            self._apply_surface_theme()
-        finally:
             self._suppress_stale_fill_until_ready = suppress_stale_fill
-        self._start_deferred_materialization_if_ready()
+            return False
+        sampled_brightness = self._seed_brightness_from_optical_compositor()
+        if sampled_brightness is not None:
+            self._brightness_target = sampled_brightness
+            self._deferred_materialization_shell_config[
+                "initial_brightness"
+            ] = sampled_brightness
+            self._deferred_materialization_shell_config[
+                "gpu_material_brightness"
+            ] = sampled_brightness
+        self._suppress_stale_fill_until_ready = suppress_stale_fill
+        return True
 
     def _start_fullscreen_compositor(self):
         """Start the full-screen compositor for zero-seam optical shell."""
