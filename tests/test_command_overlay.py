@@ -666,7 +666,8 @@ class TestOpticalShellMaterialization:
         overlay._visible = False
         overlay._materialization_timer = MagicMock()
         overlay._materialization_direction = -1
-        overlay._materialization_progress = 0.42
+        dismiss_progress = 0.47
+        overlay._materialization_progress = dismiss_progress
         overlay._materialization_final_shell_config = dict(shell_config)
         overlay._display_local_optical_shell_config = MagicMock(return_value=shell_config)
         overlay._start_materialization_animation = MagicMock()
@@ -689,10 +690,32 @@ class TestOpticalShellMaterialization:
         assert overlay._fullscreen_compositor is compositor
         compositor.stop.assert_not_called()
         start_overlay_compositor.assert_not_called()
-        overlay._start_materialization_animation.assert_called_once_with(
-            shell_config,
-            start_progress=pytest.approx(0.42),
-        )
+        _, kwargs = overlay._start_materialization_animation.call_args
+        assert kwargs["start_progress"] <= mod._OPTICAL_MATERIALIZATION_SPREAD_END
+        assert kwargs["start_progress"] < dismiss_progress
+
+    def test_body_ready_dismiss_retarget_can_resume_late_summon_progress(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        assert mod._summon_retarget_progress_for_dismiss_progress(0.72) == pytest.approx(0.72)
+
+    def test_pre_body_dismiss_retarget_cannot_publish_late_summon_magnification(
+        self, mock_pyobjc
+    ):
+        _, mod = _make_overlay(mock_pyobjc)
+        base = {
+            "content_width_points": 2480.0,
+            "content_height_points": 300.0,
+            "corner_radius_points": 40.0,
+            "core_magnification": 14.0,
+        }
+
+        retarget_progress = mod._summon_retarget_progress_for_dismiss_progress(0.47)
+        config = mod._materialized_optical_shell_config(base, retarget_progress)
+
+        assert retarget_progress <= mod._OPTICAL_MATERIALIZATION_SPREAD_END
+        assert config["core_magnification"] < base["core_magnification"] * 0.25
 
     def test_materialization_choreographs_core_magnification_overshoot(self, mock_pyobjc):
         mod = importlib.import_module("spoke.command_overlay")

@@ -780,6 +780,14 @@ def _materialized_optical_shell_config(
     return config
 
 
+def _summon_retarget_progress_for_dismiss_progress(progress: float) -> float:
+    """Map dismiss-local body progress onto a lawful summon re-entry point."""
+    p = _clamp01(progress)
+    if p < _OPTICAL_MATERIALIZATION_BODY_READY:
+        return min(p, _OPTICAL_MATERIALIZATION_SPREAD_END)
+    return p
+
+
 def _materialization_fill_state(progress: float) -> dict[str, float]:
     p = _clamp01(progress)
     if p <= _OPTICAL_MATERIAL_FILL_START:
@@ -2218,10 +2226,15 @@ class CommandOverlay(NSObject):
             initial_response=bool(initial_response),
         )
         dismiss_reversal_progress = self._optical_dismiss_reversal_progress()
+        summon_retarget_progress = (
+            _summon_retarget_progress_for_dismiss_progress(dismiss_reversal_progress)
+            if dismiss_reversal_progress is not None
+            else None
+        )
         self._cancel_all_timers()
         self._reset_fill_generation_latches_for_show()
         had_compositor = getattr(self, "_fullscreen_compositor", None) is not None
-        if had_compositor and dismiss_reversal_progress is None:
+        if had_compositor and summon_retarget_progress is None:
             self._stop_fullscreen_compositor(reveal_local_shell=False)
         self._visible = True
         self._streaming = True
@@ -2304,11 +2317,12 @@ class CommandOverlay(NSObject):
             # alpha-zero. Live/promptless starts need this too: under load a
             # deferred compositor can otherwise expose a naked pre-warp frame.
             if (
-                dismiss_reversal_progress is not None
+                summon_retarget_progress is not None
                 and getattr(self, "_fullscreen_compositor", None) is not None
             ):
                 self._retarget_fullscreen_compositor_for_show(
-                    start_progress=dismiss_reversal_progress
+                    dismiss_progress=dismiss_reversal_progress,
+                    start_progress=summon_retarget_progress,
                 )
             else:
                 self._start_fullscreen_compositor()
@@ -5151,6 +5165,7 @@ class CommandOverlay(NSObject):
     def _retarget_fullscreen_compositor_for_show(
         self,
         *,
+        dismiss_progress: float | None = None,
         start_progress: float,
     ) -> None:
         """Reverse an in-flight optical dismiss into a summon without restart."""
@@ -5163,6 +5178,7 @@ class CommandOverlay(NSObject):
         start_progress = _clamp01(float(start_progress))
         record_command_overlay_trace(
             "overlay.show.retarget_dismiss_to_summon",
+            dismiss_progress=dismiss_progress,
             start_progress=start_progress,
         )
         self._cancel_brightness_sampling()
