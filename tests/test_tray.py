@@ -43,8 +43,8 @@ def _make_delegate(main_module, monkeypatch, *, command_client=False):
     delegate._tray_index = 0
     delegate._tray_active = False
     # Typed coordination surface stack
-    from spoke.coordination_surfaces import CoordinationStack, SurfaceTypeRegistry
-    delegate._surface_registry = SurfaceTypeRegistry()
+    from spoke.coordination_surfaces import CoordinationStack, build_default_registry
+    delegate._surface_registry = build_default_registry()
     delegate._coordination_stack = CoordinationStack(registry=delegate._surface_registry)
     # Recovery state (implementation detail of tray)
     delegate._pre_paste_clipboard = None
@@ -373,6 +373,48 @@ class TestTrayStack:
         assert d._tray_stack[1] == "same text"
         # But direct TrayEntry comparison distinguishes them
         assert d._tray_stack[0] != d._tray_stack[1]
+
+    def test_dual_write_focus_matches_legacy_tray_on_active_top_insert(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+
+        d._add_tray_entry("old", activate=True)
+        d._add_tray_entry("new", activate=True, position="top")
+
+        assert d._tray_stack[d._tray_index].text == "new"
+        assert d._coordination_stack.primary is not None
+        assert d._coordination_stack.primary.payload["text"] == "new"
+
+    def test_dual_write_acknowledges_matching_surface_entry(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        entry = d._add_tray_entry("from assistant", owner="assistant", activate=False)
+        surface = d._coordination_stack.find_by_id(entry.coordination_surface_id)
+        assert surface is not None
+        assert surface.acknowledged is False
+
+        d._tray_active = True
+        d._tray_index = 0
+        d._show_tray_current(acknowledge=True)
+
+        assert entry.acknowledged is True
+        assert surface.acknowledged is True
+
+    def test_dual_write_removes_matching_surface_entry_on_delete(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        keep = d._add_tray_entry("keep", activate=True)
+        delete_me = d._add_tray_entry("delete me", activate=True)
+        assert d._coordination_stack.find_by_id(keep.coordination_surface_id) is not None
+        assert d._coordination_stack.find_by_id(delete_me.coordination_surface_id) is not None
+
+        d._tray_delete_current()
+
+        assert d._coordination_stack.find_by_id(delete_me.coordination_surface_id) is None
+        assert d._coordination_stack.find_by_id(keep.coordination_surface_id) is not None
 
 
 class TestTrayGestures:

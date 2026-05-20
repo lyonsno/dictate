@@ -31,6 +31,13 @@ class SurfaceKind(str, Enum):
     TEXT = "text"  # legacy fallback — raw text entry
 
 
+class StackOrderingMode(str, Enum):
+    """How the stack currently orders its working set."""
+
+    ARRIVAL = "arrival"
+    PRIORITY = "priority"
+
+
 class SurfaceDestinationKind(str, Enum):
     """Where a stack-focused act is routed for interpretation.
 
@@ -174,6 +181,9 @@ class CoordinationStack:
         self._index: int = 0
         self._active: bool = False
         self._registry = registry or SurfaceTypeRegistry()
+        self._ordering_mode = StackOrderingMode.ARRIVAL
+        self._arrival_counter = 0
+        self._arrival_order: dict[int, int] = {}
 
     @property
     def entries(self) -> list[SurfaceEntry]:
@@ -192,6 +202,10 @@ class CoordinationStack:
         self._active = value
 
     @property
+    def ordering_mode(self) -> StackOrderingMode:
+        return self._ordering_mode
+
+    @property
     def primary(self) -> SurfaceEntry | None:
         """The currently focused (expanded) surface, or None if empty."""
         if not self._entries:
@@ -204,6 +218,36 @@ class CoordinationStack:
     def size(self) -> int:
         return len(self._entries)
 
+    def _record_arrival(self, entry: SurfaceEntry) -> None:
+        key = id(entry)
+        if key in self._arrival_order:
+            return
+        self._arrival_order[key] = self._arrival_counter
+        self._arrival_counter += 1
+
+    def _priority_key(self, entry: SurfaceEntry) -> tuple[int, int]:
+        return (entry.priority, self._arrival_order.get(id(entry), 0))
+
+    def _set_index_to_entry(self, pivot: SurfaceEntry | None) -> None:
+        if not self._entries:
+            self._index = 0
+            return
+        if pivot is None:
+            self._index = 0
+            return
+        try:
+            self._index = self._entries.index(pivot)
+        except ValueError:
+            self._index = min(self._index, len(self._entries) - 1)
+
+    def set_ordering_mode(self, mode: StackOrderingMode) -> None:
+        """Switch stack ordering while preserving the current primary surface."""
+        pivot = self.primary if self._active else None
+        self._ordering_mode = mode
+        if mode == StackOrderingMode.PRIORITY:
+            self._entries.sort(key=self._priority_key)
+        self._set_index_to_entry(pivot)
+
     def push(self, entry: SurfaceEntry, *, to_top: bool = True) -> None:
         """Push a new surface into the stack.
 
@@ -212,6 +256,14 @@ class CoordinationStack:
             to_top: If True, insert at index 0 (newest on top).
                     If False, append to end.
         """
+        self._record_arrival(entry)
+        if self._ordering_mode == StackOrderingMode.PRIORITY:
+            pivot = self.primary if self._active else None
+            self._entries.append(entry)
+            self._entries.sort(key=self._priority_key)
+            self._set_index_to_entry(pivot)
+            return
+
         if to_top:
             self._entries.insert(0, entry)
             if self._active:
@@ -228,18 +280,11 @@ class CoordinationStack:
 
         Lower priority values sort toward the top (index 0).
         """
-        insert_at = 0
-        for i, existing in enumerate(self._entries):
-            if existing.priority <= entry.priority:
-                insert_at = i + 1
-            else:
-                break
-        self._entries.insert(insert_at, entry)
-        if self._active:
-            if insert_at <= self._index:
-                self._index += 1
-        else:
-            self._index = 0
+        self._record_arrival(entry)
+        pivot = self.primary if self._active else None
+        self._entries.append(entry)
+        self.set_ordering_mode(StackOrderingMode.PRIORITY)
+        self._set_index_to_entry(pivot)
 
     def rock_up(self) -> SurfaceEntry | None:
         """Navigate toward index 0 (newer/higher priority)."""
@@ -289,6 +334,14 @@ class CoordinationStack:
                 elif i < self._index:
                     self._index -= 1
                 return removed
+        return None
+
+    def focus_by_id(self, surface_id: str) -> SurfaceEntry | None:
+        """Focus an entry by surface_id without changing active state."""
+        for i, entry in enumerate(self._entries):
+            if entry.surface_id == surface_id:
+                self._index = i
+                return entry
         return None
 
     def find_by_id(self, surface_id: str) -> SurfaceEntry | None:
@@ -564,11 +617,12 @@ def build_default_registry() -> SurfaceTypeRegistry:
 
 def text_surface_from_str(text: str, *, owner: str = "user") -> SurfaceEntry:
     """Create a TEXT surface entry from a raw string (legacy tray compat)."""
+    label = " ".join(text.split())[:60] if text else ""
     return SurfaceEntry(
         identity=SurfaceIdentity(
             kind=SurfaceKind.TEXT,
             surface_id=f"text-{uuid4().hex[:8]}",
-            label=text[:60] if text else "",
+            label=label,
         ),
         payload={"text": text, "owner": owner},
         acknowledged=(owner != "assistant"),

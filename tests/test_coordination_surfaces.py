@@ -9,6 +9,7 @@ import threading
 
 from spoke.coordination_surfaces import (
     CoordinationStack,
+    StackOrderingMode,
     SurfaceAction,
     SurfaceDestinationKind,
     SurfaceEntry,
@@ -53,6 +54,17 @@ def _text_entry(text: str = "hello world") -> SurfaceEntry:
         identity=SurfaceIdentity(
             kind=SurfaceKind.TEXT,
             surface_id=f"text-{id(text)}",
+            label=text[:40],
+        ),
+        payload={"text": text},
+    )
+
+
+def _text_entry_with_id(surface_id: str, text: str) -> SurfaceEntry:
+    return SurfaceEntry(
+        identity=SurfaceIdentity(
+            kind=SurfaceKind.TEXT,
+            surface_id=surface_id,
             label=text[:40],
         ),
         payload={"text": text},
@@ -186,7 +198,7 @@ class TestCoordinationStack:
         low.priority = 10
         high = _finding_entry("high")
         high.priority = 1
-        mid = _text_entry("mid")
+        mid = _text_entry_with_id("mid", "mid")
         mid.priority = 5
 
         stack.push(low)
@@ -196,6 +208,50 @@ class TestCoordinationStack:
         assert stack.entries[0].surface_id == "high"
         assert stack.entries[1].priority == 5
         assert stack.entries[2].surface_id == "low"
+        assert stack.ordering_mode == StackOrderingMode.PRIORITY
+
+    def test_push_by_priority_sorts_mixed_arrival_stack_globally(self):
+        stack = CoordinationStack()
+        low = _agent_entry("low")
+        low.priority = 10
+        high = _finding_entry("high")
+        high.priority = 1
+        mid = _text_entry_with_id("mid", "mid")
+        mid.priority = 5
+
+        stack.push(low, to_top=False)
+        stack.push(high, to_top=False)
+        stack.push_by_priority(mid)
+
+        assert [(e.surface_id, e.priority) for e in stack.entries] == [
+            ("high", 1),
+            ("mid", 5),
+            ("low", 10),
+        ]
+
+    def test_priority_reorder_preserves_active_pivot_surface(self):
+        stack = CoordinationStack()
+        low = _agent_entry("low", "Low")
+        low.priority = 10
+        high = _finding_entry("high", "High")
+        high.priority = 1
+        mid = _text_entry_with_id("mid", "mid")
+        mid.priority = 5
+
+        stack.push(low, to_top=False)
+        stack.push(high, to_top=False)
+        stack.activate()
+        stack.rock_down()
+        assert stack.primary is high
+
+        stack.push_by_priority(mid)
+
+        assert [(e.surface_id, e.priority) for e in stack.entries] == [
+            ("high", 1),
+            ("mid", 5),
+            ("low", 10),
+        ]
+        assert stack.primary is high
 
     def test_push_by_priority_inactive_resets_index(self):
         """When inactive, push_by_priority should reset index to 0."""
@@ -362,6 +418,15 @@ class TestLegacyBridge:
         assert entry.acknowledged is True
         assert entry.label == "hello world"
         assert entry.routing is None
+
+    def test_text_surface_label_is_compact_one_line(self):
+        entry = text_surface_from_str("first line\nsecond line\tand more")
+        stack = CoordinationStack()
+        stack.push(entry)
+
+        assert "\n" not in entry.label
+        assert "\t" not in entry.label
+        assert stack.compact_summary(entry) == "first line second line and more"
 
     def test_text_surface_from_str_assistant(self):
         entry = text_surface_from_str("response", owner="assistant")

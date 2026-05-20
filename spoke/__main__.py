@@ -787,6 +787,7 @@ class TrayEntry:
     text: str
     owner: str = "user"
     acknowledged: bool = True
+    coordination_surface_id: str = ""
 
     def __eq__(self, other):
         if isinstance(other, TrayEntry):
@@ -3266,6 +3267,20 @@ class SpokeAppDelegate(NSObject):
         entry = self._get_tray_entry(index)
         if entry.owner == "assistant" and not entry.acknowledged:
             entry.acknowledged = True
+            self._mirror_tray_entry_acknowledged(entry)
+
+    def _mirror_tray_entry_acknowledged(self, entry: TrayEntry) -> None:
+        surface_id = getattr(entry, "coordination_surface_id", "")
+        if not surface_id:
+            return
+        surface = self._coordination_stack.find_by_id(surface_id)
+        if surface is not None:
+            surface.acknowledged = entry.acknowledged
+
+    def _remove_surface_for_tray_entry(self, entry: TrayEntry) -> None:
+        surface_id = getattr(entry, "coordination_surface_id", "")
+        if surface_id:
+            self._coordination_stack.remove_by_id(surface_id)
 
     def _add_surface(
         self,
@@ -3279,9 +3294,8 @@ class SpokeAppDelegate(NSObject):
         This is the new primary entry point for adding surfaces. Legacy
         text entries should use _add_tray_entry which delegates here.
 
-        Note: during migration, the coordination stack is append-only —
-        removals on the legacy _tray_stack are not mirrored here. Full
-        removal mirroring happens when the legacy tray is cut over.
+        During migration, legacy tray mutators mirror focus, acknowledgement,
+        and removals onto their paired typed surfaces when a pair exists.
         """
         if position == "priority":
             self._coordination_stack.push_by_priority(surface)
@@ -3289,6 +3303,7 @@ class SpokeAppDelegate(NSObject):
             self._coordination_stack.push(surface, to_top=(position == "top"))
         if activate:
             self._coordination_stack.activate()
+            self._coordination_stack.focus_by_id(surface.surface_id)
         return surface
 
     def _add_tray_entry(
@@ -3304,6 +3319,9 @@ class SpokeAppDelegate(NSObject):
             owner=owner,
             acknowledged=(owner != "assistant"),
         )
+        surface = text_surface_from_str(text, owner=owner)
+        entry.coordination_surface_id = surface.surface_id
+
         if position == "bottom":
             had_entries = bool(self._tray_stack)
             self._tray_stack.insert(0, entry)
@@ -3317,7 +3335,7 @@ class SpokeAppDelegate(NSObject):
 
         # Dual-write: also push to typed coordination stack
         self._add_surface(
-            text_surface_from_str(text, owner=owner),
+            surface,
             activate=activate,
             position=position,
         )
@@ -3575,6 +3593,8 @@ class SpokeAppDelegate(NSObject):
         """Delete the currently displayed tray entry."""
         if not self._tray_active or not self._tray_stack:
             return
+        entry = self._get_tray_entry(self._tray_index)
+        self._remove_surface_for_tray_entry(entry)
         del self._tray_stack[self._tray_index]
         if not self._tray_stack:
             self._dismiss_tray()
@@ -3597,6 +3617,7 @@ class SpokeAppDelegate(NSObject):
         self._detector.tray_active = False
 
         # Remove consumed entry from stack
+        self._remove_surface_for_tray_entry(entry)
         del self._tray_stack[self._tray_index]
         if self._tray_index >= len(self._tray_stack) and self._tray_stack:
             self._tray_index = len(self._tray_stack) - 1
@@ -3640,6 +3661,7 @@ class SpokeAppDelegate(NSObject):
         text = entry.text
 
         # Remove consumed entry from stack
+        self._remove_surface_for_tray_entry(entry)
         del self._tray_stack[self._tray_index]
         if self._tray_index >= len(self._tray_stack) and self._tray_stack:
             self._tray_index = len(self._tray_stack) - 1
