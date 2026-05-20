@@ -474,16 +474,18 @@ class TestStartStop:
         assert cap._stream is second_stream
 
     @patch("spoke.capture.sd")
-    def test_stop_resets_portaudio_after_zero_chunk_recording(self, mock_sd):
-        """A zero-chunk recording should reset PortAudio before the next hold."""
+    def test_stop_skips_inline_portaudio_reset_after_zero_chunk_recording(
+        self, mock_sd
+    ):
+        """A zero-chunk recording should not reset global PortAudio on release."""
         cap = AudioCapture()
         cap._stream = MagicMock()
 
         wav = cap.stop()
 
         assert wav == b""
-        mock_sd._terminate.assert_called_once()
-        mock_sd._initialize.assert_called_once()
+        mock_sd._terminate.assert_not_called()
+        mock_sd._initialize.assert_not_called()
         assert cap._stream is None
 
     @patch("spoke.capture.sd")
@@ -806,6 +808,39 @@ class TestVADSlicing:
         wav = cap.stop()
         # Empty or header-only WAV — no speech was detected
         assert len(wav) <= 44 or wav == b""
+
+    @patch("spoke.capture.sd")
+    def test_vad_final_wav_falls_back_to_raw_frames_when_speech_state_empty(
+        self, mock_sd
+    ):
+        """Captured speech frames should not vanish if VAD state is empty at stop."""
+        cap = AudioCapture()
+        cap.start(segment_callback=MagicMock())
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+        cap._frames = [np.full(1024, 0.5, dtype=np.float32)]
+        cap._speech_chunks = []
+        cap._is_speech = False
+
+        samples = _decode_wav_samples(cap.stop())
+
+        assert samples.size == 1024
+        assert np.any(samples != 0)
+
+    @patch("spoke.capture.sd")
+    def test_zero_chunk_stop_does_not_reset_global_portaudio(self, mock_sd):
+        """Zero-chunk release should not run global PortAudio teardown inline."""
+        cap = AudioCapture()
+        cap.start()
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+        cap._frames = []
+        cap._reset_portaudio = MagicMock()
+
+        wav = cap.stop()
+
+        assert wav == b""
+        cap._reset_portaudio.assert_not_called()
 
     @patch("spoke.capture.VAD_GRACE_PERIOD_SECS", 0.0)
     @patch("spoke.capture.sd")
