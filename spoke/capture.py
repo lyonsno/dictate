@@ -380,9 +380,8 @@ class AudioCapture:
             logger.info("Audio capture stopped (%d chunks)", chunk_count)
             if chunk_count == 0:
                 logger.warning(
-                    "Audio capture produced zero chunks — resetting PortAudio"
+                    "Audio capture produced zero chunks — skipping inline PortAudio reset"
                 )
-                self._reset_portaudio()
             
             # Emit final segment if we were in the middle of speech
             if self._segment_cb is not None and self._is_speech and self._current_segment_chunks:
@@ -409,13 +408,23 @@ class AudioCapture:
             self._segment_cb = None
 
             # Use trimmed speech chunks if available; if VAD never detected
-            # speech, return empty for VAD-aware callers.
+            # speech, fall back to raw frames only when the mic captured
+            # non-silent samples. Under load, VAD/segment state can lag behind
+            # raw capture; returning empty there clips real utterances.
             speech_chunks = getattr(self, "_speech_chunks", None)
             if speech_chunks is not None and len(speech_chunks) > 0:
                 final_chunks = list(speech_chunks)
                 wav_bytes = self._encode_wav(np.concatenate(final_chunks))
             elif had_vad:
-                wav_bytes = b""
+                raw_frames = self._get_all_frames()
+                if raw_frames.size > 0 and _has_non_silent_samples(raw_frames):
+                    logger.warning(
+                        "VAD produced no speech chunks but raw capture has non-silent samples; "
+                        "falling back to full raw capture"
+                    )
+                    wav_bytes = self._encode_wav(raw_frames)
+                else:
+                    wav_bytes = b""
             else:
                 wav_bytes = self._encode_wav(self._get_all_frames())
 
