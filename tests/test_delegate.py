@@ -55,8 +55,8 @@ def _make_delegate(main_module, monkeypatch):
     delegate._tray_index = 0
     delegate._tray_active = False
     # Typed coordination surface stack
-    from spoke.coordination_surfaces import CoordinationStack, SurfaceTypeRegistry
-    delegate._surface_registry = SurfaceTypeRegistry()
+    from spoke.coordination_surfaces import CoordinationStack, build_default_registry
+    delegate._surface_registry = build_default_registry()
     delegate._coordination_stack = CoordinationStack(registry=delegate._surface_registry)
     # Recovery mode state
     delegate._pre_paste_clipboard = None
