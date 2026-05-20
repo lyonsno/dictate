@@ -813,6 +813,92 @@ class TestOpticalShellMaterialization:
         assert mask_progresses
         assert 1.0 not in mask_progresses
 
+    def test_dismiss_during_summon_preserves_current_text_mask_and_reverses_from_progress(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "initial_brightness": 0.35,
+            "gpu_material_brightness": 0.35,
+        }
+        summon_progress = 0.34
+        events = []
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._visible = True
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = 1
+        overlay._materialization_progress = summon_progress
+        overlay._materialization_final_shell_config = dict(shell_config)
+        overlay._display_local_optical_shell_config = MagicMock(return_value=shell_config)
+        overlay._window.alphaValue.return_value = 1.0
+        overlay._update_scroll_materialization_mask = MagicMock(
+            side_effect=lambda progress, **kwargs: events.append(
+                ("mask", progress, kwargs.get("direction"))
+            )
+        )
+        overlay._start_materialization_animation = MagicMock(
+            side_effect=lambda *_args, **kwargs: events.append(
+                ("dismiss-start", kwargs)
+            )
+        )
+
+        overlay.cancel_dismiss()
+
+        dismiss_start = next(event for event in events if event[0] == "dismiss-start")
+        assert dismiss_start[1]["direction"] == -1
+        assert dismiss_start[1]["start_progress"] == pytest.approx(summon_progress)
+        assert all(
+            event[0] != "mask" or event[1] != 1.0
+            for event in events[: events.index(dismiss_start)]
+        )
+
+    def test_dismiss_materialization_start_progress_does_not_restore_full_text_mask(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "initial_brightness": 0.35,
+            "gpu_material_brightness": 0.35,
+        }
+        events = []
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = 1
+        overlay._materialization_progress = 0.34
+        overlay._update_scroll_materialization_mask = MagicMock(
+            side_effect=lambda progress, **kwargs: events.append(
+                ("mask", progress, kwargs.get("direction"))
+            )
+        )
+        overlay._apply_materialization_fill_state = MagicMock(
+            side_effect=lambda progress: events.append(("apply", progress))
+        )
+
+        overlay._start_materialization_animation(
+            shell_config,
+            direction=-1,
+            start_progress=0.34,
+        )
+
+        apply_event = next(event for event in events if event[0] == "apply")
+        assert apply_event[1] == pytest.approx(0.34)
+        assert all(
+            event[0] != "mask" or event[1] != 1.0
+            for event in events[: events.index(apply_event)]
+        )
+
     def test_show_during_dismiss_seeds_retarget_before_fresh_show_presentation(
         self, mock_pyobjc, monkeypatch
     ):

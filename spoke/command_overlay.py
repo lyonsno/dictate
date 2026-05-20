@@ -2497,13 +2497,31 @@ class CommandOverlay(NSObject):
         """Dismiss with a fast pop-then-shrink animation."""
         if self._window is None:
             return
+        optical_dismiss_start_progress = None
+        preserve_transition_text_mask = False
+        if getattr(self, "_fullscreen_compositor", None) is not None:
+            materialization_in_flight = (
+                getattr(self, "_materialization_timer", None) is not None
+            )
+            if materialization_in_flight:
+                preserve_transition_text_mask = True
+                if getattr(self, "_materialization_direction", 1) > 0:
+                    try:
+                        optical_dismiss_start_progress = _clamp01(
+                            float(getattr(self, "_materialization_progress", 0.0))
+                        )
+                    except Exception:
+                        optical_dismiss_start_progress = 0.0
         record_command_overlay_trace(
             "overlay.cancel_dismiss.begin",
             visible=bool(getattr(self, "_visible", False)),
             has_compositor=getattr(self, "_fullscreen_compositor", None) is not None,
             window_alpha=self._window.alphaValue(),
+            optical_dismiss_start_progress=optical_dismiss_start_progress,
         )
-        self._cancel_all_timers()
+        self._cancel_all_timers(
+            preserve_materialization_mask=preserve_transition_text_mask
+        )
         self._streaming = False
         if getattr(self, "_fullscreen_compositor", None) is not None:
             self._visible = False
@@ -2512,7 +2530,7 @@ class CommandOverlay(NSObject):
                 return
             self._window.setAlphaValue_(1.0)
             self._set_overlay_scale(1.0)
-            self._start_fade_out()
+            self._start_fade_out(start_progress=optical_dismiss_start_progress)
             record_command_overlay_trace("overlay.cancel_dismiss.optical_fade")
             return
         self._visible = True  # keep visible for the animation
@@ -3533,7 +3551,7 @@ class CommandOverlay(NSObject):
 
     # ── fade helpers ────────────────────────────────────────
 
-    def _start_fade_out(self) -> None:
+    def _start_fade_out(self, *, start_progress: float | None = None) -> None:
         self._cancel_fade()
         self._cancel_pulse()
         compositor = getattr(self, "_fullscreen_compositor", None)
@@ -3541,7 +3559,10 @@ class CommandOverlay(NSObject):
         fade_duration = _FADE_OUT_S
         if compositor is not None and shell_config is not None:
             try:
-                self._start_materialization_animation(shell_config, direction=-1)
+                kwargs = {"direction": -1}
+                if start_progress is not None:
+                    kwargs["start_progress"] = start_progress
+                self._start_materialization_animation(shell_config, **kwargs)
                 fade_duration = _OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S
             except Exception:
                 logger.debug("Failed to start command materialization dismissal", exc_info=True)
@@ -3750,10 +3771,9 @@ class CommandOverlay(NSObject):
         start_progress: float | None = None,
     ) -> None:
         """Animate the compositor geometry from/to a pressure slit."""
+        preserves_existing_text_frame = start_progress is not None
         self._cancel_materialization_animation(
-            restore_scroll_mask=not (
-                direction >= 0 and start_progress is not None
-            )
+            restore_scroll_mask=not preserves_existing_text_frame
         )
         self._cancel_dismiss_pucker_tail_animation()
         self._deferred_materialization_shell_config = None
