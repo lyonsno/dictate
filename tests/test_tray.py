@@ -386,6 +386,19 @@ class TestTrayStack:
         assert d._coordination_stack.primary is not None
         assert d._coordination_stack.primary.payload["text"] == "new"
 
+    def test_dual_write_focus_tracks_legacy_tray_navigation(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+
+        d._add_tray_entry("old", activate=True)
+        d._add_tray_entry("new", activate=True)
+        d._tray_navigate_down()
+
+        assert d._tray_stack[d._tray_index].text == "old"
+        assert d._coordination_stack.primary is not None
+        assert d._coordination_stack.primary.payload["text"] == "old"
+
     def test_dual_write_acknowledges_matching_surface_entry(
         self, main_module, monkeypatch
     ):

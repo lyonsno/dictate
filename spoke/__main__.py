@@ -3277,6 +3277,11 @@ class SpokeAppDelegate(NSObject):
         if surface is not None:
             surface.acknowledged = entry.acknowledged
 
+    def _focus_surface_for_tray_entry(self, entry: TrayEntry) -> None:
+        surface_id = getattr(entry, "coordination_surface_id", "")
+        if surface_id:
+            self._coordination_stack.focus_by_id(surface_id)
+
     def _remove_surface_for_tray_entry(self, entry: TrayEntry) -> None:
         surface_id = getattr(entry, "coordination_surface_id", "")
         if surface_id:
@@ -3371,6 +3376,7 @@ class SpokeAppDelegate(NSObject):
         if acknowledge:
             self._acknowledge_tray_entry(self._tray_index)
         entry = self._get_tray_entry(self._tray_index)
+        self._focus_surface_for_tray_entry(entry)
         text = entry.text
         # Set recovery_text for compatibility with existing dismiss/cleanup
         self._recovery_text = text
