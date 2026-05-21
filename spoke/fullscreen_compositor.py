@@ -103,6 +103,10 @@ class OverlayRenderSnapshot:
     presentation_layer: str | None = None
     presentation_order: int = 0
     visibility_scope: str = "independent"
+    presentation_generation: int | None = None
+    presentation_requested_state: str | None = None
+    presentation_publisher_state: str | None = None
+    presentation_config_identity: str | None = None
     optical_field: Mapping[str, Any] | None = None
 
 
@@ -315,6 +319,7 @@ class FullScreenCompositor:
 
         # First-present callback (called once from render thread on 0→1 transition)
         self._on_first_present = None
+        self._on_present_configs = None
 
         # Diagnostics
         self._frame_count = 0
@@ -1136,6 +1141,12 @@ class FullScreenCompositor:
                 was_first = self._presented_count == 0
                 self._presented_count += 1
                 self._interval_presented += 1
+                present_cb = getattr(self, "_on_present_configs", None)
+                if present_cb is not None:
+                    try:
+                        present_cb(warp_configs)
+                    except Exception:
+                        pass
                 if was_first:
                     cb = getattr(self, "_on_first_present", None)
                     self._on_first_present = None
@@ -1313,6 +1324,14 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
         config["presentation_layer"] = snapshot.presentation_layer
         config["presentation_order"] = int(snapshot.presentation_order)
         config["visibility_scope"] = snapshot.visibility_scope
+    if snapshot.presentation_generation is not None:
+        config["presentation_generation"] = int(snapshot.presentation_generation)
+    if snapshot.presentation_requested_state is not None:
+        config["presentation_requested_state"] = snapshot.presentation_requested_state
+    if snapshot.presentation_publisher_state is not None:
+        config["presentation_publisher_state"] = snapshot.presentation_publisher_state
+    if snapshot.presentation_config_identity is not None:
+        config["presentation_config_identity"] = snapshot.presentation_config_identity
     for key in (
         "bleed_zone_frac",
         "exterior_mix_width_points",
@@ -1342,6 +1361,16 @@ def _snapshot_from_shell_config(
         if key not in config or config[key] is None:
             return None
         return float(config[key])
+
+    def _optional_int(key: str) -> int | None:
+        if key not in config or config[key] is None:
+            return None
+        return int(config[key])
+
+    def _optional_str(key: str) -> str | None:
+        if key not in config or config[key] is None:
+            return None
+        return str(config[key])
 
     geometry = OpticalShellGeometrySnapshot(
         center_x=float(config.get("center_x", 0.0)),
@@ -1417,6 +1446,10 @@ def _snapshot_from_shell_config(
         ),
         presentation_order=int(config.get("presentation_order", 0)),
         visibility_scope=str(config.get("visibility_scope", "independent")),
+        presentation_generation=_optional_int("presentation_generation"),
+        presentation_requested_state=_optional_str("presentation_requested_state"),
+        presentation_publisher_state=_optional_str("presentation_publisher_state"),
+        presentation_config_identity=_optional_str("presentation_config_identity"),
         optical_field=optical_field,
     )
 
@@ -1471,7 +1504,14 @@ class OverlayCompositorHost:
         self._display_id = _display_id_from_registry_key(registry_key)
         self._compositor = FullScreenCompositor(screen)
         self._clients: dict[str, dict] = {}
+        self._presented_client_generations: dict[str, int] = {}
+        self._presented_config_identities: dict[str, str | None] = {}
+        self._present_callbacks: dict[str, list] = {}
         self._started = False
+        try:
+            setattr(self._compositor, "_on_present_configs", self._record_presented_configs)
+        except Exception:
+            pass
 
     @property
     def display_id(self) -> int | str:
@@ -1648,6 +1688,94 @@ class OverlayCompositorHost:
     def presented_count(self) -> int:
         return int(getattr(self._compositor, "presented_count", 0))
 
+    def _current_presentation_generation(self, client_id: str) -> int | None:
+        entry = self._clients.get(client_id)
+        snapshot = entry.get("snapshot") if entry is not None else None
+        value = getattr(snapshot, "presentation_generation", None)
+        if isinstance(value, int):
+            return value
+        return None
+
+    def _current_presentation_config_identity(self, client_id: str) -> str | None:
+        entry = self._clients.get(client_id)
+        snapshot = entry.get("snapshot") if entry is not None else None
+        value = getattr(snapshot, "presentation_config_identity", None)
+        if value is not None:
+            return str(value)
+        return None
+
+    def presentation_generation_for_client(self, client_id: str) -> int | None:
+        return self._current_presentation_generation(client_id)
+
+    def presentation_config_identity_for_client(self, client_id: str) -> str | None:
+        return self._current_presentation_config_identity(client_id)
+
+    def presentation_ack_generation_for_client(self, client_id: str) -> int | None:
+        generation = self._current_presentation_generation(client_id)
+        if generation is None:
+            return None
+        ack_generation = self._presented_client_generations.get(client_id)
+        if ack_generation != generation:
+            return None
+        current_identity = self._current_presentation_config_identity(client_id)
+        ack_identity = self._presented_config_identities.get(client_id)
+        if current_identity is not None and ack_identity != current_identity:
+            return None
+        return ack_generation
+
+    def presentation_ack_config_identity_for_client(self, client_id: str) -> str | None:
+        if self.presentation_ack_generation_for_client(client_id) is None:
+            return None
+        return self._presented_config_identities.get(client_id)
+
+    def set_client_on_present(self, client_id: str, callback) -> None:
+        if callback is None:
+            self._present_callbacks.pop(client_id, None)
+            return
+        if self.presentation_ack_generation_for_client(client_id) is not None:
+            try:
+                callback()
+            except Exception:
+                pass
+            return
+        self._present_callbacks.setdefault(client_id, []).append(callback)
+
+    def _record_presented_configs(self, shell_configs) -> None:
+        try:
+            configs = [dict(config) for config in shell_configs if config]
+        except TypeError:
+            return
+        for config in configs:
+            client_id = config.get("client_id")
+            if not client_id:
+                continue
+            generation = config.get("presentation_generation")
+            if not isinstance(generation, int):
+                continue
+            client_key = str(client_id)
+            identity = config.get("presentation_config_identity")
+            if identity is None:
+                try:
+                    from spoke.optical_presentation import (
+                        optical_presentation_config_identity,
+                    )
+
+                    identity = optical_presentation_config_identity(config)
+                except Exception:
+                    identity = None
+            self._presented_client_generations[client_key] = generation
+            self._presented_config_identities[client_key] = (
+                str(identity) if identity is not None else None
+            )
+            if self.presentation_ack_generation_for_client(client_key) is None:
+                continue
+            callbacks = self._present_callbacks.pop(client_key, [])
+            for callback in callbacks:
+                try:
+                    callback()
+                except Exception:
+                    pass
+
     def diagnostics_snapshot(self) -> dict[str, float | int]:
         diagnostics = getattr(self._compositor, "diagnostics_snapshot", None)
         if callable(diagnostics):
@@ -1801,27 +1929,54 @@ class OverlayCompositorClient:
         except (TypeError, ValueError):
             return 0
 
+    @property
+    def presentation_generation(self) -> int | None:
+        if self._host is None:
+            return None
+        getter = getattr(self._host, "presentation_generation_for_client", None)
+        if callable(getter):
+            return getter(self._client_id)
+        return None
+
+    @property
+    def presentation_config_identity(self) -> str | None:
+        if self._host is None:
+            return None
+        getter = getattr(self._host, "presentation_config_identity_for_client", None)
+        if callable(getter):
+            return getter(self._client_id)
+        return None
+
+    @property
+    def presentation_ack_generation(self) -> int | None:
+        if self._host is None:
+            return None
+        getter = getattr(self._host, "presentation_ack_generation_for_client", None)
+        if callable(getter):
+            return getter(self._client_id)
+        return None
+
+    @property
+    def presentation_ack_config_identity(self) -> str | None:
+        if self._host is None:
+            return None
+        getter = getattr(self._host, "presentation_ack_config_identity_for_client", None)
+        if callable(getter):
+            return getter(self._client_id)
+        return None
+
     def set_on_first_present(self, callback) -> None:
         """Register a callback invoked once when the compositor first presents.
 
-        The callback fires on the compositor render thread. Callers that need
-        main-thread delivery should post from inside the callback.
+        The callback fires only after this client/config presentation
+        generation has been drawn, not merely after the shared host's first
+        global present.
         """
         if self._host is None:
             return
-        compositor = getattr(self._host, "_compositor", None)
-        if compositor is not None:
-            compositor._on_first_present = callback
-            # If the compositor already presented before the callback was
-            # set, fire it immediately — the render-thread check for
-            # was_first would never trigger.
-            if getattr(compositor, "_presented_count", 0) > 0:
-                compositor._on_first_present = None
-                if callback is not None:
-                    try:
-                        callback()
-                    except Exception:
-                        pass
+        setter = getattr(self._host, "set_client_on_present", None)
+        if callable(setter):
+            setter(self._client_id, callback)
 
     def diagnostics_snapshot(self) -> dict[str, float | int]:
         if self._host is None:
