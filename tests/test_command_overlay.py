@@ -530,6 +530,44 @@ class TestOpticalShellMaterialization:
         assert frame.presentation_ack_generation == 6
         assert frame.presentation_acknowledged is False
 
+    def test_stale_visual_start_timer_cannot_publish_current_generation(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        overlay._visible = True
+        overlay._optical_presentation_generation = 12
+        overlay._requested_optical_presentation_state = "opening"
+        overlay._committed_optical_publisher_state = "requested"
+        current_timer = MagicMock(name="current-visual-start")
+        stale_timer = MagicMock(name="stale-visual-start")
+        overlay._visual_start_timer = current_timer
+        overlay._start_fullscreen_compositor = MagicMock()
+        overlay._refresh_punchthrough_mask_if_needed = MagicMock()
+        overlay._start_backdrop_refresh_timer = MagicMock()
+
+        overlay.visualStart_(stale_timer)
+
+        assert overlay._visual_start_timer is current_timer
+        overlay._start_fullscreen_compositor.assert_not_called()
+        overlay._refresh_punchthrough_mask_if_needed.assert_not_called()
+        overlay._start_backdrop_refresh_timer.assert_not_called()
+        assert overlay._optical_presentation_frame_bundle().generation_id == 12
+
+    def test_stale_linger_timer_cannot_hide_current_generation(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._streaming = False
+        current_timer = MagicMock(name="current-linger")
+        stale_timer = MagicMock(name="stale-linger")
+        overlay._linger_timer = current_timer
+        overlay.hide = MagicMock()
+
+        overlay.lingerDone_(stale_timer)
+
+        assert overlay._linger_timer is current_timer
+        overlay.hide.assert_not_called()
+
     def test_optical_fill_ready_recovers_stale_hidden_latch_without_pending_fill(
         self, mock_pyobjc
     ):

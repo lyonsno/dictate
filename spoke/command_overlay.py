@@ -1900,6 +1900,35 @@ class CommandOverlay(NSObject):
             return int(generation)
         return None
 
+    def _optical_timer_user_info(self) -> dict[str, int] | None:
+        generation = self._current_optical_presentation_generation()
+        if generation is None:
+            return None
+        return {"presentation_generation": generation}
+
+    def _timer_presentation_generation(self, timer) -> int | None:
+        if timer is None:
+            return None
+        user_info = getattr(timer, "userInfo", None)
+        if callable(user_info):
+            try:
+                user_info = user_info()
+            except Exception:
+                user_info = None
+        if not isinstance(user_info, dict):
+            return None
+        generation = user_info.get("presentation_generation")
+        if isinstance(generation, numbers.Integral):
+            return int(generation)
+        return None
+
+    def _timer_matches_current_optical_generation(self, timer) -> bool:
+        timer_generation = self._timer_presentation_generation(timer)
+        if timer_generation is None:
+            return True
+        current_generation = self._current_optical_presentation_generation()
+        return current_generation is None or timer_generation == current_generation
+
     def _compositor_presentation_generation(self, compositor) -> int | None:
         for name in (
             "presentation_generation",
@@ -2648,6 +2677,8 @@ class CommandOverlay(NSObject):
         """Ease the entrance pop back to scale 1.0."""
         if getattr(self, "_pop_timer", None) is not timer:
             return
+        if not self._timer_matches_current_optical_generation(timer):
+            return
         self._pop_step += 1
         t = self._pop_step / self._pop_steps
         eased = t * t * (3.0 - 2.0 * t)  # smoothstep
@@ -3185,6 +3216,8 @@ class CommandOverlay(NSObject):
         """
         if getattr(self, "_fade_timer", None) is not timer:
             return
+        if not self._timer_matches_current_optical_generation(timer):
+            return
         self._fade_step += 1
         progress = self._fade_step / _FADE_STEPS
 
@@ -3241,6 +3274,8 @@ class CommandOverlay(NSObject):
     def pulseStep_(self, timer) -> None:
         """Dual-phase pulse: user and assistant text breathe independently."""
         if getattr(self, "_pulse_timer", None) is not timer:
+            return
+        if not self._timer_matches_current_optical_generation(timer):
             return
         try:
             self._pulseStepInner()
@@ -3692,6 +3727,10 @@ class CommandOverlay(NSObject):
 
     def lingerDone_(self, timer) -> None:
         """Linger period over — fade out."""
+        if timer is not None and getattr(self, "_linger_timer", None) is not timer:
+            return
+        if not self._timer_matches_current_optical_generation(timer):
+            return
         self._linger_timer = None
         if self._visible and not self._streaming:
             self.hide()
@@ -3715,7 +3754,7 @@ class CommandOverlay(NSObject):
         self._fade_direction = -1
         interval = fade_duration / _FADE_STEPS
         self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            interval, self, "fadeStep:", None, True
+            interval, self, "fadeStep:", self._optical_timer_user_info(), True
         )
 
     def _cancel_fade(self) -> None:
@@ -3732,7 +3771,7 @@ class CommandOverlay(NSObject):
         self._cancel_pulse()
         self._response_chroma_active = True
         self._pulse_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            1.0 / _PULSE_HZ, self, "pulseStep:", None, True
+            1.0 / _PULSE_HZ, self, "pulseStep:", self._optical_timer_user_info(), True
         )
 
     def _cancel_linger(self) -> None:
@@ -3884,7 +3923,11 @@ class CommandOverlay(NSObject):
         self._pop_step = 0
         self._pop_steps = max(1, int(_ENTRANCE_POP_S * _DISMISS_ANIM_FPS))
         self._pop_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            1.0 / _DISMISS_ANIM_FPS, self, "_entrancePopStep:", None, True
+            1.0 / _DISMISS_ANIM_FPS,
+            self,
+            "_entrancePopStep:",
+            self._optical_timer_user_info(),
+            True,
         )
 
         # Apply one pulse tick immediately so text styling (shadows, chroma)
@@ -3900,7 +3943,7 @@ class CommandOverlay(NSObject):
         self._fade_direction = 1
         interval = _FADE_IN_S / _FADE_STEPS
         self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            interval, self, "fadeStep:", None, True
+            interval, self, "fadeStep:", self._optical_timer_user_info(), True
         )
 
     def _start_materialization_animation(
@@ -3961,13 +4004,15 @@ class CommandOverlay(NSObject):
             1.0 / _DISMISS_ANIM_FPS,
             self,
             "materializationStep:",
-            None,
+            self._optical_timer_user_info(),
             True,
         )
         _pin_timer_to_active_run_loop_modes(self._materialization_timer)
 
     def materializationStep_(self, timer) -> None:
         if getattr(self, "_materialization_timer", None) is not timer:
+            return
+        if not self._timer_matches_current_optical_generation(timer):
             return
         final_config = getattr(self, "_materialization_final_shell_config", None)
         compositor = getattr(self, "_fullscreen_compositor", None)
@@ -4086,7 +4131,7 @@ class CommandOverlay(NSObject):
             1.0 / _DISMISS_ANIM_FPS,
             self,
             "dismissPuckerTailStep:",
-            None,
+            self._optical_timer_user_info(),
             True,
         )
         _pin_timer_to_active_run_loop_modes(self._pucker_tail_timer)
@@ -4118,6 +4163,8 @@ class CommandOverlay(NSObject):
 
     def dismissPuckerTailStep_(self, timer) -> None:
         if getattr(self, "_pucker_tail_timer", None) is not timer:
+            return
+        if not self._timer_matches_current_optical_generation(timer):
             return
         shell_config = getattr(self, "_pucker_tail_shell_config", None)
         compositor = getattr(self, "_fullscreen_compositor", None)
@@ -4392,14 +4439,17 @@ class CommandOverlay(NSObject):
             _COMMAND_VISUAL_START_DELAY_S,
             self,
             "visualStart:",
-            None,
+            self._optical_timer_user_info(),
             False,
         )
         _pin_timer_to_active_run_loop_modes(self._visual_start_timer)
 
     def visualStart_(self, timer) -> None:
-        if getattr(self, "_visual_start_timer", None) is timer:
-            self._visual_start_timer = None
+        if timer is not None and getattr(self, "_visual_start_timer", None) is not timer:
+            return
+        if not self._timer_matches_current_optical_generation(timer):
+            return
+        self._visual_start_timer = None
         if not getattr(self, "_visible", False):
             return
         if _COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED:
@@ -4448,7 +4498,7 @@ class CommandOverlay(NSObject):
             _OPTICAL_ENTRANCE_HARD_DEADLINE_S,
             self,
             "visualReadyDeadline:",
-            None,
+            self._optical_timer_user_info(),
             False,
         )
         _pin_timer_to_active_run_loop_modes(self._visual_ready_timer)
@@ -4559,6 +4609,8 @@ class CommandOverlay(NSObject):
         if getattr(self, "_entrance_started", False):
             return
         if getattr(self, "_visual_ready_timer", None) is not timer:
+            return
+        if not self._timer_matches_current_optical_generation(timer):
             return
         if not getattr(self, "_visible", False):
             self._cancel_visual_ready_start()
