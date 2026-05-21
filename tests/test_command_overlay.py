@@ -530,6 +530,56 @@ class TestOpticalShellMaterialization:
         assert frame.presentation_ack_generation == 6
         assert frame.presentation_acknowledged is False
 
+    def test_hard_deadline_commits_local_fallback_before_text_is_visible(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        alpha = {"value": 0.0}
+        overlay._scroll_view.setAlphaValue_.side_effect = (
+            lambda value: alpha.__setitem__("value", float(value))
+        )
+        overlay._scroll_view.alphaValue.side_effect = lambda: alpha["value"]
+        overlay._scroll_view.isHidden.return_value = False
+        overlay._begin_optical_presentation_generation("opening")
+        overlay._visible = True
+        overlay._materialization_progress = 0.0
+        overlay._visual_ready_wait_started_at = time.perf_counter()
+        timer = MagicMock()
+        overlay._visual_ready_timer = timer
+        overlay._start_backdrop_refresh_timer = MagicMock()
+        overlay._start_entrance_animation = MagicMock()
+
+        overlay.visualReadyDeadline_(timer)
+
+        frame = overlay._optical_presentation_frame_bundle()
+        assert frame.generation_id == 1
+        assert frame.committed_publisher_state == "fallback_no_compositor"
+        assert frame.text_publication_state == "visible"
+
+    def test_dismissing_generation_quarantines_text_when_compositor_stops(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        alpha = {"value": 1.0}
+        overlay._scroll_view.setAlphaValue_.side_effect = (
+            lambda value: alpha.__setitem__("value", float(value))
+        )
+        overlay._scroll_view.alphaValue.side_effect = lambda: alpha["value"]
+        overlay._scroll_view.isHidden.return_value = False
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._visible = True
+        overlay._optical_presentation_generation = 9
+        overlay._requested_optical_presentation_state = "dismissing"
+        overlay._committed_optical_publisher_state = "dismissing"
+        overlay._materialization_progress = 0.2
+
+        overlay._stop_fullscreen_compositor()
+
+        frame = overlay._optical_presentation_frame_bundle()
+        assert frame.generation_id == 9
+        assert frame.requested_state == "dismissing"
+        assert frame.text_publication_state == "quarantined"
+
     def test_optical_fill_ready_recovers_stale_hidden_latch_without_pending_fill(
         self, mock_pyobjc
     ):

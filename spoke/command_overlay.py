@@ -1892,6 +1892,7 @@ class CommandOverlay(NSObject):
         self._optical_compositor_config_generation = None
         self._optical_compositor_config_identity = None
         self._optical_presentation_ack_generation = None
+        self._optical_text_quarantine_reason = None
         return generation
 
     def _current_optical_presentation_generation(self) -> int | None:
@@ -1950,6 +1951,8 @@ class CommandOverlay(NSObject):
         return visible, ordered, alpha
 
     def _text_publication_state(self) -> str:
+        if getattr(self, "_optical_text_quarantine_reason", None):
+            return "quarantined"
         scroll = getattr(self, "_scroll_view", None)
         if scroll is None:
             return "absent"
@@ -1986,6 +1989,40 @@ class CommandOverlay(NSObject):
         if getattr(self, "_backdrop_mask_layer", None) is not None:
             return "backdrop"
         return "clear"
+
+    def _quarantine_optical_text_plane(self, reason: str) -> None:
+        self._optical_text_quarantine_reason = str(reason)
+        scroll = getattr(self, "_scroll_view", None)
+        if scroll is None:
+            return
+        if hasattr(scroll, "setAlphaValue_"):
+            try:
+                scroll.setAlphaValue_(0.0)
+            except Exception:
+                logger.debug("Failed to alpha-quarantine command text plane", exc_info=True)
+        if hasattr(scroll, "setHidden_"):
+            try:
+                scroll.setHidden_(True)
+            except Exception:
+                logger.debug("Failed to hide-quarantine command text plane", exc_info=True)
+
+    def _release_optical_text_quarantine(self) -> None:
+        self._optical_text_quarantine_reason = None
+
+    def _commit_optical_local_fallback(self, reason: str) -> None:
+        if getattr(self, "_committed_optical_publisher_state", None) == str(reason):
+            self._release_optical_text_quarantine()
+            return
+        self._committed_optical_publisher_state = str(reason)
+        self._release_optical_text_quarantine()
+        record_command_overlay_trace(
+            "overlay.presentation.local_fallback",
+            reason=str(reason),
+            presentation_generation=self._current_optical_presentation_generation(),
+            presentation_requested_state=getattr(
+                self, "_requested_optical_presentation_state", "unknown"
+            ),
+        )
 
     def _optical_presentation_frame_bundle(self) -> OpticalPresentationFrameBundle:
         generation = self._current_optical_presentation_generation()
@@ -3875,6 +3912,11 @@ class CommandOverlay(NSObject):
             has_compositor=getattr(self, "_fullscreen_compositor", None) is not None,
             fill_ready=self._optical_fill_ready(),
         )
+        committed_state = str(
+            getattr(self, "_committed_optical_publisher_state", "")
+        )
+        if self._optical_body_content_ready() or committed_state.startswith("fallback_"):
+            self._release_optical_text_quarantine()
         self._cancel_entrance_pop()
         self._cancel_fade()
 
@@ -4377,12 +4419,11 @@ class CommandOverlay(NSObject):
             _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC,
             direction=1,
         )
-        scroll = getattr(self, "_scroll_view", None)
-        if scroll is not None and hasattr(scroll, "setAlphaValue_"):
-            scroll.setAlphaValue_(0.0)
+        self._quarantine_optical_text_plane("opening")
 
     def _restore_scroll_after_optical_entrance_bypass(self) -> None:
         """Restore text if the optical compositor cannot own the entrance."""
+        self._commit_optical_local_fallback("fallback_no_compositor")
         self._update_scroll_materialization_mask(1.0, direction=1)
 
     def _schedule_visual_start(self) -> None:
@@ -4601,8 +4642,10 @@ class CommandOverlay(NSObject):
         self._entrance_started = True
         self._cancel_visual_ready_start()
         if not compositor_ready:
+            self._commit_optical_local_fallback("fallback_no_compositor")
             self._stop_fullscreen_compositor()
             self._thaw_local_shell_layers()
+            self._restore_scroll_after_optical_entrance_bypass()
             self._start_backdrop_refresh_timer()
         else:
             if not getattr(self, "_visual_ready_brightness_synced", False):
@@ -5859,6 +5902,17 @@ class CommandOverlay(NSObject):
                     pass
         else:
             self._freeze_local_shell_layers_for_compositor_handoff()
+        requested_state = str(
+            getattr(self, "_requested_optical_presentation_state", "")
+        )
+        committed_state = str(
+            getattr(self, "_committed_optical_publisher_state", "")
+        )
+        if requested_state in {"closed", "dismissing"} or committed_state in {
+            "closed",
+            "dismissing",
+        }:
+            self._quarantine_optical_text_plane(requested_state or committed_state)
         if compositor is not None:
             try:
                 compositor.stop()
