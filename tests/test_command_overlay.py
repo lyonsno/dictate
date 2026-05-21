@@ -3191,6 +3191,7 @@ class TestWindowLayering:
         overlay.fillImageReady_(
             {
                 "signature": pending_signature,
+                "presentation_generation": overlay._current_optical_presentation_generation(),
                 "geom_key": ("geom",),
                 "fallback_alpha": None,
                 "raw_interior": None,
@@ -3249,6 +3250,96 @@ class TestWindowLayering:
         assert overlay._pending_fill_image_signature != ("dismissed-stale-fill",)
         assert overlay._queued_fill_request != (111.0, 22.0)
         assert overlay._fill_hidden_until_signature != ("dismissed-stale-fill",)
+
+    def test_fill_image_ready_discards_stale_presentation_generation_without_mutating_current_receipt(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._optical_presentation_generation = 7
+        overlay._desired_fill_image_signature = ("fill-sig",)
+        overlay._pending_fill_image_signature = ("fill-sig",)
+        overlay._queued_fill_request = None
+        overlay._fill_hidden_until_signature = None
+        overlay._sdf_geom_key = ("current",)
+        overlay._sdf_fallback_alpha = "current-fallback"
+        overlay._sdf_raw_interior = "current-raw"
+        overlay._sdf_edge_ridge = "current-edge"
+        overlay._sdf_inside_mask = "current-inside"
+        overlay._sdf_ext_exterior = "current-exterior"
+        overlay._cached_fill_alpha = "current-cached"
+        overlay._sdf_appearance_b = 0.0
+        overlay._fill_image_signature = None
+        overlay._fill_payload = None
+        overlay._dismiss_fill_payload = None
+        overlay._fill_image = None
+        overlay._dismiss_fill_image = None
+        overlay._fill_layer.setContents_.reset_mock()
+        overlay._fill_layer.setFrame_.reset_mock()
+        overlay._fill_layer.setContentsScale_.reset_mock()
+
+        overlay.fillImageReady_(
+            {
+                "signature": ("fill-sig",),
+                "presentation_generation": 6,
+                "geom_key": ("stale",),
+                "fallback_alpha": "stale-fallback",
+                "raw_interior": "stale-raw",
+                "edge_ridge": "stale-edge",
+                "inside_mask": "stale-inside",
+                "ext_exterior": "stale-exterior",
+                "cached_fill_alpha": "stale-cached",
+                "sdf_appearance_b": 6.0,
+                "payload": b"stale-fill",
+                "total_w": 680.0,
+                "total_h": 160.0,
+                "scale": 2.0,
+                "image": "stale-fill-image",
+                "has_compositor": False,
+            }
+        )
+
+        overlay._fill_layer.setContents_.assert_not_called()
+        overlay._fill_layer.setFrame_.assert_not_called()
+        overlay._fill_layer.setContentsScale_.assert_not_called()
+        assert overlay._pending_fill_image_signature == ("fill-sig",)
+        assert overlay._fill_image_signature is None
+        assert overlay._sdf_geom_key == ("current",)
+        assert overlay._sdf_fallback_alpha == "current-fallback"
+        assert overlay._sdf_raw_interior == "current-raw"
+        assert overlay._sdf_edge_ridge == "current-edge"
+        assert overlay._sdf_inside_mask == "current-inside"
+        assert overlay._sdf_ext_exterior == "current-exterior"
+        assert overlay._cached_fill_alpha == "current-cached"
+        assert overlay._sdf_appearance_b == 0.0
+
+    def test_backdrop_mask_ready_discards_stale_presentation_generation_without_mutating_current_receipt(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._optical_presentation_generation = 7
+        overlay._desired_backdrop_mask_signature = ("mask-sig",)
+        overlay._pending_backdrop_mask_signature = ("mask-sig",)
+        overlay._queued_backdrop_mask_request = None
+        overlay._backdrop_mask_signature = None
+        overlay._backdrop_mask_layer = None
+        overlay._backdrop_mask_payload = None
+        overlay._backdrop_layer.setMask_.reset_mock()
+
+        overlay.backdropMaskReady_(
+            {
+                "signature": ("mask-sig",),
+                "presentation_generation": 6,
+                "image": "stale-mask-image",
+                "payload": b"stale-mask",
+                "width": 680.0,
+                "height": 160.0,
+            }
+        )
+
+        overlay._backdrop_layer.setMask_.assert_not_called()
+        assert overlay._pending_backdrop_mask_signature == ("mask-sig",)
+        assert overlay._backdrop_mask_signature is None
+        assert overlay._backdrop_mask_payload is None
 
     def test_optical_show_without_initial_text_waits_for_compositor_before_fade(
         self, mock_pyobjc, monkeypatch
@@ -4975,6 +5066,7 @@ class TestSDFCaching:
     def test_same_appearance_reuses_fill_image(self, mock_pyobjc, monkeypatch):
         """Repeated show-time geometry checks should not rebuild the fill bitmap."""
         overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._optical_presentation_generation = 0
 
         import spoke.overlay as ov_mod
         call_count = 0

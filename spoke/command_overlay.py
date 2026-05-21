@@ -1940,6 +1940,9 @@ class CommandOverlay(NSObject):
         current_generation = self._current_optical_presentation_generation()
         return current_generation is None or timer_generation == current_generation
 
+    def _presentation_generation_for_async_artifact(self) -> int | None:
+        return self._current_optical_presentation_generation()
+
     def _compositor_presentation_generation(self, compositor) -> int | None:
         for name in (
             "presentation_generation",
@@ -5155,6 +5158,7 @@ class CommandOverlay(NSObject):
             return
 
         self._pending_fill_image_signature = appearance_key
+        presentation_generation = self._presentation_generation_for_async_artifact()
         geom_cache_hit = getattr(self, '_sdf_geom_key', None) == geom_key
         cached_fallback_alpha = (
             getattr(self, "_sdf_fallback_alpha", None)
@@ -5264,6 +5268,7 @@ class CommandOverlay(NSObject):
                     "cached_fill_alpha": cached_fill_alpha,
                     "sdf_appearance_b": sdf_appearance_b,
                     "has_compositor": _has_compositor,
+                    "presentation_generation": presentation_generation,
                 }
                 if _has_compositor:
                     bg_r, bg_g, bg_b = _compositor_fill_color_for_brightness(_b)
@@ -5287,12 +5292,24 @@ class CommandOverlay(NSObject):
                 except Exception as exc:
                     result["error"] = repr(exc)
             except Exception as exc:
-                result = {"signature": appearance_key, "error": repr(exc)}
+                result = {
+                    "signature": appearance_key,
+                    "error": repr(exc),
+                    "presentation_generation": presentation_generation,
+                }
             _post_overlay_result_to_main(self, "fillImageReady:", result)
 
         _start_overlay_fill_worker(build)
 
     def fillImageReady_(self, payload: dict) -> None:
+        generation = payload.get("presentation_generation")
+        if generation != self._current_optical_presentation_generation():
+            logger.debug(
+                "Discarding stale command overlay fill image generation: payload=%s current=%s",
+                generation,
+                self._current_optical_presentation_generation(),
+            )
+            return
         signature = payload.get("signature")
         if getattr(self, "_pending_fill_image_signature", None) == signature:
             self._pending_fill_image_signature = None
@@ -5417,6 +5434,7 @@ class CommandOverlay(NSObject):
         inner_width = max(width - 2 * overscan, 1.0)
         inner_height = max(height - 2 * overscan, 1.0)
         self._pending_backdrop_mask_signature = signature
+        presentation_generation = self._presentation_generation_for_async_artifact()
 
         def build() -> None:
             try:
@@ -5468,14 +5486,27 @@ class CommandOverlay(NSObject):
                     "payload": payload,
                     "width": width,
                     "height": height,
+                    "presentation_generation": presentation_generation,
                 }
             except Exception as exc:
-                result = {"signature": signature, "error": repr(exc)}
+                result = {
+                    "signature": signature,
+                    "error": repr(exc),
+                    "presentation_generation": presentation_generation,
+                }
             _post_overlay_result_to_main(self, "backdropMaskReady:", result)
 
         _start_overlay_fill_worker(build)
 
     def backdropMaskReady_(self, payload: dict) -> None:
+        generation = payload.get("presentation_generation")
+        if generation != self._current_optical_presentation_generation():
+            logger.debug(
+                "Discarding stale command overlay backdrop mask generation: payload=%s current=%s",
+                generation,
+                self._current_optical_presentation_generation(),
+            )
+            return
         signature = payload.get("signature")
         if getattr(self, "_pending_backdrop_mask_signature", None) == signature:
             self._pending_backdrop_mask_signature = None
