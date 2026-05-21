@@ -4666,6 +4666,41 @@ class TestGeometryCaps:
         assert doc_frame.size.height == pytest.approx(304.0 - 16)
         assert container.size == (mod._OVERLAY_WIDTH - 24, 1.0e7)
 
+    def test_update_layout_resets_scroll_materialization_and_punchthrough_geometry(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "NSMakeRect", _make_rect)
+        overlay._window.frame.return_value = _make_rect(0.0, 260.0, 680.0, 160.0)
+        overlay._text_view.layoutManager.return_value = _FakeLayoutManager(280.0)
+        container = _FakeTextContainer()
+        overlay._text_view.textContainer.return_value = container
+        string_obj = MagicMock()
+        string_obj.length.return_value = 12
+        overlay._text_view.string.return_value = string_obj
+        overlay._scroll_view.frame.return_value = _make_rect(12.0, 8.0, 552.0, 304.0 - 16.0)
+        overlay._scroll_view.setFrame_.side_effect = (
+            lambda frame: setattr(overlay._scroll_view.frame, "return_value", frame)
+        )
+        overlay._text_view.setFrame_.side_effect = (
+            lambda frame: setattr(overlay._text_view.frame, "return_value", frame)
+        )
+        overlay._text_punchthrough = True
+        overlay._materialization_timer = object()
+        overlay._materialization_progress = 0.42
+        overlay._materialization_direction = 1
+        overlay._apply_ridge_masks = MagicMock()
+        overlay._update_backdrop_capture_geometry = MagicMock(return_value=None)
+        overlay._update_scroll_materialization_mask = MagicMock()
+        overlay._refresh_punchthrough_mask_if_needed = MagicMock()
+
+        overlay._update_layout()
+
+        overlay._update_scroll_materialization_mask.assert_called_once_with(
+            pytest.approx(0.42), direction=1
+        )
+        overlay._refresh_punchthrough_mask_if_needed.assert_called_once()
+
     def test_punchthrough_mask_clips_tall_document_to_visible_shell(
         self, mock_pyobjc, monkeypatch
     ):

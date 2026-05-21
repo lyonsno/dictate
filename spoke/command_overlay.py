@@ -6004,6 +6004,33 @@ class CommandOverlay(NSObject):
         if container is not None and hasattr(container, "setContainerSize_"):
             container.setContainerSize_((_OVERLAY_WIDTH - 24, 1.0e7))
 
+    def _refresh_layout_geometry_masks(self) -> None:
+        """Re-seat layout-dependent masks after a resize or text reflow."""
+        try:
+            progress = _clamp01(float(getattr(self, "_materialization_progress", 1.0)))
+        except Exception:
+            progress = 1.0
+        if getattr(self, "_materialization_timer", None) is not None:
+            try:
+                direction = int(getattr(self, "_materialization_direction", 1) or 1)
+            except Exception:
+                direction = 1
+            self._update_scroll_materialization_mask(
+                progress,
+                direction=direction,
+            )
+        if getattr(self, "_text_punchthrough", False):
+            self._refresh_punchthrough_mask_if_needed()
+        try:
+            record_command_overlay_trace(
+                "overlay.layout.geometry_refresh",
+                materialization_progress=progress,
+                text_punchthrough=bool(getattr(self, "_text_punchthrough", False)),
+                **self._optical_presentation_frame_bundle().to_trace_fields(),
+            )
+        except Exception:
+            logger.debug("Command overlay layout geometry trace failed", exc_info=True)
+
     def _update_layout(self) -> None:
         """Resize window and scroll to bottom after text change."""
         try:
@@ -6056,6 +6083,7 @@ class CommandOverlay(NSObject):
                    if hasattr(self._text_view.string(), 'length')
                    else len(self._response_text))
             self._text_view.scrollRangeToVisible_((end, 0))
+            self._refresh_layout_geometry_masks()
         except Exception:
             logger.debug("Command overlay layout update failed", exc_info=True)
 
