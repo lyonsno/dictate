@@ -618,6 +618,69 @@ class TestOpticalShellMaterialization:
         assert frame.requested_state == "dismissing"
         assert frame.text_publication_state == "quarantined"
 
+    def test_same_host_batch_failure_does_not_fallback_to_partial_sidecar_updates(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        host = SimpleNamespace(update_client_configs=MagicMock(return_value=False))
+        main = SimpleNamespace(
+            _host=host,
+            _client_id="assistant.command",
+            update_shell_config=MagicMock(),
+        )
+        seam = SimpleNamespace(
+            _host=host,
+            _client_id="assistant.command.dismiss_seam",
+            update_shell_config=MagicMock(),
+        )
+        updates = [
+            (main, {"presentation_generation": 7, "center_x": 100.0}),
+            (seam, {"presentation_generation": 7, "center_x": 100.0}),
+        ]
+
+        if not overlay._publish_shared_compositor_configs(updates):
+            overlay._publish_individual_compositor_configs(updates)
+
+        host.update_client_configs.assert_called_once_with(
+            {
+                "assistant.command": {
+                    "presentation_generation": 7,
+                    "center_x": 100.0,
+                },
+                "assistant.command.dismiss_seam": {
+                    "presentation_generation": 7,
+                    "center_x": 100.0,
+                },
+            }
+        )
+        main.update_shell_config.assert_not_called()
+        seam.update_shell_config.assert_not_called()
+
+    def test_unordered_window_cannot_certify_current_optical_frame(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._optical_presentation_generation = 7
+        overlay._requested_optical_presentation_state = "opening"
+        overlay._committed_optical_publisher_state = "compositor_configured"
+        overlay._materialization_progress = 0.75
+        overlay._fill_hidden_until_signature = None
+        overlay._visible = True
+        overlay._window.isVisible.return_value = True
+        overlay._window.alphaValue.return_value = 0.0
+        compositor = MagicMock()
+        compositor.presented_count = 3
+        compositor.presentation_generation = 7
+        compositor.presentation_ack_generation = 7
+        overlay._fullscreen_compositor = compositor
+
+        assert overlay._optical_compositor_has_presented() is False
+        frame = overlay._optical_presentation_frame_bundle()
+        assert frame.generation_id == 7
+        assert frame.window_visible is True
+        assert frame.window_ordered is False
+        assert frame.presentation_acknowledged is False
+
     def test_optical_fill_ready_recovers_stale_hidden_latch_without_pending_fill(
         self, mock_pyobjc
     ):

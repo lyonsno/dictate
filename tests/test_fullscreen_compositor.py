@@ -309,6 +309,40 @@ def test_snapshot_round_trip_preserves_presentation_arbitration_fields():
     assert round_trip["visibility_scope"] == "independent"
 
 
+def test_snapshot_round_trip_preserves_optical_presentation_anchor_fields():
+    from spoke.fullscreen_compositor import (
+        _snapshot_from_shell_config,
+        _snapshot_to_shell_config,
+    )
+
+    identity = _identity("assistant.command", role="assistant")
+    snapshot = _snapshot_from_shell_config(
+        identity,
+        {
+            "center_x": 123.0,
+            "center_y": 456.0,
+            "content_width_points": 600.0,
+            "content_height_points": 80.0,
+            "corner_radius_points": 16.0,
+            "band_width_points": 11.3,
+            "tail_width_points": 8.5,
+            "initial_brightness": 0.37,
+            "presentation_generation": 9,
+            "presentation_requested_state": "opening",
+            "presentation_publisher_state": "compositor_configured",
+            "presentation_config_identity": "frame-identity-9",
+        },
+        generation=3,
+    )
+
+    round_trip = _snapshot_to_shell_config(snapshot)
+
+    assert round_trip["presentation_generation"] == 9
+    assert round_trip["presentation_requested_state"] == "opening"
+    assert round_trip["presentation_publisher_state"] == "compositor_configured"
+    assert round_trip["presentation_config_identity"] == "frame-identity-9"
+
+
 def test_snapshot_round_trip_preserves_scar_warp_controls():
     from spoke.fullscreen_compositor import (
         _snapshot_from_shell_config,
@@ -686,6 +720,50 @@ def test_client_reports_shared_compositor_presented_count(monkeypatch):
 
     assert host.presented_count == 3
     assert assistant.presented_count == 3
+
+
+def test_client_first_present_waits_for_current_config_ack(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
+    assistant = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(411),
+        content_view=object(),
+    )
+    assistant.update_shell_config(
+        {
+            "center_x": 10.0,
+            "center_y": 20.0,
+            "content_width_points": 300.0,
+            "presentation_generation": 7,
+            "presentation_config_identity": "assistant-frame-7",
+        }
+    )
+    compositor = _FakeFullScreenCompositor.instances[0]
+    compositor.presented_count = 4
+    callbacks = []
+
+    assistant.set_on_first_present(lambda: callbacks.append("assistant"))
+
+    assert callbacks == []
+    assert assistant.presentation_ack_generation is None
+    host._record_presented_configs(
+        [
+            {
+                "client_id": "assistant.command",
+                "presentation_generation": 6,
+                "presentation_config_identity": "assistant-frame-6",
+            }
+        ]
+    )
+    assert callbacks == []
+    assert assistant.presentation_ack_generation is None
+    host._record_presented_configs(compositor.updated_configs[-1])
+
+    assert callbacks == ["assistant"]
+    assert assistant.presentation_generation == 7
+    assert assistant.presentation_ack_generation == 7
+    assert assistant.presentation_config_identity == "assistant-frame-7"
 
 
 def test_shared_host_and_client_expose_residency_diagnostics(monkeypatch):

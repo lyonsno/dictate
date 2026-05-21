@@ -1858,10 +1858,20 @@ class CommandOverlay(NSObject):
                 return False
             configs[str(client_id)] = config
         try:
-            return bool(updater(configs))
+            published = bool(updater(configs))
         except Exception:
             logger.debug("Failed to batch command compositor update", exc_info=True)
-            return False
+            published = False
+        if not published:
+            record_command_overlay_trace(
+                "overlay.compositor_batch_update_failed_atomic_hold",
+                client_ids=tuple(configs.keys()),
+            )
+        # Same-host sidecars must stay atomic: the host either swaps all
+        # client configs together or leaves the previous coherent frame in
+        # place. Falling back to individual updates here can publish a half-old
+        # dismiss seam or pucker sidecar.
+        return True
 
     def _publish_individual_compositor_configs(
         self,
@@ -1958,6 +1968,27 @@ class CommandOverlay(NSObject):
             value = source() if callable(source) else source
             if isinstance(value, numbers.Integral):
                 return int(value)
+        return None
+
+    def _compositor_presentation_config_identity(self, compositor) -> str | None:
+        for source in (
+            getattr(compositor, "presentation_config_identity", None),
+            getattr(compositor, "_presentation_config_identity", None),
+            getattr(self, "_optical_compositor_config_identity", None),
+        ):
+            value = source() if callable(source) else source
+            if value is not None:
+                return str(value)
+        return None
+
+    def _compositor_presentation_ack_config_identity(self, compositor) -> str | None:
+        for source in (
+            getattr(compositor, "presentation_ack_config_identity", None),
+            getattr(compositor, "_presentation_ack_config_identity", None),
+        ):
+            value = source() if callable(source) else source
+            if value is not None:
+                return str(value)
         return None
 
     def _window_presentation_state(self) -> tuple[bool, bool, float | None]:
@@ -2078,9 +2109,14 @@ class CommandOverlay(NSObject):
         presented = isinstance(count, numbers.Number) and count > 0
         acknowledged = (
             presented
+            and ordered
             and config_generation == generation
             and ack_generation == generation
         )
+        config_identity = self._compositor_presentation_config_identity(compositor)
+        ack_identity = self._compositor_presentation_ack_config_identity(compositor)
+        if acknowledged and config_identity is not None and ack_identity is not None:
+            acknowledged = ack_identity == config_identity
         return OpticalPresentationFrameBundle(
             generation_id=generation,
             requested_state=str(
@@ -2090,9 +2126,7 @@ class CommandOverlay(NSObject):
                 getattr(self, "_committed_optical_publisher_state", "unknown")
             ),
             compositor_config_generation=config_generation,
-            compositor_config_identity=getattr(
-                self, "_optical_compositor_config_identity", None
-            ),
+            compositor_config_identity=config_identity,
             window_visible=visible,
             window_ordered=ordered,
             window_alpha=alpha,
@@ -4726,6 +4760,9 @@ class CommandOverlay(NSObject):
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is None:
             return False
+        _visible, ordered, _alpha = self._window_presentation_state()
+        if not ordered:
+            return False
         count = getattr(compositor, "presented_count", None)
         if callable(count):
             try:
@@ -4740,7 +4777,13 @@ class CommandOverlay(NSObject):
             ack_generation = self._compositor_presentation_ack_generation(compositor)
             if config_generation is None and ack_generation is None:
                 return True
-            return config_generation == generation and ack_generation == generation
+            if config_generation != generation or ack_generation != generation:
+                return False
+            config_identity = self._compositor_presentation_config_identity(compositor)
+            ack_identity = self._compositor_presentation_ack_config_identity(compositor)
+            if config_identity is not None and ack_identity is not None:
+                return config_identity == ack_identity
+            return True
         return True
 
     def _optical_fill_ready(self) -> bool:
@@ -5607,6 +5650,8 @@ class CommandOverlay(NSObject):
                 0.0,
             )
             config_identity = optical_presentation_config_identity(start_shell_config)
+            start_shell_config["presentation_config_identity"] = config_identity
+            final_shell_config["presentation_config_identity"] = config_identity
             if generation is not None:
                 self._optical_compositor_config_generation = generation
                 self._optical_compositor_config_identity = config_identity
