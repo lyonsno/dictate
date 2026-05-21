@@ -505,6 +505,31 @@ class TestOpticalShellMaterialization:
 
         assert overlay._optical_entrance_ready() is True
 
+    def test_stale_compositor_generation_cannot_certify_current_frame(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._optical_presentation_generation = 7
+        overlay._requested_optical_presentation_state = "opening"
+        overlay._committed_optical_publisher_state = "opening"
+        overlay._materialization_progress = 0.75
+        overlay._fill_hidden_until_signature = None
+        overlay._window.isVisible.return_value = True
+        compositor = MagicMock()
+        compositor.presented_count = 3
+        compositor.presentation_generation = 6
+        compositor.presentation_ack_generation = 6
+        overlay._fullscreen_compositor = compositor
+
+        assert overlay._optical_compositor_has_presented() is False
+        frame = overlay._optical_presentation_frame_bundle()
+        assert frame.generation_id == 7
+        assert frame.requested_state == "opening"
+        assert frame.committed_publisher_state == "opening"
+        assert frame.compositor_config_generation == 6
+        assert frame.presentation_ack_generation == 6
+        assert frame.presentation_acknowledged is False
+
     def test_optical_fill_ready_recovers_stale_hidden_latch_without_pending_fill(
         self, mock_pyobjc
     ):
