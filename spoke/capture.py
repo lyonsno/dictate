@@ -38,6 +38,7 @@ PRE_SPEECH_MARGIN = 6         # ~384ms padding before speech (in BLOCKSIZE chunk
 MAX_SEGMENT_CHUNKS = 468      # ~30s maximum segment duration (in BLOCKSIZE chunks)
 VAD_GRACE_PERIOD_SECS = 5.0
 NON_SILENT_SAMPLE_THRESHOLD = 1e-4
+RAW_FALLBACK_SPEECH_RMS_THRESHOLD = 0.01
 
 # Path to cached Silero VAD JIT model
 _SILERO_VAD_JIT_PATHS = [
@@ -85,6 +86,13 @@ def _load_silero_vad():
 
 def _has_non_silent_samples(chunk: np.ndarray) -> bool:
     return bool(np.any(np.abs(chunk) > NON_SILENT_SAMPLE_THRESHOLD))
+
+
+def _has_speech_like_energy(samples: np.ndarray) -> bool:
+    if samples.size == 0:
+        return False
+    rms = float(np.sqrt(np.mean(samples ** 2)))
+    return rms > RAW_FALLBACK_SPEECH_RMS_THRESHOLD
 
 
 class AudioCapture:
@@ -417,9 +425,9 @@ class AudioCapture:
                 wav_bytes = self._encode_wav(np.concatenate(final_chunks))
             elif had_vad:
                 raw_frames = self._get_all_frames()
-                if raw_frames.size > 0 and _has_non_silent_samples(raw_frames):
+                if _has_speech_like_energy(raw_frames):
                     logger.warning(
-                        "VAD produced no speech chunks but raw capture has non-silent samples; "
+                        "VAD produced no speech chunks but raw capture has speech-like energy; "
                         "falling back to full raw capture"
                     )
                     wav_bytes = self._encode_wav(raw_frames)

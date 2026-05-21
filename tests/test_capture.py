@@ -810,6 +810,25 @@ class TestVADSlicing:
         assert len(wav) <= 44 or wav == b""
 
     @patch("spoke.capture.sd")
+    def test_vad_final_wav_does_not_rescue_low_level_non_speech(self, mock_sd):
+        """Low-level raw room tone should not bypass VAD and trigger transcription."""
+        cap = AudioCapture()
+        cap.start(segment_callback=MagicMock())
+        cap._stream = mock_sd.InputStream.return_value
+        cap._stream.active = True
+
+        low_level_non_speech = np.full((1024, 1), 0.005, dtype=np.float32)
+        for _ in range(10):
+            cap._audio_callback(low_level_non_speech, 1024, None, 0)
+
+        assert not cap._is_speech
+        assert cap._speech_chunks == []
+
+        wav = cap.stop()
+
+        assert wav == b""
+
+    @patch("spoke.capture.sd")
     def test_vad_final_wav_falls_back_to_raw_frames_when_speech_state_empty(
         self, mock_sd
     ):
