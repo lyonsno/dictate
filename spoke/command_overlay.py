@@ -53,6 +53,10 @@ from .overlay import (
     _start_overlay_fill_worker,
 )
 from .optical_shell_metrics import OpticalShellMetrics
+from .optical_presentation import (
+    OpticalPresentationFrameBundle,
+    optical_presentation_config_identity,
+)
 
 logger = logging.getLogger(__name__)
 _BACKDROP_DISPLAY_LAYER_CLASS = None
@@ -1569,6 +1573,12 @@ class CommandOverlay(NSObject):
         self._compositor_registry = None
         self._fullscreen_compositor = None
         self._force_backdrop_frame_callback = False
+        self._optical_presentation_generation = 0
+        self._requested_optical_presentation_state = "closed"
+        self._committed_optical_publisher_state = "closed"
+        self._optical_compositor_config_generation = None
+        self._optical_compositor_config_identity = None
+        self._optical_presentation_ack_generation = None
 
         return self
 
@@ -1873,6 +1883,173 @@ class CommandOverlay(NSObject):
                 compositor.stop()
             except Exception:
                 logger.debug("Failed to stop command radial pucker compositor", exc_info=True)
+
+    def _begin_optical_presentation_generation(self, requested_state: str) -> int:
+        generation = int(getattr(self, "_optical_presentation_generation", 0) or 0) + 1
+        self._optical_presentation_generation = generation
+        self._requested_optical_presentation_state = str(requested_state)
+        self._committed_optical_publisher_state = "requested"
+        self._optical_compositor_config_generation = None
+        self._optical_compositor_config_identity = None
+        self._optical_presentation_ack_generation = None
+        return generation
+
+    def _current_optical_presentation_generation(self) -> int | None:
+        generation = getattr(self, "_optical_presentation_generation", None)
+        if isinstance(generation, numbers.Integral):
+            return int(generation)
+        return None
+
+    def _compositor_presentation_generation(self, compositor) -> int | None:
+        for name in (
+            "presentation_generation",
+            "compositor_config_generation",
+            "_presentation_generation",
+        ):
+            value = getattr(compositor, name, None)
+            if callable(value):
+                try:
+                    value = value()
+                except Exception:
+                    value = None
+            if isinstance(value, numbers.Integral):
+                return int(value)
+        value = getattr(self, "_optical_compositor_config_generation", None)
+        if isinstance(value, numbers.Integral):
+            return int(value)
+        return None
+
+    def _compositor_presentation_ack_generation(self, compositor) -> int | None:
+        for source in (
+            getattr(compositor, "presentation_ack_generation", None),
+            getattr(compositor, "_presentation_ack_generation", None),
+            getattr(self, "_optical_presentation_ack_generation", None),
+        ):
+            value = source() if callable(source) else source
+            if isinstance(value, numbers.Integral):
+                return int(value)
+        return None
+
+    def _window_presentation_state(self) -> tuple[bool, bool, float | None]:
+        window = getattr(self, "_window", None)
+        if window is None:
+            return False, False, None
+        visible = bool(getattr(self, "_visible", False))
+        alpha = None
+        try:
+            alpha = float(window.alphaValue())
+        except Exception:
+            alpha = None
+        is_visible = getattr(window, "isVisible", None)
+        if callable(is_visible):
+            try:
+                visible = bool(is_visible())
+            except Exception:
+                pass
+        ordered = visible and (alpha is None or alpha > 0.0)
+        return visible, ordered, alpha
+
+    def _text_publication_state(self) -> str:
+        scroll = getattr(self, "_scroll_view", None)
+        if scroll is None:
+            return "absent"
+        hidden = getattr(scroll, "isHidden", None)
+        if callable(hidden):
+            try:
+                if bool(hidden()):
+                    return "hidden"
+            except Exception:
+                pass
+        alpha = getattr(scroll, "alphaValue", None)
+        if callable(alpha):
+            try:
+                return "visible" if float(alpha()) > 0.0 else "hidden"
+            except Exception:
+                pass
+        return "visible" if getattr(self, "_visible", False) else "hidden"
+
+    def _body_publication_state(self) -> str:
+        progress = float(getattr(self, "_materialization_progress", 1.0) or 0.0)
+        if progress <= 0.0:
+            return "slit"
+        if progress < _OPTICAL_MATERIALIZATION_BODY_READY:
+            return "materializing"
+        if progress < 1.0:
+            return "body_ready"
+        return "full"
+
+    def _mask_publication_state(self) -> str:
+        if getattr(self, "_fill_hidden_until_signature", None) is not None:
+            return "pending_fill"
+        if getattr(self, "_punchthrough_mask_layer", None) is not None:
+            return "punchthrough"
+        if getattr(self, "_backdrop_mask_layer", None) is not None:
+            return "backdrop"
+        return "clear"
+
+    def _optical_presentation_frame_bundle(self) -> OpticalPresentationFrameBundle:
+        generation = self._current_optical_presentation_generation()
+        if generation is None:
+            generation = 0
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        config_generation = (
+            self._compositor_presentation_generation(compositor)
+            if compositor is not None
+            else None
+        )
+        ack_generation = (
+            self._compositor_presentation_ack_generation(compositor)
+            if compositor is not None
+            else None
+        )
+        visible, ordered, alpha = self._window_presentation_state()
+        count = getattr(compositor, "presented_count", 0) if compositor is not None else 0
+        if callable(count):
+            try:
+                count = count()
+            except Exception:
+                count = 0
+        presented = isinstance(count, numbers.Number) and count > 0
+        acknowledged = (
+            presented
+            and config_generation == generation
+            and ack_generation == generation
+        )
+        return OpticalPresentationFrameBundle(
+            generation_id=generation,
+            requested_state=str(
+                getattr(self, "_requested_optical_presentation_state", "unknown")
+            ),
+            committed_publisher_state=str(
+                getattr(self, "_committed_optical_publisher_state", "unknown")
+            ),
+            compositor_config_generation=config_generation,
+            compositor_config_identity=getattr(
+                self, "_optical_compositor_config_identity", None
+            ),
+            window_visible=visible,
+            window_ordered=ordered,
+            window_alpha=alpha,
+            text_publication_state=self._text_publication_state(),
+            body_publication_state=self._body_publication_state(),
+            mask_publication_state=self._mask_publication_state(),
+            presentation_ack_generation=ack_generation,
+            presentation_acknowledged=acknowledged,
+        )
+
+    def _acknowledge_current_optical_presentation(self) -> None:
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        generation = self._current_optical_presentation_generation()
+        if compositor is None or generation is None:
+            return
+        config_generation = self._compositor_presentation_generation(compositor)
+        if config_generation != generation:
+            return
+        self._optical_presentation_ack_generation = generation
+        try:
+            setattr(compositor, "presentation_ack_generation", generation)
+        except Exception:
+            pass
 
     def setup(self) -> None:
         """Create the command overlay window."""
@@ -2254,6 +2431,7 @@ class CommandOverlay(NSObject):
         """Fade the overlay in, optionally starting or resuming the thinking timer."""
         if self._window is None:
             return
+        self._begin_optical_presentation_generation("opening")
         record_command_overlay_trace(
             "overlay.show.begin",
             was_visible=bool(getattr(self, "_visible", False)),
@@ -2261,6 +2439,7 @@ class CommandOverlay(NSObject):
             dismiss_reversal_progress=self._optical_dismiss_reversal_progress(),
             initial_utterance=bool(initial_utterance),
             initial_response=bool(initial_response),
+            **self._optical_presentation_frame_bundle().to_trace_fields(),
         )
         dismiss_reversal_progress = self._optical_dismiss_reversal_progress()
         summon_retarget_progress = (
@@ -2405,6 +2584,7 @@ class CommandOverlay(NSObject):
             window_alpha=self._window.alphaValue() if self._window is not None else None,
             visual_ready_timer=getattr(self, "_visual_ready_timer", None) is not None,
             fade_timer=getattr(self, "_fade_timer", None) is not None,
+            **self._optical_presentation_frame_bundle().to_trace_fields(),
         )
 
     def set_brightness(self, brightness: float, immediate: bool = False) -> None:
@@ -4331,6 +4511,7 @@ class CommandOverlay(NSObject):
 
     def compositorDidPresent_(self, payload) -> None:
         """Called on main thread when the compositor presents its first frame."""
+        self._acknowledge_current_optical_presentation()
         self._enforce_compositor_window_order()
         if getattr(self, "_entrance_started", False):
             return
@@ -4369,6 +4550,7 @@ class CommandOverlay(NSObject):
             materialization_progress=getattr(
                 self, "_materialization_progress", None
             ),
+            **self._optical_presentation_frame_bundle().to_trace_fields(),
         )
         self._start_entrance_animation()
 
@@ -4396,6 +4578,7 @@ class CommandOverlay(NSObject):
             materialization_progress=getattr(
                 self, "_materialization_progress", None
             ),
+            **self._optical_presentation_frame_bundle().to_trace_fields(),
         )
         if compositor_ready and not self._optical_body_content_ready():
             self._cancel_visual_ready_start()
@@ -4412,6 +4595,7 @@ class CommandOverlay(NSObject):
                 materialization_progress=getattr(
                     self, "_materialization_progress", None
                 ),
+                **self._optical_presentation_frame_bundle().to_trace_fields(),
             )
             return
         self._entrance_started = True
@@ -4455,6 +4639,13 @@ class CommandOverlay(NSObject):
                 count = None
         if not isinstance(count, numbers.Number) or count <= 0:
             return False
+        generation = self._current_optical_presentation_generation()
+        if generation is not None:
+            config_generation = self._compositor_presentation_generation(compositor)
+            ack_generation = self._compositor_presentation_ack_generation(compositor)
+            if config_generation is None and ack_generation is None:
+                return True
+            return config_generation == generation and ack_generation == generation
         return True
 
     def _optical_fill_ready(self) -> bool:
@@ -5309,10 +5500,22 @@ class CommandOverlay(NSObject):
             final_shell_config = self._display_local_optical_shell_config()
             if final_shell_config is None:
                 return
+            generation = self._current_optical_presentation_generation()
+            if generation is not None:
+                final_shell_config["presentation_generation"] = generation
+                final_shell_config["presentation_requested_state"] = str(
+                    getattr(self, "_requested_optical_presentation_state", "opening")
+                )
+                final_shell_config["presentation_publisher_state"] = "compositor_configured"
             start_shell_config = _materialized_optical_shell_config(
                 final_shell_config,
                 0.0,
             )
+            config_identity = optical_presentation_config_identity(start_shell_config)
+            if generation is not None:
+                self._optical_compositor_config_generation = generation
+                self._optical_compositor_config_identity = config_identity
+                self._committed_optical_publisher_state = "compositor_configured"
             compositor = start_overlay_compositor(
                 screen=self._screen,
                 window=self._window,
@@ -5324,6 +5527,13 @@ class CommandOverlay(NSObject):
             )
             if compositor is not None:
                 self._fullscreen_compositor = compositor
+                if generation is not None:
+                    try:
+                        setattr(compositor, "presentation_generation", generation)
+                        setattr(compositor, "presentation_ack_generation", None)
+                        setattr(compositor, "presentation_config_identity", config_identity)
+                    except Exception:
+                        pass
                 self._cancel_brightness_sampling()
                 self._brightness_target = final_shell_config["initial_brightness"]
                 self._brightness_sample_tick = (
