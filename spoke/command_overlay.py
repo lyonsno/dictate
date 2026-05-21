@@ -1905,6 +1905,16 @@ class CommandOverlay(NSObject):
         self._optical_text_quarantine_reason = None
         return generation
 
+    def _begin_optical_dismiss_presentation_generation(self) -> int:
+        if str(getattr(self, "_requested_optical_presentation_state", "")) == "dismissing":
+            generation = self._current_optical_presentation_generation()
+            if generation is not None:
+                self._committed_optical_publisher_state = "dismissing"
+                return generation
+        generation = self._begin_optical_presentation_generation("dismissing")
+        self._committed_optical_publisher_state = "dismissing"
+        return generation
+
     def _current_optical_presentation_generation(self) -> int | None:
         generation = getattr(self, "_optical_presentation_generation", None)
         if isinstance(generation, numbers.Integral):
@@ -2767,6 +2777,7 @@ class CommandOverlay(NSObject):
         """Dismiss with a fast pop-then-shrink animation."""
         if self._window is None:
             return
+        self._begin_optical_dismiss_presentation_generation()
         record_command_overlay_trace(
             "overlay.cancel_dismiss.begin",
             visible=bool(getattr(self, "_visible", False)),
@@ -2792,13 +2803,19 @@ class CommandOverlay(NSObject):
         self._window.setAlphaValue_(1.0)
         self._set_overlay_scale(1.0)
         self._cancel_timer_anim = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            1.0 / _DISMISS_ANIM_FPS, self, "_cancelAnimStep:", None, True
+            1.0 / _DISMISS_ANIM_FPS,
+            self,
+            "_cancelAnimStep:",
+            self._optical_timer_user_info(),
+            True,
         )
         record_command_overlay_trace("overlay.cancel_dismiss.local_anim")
 
     def _cancelAnimStep_(self, timer) -> None:
         """Animate the dismiss sequence: grow for 60ms, then shrink and fade."""
         if getattr(self, "_cancel_timer_anim", None) is not timer:
+            return
+        if not self._timer_matches_current_optical_generation(timer):
             return
         self._cancel_elapsed += 1.0 / _DISMISS_ANIM_FPS
         phase, scale, alpha, done = _dismiss_animation_state(self._cancel_elapsed)
@@ -2822,6 +2839,7 @@ class CommandOverlay(NSObject):
         """Fade out without competing pulse work during the dismiss animation."""
         if self._window is None:
             return
+        self._begin_optical_dismiss_presentation_generation()
         self._visible = False
         self._streaming = False
         self._cancel_linger()
@@ -5559,7 +5577,14 @@ class CommandOverlay(NSObject):
                 renderer.set_frame_callback(None)
                 return
 
+        callback_generation = self._current_optical_presentation_generation()
+
         def apply_live_frame(image) -> None:
+            if (
+                callback_generation is not None
+                and callback_generation != self._current_optical_presentation_generation()
+            ):
+                return
             if self._backdrop_layer is None:
                 return
             self._backdrop_layer.setContents_(image)
@@ -5577,7 +5602,14 @@ class CommandOverlay(NSObject):
         ):
             return
 
+        callback_generation = self._current_optical_presentation_generation()
+
         def apply_live_sample_buffer(sample_buffer) -> None:
+            if (
+                callback_generation is not None
+                and callback_generation != self._current_optical_presentation_generation()
+            ):
+                return
             if self._backdrop_layer is None:
                 return
             try:
@@ -6067,7 +6099,7 @@ class CommandOverlay(NSObject):
             _COMMAND_BACKDROP_REFRESH_S,
             self,
             "backdropRefreshTick:",
-            None,
+            self._optical_timer_user_info(),
             True,
         )
         _pin_timer_to_active_run_loop_modes(self._backdrop_timer)
@@ -6075,6 +6107,8 @@ class CommandOverlay(NSObject):
     def backdropRefreshTick_(self, timer) -> None:
         if not self._visible:
             self._cancel_backdrop_refresh()
+            return
+        if not self._timer_matches_current_optical_generation(timer):
             return
         self._refresh_backdrop_snapshot()
 

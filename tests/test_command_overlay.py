@@ -618,6 +618,49 @@ class TestOpticalShellMaterialization:
         assert frame.requested_state == "dismissing"
         assert frame.text_publication_state == "quarantined"
 
+    def test_hide_begins_dismissing_generation_before_fade_and_quarantine(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._begin_optical_presentation_generation("opening")
+        opening_generation = overlay._optical_presentation_generation
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._visible = True
+        overlay._streaming = True
+        overlay._display_local_optical_shell_config = MagicMock(
+            return_value={
+                "center_x": 640.0,
+                "center_y": 1160.0,
+                "content_width_points": 1200.0,
+                "content_height_points": 208.0,
+                "corner_radius_points": 32.0,
+            }
+        )
+        timers = []
+
+        def _schedule(_interval, _target, _selector, user_info, _repeats):
+            timer = MagicMock()
+            timer.userInfo.return_value = user_info
+            timers.append(timer)
+            return timer
+
+        mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_ = MagicMock(
+            side_effect=_schedule
+        )
+
+        overlay.hide()
+
+        assert overlay._optical_presentation_generation == opening_generation + 1
+        frame = overlay._optical_presentation_frame_bundle()
+        assert frame.requested_state == "dismissing"
+        assert frame.committed_publisher_state == "dismissing"
+        assert timers
+        assert timers[-1].userInfo()["presentation_generation"] == frame.generation_id
+
+        overlay._stop_fullscreen_compositor()
+
+        assert overlay._optical_presentation_frame_bundle().text_publication_state == "quarantined"
+
     def test_same_host_batch_failure_does_not_fallback_to_partial_sidecar_updates(
         self, mock_pyobjc
     ):
@@ -680,6 +723,46 @@ class TestOpticalShellMaterialization:
         assert frame.window_visible is True
         assert frame.window_ordered is False
         assert frame.presentation_acknowledged is False
+
+    def test_stale_live_backdrop_frame_callback_cannot_publish_new_generation(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        callbacks = []
+        overlay._backdrop_renderer.set_frame_callback.side_effect = callbacks.append
+        overlay._begin_optical_presentation_generation("opening")
+
+        overlay._install_backdrop_frame_callback()
+
+        overlay._begin_optical_presentation_generation("opening")
+        callbacks[-1]("stale-live-frame")
+
+        overlay._backdrop_layer.setContents_.assert_not_called()
+
+    def test_stale_backdrop_refresh_timer_cannot_publish_new_generation(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        overlay._visible = True
+        overlay._fullscreen_compositor = None
+        overlay._begin_optical_presentation_generation("opening")
+        timers = []
+
+        def _schedule(_interval, _target, _selector, user_info, _repeats):
+            timer = MagicMock()
+            timer.userInfo.return_value = user_info
+            timers.append(timer)
+            return timer
+
+        mod.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_ = MagicMock(
+            side_effect=_schedule
+        )
+
+        overlay._start_backdrop_refresh_timer()
+        overlay._begin_optical_presentation_generation("opening")
+        overlay.backdropRefreshTick_(timers[-1])
+
+        overlay._backdrop_renderer.capture_blurred_image.assert_not_called()
 
     def test_optical_fill_ready_recovers_stale_hidden_latch_without_pending_fill(
         self, mock_pyobjc

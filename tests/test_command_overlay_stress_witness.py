@@ -100,3 +100,26 @@ def test_cli_exits_nonzero_for_unlawful_trace(tmp_path):
     payload = json.loads(result.stdout)
     assert payload["has_violations"] is True
     assert payload["violations"][0]["reason"] == "visible_text_without_presented_body_generation"
+
+
+def test_trace_with_no_presentation_receipts_is_not_clean():
+    witness = _load_witness_module()
+
+    result = witness.analyze_events([])
+
+    assert result.has_violations is True
+    assert result.violations[0]["reason"] == "no_presentation_receipts_checked"
+
+
+def test_visible_lifecycle_events_without_receipts_are_not_clean():
+    witness = _load_witness_module()
+
+    result = witness.analyze_events(
+        [
+            {"event": "overlay.entrance.start"},
+            {"event": "overlay.materialization.start"},
+        ]
+    )
+
+    assert result.has_violations is True
+    assert result.violations[0]["reason"] == "no_presentation_receipts_checked"

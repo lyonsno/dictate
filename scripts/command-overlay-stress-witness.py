@@ -148,6 +148,14 @@ def analyze_events(events: list[dict[str, Any]]) -> AnalysisResult:
                 )
             )
 
+    if checked == 0:
+        violations.append(
+            {
+                "reason": "no_presentation_receipts_checked",
+                "index": -1,
+            }
+        )
+
     return AnalysisResult(checked_events=checked, violations=violations)
 
 
