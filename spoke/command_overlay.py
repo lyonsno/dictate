@@ -1903,7 +1903,17 @@ class CommandOverlay(NSObject):
         self._optical_compositor_config_identity = None
         self._optical_presentation_ack_generation = None
         self._optical_text_quarantine_reason = None
+        self._rebind_live_backdrop_callbacks_for_generation()
         return generation
+
+    def _rebind_live_backdrop_callbacks_for_generation(self) -> None:
+        if (
+            getattr(self, "_backdrop_renderer", None) is None
+            or getattr(self, "_backdrop_layer", None) is None
+        ):
+            return
+        self._install_backdrop_frame_callback()
+        self._install_backdrop_sample_buffer_callback()
 
     def _begin_optical_dismiss_presentation_generation(self) -> int:
         if str(getattr(self, "_requested_optical_presentation_state", "")) == "dismissing":

@@ -733,11 +733,61 @@ class TestOpticalShellMaterialization:
         overlay._begin_optical_presentation_generation("opening")
 
         overlay._install_backdrop_frame_callback()
+        generation_callback = callbacks[-1]
 
         overlay._begin_optical_presentation_generation("opening")
-        callbacks[-1]("stale-live-frame")
+        generation_callback("stale-live-frame")
 
         overlay._backdrop_layer.setContents_.assert_not_called()
+
+    def test_live_backdrop_callback_rebinds_when_generation_starts_after_setup(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        callbacks = []
+        overlay._backdrop_renderer.set_frame_callback.side_effect = callbacks.append
+        overlay._optical_presentation_generation = 0
+
+        overlay._install_backdrop_frame_callback()
+        setup_callback = callbacks[-1]
+        overlay._begin_optical_presentation_generation("opening")
+        generation_callback = callbacks[-1]
+
+        generation_callback("current-live-frame")
+        overlay._backdrop_layer.setContents_.assert_called_once_with("current-live-frame")
+
+        overlay._backdrop_layer.setContents_.reset_mock()
+        overlay._begin_optical_presentation_generation("opening")
+        setup_callback("setup-generation-frame")
+        generation_callback("stale-live-frame")
+
+        overlay._backdrop_layer.setContents_.assert_not_called()
+
+    def test_live_sample_buffer_callback_rebinds_when_generation_starts_after_setup(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        callbacks = []
+        overlay._backdrop_renderer.set_sample_buffer_callback.side_effect = callbacks.append
+        overlay._backdrop_layer.enqueueSampleBuffer_ = MagicMock()
+        overlay._optical_presentation_generation = 0
+
+        overlay._install_backdrop_sample_buffer_callback()
+        setup_callback = callbacks[-1]
+        overlay._begin_optical_presentation_generation("opening")
+        generation_callback = callbacks[-1]
+
+        generation_callback("current-sample-buffer")
+        overlay._backdrop_layer.enqueueSampleBuffer_.assert_called_once_with(
+            "current-sample-buffer"
+        )
+
+        overlay._backdrop_layer.enqueueSampleBuffer_.reset_mock()
+        overlay._begin_optical_presentation_generation("opening")
+        setup_callback("setup-generation-sample")
+        generation_callback("stale-sample-buffer")
+
+        overlay._backdrop_layer.enqueueSampleBuffer_.assert_not_called()
 
     def test_stale_backdrop_refresh_timer_cannot_publish_new_generation(
         self, mock_pyobjc
