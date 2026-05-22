@@ -2006,6 +2006,9 @@ class SpokeAppDelegate(NSObject):
                     immediate=True,
                 )
             self._overlay.show()
+            self._refresh_operator_ping_tokens_from_configured_event_log(
+                update_status=False,
+            )
 
         try:
             def on_vad_state(is_speech: bool):
@@ -3409,25 +3412,38 @@ class SpokeAppDelegate(NSObject):
             stack_body_frame=stack_body_frame,
         )
 
+    def _refresh_operator_ping_tokens_from_configured_event_log(
+        self,
+        *,
+        stack_body_frame: tuple[float, float, float, float] | None = None,
+        update_status: bool = True,
+    ) -> bool:
+        event_log_path = os.environ.get("SPOKE_OPERATOR_PING_EVENTS_PATH", "").strip()
+        if not event_log_path:
+            return False
+        try:
+            visuals = self._show_operator_ping_tokens_from_event_log(
+                event_log_path,
+                stack_body_frame=stack_body_frame or self._operator_ping_token_smoke_frame(),
+            )
+        except (OSError, ValueError) as exc:
+            logger.warning("Chairside ping token event log unreadable: %s", exc)
+            if update_status and self._menubar is not None:
+                self._menubar.set_status_text("Chairside ping token event log unreadable")
+            return False
+        if not visuals:
+            return False
+        if update_status and self._menubar is not None:
+            self._menubar.set_status_text("Chairside ping token event log")
+        return True
+
     def _maybe_show_operator_ping_token_smoke(self) -> bool:
         """Show a sample Chairside token when explicit smoke env is enabled."""
         stack_body_frame = self._operator_ping_token_smoke_frame()
-        event_log_path = os.environ.get("SPOKE_OPERATOR_PING_EVENTS_PATH", "").strip()
-        if event_log_path:
-            try:
-                visuals = self._show_operator_ping_tokens_from_event_log(
-                    event_log_path,
-                    stack_body_frame=stack_body_frame,
-                )
-            except (OSError, ValueError) as exc:
-                logger.warning("Chairside ping token event log unreadable: %s", exc)
-                if self._menubar is not None:
-                    self._menubar.set_status_text("Chairside ping token event log unreadable")
-            else:
-                if visuals:
-                    if self._menubar is not None:
-                        self._menubar.set_status_text("Chairside ping token event log")
-                    return True
+        if self._refresh_operator_ping_tokens_from_configured_event_log(
+            stack_body_frame=stack_body_frame
+        ):
+            return True
 
         value = os.environ.get("SPOKE_OPERATOR_PING_TOKEN_SMOKE", "")
         if value in {"", "0", "false", "False", "no", "off"}:

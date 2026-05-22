@@ -1,6 +1,11 @@
 import json
 
-from spoke.launch_targets import current_launch_target, current_launch_target_id, save_selected_launch_target
+from spoke.launch_targets import (
+    current_launch_target,
+    current_launch_target_id,
+    parse_env_overrides,
+    save_selected_launch_target,
+)
 
 
 def test_save_selected_launch_target_updates_registry_only(tmp_path, monkeypatch):
@@ -77,3 +82,20 @@ def test_current_launch_target_returns_visible_label_for_registered_checkout(tmp
         "path": checkout,
         "enabled": True,
     }
+
+
+def test_parse_env_overrides_expands_home_variables(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    env_file = tmp_path / ".spoke-smoke-env"
+    env_file.write_text(
+        'export SPOKE_OPERATOR_PING_EVENTS_PATH="$HOME/.local/state/epistaxis/events.jsonl"\n',
+        encoding="utf-8",
+    )
+
+    overrides = parse_env_overrides(env_file)
+
+    assert overrides["SPOKE_OPERATOR_PING_EVENTS_PATH"] == (
+        str(home / ".local/state/epistaxis/events.jsonl")
+    )

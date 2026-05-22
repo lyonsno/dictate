@@ -140,6 +140,42 @@ class TestOperatorPingTokenSmokeHook:
         assert d._tray_stack == []
         assert d._coordination_stack.entries == []
 
+    def test_hold_start_refreshes_real_event_log_tokens_on_preview_overlay(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        event_log = tmp_path / "events.jsonl"
+        event_log.write_text(
+            json.dumps(
+                {
+                    "kind": "operator_ping.created",
+                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:preview-ping",
+                    "source_tool": "epistaxis ping-operator",
+                    "operator_ping": {
+                        "ping_id": "preview-ping",
+                        "created_at": "2026-05-22T12:00:00Z",
+                        "diaulos": "Chairside Sparkwright",
+                        "message": "preview overlay ping",
+                        "reason_token": "live",
+                    },
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("SPOKE_OPERATOR_PING_EVENTS_PATH", str(event_log))
+        d = _make_delegate(main_module, monkeypatch)
+        d._overlay = MagicMock()
+
+        d._on_hold_start()
+
+        d._overlay.show.assert_called_once()
+        visuals = d._overlay.show_operator_ping_token_visuals.call_args.args[0]
+        assert [visual.ping_id for visual in visuals] == ["preview-ping"]
+        assert visuals[0].presentation_text == "Diaulos: Chairside Sparkwright · live"
+        assert d._tray_stack == []
+        assert d._coordination_stack.entries == []
+
 
 class TestHoldCallbacks:
     """Test _on_hold_start and _on_hold_end orchestration."""
