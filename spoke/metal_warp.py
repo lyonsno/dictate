@@ -214,7 +214,7 @@ float shellMaterialChoiceForBrightness(float brightness) {{
 float3 shellMaterialColorForBrightness(float brightness, float textContrastBias) {{
     float choice = shellMaterialChoiceForBrightness(brightness);
     float contrast = clamp(textContrastBias, 0.0f, 1.0f);
-    float3 darkBackgroundFill = mix(float3(0.42f, 0.43f, 0.46f), float3(0.56f, 0.57f, 0.60f), contrast);
+    float3 darkBackgroundFill = mix(float3(0.36f, 0.37f, 0.39f), float3(0.48f, 0.49f, 0.51f), contrast);
     float3 lightBackgroundFill = mix(float3(0.065f, 0.065f, 0.075f), float3(0.025f, 0.025f, 0.032f), contrast);
     return mix(darkBackgroundFill, lightBackgroundFill, choice);
 }}
@@ -248,7 +248,7 @@ float shellMaterialAlphaForSdf(float2 p, constant WarpParams& params) {{
         float ridgeScale = mix(0.75f, 1.35f, clamp(params.gpuMaterialRidgeEmphasis, 0.0f, 1.0f));
         float edgeRidge = exp(-pow(insideD / max(1.5f * materialScale, 1e-6f), 2.0f)) * ridgeScale;
         float rawInterior = exp(sqrt(abs(fillSdf) / max(2.0f * materialScale, 1e-6f)) * -1.0f);
-        float interiorFloor = 0.72f;
+        float interiorFloor = 0.66f;
         float interior = clamp(interiorFloor + (1.0f - interiorFloor) * rawInterior + edgeRidge * 0.50f, 0.0f, 1.0f);
         return clamp(interior * opacity, 0.0f, 1.0f);
     }}

@@ -402,9 +402,9 @@ _RUN_LOOP_COMMON_MODE = "NSRunLoopCommonModes"
 _EVENT_TRACKING_RUN_LOOP_MODE = "NSEventTrackingRunLoopMode"
 
 # Adaptive compositing for command output.
-_USER_TEXT_COLOR_DARK = (0.92, 0.94, 0.97)
+_USER_TEXT_COLOR_DARK = (0.80, 0.82, 0.84)
 _USER_TEXT_COLOR_LIGHT = (0.10, 0.11, 0.14)
-_ASSISTANT_TEXT_COLOR_DARK = (0.92, 0.94, 0.97)
+_ASSISTANT_TEXT_COLOR_DARK = (0.80, 0.82, 0.84)
 _ASSISTANT_TEXT_COLOR_LIGHT = (0.10, 0.11, 0.14)
 _ASSISTANT_BLUR_RADIUS = _env("SPOKE_COMMAND_ASSISTANT_BLUR_RADIUS", 8.0)
 _COMMAND_RESPONSE_ANIMATION_CHAR_LIMIT = max(
@@ -470,9 +470,11 @@ def _background_color_for_brightness(brightness: float) -> tuple[float, float, f
 # Compositor graphic mode: fill matches background tone so text
 # punch-through reveals the contrasting warped content underneath.
 # Dark on dark, light on light — the overlay is a surface, not a glow.
-_COMPOSITOR_FILL_DARK = (0.50, 0.51, 0.54)   # light fill on dark backgrounds — faint, translucent
+_COMPOSITOR_FILL_DARK = (0.40, 0.41, 0.43)   # medium fill on dark backgrounds — present, not icy
 _COMPOSITOR_FILL_LIGHT = (0.04, 0.04, 0.05)   # dark fill on light backgrounds — vivid, near-black
-_COMPOSITOR_FILL_INTERIOR_FLOOR = 0.72
+_COMPOSITOR_FILL_INTERIOR_FLOOR = 0.66
+_COMPOSITOR_PUNCHTHROUGH_TEXT_CONTRAST_BIAS = 0.64
+_COMPOSITOR_DEFAULT_RIDGE_EMPHASIS = 0.35
 _PUNCHTHROUGH_BOOST_DARK = (0.0, 0.0, 0.0)
 _PUNCHTHROUGH_BOOST_LIGHT = (1.0, 1.0, 1.0)
 _PUNCHTHROUGH_BOOST_OPACITY_DARK = 0.42
@@ -6028,13 +6030,17 @@ class CommandOverlay(NSObject):
         ):
             if key in shell_config:
                 shell_config[key] = float(shell_config[key]) * scale
-        text_contrast_bias = 1.0 if getattr(self, "_text_punchthrough", False) else 0.5
+        text_contrast_bias = (
+            _COMPOSITOR_PUNCHTHROUGH_TEXT_CONTRAST_BIAS
+            if getattr(self, "_text_punchthrough", False)
+            else 0.5
+        )
         shell_config.update(
             _gpu_material_shell_fields(
                 brightness,
                 scale,
                 text_contrast_bias=text_contrast_bias,
-                ridge_emphasis=0.5,
+                ridge_emphasis=_COMPOSITOR_DEFAULT_RIDGE_EMPHASIS,
             )
         )
         _with_gpu_material_basis(

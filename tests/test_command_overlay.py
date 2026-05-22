@@ -1577,6 +1577,25 @@ class TestOpticalShellMaterialization:
             config["content_width_points"]
         )
 
+    def test_punchthrough_material_uses_calm_visual_basis(
+        self, mock_pyobjc, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", "1")
+        monkeypatch.setenv("SPOKE_COMMAND_GPU_MATERIAL_ENABLED", "1")
+        overlay, _mod = _make_overlay(mock_pyobjc)
+        overlay._text_punchthrough = True
+
+        config = overlay._display_local_optical_shell_config()
+
+        assert config["gpu_material_text_contrast_bias"] == pytest.approx(0.64)
+        assert config["gpu_material_ridge_emphasis"] == pytest.approx(0.35)
+
+    def test_light_text_tone_is_not_pure_white(self, mock_pyobjc):
+        mod = importlib.import_module("spoke.command_overlay")
+
+        assert max(mod._assistant_foreground_color_for_brightness(0.0)) <= 0.84
+        assert max(mod._user_text_color_for_brightness(0.0)) <= 0.84
+
     def test_pulse_skips_gpu_material_key_updates_when_gate_is_off(
         self, mock_pyobjc, monkeypatch
     ):
@@ -3736,7 +3755,8 @@ class TestAdaptiveCompositing:
             dark = mod._assistant_foreground_color_for_brightness(0.0)
             light = mod._assistant_foreground_color_for_brightness(1.0)
 
-            assert min(dark) > 0.9, "light text on dark backdrop"
+            assert min(dark) >= 0.80, "calm light text on dark backdrop"
+            assert max(dark) <= 0.84, "text should not return to pure white"
             assert max(light) < 0.2, "dark text on light backdrop"
         finally:
             sys.modules.pop("spoke.command_overlay", None)
@@ -3748,7 +3768,8 @@ class TestAdaptiveCompositing:
             dark = mod._user_text_color_for_brightness(0.0)
             light = mod._user_text_color_for_brightness(1.0)
 
-            assert min(dark) > 0.9, "light text on dark backdrop"
+            assert min(dark) >= 0.80, "calm light text on dark backdrop"
+            assert max(dark) <= 0.84, "text should not return to pure white"
             assert max(light) < 0.2, "dark text on light backdrop"
         finally:
             sys.modules.pop("spoke.command_overlay", None)
@@ -5176,4 +5197,4 @@ class TestSDFCaching:
         light_background_center = alphas[2][1, 1]
 
         assert dark_background_center == pytest.approx(light_background_center)
-        assert dark_background_center == pytest.approx(0.722, abs=0.01)
+        assert dark_background_center == pytest.approx(0.662, abs=0.01)
