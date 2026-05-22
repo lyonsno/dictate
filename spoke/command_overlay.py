@@ -1894,6 +1894,20 @@ class CommandOverlay(NSObject):
         self._optical_presentation_ack_generation = None
         return generation
 
+    def _quarantine_appkit_presentation_for_optical_retarget(self) -> None:
+        window = getattr(self, "_window", None)
+        if window is not None and hasattr(window, "setAlphaValue_"):
+            try:
+                window.setAlphaValue_(0.0)
+            except Exception:
+                logger.debug("Failed to quarantine command overlay window", exc_info=True)
+        scroll = getattr(self, "_scroll_view", None)
+        if scroll is not None and hasattr(scroll, "setAlphaValue_"):
+            try:
+                scroll.setAlphaValue_(0.0)
+            except Exception:
+                logger.debug("Failed to quarantine command overlay text plane", exc_info=True)
+
     def _current_optical_presentation_generation(self) -> int | None:
         generation = getattr(self, "_optical_presentation_generation", None)
         if isinstance(generation, numbers.Integral):
@@ -2432,6 +2446,7 @@ class CommandOverlay(NSObject):
         if self._window is None:
             return
         self._begin_optical_presentation_generation("opening")
+        self._quarantine_appkit_presentation_for_optical_retarget()
         record_command_overlay_trace(
             "overlay.show.begin",
             was_visible=bool(getattr(self, "_visible", False)),
