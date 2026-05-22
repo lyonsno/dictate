@@ -770,6 +770,10 @@ class TestOpticalShellMaterialization:
             initial_response="answer",
             start_thinking_timer=False,
         )
+        first_generation = overlay._current_optical_presentation_generation()
+        compositor.presentation_generation = first_generation
+        compositor.presentation_ack_generation = first_generation
+        compositor.presented_count = 1
         overlay.cancel_dismiss()
 
         dismiss_progress = 0.47
@@ -792,6 +796,14 @@ class TestOpticalShellMaterialization:
         compositor.stop.assert_not_called()
         assert ("scroll-alpha", 0.0) in events
         assert ("materialize", None, expected_start) in events
+        second_generation = overlay._current_optical_presentation_generation()
+        assert second_generation != first_generation
+        assert overlay._optical_compositor_config_generation == second_generation
+        assert compositor.presentation_generation == second_generation
+        assert compositor.presentation_ack_generation is None
+        published_config = compositor.update_shell_config.call_args.args[0]
+        assert published_config["presentation_generation"] == second_generation
+        assert published_config["presentation_publisher_state"] == "compositor_configured"
 
     def test_body_ready_dismiss_retarget_is_capped_below_full_open_flash(
         self, mock_pyobjc

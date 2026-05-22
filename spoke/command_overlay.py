@@ -5432,10 +5432,18 @@ class CommandOverlay(NSObject):
         if final_shell_config is None:
             return
         start_progress = _clamp01(float(start_progress))
+        generation = self._current_optical_presentation_generation()
+        if generation is not None:
+            final_shell_config["presentation_generation"] = generation
+            final_shell_config["presentation_requested_state"] = str(
+                getattr(self, "_requested_optical_presentation_state", "opening")
+            )
+            final_shell_config["presentation_publisher_state"] = "compositor_configured"
         record_command_overlay_trace(
             "overlay.show.retarget_dismiss_to_summon",
             dismiss_progress=dismiss_progress,
             start_progress=start_progress,
+            presentation_generation=generation,
         )
         self._cancel_brightness_sampling()
         self._brightness_target = final_shell_config["initial_brightness"]
@@ -5473,12 +5481,25 @@ class CommandOverlay(NSObject):
                 "gpu_material_brightness"
             ] = sampled_brightness
         try:
-            compositor.update_shell_config(
-                _materialized_optical_shell_config(
-                    final_shell_config,
-                    start_progress,
-                )
+            start_shell_config = _materialized_optical_shell_config(
+                final_shell_config,
+                start_progress,
             )
+            config_identity = optical_presentation_config_identity(start_shell_config)
+            published = compositor.update_shell_config(start_shell_config)
+            if published is False:
+                return
+            if generation is not None:
+                self._optical_compositor_config_generation = generation
+                self._optical_compositor_config_identity = config_identity
+                self._optical_presentation_ack_generation = None
+                self._committed_optical_publisher_state = "compositor_configured"
+                try:
+                    setattr(compositor, "presentation_generation", generation)
+                    setattr(compositor, "presentation_ack_generation", None)
+                    setattr(compositor, "presentation_config_identity", config_identity)
+                except Exception:
+                    pass
         except Exception:
             logger.debug("Failed to seed retargeted command materialization", exc_info=True)
         try:
