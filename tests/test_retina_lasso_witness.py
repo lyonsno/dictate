@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timezone
 
 from spoke.retina_lasso_witness import (
+    build_cropped_filmstrips_from_manifest,
     build_filmstrip_from_manifest,
     build_launch_target_command,
     build_retina_lasso_command,
@@ -9,6 +10,8 @@ from spoke.retina_lasso_witness import (
     collect_trace_events,
     drive_hammer_toggles,
     drive_retarget_during_dismiss_pattern,
+    resolve_trace_path,
+    wait_for_trace_event,
     write_witness_index,
 )
 
@@ -181,3 +184,85 @@ def test_build_filmstrip_from_manifest_samples_capture_frames(tmp_path):
     with Image.open(filmstrip) as image:
         assert image.width == 3 * 40 + 4 * 2
         assert image.height == 20 + 2 * 2
+
+
+def test_wait_for_trace_event_ignores_old_lines_and_returns_new_event(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text(
+        json.dumps({"timestamp": "2026-05-22T00:00:00Z", "event": "overlay.show.begin"})
+        + "\n",
+        encoding="utf-8",
+    )
+    sleeps = []
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        trace_path.write_text(
+            trace_path.read_text(encoding="utf-8")
+            + json.dumps(
+                {
+                    "timestamp": "2026-05-22T00:00:02Z",
+                    "event": "overlay.show.begin",
+                    "presentation_generation": 12,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    event = wait_for_trace_event(
+        trace_path,
+        event_name="overlay.show.begin",
+        start_line=1,
+        timeout_seconds=1.0,
+        poll_seconds=0.1,
+        sleep=sleep,
+    )
+
+    assert event["presentation_generation"] == 12
+    assert event["trace_line"] == 2
+    assert sleeps == [0.1]
+
+
+def test_resolve_trace_path_auto_selects_newest_candidate(tmp_path):
+    old = tmp_path / "old-command-overlay-trace.jsonl"
+    new = tmp_path / "new-command-overlay-trace.jsonl"
+    old.write_text("", encoding="utf-8")
+    new.write_text("", encoding="utf-8")
+
+    assert resolve_trace_path("auto", candidates=[old, new]) == new
+
+
+def test_build_cropped_filmstrips_from_manifest_emits_overlay_and_corner_strips(tmp_path):
+    from PIL import Image
+
+    frames = []
+    for idx in range(4):
+        path = tmp_path / f"frame-{idx}.png"
+        Image.new("RGB", (800, 500), (20, 20, 20)).save(path)
+        frames.append({"path": path.name})
+    (tmp_path / "manifest.json").write_text(json.dumps({"frames": frames}), encoding="utf-8")
+
+    strips = build_cropped_filmstrips_from_manifest(
+        output_dir=tmp_path,
+        trace_events=[
+            {
+                "event": "overlay.enforce_window_order",
+                "comp_shell_config": "cx=400,cy=300,w=500,h=7,mag=1.0",
+                "comp_window_frame": "400x250",
+            }
+        ],
+        max_frames=4,
+        columns=2,
+        overlay_thumb_width=300,
+        corner_thumb_width=220,
+        label_height=0,
+    )
+
+    assert set(strips) == {"full", "overlay", "top_left_corner"}
+    for path in strips.values():
+        assert path.exists()
+    with Image.open(strips["overlay"]) as image:
+        assert image.width == 2 * 300 + 3 * 8
+    with Image.open(strips["top_left_corner"]) as image:
+        assert image.width == 2 * 220 + 3 * 8

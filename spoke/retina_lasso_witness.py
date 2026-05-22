@@ -20,6 +20,7 @@ DEFAULT_SOURCE_APP = "Spoke"
 DEFAULT_SOURCE_WINDOW = "Command Overlay"
 INDEX_NAME = "witness-index.json"
 FILMSTRIP_NAME = "filmstrip.png"
+TRACE_AUTO = "auto"
 SPACEBAR_KEYCODE = 49
 RETURN_KEYCODE = 36
 
@@ -84,6 +85,63 @@ def collect_trace_events(
         event["trace_line"] = line_number
         events.append(event)
     return events
+
+
+def resolve_trace_path(
+    trace_path: str | Path | None,
+    *,
+    candidates: Sequence[Path] | None = None,
+) -> Path:
+    if trace_path is not None and str(trace_path) != TRACE_AUTO:
+        return Path(trace_path).expanduser()
+    paths = list(candidates) if candidates is not None else list(Path("/tmp").glob("*command-overlay-trace*.jsonl"))
+    existing = [
+        (path.stat().st_mtime_ns, index, path)
+        for index, path in enumerate(paths)
+        if path.exists()
+    ]
+    if not existing:
+        raise FileNotFoundError("No command overlay trace files found for auto trace resolution")
+    return max(existing)[2]
+
+
+def trace_line_count(trace_path: str | Path) -> int:
+    path = Path(trace_path).expanduser()
+    if not path.exists():
+        return 0
+    return len(path.read_text(encoding="utf-8").splitlines())
+
+
+def wait_for_trace_event(
+    trace_path: str | Path,
+    *,
+    event_name: str,
+    start_line: int = 0,
+    timeout_seconds: float = 30.0,
+    poll_seconds: float = 0.05,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    if poll_seconds <= 0:
+        raise ValueError("poll_seconds must be positive")
+    deadline = time.monotonic() + timeout_seconds
+    path = Path(trace_path).expanduser()
+    while True:
+        if path.exists():
+            lines = path.read_text(encoding="utf-8").splitlines()
+            for line_number, line in enumerate(lines[start_line:], start=start_line + 1):
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("event") == event_name:
+                    event = dict(event)
+                    event["trace_line"] = line_number
+                    return event
+        if time.monotonic() >= deadline:
+            raise TimeoutError(f"Timed out waiting for {event_name} in {path}")
+        sleep(poll_seconds)
 
 
 def build_retina_lasso_command(
@@ -193,6 +251,7 @@ def write_witness_index(
     manifest_name: str = "manifest.json",
     stimulus: dict[str, Any] | None = None,
     filmstrip_path: str | Path | None = None,
+    filmstrip_paths: dict[str, Path] | None = None,
 ) -> Path:
     output = Path(output_dir).expanduser()
     manifest_path = output / manifest_name
@@ -210,6 +269,10 @@ def write_witness_index(
         "trace_event_count": len(trace_events),
         "trace_events": trace_events,
         "filmstrip": str(filmstrip_path) if filmstrip_path is not None else None,
+        "filmstrips": {
+            name: str(path)
+            for name, path in (filmstrip_paths or {}).items()
+        },
         "command": list(command),
         "stimulus": stimulus or {},
         "uncertainty": [
@@ -264,6 +327,103 @@ def _sample_evenly(items: Sequence[Path], max_items: int) -> list[Path]:
     return [items[i] for i in sorted(indexes)]
 
 
+def _frame_paths_from_manifest(output_dir: Path, manifest_name: str) -> list[Path]:
+    manifest_path = output_dir / manifest_name
+    if not manifest_path.exists():
+        return []
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    return [
+        path
+        for entry in _manifest_frame_entries(manifest)
+        if (path := _frame_path_from_manifest_entry(output_dir, entry)) is not None
+        and path.exists()
+    ]
+
+
+def _parse_shell_config(value: Any) -> dict[str, float]:
+    if not isinstance(value, str):
+        return {}
+    parsed: dict[str, float] = {}
+    for part in value.split(","):
+        if "=" not in part:
+            continue
+        key, raw = part.split("=", 1)
+        try:
+            parsed[key.strip()] = float(raw)
+        except ValueError:
+            continue
+    return parsed
+
+
+def _clamp_crop_box(
+    *,
+    image_size: tuple[int, int],
+    center_x: float,
+    center_y: float,
+    width: float,
+    height: float,
+) -> tuple[int, int, int, int]:
+    image_w, image_h = image_size
+    width = min(max(1.0, width), float(image_w))
+    height = min(max(1.0, height), float(image_h))
+    left = int(round(center_x - width / 2.0))
+    top = int(round(center_y - height / 2.0))
+    left = max(0, min(left, image_w - int(round(width))))
+    top = max(0, min(top, image_h - int(round(height))))
+    right = min(image_w, left + int(round(width)))
+    bottom = min(image_h, top + int(round(height)))
+    return (left, top, right, bottom)
+
+
+def infer_overlay_crop_box(
+    *,
+    image_size: tuple[int, int],
+    trace_events: Sequence[dict[str, Any]],
+    padding_px: int = 180,
+) -> tuple[int, int, int, int]:
+    image_w, image_h = image_size
+    shells = [
+        shell
+        for event in trace_events
+        if (shell := _parse_shell_config(event.get("comp_shell_config")))
+    ]
+    if shells:
+        shell = max(shells, key=lambda item: item.get("w", 0.0))
+        center_x = shell.get("cx", image_w / 2.0)
+        center_y = shell.get("cy", image_h * 0.63)
+        width = max(shell.get("w", 0.0) + padding_px * 2, image_w * 0.60)
+    else:
+        center_x = image_w / 2.0
+        center_y = image_h * 0.63
+        width = image_w * 0.72
+    height = max(image_h * 0.34, 420.0)
+    return _clamp_crop_box(
+        image_size=image_size,
+        center_x=center_x,
+        center_y=center_y,
+        width=width,
+        height=height,
+    )
+
+
+def _top_left_corner_crop_box(
+    overlay_box: tuple[int, int, int, int],
+    image_size: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    left, top, right, bottom = overlay_box
+    overlay_w = right - left
+    overlay_h = bottom - top
+    corner_w = min(max(360, int(round(overlay_w * 0.34))), overlay_w)
+    corner_h = min(max(260, int(round(overlay_h * 0.52))), overlay_h)
+    return _clamp_crop_box(
+        image_size=image_size,
+        center_x=left + corner_w / 2.0,
+        center_y=top + corner_h / 2.0,
+        width=corner_w,
+        height=corner_h,
+    )
+
+
 def build_filmstrip_from_manifest(
     *,
     output_dir: str | Path,
@@ -274,19 +434,11 @@ def build_filmstrip_from_manifest(
     thumb_width: int = 360,
     gutter: int = 8,
     label_height: int = 22,
+    crop_box: tuple[int, int, int, int] | None = None,
 ) -> Path | None:
     """Build a sampled visual filmstrip from Retina Lasso capture frames."""
     output = Path(output_dir).expanduser()
-    manifest_path = output / manifest_name
-    if not manifest_path.exists():
-        return None
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    frame_paths = [
-        path
-        for entry in _manifest_frame_entries(manifest)
-        if (path := _frame_path_from_manifest_entry(output, entry)) is not None
-        and path.exists()
-    ]
+    frame_paths = _frame_paths_from_manifest(output, manifest_name)
     if not frame_paths:
         return None
 
@@ -296,7 +448,9 @@ def build_filmstrip_from_manifest(
     thumbs: list[tuple[Path, Image.Image]] = []
     for path in selected:
         image = Image.open(path).convert("RGB")
-        scale = min(1.0, max(float(thumb_width), 1.0) / max(float(image.width), 1.0))
+        if crop_box is not None:
+            image = image.crop(crop_box)
+        scale = max(float(thumb_width), 1.0) / max(float(image.width), 1.0)
         size = (
             max(1, int(round(image.width * scale))),
             max(1, int(round(image.height * scale))),
@@ -332,6 +486,68 @@ def build_filmstrip_from_manifest(
     filmstrip_path = output / output_name
     canvas.save(filmstrip_path)
     return filmstrip_path
+
+
+def build_cropped_filmstrips_from_manifest(
+    *,
+    output_dir: str | Path,
+    trace_events: Sequence[dict[str, Any]],
+    manifest_name: str = "manifest.json",
+    max_frames: int = 24,
+    columns: int = 8,
+    full_thumb_width: int = 360,
+    overlay_thumb_width: int = 900,
+    corner_thumb_width: int = 720,
+    label_height: int = 22,
+) -> dict[str, Path]:
+    output = Path(output_dir).expanduser()
+    frame_paths = _frame_paths_from_manifest(output, manifest_name)
+    if not frame_paths:
+        return {}
+
+    from PIL import Image
+
+    with Image.open(frame_paths[0]) as image:
+        image_size = image.size
+    overlay_box = infer_overlay_crop_box(image_size=image_size, trace_events=trace_events)
+    corner_box = _top_left_corner_crop_box(overlay_box, image_size)
+    strips: dict[str, Path] = {}
+    full = build_filmstrip_from_manifest(
+        output_dir=output,
+        manifest_name=manifest_name,
+        output_name="filmstrip-full.png",
+        max_frames=max_frames,
+        columns=columns,
+        thumb_width=full_thumb_width,
+        label_height=label_height,
+    )
+    if full is not None:
+        strips["full"] = full
+    overlay = build_filmstrip_from_manifest(
+        output_dir=output,
+        manifest_name=manifest_name,
+        output_name="filmstrip-overlay.png",
+        max_frames=max_frames,
+        columns=columns,
+        thumb_width=overlay_thumb_width,
+        label_height=label_height,
+        crop_box=overlay_box,
+    )
+    if overlay is not None:
+        strips["overlay"] = overlay
+    corner = build_filmstrip_from_manifest(
+        output_dir=output,
+        manifest_name=manifest_name,
+        output_name="filmstrip-top-left-corner.png",
+        max_frames=max_frames,
+        columns=columns,
+        thumb_width=corner_thumb_width,
+        label_height=label_height,
+        crop_box=corner_box,
+    )
+    if corner is not None:
+        strips["top_left_corner"] = corner
+    return strips
 
 
 def run_autonomous_hammer_witness(
@@ -416,6 +632,10 @@ def run_autonomous_hammer_witness(
         raise subprocess.CalledProcessError(return_code, command)
     ended_at = now()
     trace_events = collect_trace_events(trace_path, started_at=started_at, ended_at=ended_at)
+    filmstrips = build_cropped_filmstrips_from_manifest(
+        output_dir=output_dir,
+        trace_events=trace_events,
+    )
     return write_witness_index(
         output_dir=output_dir,
         trace_path=trace_path,
@@ -423,7 +643,8 @@ def run_autonomous_hammer_witness(
         ended_at=ended_at,
         command=command,
         trace_events=trace_events,
-        filmstrip_path=build_filmstrip_from_manifest(output_dir=output_dir),
+        filmstrip_path=filmstrips.get("full"),
+        filmstrip_paths=filmstrips,
         stimulus=stimulus,
     )
 
@@ -457,6 +678,10 @@ def run_witness_window(
     runner(command, cwd=Path(perceptasia_root).expanduser(), check=True)
     ended_at = now()
     trace_events = collect_trace_events(trace_path, started_at=started_at, ended_at=ended_at)
+    filmstrips = build_cropped_filmstrips_from_manifest(
+        output_dir=output_dir,
+        trace_events=trace_events,
+    )
     return write_witness_index(
         output_dir=output_dir,
         trace_path=trace_path,
@@ -464,15 +689,64 @@ def run_witness_window(
         ended_at=ended_at,
         command=command,
         trace_events=trace_events,
-        filmstrip_path=build_filmstrip_from_manifest(output_dir=output_dir),
+        filmstrip_path=filmstrips.get("full"),
+        filmstrip_paths=filmstrips,
     )
+
+
+def run_trace_triggered_witness(
+    *,
+    trace_path: str | Path,
+    output_dir: str | Path,
+    perceptasia_root: str | Path = DEFAULT_PERCEPTASIA_ROOT,
+    duration_seconds: float = 4.0,
+    fps: float = 18.0,
+    trigger_event: str = "overlay.materialization.start",
+    trigger_timeout_seconds: float = 30.0,
+    lane: str = DEFAULT_LANE,
+    diaulos: str = DEFAULT_DIAULOS,
+    source_app: str = DEFAULT_SOURCE_APP,
+    source_window: str = DEFAULT_SOURCE_WINDOW,
+    runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
+    now: Callable[[], datetime] = _utc_now,
+) -> Path:
+    start_line = trace_line_count(trace_path)
+    armed_at = now()
+    trigger = wait_for_trace_event(
+        trace_path,
+        event_name=trigger_event,
+        start_line=start_line,
+        timeout_seconds=trigger_timeout_seconds,
+    )
+    index_path = run_witness_window(
+        trace_path=trace_path,
+        output_dir=output_dir,
+        perceptasia_root=perceptasia_root,
+        duration_seconds=duration_seconds,
+        fps=fps,
+        lane=lane,
+        diaulos=diaulos,
+        source_app=source_app,
+        source_window=source_window,
+        runner=runner,
+        now=now,
+    )
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    payload["armed_at"] = _format_instant(armed_at)
+    payload["trigger_event"] = trigger
+    index_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return index_path
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run a Retina Lasso capture window and index it against a Spoke trace."
     )
-    parser.add_argument("--trace", required=True, help="Command overlay JSONL trace to align with captures.")
+    parser.add_argument(
+        "--trace",
+        default=TRACE_AUTO,
+        help="Command overlay JSONL trace to align with captures, or 'auto' for the freshest /tmp trace.",
+    )
     parser.add_argument("--output-dir", required=True, help="Directory for Retina Lasso frames and witness index.")
     parser.add_argument("--perceptasia-root", default=str(DEFAULT_PERCEPTASIA_ROOT))
     parser.add_argument("--duration", type=float, default=8.0, help="Capture window length in seconds.")
@@ -537,15 +811,37 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--launch-wait", type=float, default=3.0)
+    parser.add_argument(
+        "--arm-on-open",
+        action="store_true",
+        help="Wait for the next optical transition trace event, then capture and crop filmstrips.",
+    )
+    parser.add_argument("--trigger-event", default="overlay.materialization.start")
+    parser.add_argument("--arm-timeout", type=float, default=30.0)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    if args.hammer_toggles or args.retarget_during_dismiss_repeats or args.launch_target:
+    trace_path = resolve_trace_path(args.trace)
+    if args.arm_on_open:
+        index_path = run_trace_triggered_witness(
+            trace_path=trace_path,
+            output_dir=args.output_dir,
+            perceptasia_root=args.perceptasia_root,
+            duration_seconds=args.duration,
+            fps=args.fps,
+            trigger_event=args.trigger_event,
+            trigger_timeout_seconds=args.arm_timeout,
+            lane=args.lane,
+            diaulos=args.diaulos,
+            source_app=args.source_app,
+            source_window=args.source_window,
+        )
+    elif args.hammer_toggles or args.retarget_during_dismiss_repeats or args.launch_target:
         index_path = run_autonomous_hammer_witness(
-            trace_path=args.trace,
+            trace_path=trace_path,
             output_dir=args.output_dir,
             repo_root=Path(__file__).resolve().parents[1],
             perceptasia_root=args.perceptasia_root,
@@ -568,7 +864,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         index_path = run_witness_window(
-            trace_path=args.trace,
+            trace_path=trace_path,
             output_dir=args.output_dir,
             perceptasia_root=args.perceptasia_root,
             duration_seconds=args.duration,
