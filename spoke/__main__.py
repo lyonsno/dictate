@@ -158,6 +158,8 @@ from .coordination_surfaces import (
     SurfaceKind,
     SurfaceTypeRegistry,
     build_default_registry,
+    derive_operator_ping_tokens,
+    layout_operator_ping_token_visuals,
     text_surface_from_str,
 )
 from .subagents import SubagentManager, run_search_subagent_query
@@ -3364,6 +3366,30 @@ class SpokeAppDelegate(NSObject):
             self._show_tray_current()
 
         return entry
+
+    def _show_operator_ping_tokens_from_events(
+        self,
+        events: list[dict],
+        *,
+        stack_body_frame: tuple[float, float, float, float],
+    ) -> list:
+        """Project backend ping events into ephemeral overlay visuals.
+
+        This does not add tray entries, focus CoordinationStack rows, clear
+        pings, or route to panes. It only hands renderer-neutral token visuals
+        to the overlay when that surface is present.
+        """
+        tokens = derive_operator_ping_tokens(events, stack=self._coordination_stack)
+        visuals = layout_operator_ping_token_visuals(
+            tokens,
+            stack_body_frame=stack_body_frame,
+            stack=self._coordination_stack,
+        )
+        overlay = getattr(self, "_overlay", None)
+        presenter = getattr(overlay, "show_operator_ping_token_visuals", None)
+        if callable(presenter):
+            presenter(visuals)
+        return visuals
 
     def _show_tray_current(self, *, acknowledge: bool = False) -> None:
         """Update the tray overlay to display the current stack entry."""

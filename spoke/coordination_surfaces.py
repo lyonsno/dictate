@@ -712,6 +712,11 @@ class SurfaceMessageBus:
 
 
 OPERATOR_PING_TOKEN_ANCHOR = "operator_stack_body"
+OPERATOR_PING_TOKEN_GAP = 8.0
+OPERATOR_PING_TOKEN_WIDTH = 248.0
+OPERATOR_PING_TOKEN_HEIGHT = 28.0
+OPERATOR_PING_TOKEN_CASCADE_X = 12.0
+OPERATOR_PING_TOKEN_CASCADE_Y = 34.0
 
 
 @dataclass(frozen=True)
@@ -772,6 +777,32 @@ class OperatorPingToken:
         )
 
 
+@dataclass(frozen=True)
+class TokenVisualFrame:
+    """Renderer-neutral rectangle for an ephemeral token visual."""
+
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+@dataclass(frozen=True)
+class OperatorPingTokenVisual:
+    """Renderer-neutral visual presentation for an operator-ping token."""
+
+    ping_id: str
+    visual_index: int
+    diagnostic_count: int
+    frame: TokenVisualFrame
+    presentation_text: str
+    accessibility_label: str
+    anchor: str = OPERATOR_PING_TOKEN_ANCHOR
+    style_role: str = "quiet_source_spark"
+    authority: str = "event_fact_only"
+    steals_primary_focus: bool = False
+
+
 def _operator_ping_reread_refs(
     topos: str,
     refs: dict[str, list[str]] | None,
@@ -808,6 +839,18 @@ def _operator_ping_token_label(ping: dict[str, Any]) -> str:
     if message:
         return message[:60]
     return "operator ping"
+
+
+def _operator_ping_visual_text(token: OperatorPingToken) -> str:
+    parts = [token.source_signature]
+    if token.label:
+        parts.append(token.label)
+    return " · ".join(parts)
+
+
+def _operator_ping_visual_accessibility_label(token: OperatorPingToken) -> str:
+    label = token.label or token.message or token.ping_id
+    return f"Operator ping from {token.source_signature}: {label}"
 
 
 def _operator_ping_created_at(ping: dict[str, Any], event: dict[str, Any]) -> str:
@@ -872,3 +915,41 @@ def derive_operator_ping_tokens(
             )
         )
     return tokens
+
+
+def layout_operator_ping_token_visuals(
+    tokens: list[OperatorPingToken],
+    *,
+    stack_body_frame: tuple[float, float, float, float],
+    stack: CoordinationStack | None = None,
+) -> list[OperatorPingTokenVisual]:
+    """Lay out operator-ping tokens near the Stack body without row mutation.
+
+    The layout deliberately does not cap tokens. If a caller sees too many
+    visuals, that is upstream salience pressure to diagnose, not data to drop.
+    """
+    del stack
+
+    stack_x, stack_y, stack_width, stack_height = stack_body_frame
+    base_x = stack_x + max(0.0, stack_width - OPERATOR_PING_TOKEN_WIDTH)
+    base_y = stack_y + stack_height + OPERATOR_PING_TOKEN_GAP
+    count = len(tokens)
+    visuals: list[OperatorPingTokenVisual] = []
+    for index, token in enumerate(tokens):
+        frame = TokenVisualFrame(
+            x=base_x + (index % 3) * OPERATOR_PING_TOKEN_CASCADE_X,
+            y=base_y + index * OPERATOR_PING_TOKEN_CASCADE_Y,
+            width=OPERATOR_PING_TOKEN_WIDTH,
+            height=OPERATOR_PING_TOKEN_HEIGHT,
+        )
+        visuals.append(
+            OperatorPingTokenVisual(
+                ping_id=token.ping_id,
+                visual_index=index,
+                diagnostic_count=count,
+                frame=frame,
+                presentation_text=_operator_ping_visual_text(token),
+                accessibility_label=_operator_ping_visual_accessibility_label(token),
+            )
+        )
+    return visuals

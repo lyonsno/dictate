@@ -433,6 +433,8 @@ class TranscriptionOverlay(NSObject):
         self._fade_from = 0.0
         self._fade_direction = 0
         self._tray_mode = False
+        self._operator_ping_token_visuals = []
+        self._operator_ping_token_views: list[NSView] = []
 
         # Typewriter state
         self._typewriter_timer: NSTimer | None = None
@@ -541,6 +543,7 @@ class TranscriptionOverlay(NSObject):
         wrapper_frame = NSMakeRect(0, 0, win_w, win_h)
         wrapper = NSView.alloc().initWithFrame_(wrapper_frame)
         wrapper.setWantsLayer_(True)
+        self._wrapper_view = wrapper
 
         # Semi-transparent dark background with rounded corners (inset by feather)
         content_frame = NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
@@ -1557,6 +1560,55 @@ class TranscriptionOverlay(NSObject):
             pass
 
     # ── tray mode ──────────────────────────────────────────────
+
+    def clear_operator_ping_token_visuals(self) -> None:
+        """Remove ephemeral operator-ping token views without touching stack state."""
+        for view in getattr(self, "_operator_ping_token_views", []):
+            remover = getattr(view, "removeFromSuperview", None)
+            if callable(remover):
+                remover()
+        self._operator_ping_token_views = []
+        self._operator_ping_token_visuals = []
+
+    def show_operator_ping_token_visuals(self, visuals: list) -> None:
+        """Render quiet source-linked operator-ping token pills near the Stack body."""
+        self.clear_operator_ping_token_visuals()
+        self._operator_ping_token_visuals = list(visuals)
+        if self._window is None:
+            return
+        wrapper = getattr(self, "_wrapper_view", None)
+        if wrapper is None:
+            return
+
+        for visual in visuals:
+            frame = visual.frame
+            pill = NSView.alloc().initWithFrame_(
+                NSMakeRect(frame.x, frame.y, frame.width, frame.height)
+            )
+            pill.setWantsLayer_(True)
+            pill.layer().setCornerRadius_(9.0)
+            pill.layer().setBackgroundColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(
+                    0.12, 0.17, 0.28, 0.58
+                ).CGColor()
+            )
+
+            label = NSTextView.alloc().initWithFrame_(
+                NSMakeRect(10.0, 3.0, max(frame.width - 20.0, 1.0), 20.0)
+            )
+            label.setEditable_(False)
+            label.setSelectable_(False)
+            label.setDrawsBackground_(False)
+            label.setString_(visual.presentation_text)
+            label.setFont_(NSFont.systemFontOfSize_weight_(11.0, 0.25))
+            label.setTextColor_(
+                NSColor.colorWithSRGBRed_green_blue_alpha_(
+                    0.86, 0.92, 1.0, 0.88
+                )
+            )
+            pill.addSubview_(label)
+            wrapper.addSubview_(pill)
+            self._operator_ping_token_views.append(pill)
 
     def show_tray(self, text: str, *, owner: str = "user") -> None:
         """Show the tray overlay with the given text.

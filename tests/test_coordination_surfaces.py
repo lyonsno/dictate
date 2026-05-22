@@ -23,6 +23,7 @@ from spoke.coordination_surfaces import (
     SurfaceTypeRegistry,
     build_default_registry,
     derive_operator_ping_tokens,
+    layout_operator_ping_token_visuals,
     surface_actions_to_resolver_intents,
     text_surface_from_str,
 )
@@ -806,3 +807,102 @@ class TestOperatorPingTokenProjection:
         assert routing.cargo["may_clear_ping"] is False
         assert routing.cargo["may_focus_pane"] is False
         assert routing.cargo["may_write_state"] is False
+
+
+class TestOperatorPingTokenVisualAssay:
+    def test_token_visuals_render_as_quiet_source_sparks_near_stack_body(self):
+        token = derive_operator_ping_tokens(
+            [
+                {
+                    "kind": "operator_ping.created",
+                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-1",
+                    "operator_ping": {
+                        "ping_id": "ping-1",
+                        "created_at": "2026-05-22T12:00:00Z",
+                        "diaulos": "chairside-sparkwright",
+                        "message": "assay needs operator glance",
+                        "reason_token": "question",
+                    },
+                }
+            ]
+        )[0]
+
+        visuals = layout_operator_ping_token_visuals(
+            [token],
+            stack_body_frame=(100.0, 80.0, 360.0, 96.0),
+        )
+
+        assert len(visuals) == 1
+        visual = visuals[0]
+        assert visual.ping_id == "ping-1"
+        assert visual.anchor == "operator_stack_body"
+        assert visual.presentation_text == "Diaulos: chairside-sparkwright · question"
+        assert visual.accessibility_label == (
+            "Operator ping from Diaulos: chairside-sparkwright: question"
+        )
+        assert visual.style_role == "quiet_source_spark"
+        assert visual.authority == "event_fact_only"
+        assert visual.steals_primary_focus is False
+        assert visual.frame.x >= 100.0
+        assert visual.frame.y >= 176.0
+
+    def test_token_visual_layout_keeps_all_tokens_without_capping(self):
+        tokens = derive_operator_ping_tokens(
+            [
+                {
+                    "kind": "operator_ping.created",
+                    "event_id": f"epistaxis.event.v1:operator_ping.created:spoke:ping-{index}",
+                    "operator_ping": {
+                        "ping_id": f"ping-{index}",
+                        "created_at": f"2026-05-22T12:{index:02d}:00Z",
+                        "diaulos": "chairside-sparkwright",
+                        "reason_token": f"q{index}",
+                    },
+                }
+                for index in range(18)
+            ]
+        )
+
+        visuals = layout_operator_ping_token_visuals(
+            tokens,
+            stack_body_frame=(100.0, 80.0, 360.0, 96.0),
+        )
+
+        assert len(visuals) == 18
+        assert [visual.ping_id for visual in visuals] == [
+            f"ping-{index}" for index in range(18)
+        ]
+        assert [visual.visual_index for visual in visuals] == list(range(18))
+        assert all(visual.diagnostic_count == 18 for visual in visuals)
+        assert len({(visual.frame.x, visual.frame.y) for visual in visuals}) == 18
+
+    def test_token_visual_layout_does_not_mutate_stack_focus_or_rows(self):
+        stack = CoordinationStack()
+        primary = _agent_entry("active-lane", "Active lane")
+        stack.push(primary)
+        stack.activate()
+        token = derive_operator_ping_tokens(
+            [
+                {
+                    "kind": "operator_ping.created",
+                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-1",
+                    "operator_ping": {
+                        "ping_id": "ping-1",
+                        "created_at": "2026-05-22T12:00:00Z",
+                        "diaulos": "chairside-sparkwright",
+                        "reason_token": "question",
+                    },
+                }
+            ]
+        )[0]
+
+        visuals = layout_operator_ping_token_visuals(
+            [token],
+            stack_body_frame=(100.0, 80.0, 360.0, 96.0),
+            stack=stack,
+        )
+
+        assert len(visuals) == 1
+        assert stack.entries == [primary]
+        assert stack.primary is primary
+        assert stack.active is True
