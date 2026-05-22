@@ -672,6 +672,31 @@ class TestOpticalShellMaterialization:
         overlay._window.orderOut_.assert_called_once_with(None)
         overlay._window.setAlphaValue_.assert_any_call(0.0)
 
+    def test_invisible_pending_entrance_teardown_resets_body_to_slit(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = MagicMock()
+        overlay._visible = True
+        overlay._streaming = True
+        overlay._window.alphaValue.return_value = 0.0
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = 1
+        overlay._materialization_progress = 0.55
+        overlay._optical_lifecycle_trajectory = "summoning"
+        overlay._deferred_materialization_shell_config = {"center_x": 640.0}
+        overlay._deferred_materialization_start_progress = 0.55
+        overlay._materialization_final_shell_config = {"center_x": 640.0}
+
+        overlay.cancel_dismiss()
+
+        assert overlay._body_publication_state() == "slit"
+        assert overlay._materialization_progress == pytest.approx(0.0)
+        assert overlay._deferred_materialization_shell_config is None
+        assert overlay._deferred_materialization_start_progress is None
+        assert overlay._materialization_final_shell_config is None
+        assert overlay._optical_lifecycle_trajectory == "idle_closed"
+
     def test_show_during_optical_dismiss_retargets_existing_body_instead_of_restart(
         self, mock_pyobjc, monkeypatch
     ):
