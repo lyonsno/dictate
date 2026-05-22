@@ -4365,9 +4365,14 @@ class CommandOverlay(NSObject):
             visible_w = w
             visible_h = max(h * hf, 0.0)
             x_offset = 0.0
-            # Also fade the scroll view in quickly during the initial squeeze
+            # Keep text genuinely quarantined until the optical body is ready;
+            # alpha-zero window ordering is not a sufficient publication guard
+            # under hammered transition reversals.
             if hasattr(scroll, "setAlphaValue_"):
-                alpha = min(hf * 5.0, 1.0)  # fade in over first 20% of height_frac
+                if progress is not None and progress < _OPTICAL_MATERIALIZATION_BODY_READY:
+                    alpha = 0.0
+                else:
+                    alpha = min(hf * 5.0, 1.0)
                 scroll.setAlphaValue_(alpha)
         else:
             text_state = _dismiss_text_collapse_state(hf if progress is None else progress)

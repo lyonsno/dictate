@@ -806,6 +806,40 @@ class TestOpticalShellMaterialization:
         assert show_begin["presentation_window_alpha"] == pytest.approx(0.0)
         assert show_begin["presentation_window_ordered"] is False
 
+    def test_pre_body_entrance_materialization_keeps_text_plane_quarantined(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        alphas = []
+        overlay._scroll_view.setAlphaValue_.side_effect = alphas.append
+
+        progress = mod._OPTICAL_MATERIALIZATION_BODY_READY * 0.5
+        fill_state = mod._materialization_fill_state(progress)
+        overlay._update_scroll_materialization_mask(
+            fill_state["height_frac"],
+            direction=1,
+            progress=progress,
+        )
+
+        assert alphas[-1] == pytest.approx(0.0)
+
+    def test_body_ready_entrance_materialization_releases_text_plane(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        alphas = []
+        overlay._scroll_view.setAlphaValue_.side_effect = alphas.append
+
+        progress = mod._OPTICAL_MATERIALIZATION_BODY_READY
+        fill_state = mod._materialization_fill_state(progress)
+        overlay._update_scroll_materialization_mask(
+            fill_state["height_frac"],
+            direction=1,
+            progress=progress,
+        )
+
+        assert alphas[-1] > 0.0
+
     def test_show_dismiss_retarget_consumes_lifecycle_adapter(
         self, mock_pyobjc, monkeypatch
     ):
