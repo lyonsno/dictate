@@ -57,6 +57,11 @@ from .optical_presentation import (
     OpticalPresentationFrameBundle,
     optical_presentation_config_identity,
 )
+from .optical_lifecycle import (
+    OPTICAL_BODY_READY_PROGRESS,
+    OPTICAL_MAG_SEED_PROGRESS,
+    retarget_progress_for_dismiss,
+)
 
 logger = logging.getLogger(__name__)
 _BACKDROP_DISPLAY_LAYER_CLASS = None
@@ -133,14 +138,14 @@ _OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S = (
     _OPTICAL_MATERIALIZATION_DISMISS_S
     + _OPTICAL_MATERIALIZATION_PUCKER_TAIL_S
 )
-_OPTICAL_MATERIALIZATION_BODY_READY = 0.55
+_OPTICAL_MATERIALIZATION_BODY_READY = OPTICAL_BODY_READY_PROGRESS
 _OPTICAL_MATERIALIZATION_SEED_WIDTH_FRAC = 0.06
 _OPTICAL_MATERIALIZATION_SEED_HEIGHT_FRAC = 0.028
 _OPTICAL_MATERIALIZATION_SPREAD_END = (
     _OPTICAL_MATERIALIZATION_SEAM_OPEN_S / _OPTICAL_MATERIALIZATION_S
 )
 _OPTICAL_MATERIALIZATION_BLOOM_START = _OPTICAL_MATERIALIZATION_SPREAD_END
-_OPTICAL_MATERIALIZATION_MAG_SEED_FRAC = 0.04
+_OPTICAL_MATERIALIZATION_MAG_SEED_FRAC = OPTICAL_MAG_SEED_PROGRESS
 _OPTICAL_MATERIALIZATION_MAG_ACCEL_END = 0.42
 _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT_AT = 0.72
 _OPTICAL_MATERIALIZATION_MAG_OVERSHOOT = 1.20
@@ -794,10 +799,7 @@ def _materialized_optical_shell_config(
 
 def _summon_retarget_progress_for_dismiss_progress(progress: float) -> float:
     """Map dismiss-local body progress onto a lawful summon re-entry point."""
-    p = _clamp01(progress)
-    if p < _OPTICAL_MATERIALIZATION_BODY_READY:
-        return min(p, _OPTICAL_MATERIALIZATION_MAG_SEED_FRAC)
-    return min(p, _OPTICAL_MATERIALIZATION_BODY_READY)
+    return retarget_progress_for_dismiss(progress).start_progress
 
 
 def _materialization_fill_state(progress: float) -> dict[str, float]:
@@ -2457,11 +2459,11 @@ class CommandOverlay(NSObject):
             **self._optical_presentation_frame_bundle().to_trace_fields(),
         )
         dismiss_reversal_progress = self._optical_dismiss_reversal_progress()
-        summon_retarget_progress = (
-            _summon_retarget_progress_for_dismiss_progress(dismiss_reversal_progress)
-            if dismiss_reversal_progress is not None
-            else None
-        )
+        summon_retarget_progress = None
+        if dismiss_reversal_progress is not None:
+            retarget_decision = retarget_progress_for_dismiss(dismiss_reversal_progress)
+            if retarget_decision.should_retarget:
+                summon_retarget_progress = retarget_decision.start_progress
         self._cancel_all_timers()
         self._reset_fill_generation_latches_for_show()
         had_compositor = getattr(self, "_fullscreen_compositor", None) is not None

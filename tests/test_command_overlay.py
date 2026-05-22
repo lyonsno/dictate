@@ -806,6 +806,47 @@ class TestOpticalShellMaterialization:
         assert show_begin["presentation_window_alpha"] == pytest.approx(0.0)
         assert show_begin["presentation_window_ordered"] is False
 
+    def test_show_dismiss_retarget_consumes_lifecycle_adapter(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "initial_brightness": 0.35,
+            "gpu_material_brightness": 0.35,
+        }
+        compositor = MagicMock()
+        overlay._fullscreen_compositor = compositor
+        overlay._visible = False
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+        overlay._materialization_progress = 0.47
+        overlay._materialization_final_shell_config = dict(shell_config)
+        overlay._display_local_optical_shell_config = MagicMock(return_value=shell_config)
+        overlay._start_materialization_animation = MagicMock()
+        calls = []
+
+        def fake_retarget(progress):
+            calls.append(progress)
+            return SimpleNamespace(should_retarget=True, start_progress=0.123)
+
+        monkeypatch.setattr(mod, "retarget_progress_for_dismiss", fake_retarget)
+
+        overlay.show(
+            initial_utterance="ask",
+            initial_response="answer",
+            start_thinking_timer=False,
+        )
+
+        assert calls == [pytest.approx(0.47)]
+        _, kwargs = overlay._start_materialization_animation.call_args
+        assert kwargs["start_progress"] == pytest.approx(0.123)
+
     def test_hammer_toggle_show_dismiss_show_retargets_without_restart_or_text_flash(
         self, mock_pyobjc, monkeypatch
     ):
