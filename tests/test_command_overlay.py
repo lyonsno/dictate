@@ -735,6 +735,52 @@ class TestOpticalShellMaterialization:
             ("materialize", kwargs["start_progress"])
         )
 
+    def test_show_begin_quarantines_inherited_visible_window_before_retarget_trace(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "initial_brightness": 0.35,
+            "gpu_material_brightness": 0.35,
+        }
+        compositor = MagicMock()
+        overlay._fullscreen_compositor = compositor
+        overlay._visible = False
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+        overlay._materialization_progress = 0.47
+        overlay._materialization_final_shell_config = dict(shell_config)
+        overlay._display_local_optical_shell_config = MagicMock(return_value=shell_config)
+        overlay._start_materialization_animation = MagicMock()
+        window_alpha = {"value": 1.0}
+        overlay._window.alphaValue.side_effect = lambda: window_alpha["value"]
+        overlay._window.setAlphaValue_.side_effect = (
+            lambda alpha: window_alpha.__setitem__("value", float(alpha))
+        )
+        overlay._window.isVisible.return_value = True
+        traces = []
+        monkeypatch.setattr(
+            mod,
+            "record_command_overlay_trace",
+            lambda event, **fields: traces.append((event, fields)),
+        )
+
+        overlay.show(
+            initial_utterance="ask",
+            initial_response="answer",
+            start_thinking_timer=False,
+        )
+
+        show_begin = next(fields for event, fields in traces if event == "overlay.show.begin")
+        assert show_begin["presentation_window_alpha"] == pytest.approx(0.0)
+        assert show_begin["presentation_window_ordered"] is False
+
     def test_hammer_toggle_show_dismiss_show_retargets_without_restart_or_text_flash(
         self, mock_pyobjc, monkeypatch
     ):
