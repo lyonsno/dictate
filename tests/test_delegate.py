@@ -3303,6 +3303,7 @@ class TestRuntimePhaseLogging:
 
         menubar = MagicMock()
         menubar.setup = MagicMock()
+        menubar._on_toggle_terraform = None
         glow = MagicMock()
         glow.setup = MagicMock()
         overlay = MagicMock()
@@ -3374,6 +3375,54 @@ class TestRuntimePhaseLogging:
 
         preview_warp_hud.restore_visibility.assert_called_once_with()
         assert menubar._on_toggle_preview_warp is preview_warp_hud.toggle
+
+    def test_application_launch_does_not_import_terraform_hud(
+        self, main_module, monkeypatch
+    ):
+        """Terror Form should stay out of the launch path entirely."""
+        d = _make_delegate(main_module, monkeypatch)
+        d._quit = MagicMock()
+        d._command_client = MagicMock()
+        d._refresh_command_model_options_async = MagicMock()
+        d._request_mic_permission = MagicMock()
+        d._setup_event_tap = MagicMock()
+
+        menubar = MagicMock()
+        menubar.setup = MagicMock()
+        menubar._on_toggle_terraform = None
+        overlay = MagicMock()
+        overlay.setup = MagicMock()
+        command_overlay = MagicMock()
+        command_overlay.setup = MagicMock()
+        preview_warp_hud = MagicMock()
+        real_import = __import__
+
+        def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if (
+                name == "spoke.terraform_hud"
+                or name.endswith(".terraform_hud")
+                or (level and name == "terraform_hud")
+            ):
+                raise AssertionError("terraform_hud must not be imported on launch")
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch("builtins.__import__", side_effect=guarded_import), \
+            patch.object(main_module.MenuBarIcon, "alloc") as mock_menubar_alloc, \
+            patch.object(main_module.GlowOverlay, "alloc") as mock_glow_alloc, \
+            patch.object(main_module.TranscriptionOverlay, "alloc") as mock_overlay_alloc:
+            mock_menubar_alloc.return_value.initWithQuitCallback_selectModelCallback_.return_value = menubar
+            mock_glow_alloc.return_value.initWithScreen_.return_value = MagicMock()
+            mock_overlay_alloc.return_value.initWithScreen_.return_value = overlay
+            import sys
+            sys.modules["spoke.command_overlay"] = MagicMock()
+            sys.modules["spoke.command_overlay"].CommandOverlay.alloc.return_value.initWithScreen_.return_value = command_overlay
+            sys.modules["spoke.preview_warp_hud"] = MagicMock()
+            sys.modules["spoke.preview_warp_hud"].PreviewWarpHUD.alloc.return_value.initWithOverlay_.return_value = preview_warp_hud
+
+            d.applicationDidFinishLaunching_(None)
+
+        assert not hasattr(d, "_terraform_hud")
+        assert getattr(menubar, "_on_toggle_terraform", None) is None
 
     def test_refresh_command_model_options_async_spawns_background_thread(
         self, main_module, monkeypatch
@@ -3596,6 +3645,25 @@ class TestEnvValidation:
             mock_alloc.return_value.initWithHoldStart_holdEnd_holdMs_.call_args.args[2]
             == 200
         )
+
+    def test_init_does_not_bind_terraform_double_shift(self, main_module, monkeypatch):
+        """Terror Form is offline; Shift double-tap should not wire Terraform."""
+        monkeypatch.setenv("SPOKE_WHISPER_URL", "http://test:8000")
+
+        class Detector:
+            command_overlay_active = False
+
+        detector_instance = Detector()
+
+        with patch.object(main_module.SpacebarHoldDetector, "alloc") as mock_alloc:
+            mock_alloc.return_value.initWithHoldStart_holdEnd_holdMs_.return_value = (
+                detector_instance
+            )
+            d = main_module.SpokeAppDelegate.__new__(main_module.SpokeAppDelegate)
+            result = d.init()
+
+        assert result is not None
+        assert getattr(detector_instance, "_on_double_tap_shift", None) is None
 
 
 class TestRecordingCap:

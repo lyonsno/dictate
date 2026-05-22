@@ -977,7 +977,7 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_enter_during_waiting = self._toggle_command_overlay
         self._detector._on_approval_enter_pressed = self._on_approval_enter_pressed
         self._detector._on_approval_delete_pressed = self._on_approval_delete_pressed
-        self._detector._on_double_tap_shift = self._toggle_terraform_hud
+        self._detector._on_double_tap_shift = None
         self._menubar: MenuBarIcon | None = None
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
@@ -1252,12 +1252,6 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay.set_compositor_registry(self._overlay_compositor_registry)
             self._command_overlay._on_cancel_spring_threshold = self._on_cancel_spring_threshold
             self._refresh_command_model_options_async()
-
-        # Terraform topoi HUD — restores last visibility state (default: open)
-        from .terraform_hud import TerraformHUD
-        self._terraform_hud = TerraformHUD.alloc().init()
-        self._terraform_hud.restore_visibility()
-        self._menubar._on_toggle_terraform = self._terraform_hud.toggle
 
         from .preview_warp_hud import PreviewWarpHUD
         self._preview_warp_hud = PreviewWarpHUD.alloc().initWithOverlay_(self._overlay)
@@ -3466,13 +3460,6 @@ class SpokeAppDelegate(NSObject):
                 record_command_overlay_trace("delegate.toggle.no_snapshot")
         else:
             logger.info("Double-tap Enter — no assistant overlay snapshot to recall")
-
-    def _toggle_terraform_hud(self) -> None:
-        """Toggle Terror Form HUD visibility — called from double-tap Shift."""
-        hud = getattr(self, '_terraform_hud', None)
-        if hud is not None:
-            hud.toggle()
-            logger.info("Double-tap Shift — toggled Terror Form HUD")
 
     def _on_audio_shift_tap(self) -> None:
         """Shift tap while idle toggles current TTS audibility."""
@@ -6710,8 +6697,6 @@ class SpokeAppDelegate(NSObject):
         hf = getattr(self, "_handsfree", None)
         if hf is not None and hf.is_active:
             hf.disable(reason="app quit")
-        if hasattr(self, "_terraform_hud") and self._terraform_hud is not None:
-            self._terraform_hud.cleanup()
         if hasattr(self, "_preview_warp_hud") and self._preview_warp_hud is not None:
             self._preview_warp_hud.cleanup()
         if hasattr(self, "_seam_pucker_hud") and self._seam_pucker_hud is not None:

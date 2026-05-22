@@ -352,13 +352,6 @@ class MenuBarIcon(NSObject):
             handsfree_item.setTarget_(self)
             menu.addItem_(handsfree_item)
 
-        if getattr(self, "_on_toggle_terraform", None) is not None:
-            terraform_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                "Terror Form", "toggleTerraform:", "t"
-            )
-            terraform_item.setTarget_(self)
-            menu.addItem_(terraform_item)
-
         if getattr(self, "_on_toggle_preview_warp", None) is not None:
             preview_warp_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 "Preview Warp Tuner", "togglePreviewWarp:", "w"
@@ -462,10 +455,6 @@ class MenuBarIcon(NSObject):
     def toggleHandsFree_(self, sender) -> None:
         if self._on_toggle_handsfree is not None:
             self._on_toggle_handsfree()
-
-    def toggleTerraform_(self, sender) -> None:
-        if self._on_toggle_terraform is not None:
-            self._on_toggle_terraform()
 
     def togglePreviewWarp_(self, sender) -> None:
         if self._on_toggle_preview_warp is not None:
