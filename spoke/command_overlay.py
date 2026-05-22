@@ -3792,6 +3792,15 @@ class CommandOverlay(NSObject):
         # Remove text clipping mask when materialization ends
         self._update_scroll_materialization_mask(1.0)
 
+    def _reset_closed_materialization_publication_state(self) -> None:
+        self._materialization_started_at = 0.0
+        self._materialization_progress = 0.0
+        self._materialization_direction = 1
+        self._materialization_final_shell_config = None
+        self._deferred_materialization_shell_config = None
+        self._deferred_materialization_start_progress = None
+        self._optical_lifecycle_trajectory = "idle_closed"
+
     def _cancel_dismiss_pucker_tail_animation(
         self,
         *,
@@ -3872,6 +3881,7 @@ class CommandOverlay(NSObject):
         self._cancel_entrance_pop()
         self._cancel_materialization_animation()
         self._cancel_dismiss_pucker_tail_animation()
+        self._reset_closed_materialization_publication_state()
         self._reset_fill_generation_latches_for_show()
         self._stop_fullscreen_compositor()
         self._window.setAlphaValue_(0.0)
