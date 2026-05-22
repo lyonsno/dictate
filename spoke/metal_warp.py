@@ -490,10 +490,12 @@ kernel void opticalShellWarp(
         {_WARP_ALIAS_MIP_BIAS_MAX}f
     );
 
-    // In the band: mip ramps from 0 (at the edge) toward a medium level.
+    // In the band: mip ramps from 0 (at the edge) all the way to max mip.
+    // Reaching the same LOD as the flat interior before the blend completes
+    // prevents a visible square-ish mip step at the band/interior boundary.
     // Past the band: jump to max mip on purpose to suppress magnification.
-    float bandMipLod = easedT * 4.0f + warpAliasBias;
     float maxMipLod = 6.0f;
+    float bandMipLod = easedT * maxMipLod + warpAliasBias;
     float mipLod = (bandT < 1.0f)
         ? clamp(bandMipLod, 0.0f, maxMipLod)
         : maxMipLod;
@@ -510,15 +512,8 @@ kernel void opticalShellWarp(
         bandColor = inTexture.sample(mipSampler, normPt, level(mipLod));
     }}
 
-    // Sample the intentionally flat interior average from one stable shell point.
-    // Level 6 can still contain coarse screen-space cells on large displays; using
-    // normPt here makes those cells read as a square-ish mip discontinuity.
-    float2 flatNormPt = clamp(
-        c / float2(params.width, params.height),
-        float2(0.0f),
-        float2(1.0f)
-    );
-    float4 flatColor = inTexture.sample(mipSampler, flatNormPt, level(maxMipLod));
+    // Sample the intentionally flat interior average (max mip -- one cached texel).
+    float4 flatColor = inTexture.sample(mipSampler, normPt, level(maxMipLod));
 
     // In the band, lerp from the mipped sample toward the flat average.
     // At the outer edge (easedT=0): pure crisp warped sample.
