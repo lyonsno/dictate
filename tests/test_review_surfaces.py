@@ -55,6 +55,9 @@ def test_optical_shell_review_surface_doc_states_authority_and_revisit_boundary(
     assert "spoke/backdrop_stream.py" in doc_text
     assert "design pressure" in doc_text.lower()
     assert "diverge during tuning" in doc_text.lower()
+    assert "flat max-mip interior" in doc_text.lower()
+    assert "magnifying lens" in doc_text.lower()
+    assert "visible transition discontinuities" in doc_text.lower()
 
 
 def test_agents_documents_make_this_durable_for_review_route():

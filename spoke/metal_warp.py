@@ -170,7 +170,7 @@ struct WarpParams {{
     float exteriorMixWidth; // width of the exterior onset band in pixels
     float xSqueeze;
     float ySqueeze;
-    float mipBlurStrength; // 0 = crisp level-0 sampling, 1 = material blur LOD
+    float mipBlurStrength; // transition-band blur strength; deep interior stays flat max-mip
     float warpMode; // 0 = material shell, 1 = seam-tension scar
     float scarAmount; // signed: positive pinches inward, negative rebounds outward
     float scarSeamLengthFrac; // normalized half-length before horizontal falloff
@@ -464,6 +464,10 @@ kernel void opticalShellWarp(
     //     Mip ramps from 0→max with ease-in/ease-out, and the sampled color
     //     lerps toward the flat interior average.
     //   Interior (everything past the band): flat average color from max mip.
+    //     This is deliberate: the center should read as material spreading
+    //     around the shell, not as a magnifying lens over live screen detail.
+    //     mipBlurStrength controls the transition/scar band only; do not use
+    //     it to reintroduce crisp sampling in the flat interior.
     //
     // The band width is narrow and the easing makes it read as a designed
     // material edge rather than an artifact of the blur kernel.
@@ -487,14 +491,13 @@ kernel void opticalShellWarp(
     );
 
     // In the band: mip ramps from 0 (at the edge) toward a medium level.
-    // Past the band: jump to the caller-selected flat interior blur depth.
+    // Past the band: jump to max mip on purpose to suppress magnification.
     float bandMipLod = easedT * 4.0f + warpAliasBias;
     float maxMipLod = 6.0f;
-    float effectiveMipBlurStrength = clamp(params.mipBlurStrength, 0.0f, 1.0f);
-    float effectiveMaxMipLod = maxMipLod * effectiveMipBlurStrength;
     float mipLod = (bandT < 1.0f)
-        ? clamp(bandMipLod, 0.0f, maxMipLod) * effectiveMipBlurStrength
-        : effectiveMaxMipLod;
+        ? clamp(bandMipLod, 0.0f, maxMipLod)
+        : maxMipLod;
+    mipLod *= clamp(params.mipBlurStrength, 0.0f, 1.0f);
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
     float2 normPt = samplePt / float2(params.width, params.height);
@@ -507,8 +510,15 @@ kernel void opticalShellWarp(
         bandColor = inTexture.sample(mipSampler, normPt, level(mipLod));
     }}
 
-    // Sample the flat interior average at the caller-selected material blur depth.
-    float4 flatColor = inTexture.sample(mipSampler, normPt, level(effectiveMaxMipLod));
+    // Sample the intentionally flat interior average from one stable shell point.
+    // Level 6 can still contain coarse screen-space cells on large displays; using
+    // normPt here makes those cells read as a square-ish mip discontinuity.
+    float2 flatNormPt = clamp(
+        c / float2(params.width, params.height),
+        float2(0.0f),
+        float2(1.0f)
+    );
+    float4 flatColor = inTexture.sample(mipSampler, flatNormPt, level(maxMipLod));
 
     // In the band, lerp from the mipped sample toward the flat average.
     // At the outer edge (easedT=0): pure crisp warped sample.

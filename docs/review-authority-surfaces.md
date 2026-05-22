@@ -32,6 +32,17 @@ that drift automatically counting as a material regression.
 Default review posture: treat bare constant drift or comment/code mismatch
 between these two paths as design pressure, not as a must-fix bug.
 
+The Metal shell's deep interior is intentionally a flat max-mip interior, not
+a magnifying lens over live screen detail. The visual goal is for material to
+spread around the optical shell and settle into a flattened body. Do not treat
+the deep interior ignoring `mip_blur_strength` as a bug by itself; that knob is
+allowed to shape the transition/scar band while the center remains flat.
+
+Visible transition discontinuities at the edge of the flat interior are still
+valid review pressure. A square-looking mip boundary, hard cutoff, or obvious
+coarse-mip cell pattern should be reviewed as a transition-smoothing problem,
+not as a reason to reintroduce crisp sampling in the interior.
+
 Promote the finding to material only if one of these becomes true:
 
 - an executable contract explicitly requires equivalence
