@@ -6,6 +6,7 @@ vocabulary and compact/expanded renderers.
 """
 
 import threading
+import json
 
 from spoke.coordination_surfaces import (
     CoordinationStack,
@@ -24,6 +25,7 @@ from spoke.coordination_surfaces import (
     build_default_registry,
     derive_operator_ping_tokens,
     layout_operator_ping_token_visuals,
+    load_operator_ping_events_from_jsonl,
     surface_actions_to_resolver_intents,
     text_surface_from_str,
 )
@@ -686,6 +688,35 @@ class TestSurfaceMessageBus:
 
 
 class TestOperatorPingTokenProjection:
+    def test_operator_ping_event_log_reader_replays_jsonl_without_capping(self, tmp_path):
+        event_log = tmp_path / "events.jsonl"
+        events = [
+            {
+                "kind": "operator_ping.created",
+                "event_id": f"epistaxis.event.v1:operator_ping.created:spoke:ping-{index}",
+                "operator_ping": {
+                    "ping_id": f"ping-{index}",
+                    "created_at": f"2026-05-22T12:{index:02d}:00Z",
+                    "diaulos": "chairside-sparkwright",
+                    "reason_token": f"q{index}",
+                },
+            }
+            for index in range(24)
+        ]
+        event_log.write_text(
+            "\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n\n",
+            encoding="utf-8",
+        )
+
+        loaded = load_operator_ping_events_from_jsonl(event_log)
+
+        assert [event["operator_ping"]["ping_id"] for event in loaded] == [
+            f"ping-{index}" for index in range(24)
+        ]
+
+    def test_operator_ping_event_log_reader_missing_file_is_quiet(self, tmp_path):
+        assert load_operator_ping_events_from_jsonl(tmp_path / "missing.jsonl") == []
+
     def test_unresolved_operator_pings_project_to_ephemeral_source_tokens(self):
         events = [
             {

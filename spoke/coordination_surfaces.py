@@ -11,10 +11,12 @@ type's action vocabulary.
 
 from __future__ import annotations
 
+import json
 import threading
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
@@ -860,6 +862,33 @@ def _operator_ping_created_at(ping: dict[str, Any], event: dict[str, Any]) -> st
 def _operator_ping_sort_key(event: dict[str, Any]) -> tuple[str, str]:
     ping = event.get("operator_ping") if isinstance(event.get("operator_ping"), dict) else {}
     return (_operator_ping_created_at(ping, event), str(event.get("event_id") or ""))
+
+
+def load_operator_ping_events_from_jsonl(path: str | Path) -> list[dict[str, Any]]:
+    """Load operator ping rows from an Epistaxis Spark-Tendon JSONL stream."""
+    event_log = Path(path).expanduser()
+    if not event_log.exists():
+        return []
+
+    events: list[dict[str, Any]] = []
+    with event_log.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"invalid operator ping event JSON on line {line_number}: {exc.msg}"
+                ) from exc
+            if not isinstance(event, dict):
+                raise ValueError(
+                    f"invalid operator ping event JSON on line {line_number}: row is not an object"
+                )
+            if str(event.get("kind", "")).startswith("operator_ping."):
+                events.append(event)
+    return events
 
 
 def derive_operator_ping_tokens(

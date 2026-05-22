@@ -103,6 +103,43 @@ class TestOperatorPingTokenSmokeHook:
         assert d._tray_stack == []
         assert d._coordination_stack.entries == []
 
+    def test_smoke_hook_prefers_real_event_log_over_sample_ping(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        event_log = tmp_path / "events.jsonl"
+        event_log.write_text(
+            json.dumps(
+                {
+                    "kind": "operator_ping.created",
+                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:real-ping",
+                    "source_tool": "epistaxis ping-operator",
+                    "operator_ping": {
+                        "ping_id": "real-ping",
+                        "created_at": "2026-05-22T12:00:00Z",
+                        "diaulos": "Chairside Sparkwright",
+                        "message": "real event log ping",
+                        "reason_token": "question",
+                    },
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("SPOKE_OPERATOR_PING_TOKEN_SMOKE", "1")
+        monkeypatch.setenv("SPOKE_OPERATOR_PING_EVENTS_PATH", str(event_log))
+        d = _make_delegate(main_module, monkeypatch)
+        d._overlay = MagicMock()
+
+        assert d._maybe_show_operator_ping_token_smoke() is True
+
+        visuals = d._overlay.show_operator_ping_token_visuals.call_args.args[0]
+        assert [visual.ping_id for visual in visuals] == ["real-ping"]
+        assert visuals[0].presentation_text == "Diaulos: Chairside Sparkwright · question"
+        d._menubar.set_status_text.assert_called_with("Chairside ping token event log")
+        assert d._tray_stack == []
+        assert d._coordination_stack.entries == []
+
 
 class TestHoldCallbacks:
     """Test _on_hold_start and _on_hold_end orchestration."""

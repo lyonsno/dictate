@@ -160,6 +160,7 @@ from .coordination_surfaces import (
     build_default_registry,
     derive_operator_ping_tokens,
     layout_operator_ping_token_visuals,
+    load_operator_ping_events_from_jsonl,
     text_surface_from_str,
 )
 from .subagents import SubagentManager, run_search_subagent_query
@@ -3396,8 +3397,38 @@ class SpokeAppDelegate(NSObject):
         """Approximate the preview overlay body for token-only visual smoke."""
         return (220.0, 220.0, 600.0, 80.0)
 
+    def _show_operator_ping_tokens_from_event_log(
+        self,
+        event_log_path: str,
+        *,
+        stack_body_frame: tuple[float, float, float, float],
+    ) -> list:
+        events = load_operator_ping_events_from_jsonl(event_log_path)
+        return self._show_operator_ping_tokens_from_events(
+            events,
+            stack_body_frame=stack_body_frame,
+        )
+
     def _maybe_show_operator_ping_token_smoke(self) -> bool:
         """Show a sample Chairside token when explicit smoke env is enabled."""
+        stack_body_frame = self._operator_ping_token_smoke_frame()
+        event_log_path = os.environ.get("SPOKE_OPERATOR_PING_EVENTS_PATH", "").strip()
+        if event_log_path:
+            try:
+                visuals = self._show_operator_ping_tokens_from_event_log(
+                    event_log_path,
+                    stack_body_frame=stack_body_frame,
+                )
+            except (OSError, ValueError) as exc:
+                logger.warning("Chairside ping token event log unreadable: %s", exc)
+                if self._menubar is not None:
+                    self._menubar.set_status_text("Chairside ping token event log unreadable")
+            else:
+                if visuals:
+                    if self._menubar is not None:
+                        self._menubar.set_status_text("Chairside ping token event log")
+                    return True
+
         value = os.environ.get("SPOKE_OPERATOR_PING_TOKEN_SMOKE", "")
         if value in {"", "0", "false", "False", "no", "off"}:
             return False
@@ -3424,7 +3455,7 @@ class SpokeAppDelegate(NSObject):
         }
         self._show_operator_ping_tokens_from_events(
             [event],
-            stack_body_frame=self._operator_ping_token_smoke_frame(),
+            stack_body_frame=stack_body_frame,
         )
         if self._menubar is not None:
             self._menubar.set_status_text("Chairside ping token smoke")
