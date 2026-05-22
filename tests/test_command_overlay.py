@@ -1389,17 +1389,41 @@ class TestOpticalShellMaterialization:
         assert start["content_width_points"] == pytest.approx(
             start["content_height_points"]
         )
-        old_diameter = min(
-            base["content_width_points"] * 0.52,
-            base["content_height_points"] * 2.9,
+        assert start["content_width_points"] == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_RADIAL_PUCKER_DIAMETER_POINTS
         )
-        assert start["content_width_points"] >= old_diameter * math.sqrt(10.0)
         assert start["scar_amount"] > 0.0
         assert rebound["scar_amount"] < 0.0
         assert abs(rebound["scar_amount"]) > abs(start["scar_amount"])
         assert abs(rest["scar_amount"]) < 0.02
         assert start["cleanup_blur_radius_points"] == pytest.approx(0.0)
         assert start["mip_blur_strength"] == pytest.approx(0.0)
+
+    def test_radial_pucker_tail_uses_size_invariant_local_diameter(
+        self, mock_pyobjc
+    ):
+        mod = importlib.import_module("spoke.command_overlay")
+        small = {
+            "content_width_points": 360.0,
+            "content_height_points": 80.0,
+            "corner_radius_points": 20.0,
+        }
+        large = {
+            "content_width_points": 1800.0,
+            "content_height_points": 260.0,
+            "corner_radius_points": 48.0,
+        }
+
+        small_config = mod._dismiss_pucker_shell_config(small, 0.0)
+        large_config = mod._dismiss_pucker_shell_config(large, 0.0)
+
+        assert small_config["content_width_points"] == pytest.approx(
+            large_config["content_width_points"]
+        )
+        assert small_config["content_height_points"] == pytest.approx(
+            large_config["content_height_points"]
+        )
+        assert large_config["content_width_points"] < large["content_width_points"] * 0.35
 
     def test_reverse_materialization_hides_local_layers_before_compositor_seed(
         self, mock_pyobjc

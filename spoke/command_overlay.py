@@ -129,7 +129,10 @@ _DISMISS_SEAM_CLIENT_ID = "assistant.command.dismiss_seam"
 _DISMISS_RADIAL_PUCKER_CLIENT_ID = "assistant.command.dismiss_radial_pucker"
 _SEAM_PUCKER_TUNING_CLIENT_ID = "assistant.seam_pucker_tuner"
 _OPTICAL_MATERIALIZATION_RADIAL_PUCKER_INTENSITY = 0.25
-_OPTICAL_MATERIALIZATION_RADIAL_AREA_MULTIPLIER = 10.0
+_OPTICAL_MATERIALIZATION_RADIAL_PUCKER_DIAMETER_POINTS = _env(
+    "SPOKE_COMMAND_OPTICAL_RADIAL_PUCKER_DIAMETER_POINTS",
+    360.0,
+)
 _OPTICAL_MATERIALIZATION_PUCKER_DIAGNOSTIC_GAIN = 5.0
 _OPTICAL_MATERIALIZATION_PUCKER_GAIN_PEAK_AT = 0.30
 _OPTICAL_MATERIALIZATION_RADIAL_CYCLES = 2.35
@@ -1077,11 +1080,8 @@ def _apply_dismiss_radial_pucker_fields(config: dict, progress: float) -> dict:
 
 def _dismiss_pucker_shell_config(shell_config: dict, progress: float) -> dict:
     """Return the radial underdamped scar that releases after dismiss closes."""
-    base_w = max(float(shell_config.get("content_width_points", 1.0)), 1.0)
-    base_h = max(float(shell_config.get("content_height_points", 1.0)), 1.0)
     config = _materialized_optical_shell_config(shell_config, 0.0)
-    base_diameter = max(560.0, min(base_w * 0.52, base_h * 2.9))
-    diameter = base_diameter * math.sqrt(_OPTICAL_MATERIALIZATION_RADIAL_AREA_MULTIPLIER)
+    diameter = max(_OPTICAL_MATERIALIZATION_RADIAL_PUCKER_DIAMETER_POINTS, 48.0)
     config["content_width_points"] = diameter
     config["content_height_points"] = diameter
     config["corner_radius_points"] = diameter * 0.5
