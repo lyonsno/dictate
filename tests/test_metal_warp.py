@@ -80,6 +80,21 @@ def test_pack_warp_params_uses_shell_specific_mip_blur_strength():
     assert values[20] == pytest.approx(0.0)
 
 
+def test_metal_shader_ramps_band_to_flat_max_mip_without_global_flat_sample():
+    source = metal_warp._metal_shader_source()
+    blur_block = source.split("// In the band: mip ramps", 1)[1].split(
+        "// Temporal accumulation:",
+        1,
+    )[0]
+
+    assert "float maxMipLod = 6.0f;" in blur_block
+    assert "float bandMipLod = easedT * maxMipLod + warpAliasBias;" in blur_block
+    assert "float bandMipLod = easedT * 4.0f + warpAliasBias;" not in blur_block
+    assert "flatNormPt" not in blur_block
+    assert "float4 flatColor = inTexture.sample(mipSampler, normPt, level(maxMipLod));" in blur_block
+    assert "effectiveMaxMipLod" not in blur_block
+
+
 def test_pack_warp_params_uses_shell_specific_scar_mode_controls():
     payload = metal_warp._pack_warp_params(
         1440.0,

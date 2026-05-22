@@ -170,7 +170,7 @@ struct WarpParams {{
     float exteriorMixWidth; // width of the exterior onset band in pixels
     float xSqueeze;
     float ySqueeze;
-    float mipBlurStrength; // 0 = crisp level-0 sampling, 1 = material blur LOD
+    float mipBlurStrength; // transition-band blur strength; deep interior stays flat max-mip
     float warpMode; // 0 = material shell, 1 = seam-tension scar
     float scarAmount; // signed: positive pinches inward, negative rebounds outward
     float scarSeamLengthFrac; // normalized half-length before horizontal falloff
@@ -464,6 +464,10 @@ kernel void opticalShellWarp(
     //     Mip ramps from 0→max with ease-in/ease-out, and the sampled color
     //     lerps toward the flat interior average.
     //   Interior (everything past the band): flat average color from max mip.
+    //     This is deliberate: the center should read as material spreading
+    //     around the shell, not as a magnifying lens over live screen detail.
+    //     mipBlurStrength controls the transition/scar band only; do not use
+    //     it to reintroduce crisp sampling in the flat interior.
     //
     // The band width is narrow and the easing makes it read as a designed
     // material edge rather than an artifact of the blur kernel.
@@ -486,10 +490,12 @@ kernel void opticalShellWarp(
         {_WARP_ALIAS_MIP_BIAS_MAX}f
     );
 
-    // In the band: mip ramps from 0 (at the edge) toward a medium level.
+    // In the band: mip ramps from 0 (at the edge) all the way to max mip.
+    // Reaching the same LOD as the flat interior before the blend completes
+    // prevents a visible square-ish mip step at the band/interior boundary.
     // Past the band: jump to max mip (flat average).
-    float bandMipLod = easedT * 4.0f + warpAliasBias;
     float maxMipLod = 6.0f;
+    float bandMipLod = easedT * maxMipLod + warpAliasBias;
     float mipLod = (bandT < 1.0f)
         ? clamp(bandMipLod, 0.0f, maxMipLod)
         : maxMipLod;
