@@ -1610,6 +1610,11 @@ class TranscriptionOverlay(NSObject):
             wrapper.addSubview_(pill)
             self._operator_ping_token_views.append(pill)
 
+        if visuals:
+            self._visible = True
+            self._window.setAlphaValue_(1.0)
+            self._window.orderFrontRegardless()
+
     def show_tray(self, text: str, *, owner: str = "user") -> None:
         """Show the tray overlay with the given text.
 

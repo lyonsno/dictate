@@ -76,6 +76,34 @@ def _make_delegate(main_module, monkeypatch):
     return delegate
 
 
+class TestOperatorPingTokenSmokeHook:
+    def test_smoke_hook_is_quiet_without_env(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+        d._overlay = MagicMock()
+
+        assert d._maybe_show_operator_ping_token_smoke() is False
+
+        d._overlay.show_operator_ping_token_visuals.assert_not_called()
+        assert d._tray_stack == []
+        assert d._coordination_stack.entries == []
+
+    def test_smoke_hook_projects_sample_ping_to_visible_overlay(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_OPERATOR_PING_TOKEN_SMOKE", "1")
+        d = _make_delegate(main_module, monkeypatch)
+        d._overlay = MagicMock()
+
+        assert d._maybe_show_operator_ping_token_smoke() is True
+
+        visuals = d._overlay.show_operator_ping_token_visuals.call_args.args[0]
+        assert [visual.ping_id for visual in visuals] == ["chairside-smoke"]
+        assert visuals[0].presentation_text == "Diaulos: Chairside Sparkwright · smoke"
+        assert visuals[0].anchor == "operator_stack_body"
+        assert d._tray_stack == []
+        assert d._coordination_stack.entries == []
+
+
 class TestHoldCallbacks:
     """Test _on_hold_start and _on_hold_end orchestration."""
 

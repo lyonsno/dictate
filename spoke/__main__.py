@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import faulthandler
 import json
 import logging
@@ -1255,6 +1255,7 @@ class SpokeAppDelegate(NSObject):
         self._overlay = TranscriptionOverlay.alloc().initWithScreen_(None)
         self._overlay.setup()
         self._overlay.set_compositor_registry(self._overlay_compositor_registry)
+        self._maybe_show_operator_ping_token_smoke()
 
         # Command output overlay — separate surface for command responses
         if self._command_client is not None:
@@ -3390,6 +3391,44 @@ class SpokeAppDelegate(NSObject):
         if callable(presenter):
             presenter(visuals)
         return visuals
+
+    def _operator_ping_token_smoke_frame(self) -> tuple[float, float, float, float]:
+        """Approximate the preview overlay body for token-only visual smoke."""
+        return (220.0, 220.0, 600.0, 80.0)
+
+    def _maybe_show_operator_ping_token_smoke(self) -> bool:
+        """Show a sample Chairside token when explicit smoke env is enabled."""
+        value = os.environ.get("SPOKE_OPERATOR_PING_TOKEN_SMOKE", "")
+        if value in {"", "0", "false", "False", "no", "off"}:
+            return False
+
+        event = {
+            "kind": "operator_ping.created",
+            "event_id": "epistaxis.event.v1:operator_ping.created:spoke:chairside-smoke",
+            "source_tool": "epistaxis ping-operator",
+            "operator_ping": {
+                "ping_id": "chairside-smoke",
+                "created_at": datetime.now(timezone.utc)
+                .isoformat(timespec="seconds")
+                .replace("+00:00", "Z"),
+                "diaulos": "Chairside Sparkwright",
+                "message": os.environ.get(
+                    "SPOKE_OPERATOR_PING_TOKEN_SMOKE_MESSAGE",
+                    "Chairside visible token smoke",
+                ),
+                "reason_token": os.environ.get(
+                    "SPOKE_OPERATOR_PING_TOKEN_SMOKE_REASON_TOKEN",
+                    "smoke",
+                ),
+            },
+        }
+        self._show_operator_ping_tokens_from_events(
+            [event],
+            stack_body_frame=self._operator_ping_token_smoke_frame(),
+        )
+        if self._menubar is not None:
+            self._menubar.set_status_text("Chairside ping token smoke")
+        return True
 
     def _show_tray_current(self, *, acknowledge: bool = False) -> None:
         """Update the tray overlay to display the current stack entry."""
