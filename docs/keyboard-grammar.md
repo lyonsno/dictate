@@ -52,7 +52,6 @@ the middle of an active hold:
 | Gesture | Result |
 |---|---|
 | Shift tap while idle | Toggle TTS audibility |
-| Double-tap Shift while idle | Toggle Terror Form HUD |
 | Space + Delete (while assistant overlay is visible) | **Cancel generation / end assistant turn.** Stops the current streamed response and dismisses or freezes the command overlay. |
 
 ## Disposition at release

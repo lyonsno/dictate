@@ -280,7 +280,6 @@ spoke/
 ├── command_overlay.py    # assistant overlay
 ├── overlay.py            # live transcription overlay
 ├── glow.py               # screen-edge glow
-├── terraform_hud.py      # smoke-status HUD
 ├── menubar.py            # status item and menu
 └── tool_dispatch.py      # local tool execution surface
 ```

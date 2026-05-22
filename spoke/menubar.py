@@ -87,7 +87,6 @@ class MenuBarIcon(NSObject):
             return None
         self._on_quit = on_quit
         self._on_select_model = on_select_model
-        self._on_toggle_terraform = None
         self._on_toggle_preview_warp = None
         self._on_toggle_seam_pucker = None
         self._on_toggle_handsfree = None

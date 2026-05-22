@@ -214,9 +214,9 @@ That badge is the fastest truth surface when the same box can launch `main`,
 
 ## Smoke-Surface Runtime Affordances
 
-On local smoke surfaces, the menubar exposes launch-target switching,
-source/branch visibility, and the status HUD (`Terror Form`) so you can
-confirm which runtime surface is actually live.
+On local smoke surfaces, the menubar exposes launch-target switching and
+source/branch visibility so you can confirm which runtime surface is actually
+live.
 
 Those affordances are intentionally documented here rather than in the public
 README because they are operator/runtime tools, not part of the normal product

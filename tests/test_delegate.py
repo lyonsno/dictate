@@ -199,7 +199,6 @@ class TestHoldCallbacks:
         d = _make_delegate(main_module, monkeypatch)
         d._handsfree = MagicMock()
         d._handsfree.is_active = True
-        d._terraform_hud = MagicMock()
 
         with patch.object(main_module.NSApp, "terminate_") as terminate:
             d._quit()
@@ -3303,7 +3302,6 @@ class TestRuntimePhaseLogging:
 
         menubar = MagicMock()
         menubar.setup = MagicMock()
-        menubar._on_toggle_terraform = None
         glow = MagicMock()
         glow.setup = MagicMock()
         overlay = MagicMock()
@@ -3320,8 +3318,6 @@ class TestRuntimePhaseLogging:
             import sys
             sys.modules["spoke.command_overlay"] = MagicMock()
             sys.modules["spoke.command_overlay"].CommandOverlay.alloc.return_value.initWithScreen_.return_value = command_overlay
-            sys.modules["spoke.terraform_hud"] = MagicMock()
-            sys.modules["spoke.terraform_hud"].TerraformHUD.alloc.return_value.init.return_value = MagicMock()
             sys.modules["spoke.preview_warp_hud"] = MagicMock()
             sys.modules["spoke.preview_warp_hud"].PreviewWarpHUD.alloc.return_value.initWithOverlay_.return_value = MagicMock()
 
@@ -3366,8 +3362,6 @@ class TestRuntimePhaseLogging:
             import sys
             sys.modules["spoke.command_overlay"] = MagicMock()
             sys.modules["spoke.command_overlay"].CommandOverlay.alloc.return_value.initWithScreen_.return_value = command_overlay
-            sys.modules["spoke.terraform_hud"] = MagicMock()
-            sys.modules["spoke.terraform_hud"].TerraformHUD.alloc.return_value.init.return_value = MagicMock()
             sys.modules["spoke.preview_warp_hud"] = MagicMock()
             sys.modules["spoke.preview_warp_hud"].PreviewWarpHUD.alloc.return_value.initWithOverlay_.return_value = preview_warp_hud
 
@@ -3389,7 +3383,6 @@ class TestRuntimePhaseLogging:
 
         menubar = MagicMock()
         menubar.setup = MagicMock()
-        menubar._on_toggle_terraform = None
         overlay = MagicMock()
         overlay.setup = MagicMock()
         command_overlay = MagicMock()
@@ -3422,7 +3415,6 @@ class TestRuntimePhaseLogging:
             d.applicationDidFinishLaunching_(None)
 
         assert not hasattr(d, "_terraform_hud")
-        assert getattr(menubar, "_on_toggle_terraform", None) is None
 
     def test_refresh_command_model_options_async_spawns_background_thread(
         self, main_module, monkeypatch

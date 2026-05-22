@@ -355,7 +355,6 @@ class TestMenuBarIcon:
         icon._on_quit = MagicMock()
         icon._on_select_model = None
         icon._on_toggle_handsfree = None
-        icon._on_toggle_terraform = None
         icon._on_toggle_preview_warp = MagicMock()
         icon._status_item = None
         icon._idle_image = None
@@ -366,34 +365,6 @@ class TestMenuBarIcon:
         calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
         assert any(
             call.args == ("Preview Warp Tuner", "togglePreviewWarp:", "w")
-            for call in calls
-        )
-
-    def test_build_menu_never_shows_terraform_toggle(self, menubar_module):
-        AppKit = __import__("AppKit")
-
-        status_item_menu_holder = MagicMock(name="status_item_holder")
-        status_item_menu_holder.button.return_value = MagicMock()
-        AppKit.NSStatusBar.systemStatusBar.return_value.statusItemWithLength_.return_value = (
-            status_item_menu_holder
-        )
-
-        icon = menubar_module.MenuBarIcon.__new__(menubar_module.MenuBarIcon)
-        icon._on_quit = MagicMock()
-        icon._on_select_model = None
-        icon._on_toggle_handsfree = None
-        icon._on_toggle_terraform = MagicMock()
-        icon._on_toggle_preview_warp = None
-        icon._on_toggle_seam_pucker = None
-        icon._status_item = None
-        icon._idle_image = None
-        icon._recording_image = None
-
-        icon.setup()
-
-        calls = AppKit.NSMenuItem.alloc.return_value.initWithTitle_action_keyEquivalent_.call_args_list
-        assert not any(
-            call.args == ("Terror Form", "toggleTerraform:", "t")
             for call in calls
         )
 
@@ -410,7 +381,6 @@ class TestMenuBarIcon:
         icon._on_quit = MagicMock()
         icon._on_select_model = None
         icon._on_toggle_handsfree = None
-        icon._on_toggle_terraform = None
         icon._on_toggle_preview_warp = None
         icon._on_toggle_seam_pucker = MagicMock()
         icon._status_item = None

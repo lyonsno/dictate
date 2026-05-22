@@ -14,4 +14,4 @@ public_readme = "omit"
 reason = "Smoke-only launch-target and HUD affordances belong on the local operator surface rather than in the public README."
 revisit_when = "Revisit if these affordances become part of ordinary end-user workflow instead of smoke/runtime verification."
 canonical_markers = ["Smoke-Surface Runtime Affordances"]
-public_readme_absent_markers = ["launch-target switching", "source/branch visibility", "Terror Form"]
+public_readme_absent_markers = ["launch-target switching", "source/branch visibility"]
