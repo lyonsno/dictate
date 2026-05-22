@@ -487,13 +487,14 @@ kernel void opticalShellWarp(
     );
 
     // In the band: mip ramps from 0 (at the edge) toward a medium level.
-    // Past the band: jump to max mip (flat average).
+    // Past the band: jump to the caller-selected flat interior blur depth.
     float bandMipLod = easedT * 4.0f + warpAliasBias;
     float maxMipLod = 6.0f;
+    float effectiveMipBlurStrength = clamp(params.mipBlurStrength, 0.0f, 1.0f);
+    float effectiveMaxMipLod = maxMipLod * effectiveMipBlurStrength;
     float mipLod = (bandT < 1.0f)
-        ? clamp(bandMipLod, 0.0f, maxMipLod)
-        : maxMipLod;
-    mipLod *= clamp(params.mipBlurStrength, 0.0f, 1.0f);
+        ? clamp(bandMipLod, 0.0f, maxMipLod) * effectiveMipBlurStrength
+        : effectiveMaxMipLod;
 
     float2 samplePt = clamp(result, float2(0.5f), float2(params.width - 0.5f, params.height - 0.5f));
     float2 normPt = samplePt / float2(params.width, params.height);
@@ -506,8 +507,8 @@ kernel void opticalShellWarp(
         bandColor = inTexture.sample(mipSampler, normPt, level(mipLod));
     }}
 
-    // Sample the flat interior average (max mip — one cached texel)
-    float4 flatColor = inTexture.sample(mipSampler, normPt, level(maxMipLod));
+    // Sample the flat interior average at the caller-selected material blur depth.
+    float4 flatColor = inTexture.sample(mipSampler, normPt, level(effectiveMaxMipLod));
 
     // In the band, lerp from the mipped sample toward the flat average.
     // At the outer edge (easedT=0): pure crisp warped sample.
