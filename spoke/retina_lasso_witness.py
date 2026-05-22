@@ -19,6 +19,7 @@ DEFAULT_DIAULOS = "Warpstorm Pit Boss"
 DEFAULT_SOURCE_APP = "Spoke"
 DEFAULT_SOURCE_WINDOW = "Command Overlay"
 INDEX_NAME = "witness-index.json"
+FILMSTRIP_NAME = "filmstrip.png"
 SPACEBAR_KEYCODE = 49
 RETURN_KEYCODE = 36
 
@@ -191,6 +192,7 @@ def write_witness_index(
     trace_events: list[dict[str, Any]],
     manifest_name: str = "manifest.json",
     stimulus: dict[str, Any] | None = None,
+    filmstrip_path: str | Path | None = None,
 ) -> Path:
     output = Path(output_dir).expanduser()
     manifest_path = output / manifest_name
@@ -207,6 +209,7 @@ def write_witness_index(
         "frame_count": len((manifest or {}).get("frames", [])),
         "trace_event_count": len(trace_events),
         "trace_events": trace_events,
+        "filmstrip": str(filmstrip_path) if filmstrip_path is not None else None,
         "command": list(command),
         "stimulus": stimulus or {},
         "uncertainty": [
@@ -218,6 +221,117 @@ def write_witness_index(
     index_path = output / INDEX_NAME
     index_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return index_path
+
+
+def _manifest_frame_entries(manifest: dict[str, Any]) -> list[Any]:
+    for key in ("frames", "captures", "images"):
+        value = manifest.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def _frame_path_from_manifest_entry(output_dir: Path, entry: Any) -> Path | None:
+    raw: str | None = None
+    if isinstance(entry, str):
+        raw = entry
+    elif isinstance(entry, dict):
+        for key in ("path", "image_path", "file_path", "filename", "file", "image"):
+            value = entry.get(key)
+            if isinstance(value, str) and value:
+                raw = value
+                break
+    if raw is None:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = output_dir / path
+    return path
+
+
+def _sample_evenly(items: Sequence[Path], max_items: int) -> list[Path]:
+    if max_items <= 0:
+        raise ValueError("max_items must be positive")
+    if len(items) <= max_items:
+        return list(items)
+    if max_items == 1:
+        return [items[0]]
+    last = len(items) - 1
+    indexes = {
+        int(round(i * last / float(max_items - 1)))
+        for i in range(max_items)
+    }
+    return [items[i] for i in sorted(indexes)]
+
+
+def build_filmstrip_from_manifest(
+    *,
+    output_dir: str | Path,
+    manifest_name: str = "manifest.json",
+    output_name: str = FILMSTRIP_NAME,
+    max_frames: int = 24,
+    columns: int = 8,
+    thumb_width: int = 360,
+    gutter: int = 8,
+    label_height: int = 22,
+) -> Path | None:
+    """Build a sampled visual filmstrip from Retina Lasso capture frames."""
+    output = Path(output_dir).expanduser()
+    manifest_path = output / manifest_name
+    if not manifest_path.exists():
+        return None
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    frame_paths = [
+        path
+        for entry in _manifest_frame_entries(manifest)
+        if (path := _frame_path_from_manifest_entry(output, entry)) is not None
+        and path.exists()
+    ]
+    if not frame_paths:
+        return None
+
+    from PIL import Image, ImageDraw
+
+    selected = _sample_evenly(frame_paths, max_frames)
+    thumbs: list[tuple[Path, Image.Image]] = []
+    for path in selected:
+        image = Image.open(path).convert("RGB")
+        scale = min(1.0, max(float(thumb_width), 1.0) / max(float(image.width), 1.0))
+        size = (
+            max(1, int(round(image.width * scale))),
+            max(1, int(round(image.height * scale))),
+        )
+        thumbs.append((path, image.resize(size, Image.Resampling.LANCZOS)))
+
+    columns = max(1, int(columns))
+    rows = int(math.ceil(len(thumbs) / float(columns)))
+    cell_w = max(image.width for _, image in thumbs)
+    cell_h = max(image.height for _, image in thumbs) + max(label_height, 0)
+    canvas = Image.new(
+        "RGB",
+        (
+            columns * cell_w + (columns + 1) * gutter,
+            rows * cell_h + (rows + 1) * gutter,
+        ),
+        (18, 18, 20),
+    )
+    draw = ImageDraw.Draw(canvas)
+    for idx, (path, image) in enumerate(thumbs):
+        col = idx % columns
+        row = idx // columns
+        x = gutter + col * (cell_w + gutter)
+        y = gutter + row * (cell_h + gutter)
+        canvas.paste(image, (x, y + label_height))
+        if label_height > 0:
+            draw.text(
+                (x, y + 3),
+                f"{idx + 1:02d}/{len(frame_paths):02d} {path.name}",
+                fill=(210, 214, 220),
+            )
+
+    filmstrip_path = output / output_name
+    canvas.save(filmstrip_path)
+    return filmstrip_path
 
 
 def run_autonomous_hammer_witness(
@@ -309,6 +423,7 @@ def run_autonomous_hammer_witness(
         ended_at=ended_at,
         command=command,
         trace_events=trace_events,
+        filmstrip_path=build_filmstrip_from_manifest(output_dir=output_dir),
         stimulus=stimulus,
     )
 
@@ -349,6 +464,7 @@ def run_witness_window(
         ended_at=ended_at,
         command=command,
         trace_events=trace_events,
+        filmstrip_path=build_filmstrip_from_manifest(output_dir=output_dir),
     )
 
 
