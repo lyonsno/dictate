@@ -115,6 +115,18 @@ def _normalize_max_history(value: int) -> int | None:
     return value if value > 0 else None
 
 
+def _env_flag(name: str) -> bool | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
 def _rough_tool_result_tokens(text: str) -> int:
     """Approximate token count for a tool result."""
     return int(len(text.split()) * 1.3)
@@ -686,6 +698,20 @@ class CommandClient:
         messages.append({"role": "user", "content": utterance})
         return messages
 
+    def _supports_multimodal_tool_content(self) -> bool:
+        """Whether the current backend accepts image-bearing tool content."""
+        explicit = _env_flag("SPOKE_COMMAND_MULTIMODAL")
+        if explicit is not None:
+            return explicit
+        model = self._model.lower()
+        base_url = self._base_url.lower()
+        return (
+            "googleapis.com" in base_url
+            or "gemini" in model
+            or "gpt-4.1" in model
+            or "gpt-4o" in model
+        )
+
     def _normalize_tool_result(self, tool_result: Any) -> tuple[Any, str]:
         """Return (message_content, log_preview_text) for a tool result."""
         if isinstance(tool_result, dict) and "content" in tool_result:
@@ -714,6 +740,21 @@ class CommandClient:
             if part_type in {"image_url", "input_image"}:
                 image_parts.append(part)
         return image_parts
+
+    def _tool_content_without_image_parts(self, tool_content: Any) -> Any:
+        if not isinstance(tool_content, list):
+            return tool_content
+        non_image_parts = [
+            part
+            for part in tool_content
+            if not (
+                isinstance(part, dict)
+                and part.get("type") in {"image_url", "input_image"}
+            )
+        ]
+        if non_image_parts:
+            return non_image_parts
+        return "Image attached in follow-up user message."
 
     def _tool_image_bridge_message(
         self,
@@ -783,7 +824,11 @@ class CommandClient:
             "arguments": fn_args,
         }
         if self._tool_executor_supports_output_mode(tool_executor):
-            tool_kwargs["tool_output_mode"] = "multimodal"
+            tool_kwargs["tool_output_mode"] = (
+                "multimodal"
+                if self._supports_multimodal_tool_content()
+                else "text"
+            )
         if approval_granted and self._tool_executor_supports_kwarg(
             tool_executor, "approval_granted"
         ):
@@ -822,6 +867,7 @@ class CommandClient:
         turn_start_idx: int,
         approval_granted_call_id: str | None = None,
     ) -> Generator[CommandStreamEvent, None, tuple[list[dict[str, Any]], str, bool]]:
+        image_bridge_messages: list[dict[str, Any]] = []
         for idx, call in enumerate(completed_calls):
             fn_name = call["function"]["name"]
             try:
@@ -903,21 +949,26 @@ class CommandClient:
                     text=info_line,
                 )
 
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call["id"],
-                    "content": tool_content,
-                }
-            )
             image_bridge = self._tool_image_bridge_message(
                 tool_name=fn_name,
                 tool_call_id=call["id"],
                 tool_content=tool_content,
             )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call["id"],
+                    "content": (
+                        self._tool_content_without_image_parts(tool_content)
+                        if image_bridge is not None
+                        else tool_content
+                    ),
+                }
+            )
             if image_bridge is not None:
-                messages.append(image_bridge)
+                image_bridge_messages.append(image_bridge)
 
+        messages.extend(image_bridge_messages)
         return messages, visible_response, False
 
     def stream_command(

@@ -235,6 +235,22 @@ class TestCommandClient:
             {"role": "assistant", "content": "a0"},
         ]
 
+    def test_local_multimodal_tool_content_requires_explicit_env(self, monkeypatch):
+        """Local OpenAI-compatible backends stay text-only unless explicitly opted in."""
+        from spoke.command import CommandClient
+
+        monkeypatch.delenv("SPOKE_COMMAND_MULTIMODAL", raising=False)
+        client = CommandClient(
+            base_url="http://localhost:8001",
+            model="step-3p5-flash-mixedp-final",
+            api_key="key",
+            history_path=None,
+        )
+        assert client._supports_multimodal_tool_content() is False
+
+        monkeypatch.setenv("SPOKE_COMMAND_MULTIMODAL", "1")
+        assert client._supports_multimodal_tool_content() is True
+
     def test_custom_system_prompt_override(self):
         """Subagents should be able to supply a distinct system prompt."""
         from spoke.command import CommandClient
@@ -509,13 +525,7 @@ class TestStreamCommand:
         assert request_bodies[1]["messages"][-2] == {
             "role": "tool",
             "tool_call_id": "call_1",
-            "content": [
-                {"type": "text", "text": '{"scene_ref":"scene-test"}'},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,QUJD"},
-                },
-            ],
+            "content": [{"type": "text", "text": '{"scene_ref":"scene-test"}'}],
         }
         assert request_bodies[1]["messages"][-1] == {
             "role": "user",
@@ -535,11 +545,12 @@ class TestStreamCommand:
             ],
         }
 
-    def test_local_step_model_sends_multimodal_when_executor_supports_it(self):
+    def test_local_step_model_sends_multimodal_when_explicitly_enabled(self, monkeypatch):
         """Local backends should receive multimodal capture output when supported."""
         from spoke.command import CommandClient
         from spoke.tool_dispatch import get_tool_schemas
 
+        monkeypatch.setenv("SPOKE_COMMAND_MULTIMODAL", "1")
         client = CommandClient(
             base_url="http://localhost:8001",
             model="step-3p5-flash-mixedp-final",
@@ -595,13 +606,7 @@ class TestStreamCommand:
         assert request_bodies[1]["messages"][-2] == {
             "role": "tool",
             "tool_call_id": "call_1",
-            "content": [
-                {"type": "text", "text": '{"scene_ref":"scene-test"}'},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": "data:image/png;base64,QUJD"},
-                },
-            ],
+            "content": [{"type": "text", "text": '{"scene_ref":"scene-test"}'}],
         }
         assert request_bodies[1]["messages"][-1] == {
             "role": "user",
@@ -619,6 +624,136 @@ class TestStreamCommand:
                     "image_url": {"url": "data:image/png;base64,QUJD"},
                 },
             ],
+        }
+
+    def test_local_model_without_multimodal_env_sends_text_tool_output(self, monkeypatch):
+        """Text-only local backends should keep capture_context OCR/text output."""
+        from spoke.command import CommandClient
+        from spoke.tool_dispatch import get_tool_schemas
+
+        monkeypatch.delenv("SPOKE_COMMAND_MULTIMODAL", raising=False)
+        client = CommandClient(
+            base_url="http://localhost:8001",
+            model="qwen3-14b",
+            api_key="key",
+        )
+
+        tool_round_chunks = [
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "id": "call_1", "type": "function",
+                 "function": {"name": "capture_context", "arguments": ""}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"scope":"active_window"}'}}
+            ]}}]},
+            {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+        ]
+        final_chunks = [self._content_chunk("Done.")]
+        first_resp = _make_sse_response(tool_round_chunks)
+        second_resp = _make_sse_response(final_chunks)
+        request_bodies = []
+        tool_calls = []
+
+        def fake_urlopen(req, timeout=None):
+            request_bodies.append(json.loads(req.data))
+            return first_resp if len(request_bodies) == 1 else second_resp
+
+        def tool_executor(**kwargs):
+            tool_calls.append(kwargs)
+            return '{"scene_ref":"scene-test","ocr_blocks":[{"text":"hello"}]}'
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            list(
+                client.stream_command_events(
+                    "read this",
+                    tools=get_tool_schemas(),
+                    tool_executor=tool_executor,
+                )
+            )
+
+        assert tool_calls[0]["tool_output_mode"] == "text"
+        assert request_bodies[1]["messages"][-1] == {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": '{"scene_ref":"scene-test","ocr_blocks":[{"text":"hello"}]}',
+        }
+
+    def test_image_bridge_waits_until_all_tool_messages_and_deduplicates_payload(self):
+        """Bridge images after the tool sequence without copying bytes into tool content."""
+        from spoke.command import CommandClient
+
+        client = CommandClient(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            model="gemini-2.5-flash",
+            api_key="key",
+            history_path=None,
+        )
+        completed_calls = [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "capture_context", "arguments": "{}"},
+            },
+            {
+                "id": "call_2",
+                "type": "function",
+                "function": {"name": "search_file", "arguments": "{}"},
+            },
+        ]
+        messages = [
+            {"role": "user", "content": "check it"},
+            {"role": "assistant", "content": None, "tool_calls": completed_calls},
+        ]
+
+        def tool_executor(**kwargs):
+            if kwargs["name"] == "capture_context":
+                return {
+                    "content": [
+                        {"type": "text", "text": '{"scene_ref":"scene-test"}'},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,QUJD"},
+                        },
+                    ],
+                    "log_text": '{"scene_ref":"scene-test","model_image_size":[1707,960]}',
+                }
+            return '{"matches":[]}'
+
+        gen = client._execute_tool_calls(
+            utterance="check it",
+            messages=messages,
+            visible_response="",
+            completed_calls=completed_calls,
+            tool_executor=tool_executor,
+            round_index=0,
+            tools=[],
+            turn_start_idx=0,
+        )
+        try:
+            while True:
+                next(gen)
+        except StopIteration as stop:
+            updated_messages, _, pending = stop.value
+
+        assert pending is False
+        assert [message["role"] for message in updated_messages[-3:]] == [
+            "tool",
+            "tool",
+            "user",
+        ]
+        assert updated_messages[-3] == {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": [{"type": "text", "text": '{"scene_ref":"scene-test"}'}],
+        }
+        assert updated_messages[-2] == {
+            "role": "tool",
+            "tool_call_id": "call_2",
+            "content": '{"matches":[]}',
+        }
+        assert updated_messages[-1]["content"][1] == {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,QUJD"},
         }
 
     def test_stream_tool_round_accepts_legacy_tool_executor_signature(self):
