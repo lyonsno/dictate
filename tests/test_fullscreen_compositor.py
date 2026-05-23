@@ -1261,6 +1261,7 @@ def test_fullscreen_compositor_visual_ledger_suppresses_steady_frame_chatter(mon
         compositor._visual_ledger_present_trace_reason(
             frame_generation=10,
             config_generation=5,
+            config_semantic_key=None,
             presented_count=44,
             was_first=False,
             present_frame_ms=5.0,
@@ -1271,6 +1272,93 @@ def test_fullscreen_compositor_visual_ledger_suppresses_steady_frame_chatter(mon
     )
 
     assert traces == []
+
+
+def test_fullscreen_compositor_visual_ledger_summarizes_multi_config_presentations(monkeypatch):
+    import spoke.fullscreen_compositor as fullscreen_compositor
+
+    configs = [
+        {
+            "client_id": "assistant.command",
+            "role": "assistant",
+            "generation": 11,
+            "presentation_generation": 8,
+            "presentation_requested_state": "opening",
+            "presentation_publisher_state": "compositor_configured",
+            "materialization_progress": 0.72,
+            "text_mask_progress": 0.9,
+        },
+        {
+            "client_id": "assistant.command.dismiss_radial_pucker",
+            "role": "assistant",
+            "generation": 3,
+            "presentation_generation": 8,
+            "presentation_requested_state": "closing",
+            "materialization_progress": 0.22,
+        },
+        {
+            "client_id": "preview.transcription",
+            "role": "preview",
+            "generation": 41,
+            "presentation_generation": 2,
+            "presentation_requested_state": "opening",
+            "materialization_progress": 1.0,
+        },
+    ]
+
+    summary = fullscreen_compositor._visual_ledger_config_summary(configs)
+
+    assert summary["shell_config_count"] == 3
+    assert summary["client_ids"] == [
+        "assistant.command",
+        "assistant.command.dismiss_radial_pucker",
+        "preview.transcription",
+    ]
+    assert summary["client_roles"] == ["assistant", "assistant", "preview"]
+    assert summary["presentation_generations"] == [8, 8, 2]
+    assert summary["presentation_requested_states"] == ["opening", "closing", "opening"]
+    assert summary["materialization_progress_min"] == pytest.approx(0.22)
+    assert summary["materialization_progress_max"] == pytest.approx(1.0)
+    assert summary["text_mask_progress_min"] == pytest.approx(0.9)
+    assert summary["text_mask_progress_max"] == pytest.approx(0.9)
+
+
+def test_fullscreen_compositor_visual_ledger_does_not_log_every_materialization_step(monkeypatch):
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    monkeypatch.delenv("SPOKE_VISUAL_LEDGER_FRAME_MODE", raising=False)
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._visual_ledger_last_present_trace_at = 100.0
+    compositor._visual_ledger_last_present_config_generation = 5
+    compositor._visual_ledger_last_present_semantic_key = (
+        ("assistant.command",),
+        ("assistant",),
+        (8,),
+        ("opening",),
+        ("compositor_configured",),
+        1,
+    )
+
+    assert (
+        compositor._visual_ledger_present_trace_reason(
+            frame_generation=42,
+            config_generation=6,
+            config_semantic_key=(
+                ("assistant.command",),
+                ("assistant",),
+                (8,),
+                ("opening",),
+                ("compositor_configured",),
+                1,
+            ),
+            presented_count=44,
+            was_first=False,
+            present_frame_ms=5.0,
+            warp_to_drawable_ms=0.2,
+            now=100.1,
+        )
+        is None
+    )
 
 
 def test_fullscreen_compositor_visual_ledger_full_frame_mode_keeps_steady_frames(monkeypatch):

@@ -1618,6 +1618,41 @@ class TestOpticalShellMaterialization:
         assert events["overlay.material.publish"]["presentation_generation"] == 12
         assert events["overlay.material.publish"]["presentation_acknowledged"] is True
 
+    def test_optical_presentation_trace_names_early_text_anomaly(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        traces = []
+        monkeypatch.setattr(
+            mod,
+            "record_command_overlay_trace",
+            lambda event, **fields: traces.append((event, fields)),
+        )
+        overlay._visible = True
+        overlay._window.isVisible.return_value = True
+        overlay._scroll_view.isHidden.return_value = False
+        overlay._scroll_view.alphaValue.return_value = 1.0
+        overlay._materialization_progress = 0.0
+        overlay._optical_presentation_generation = 4
+        overlay._requested_optical_presentation_state = "opening"
+        overlay._committed_optical_publisher_state = "compositor_configured"
+        overlay._optical_compositor_config_generation = 4
+        overlay._optical_presentation_ack_generation = 4
+        compositor = MagicMock()
+        compositor.presented_count = 1
+        overlay._fullscreen_compositor = compositor
+
+        overlay._record_optical_presentation_trace("overlay.show.end")
+
+        events = {event: fields for event, fields in traces}
+        assert events["overlay.show.end"]["presentation_text_state"] == "visible"
+        assert events["overlay.show.end"]["presentation_body_state"] == "slit"
+        assert events["overlay.presentation.contract_anomaly"][
+            "anomaly"
+        ] == "text_visible_before_body_ready"
+        assert events["overlay.presentation.contract_anomaly"]["source_event"] == "overlay.show.end"
+        assert events["overlay.presentation.contract_anomaly"]["presentation_generation"] == 4
+
     def test_gpu_material_is_disabled_by_default_for_smoke_stability(
         self, mock_pyobjc, monkeypatch
     ):

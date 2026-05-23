@@ -2077,6 +2077,23 @@ class CommandOverlay(NSObject):
             presentation_acknowledged=acknowledged,
         )
 
+    def _record_optical_presentation_trace(self, event: str, **fields) -> None:
+        bundle = self._optical_presentation_frame_bundle()
+        trace_fields = bundle.to_trace_fields()
+        trace_fields.update(fields)
+        record_command_overlay_trace(event, **trace_fields)
+        if (
+            bundle.requested_state == "opening"
+            and bundle.text_publication_state == "visible"
+            and bundle.body_publication_state in {"slit", "materializing"}
+        ):
+            record_command_overlay_trace(
+                "overlay.presentation.contract_anomaly",
+                anomaly="text_visible_before_body_ready",
+                source_event=event,
+                **bundle.to_trace_fields(),
+            )
+
     def _acknowledge_current_optical_presentation(self) -> None:
         compositor = getattr(self, "_fullscreen_compositor", None)
         generation = self._current_optical_presentation_generation()
@@ -2473,14 +2490,13 @@ class CommandOverlay(NSObject):
             return
         self._begin_optical_presentation_generation("opening")
         self._quarantine_appkit_presentation_for_optical_retarget()
-        record_command_overlay_trace(
+        self._record_optical_presentation_trace(
             "overlay.show.begin",
             was_visible=bool(getattr(self, "_visible", False)),
             had_compositor=getattr(self, "_fullscreen_compositor", None) is not None,
             dismiss_reversal_progress=self._optical_dismiss_reversal_progress(),
             initial_utterance=bool(initial_utterance),
             initial_response=bool(initial_response),
-            **self._optical_presentation_frame_bundle().to_trace_fields(),
         )
         dismiss_reversal_progress = self._optical_dismiss_reversal_progress()
         summon_retarget_progress = None
@@ -2618,14 +2634,13 @@ class CommandOverlay(NSObject):
             and getattr(self, "_fullscreen_compositor", None) is None
         ):
             self._start_backdrop_refresh_timer()
-        record_command_overlay_trace(
+        self._record_optical_presentation_trace(
             "overlay.show.end",
             visible=bool(getattr(self, "_visible", False)),
             has_compositor=getattr(self, "_fullscreen_compositor", None) is not None,
             window_alpha=self._window.alphaValue() if self._window is not None else None,
             visual_ready_timer=getattr(self, "_visual_ready_timer", None) is not None,
             fade_timer=getattr(self, "_fade_timer", None) is not None,
-            **self._optical_presentation_frame_bundle().to_trace_fields(),
         )
 
     def set_brightness(self, brightness: float, immediate: bool = False) -> None:
@@ -3311,11 +3326,10 @@ class CommandOverlay(NSObject):
                         float(getattr(compositor, "sampled_brightness", self._brightness_target))
                     )
                     self._brightness_target = sampled_brightness
-                    record_command_overlay_trace(
+                    self._record_optical_presentation_trace(
                         "overlay.material.sample_target",
                         sampled_brightness=sampled_brightness,
                         brightness_sample_tick=sample_tick,
-                        **self._optical_presentation_frame_bundle().to_trace_fields(),
                     )
                 except Exception:
                     pass
@@ -3336,11 +3350,10 @@ class CommandOverlay(NSObject):
             if callable(updater) and abs(t - last_material_brightness) > 0.005:
                 updater("gpu_material_brightness", t)
                 self._last_gpu_material_brightness = t
-                record_command_overlay_trace(
+                self._record_optical_presentation_trace(
                     "overlay.material.publish",
                     gpu_material_brightness=t,
                     brightness_target=target,
-                    **self._optical_presentation_frame_bundle().to_trace_fields(),
                 )
         return t
 
@@ -4574,7 +4587,7 @@ class CommandOverlay(NSObject):
             self._visual_ready_brightness_synced = True
         self._entrance_started = True
         self._cancel_visual_ready_start()
-        record_command_overlay_trace(
+        self._record_optical_presentation_trace(
             "overlay.visual_ready.push",
             elapsed=time.perf_counter() - getattr(
                 self, "_visual_ready_wait_started_at", time.perf_counter()
@@ -4583,7 +4596,6 @@ class CommandOverlay(NSObject):
             materialization_progress=getattr(
                 self, "_materialization_progress", None
             ),
-            **self._optical_presentation_frame_bundle().to_trace_fields(),
         )
         self._start_entrance_animation()
 
@@ -4602,7 +4614,7 @@ class CommandOverlay(NSObject):
             "_visual_ready_wait_started_at",
             time.perf_counter(),
         )
-        record_command_overlay_trace(
+        self._record_optical_presentation_trace(
             "overlay.visual_ready.hard_deadline",
             elapsed=elapsed,
             compositor_ready=compositor_ready,
@@ -4611,7 +4623,6 @@ class CommandOverlay(NSObject):
             materialization_progress=getattr(
                 self, "_materialization_progress", None
             ),
-            **self._optical_presentation_frame_bundle().to_trace_fields(),
         )
         if compositor_ready and not self._optical_body_content_ready():
             self._cancel_visual_ready_start()
@@ -4622,13 +4633,12 @@ class CommandOverlay(NSObject):
                 )
                 self._visual_ready_brightness_synced = True
             self._enforce_compositor_window_order()
-            record_command_overlay_trace(
+            self._record_optical_presentation_trace(
                 "overlay.visual_ready.hard_deadline.body_not_ready",
                 elapsed=elapsed,
                 materialization_progress=getattr(
                     self, "_materialization_progress", None
                 ),
-                **self._optical_presentation_frame_bundle().to_trace_fields(),
             )
             return
         self._entrance_started = True

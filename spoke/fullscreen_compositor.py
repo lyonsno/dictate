@@ -59,6 +59,62 @@ def _visual_ledger_config_fields(config: Mapping[str, Any] | None) -> dict[str, 
     }
 
 
+def _visual_ledger_progress_bounds(
+    configs: list[Mapping[str, Any]],
+    key: str,
+) -> dict[str, float]:
+    values = [
+        float(value)
+        for config in configs
+        if isinstance((value := config.get(key)), int | float)
+    ]
+    if not values:
+        return {}
+    return {
+        f"{key}_min": min(values),
+        f"{key}_max": max(values),
+    }
+
+
+def _visual_ledger_config_summary(configs) -> dict[str, Any]:
+    """Return a compact summary of every shell contributing to this frame."""
+    normalized = [config for config in configs if isinstance(config, Mapping)]
+    if not normalized:
+        return {"shell_config_count": 0}
+    summary: dict[str, Any] = {
+        "shell_config_count": len(normalized),
+        "client_ids": [config.get("client_id") for config in normalized],
+        "client_roles": [config.get("role") for config in normalized],
+        "client_snapshot_generations": [
+            config.get("generation") for config in normalized
+        ],
+        "presentation_generations": [
+            config.get("presentation_generation") for config in normalized
+        ],
+        "presentation_requested_states": [
+            config.get("presentation_requested_state") for config in normalized
+        ],
+        "presentation_publisher_states": [
+            config.get("presentation_publisher_state") for config in normalized
+        ],
+    }
+    summary.update(_visual_ledger_progress_bounds(normalized, "materialization_progress"))
+    summary.update(_visual_ledger_progress_bounds(normalized, "text_mask_progress"))
+    return summary
+
+
+def _visual_ledger_semantic_key(configs) -> tuple:
+    summary = _visual_ledger_config_summary(configs)
+    return (
+        tuple(summary.get("client_ids", ())),
+        tuple(summary.get("client_roles", ())),
+        tuple(summary.get("presentation_generations", ())),
+        tuple(summary.get("presentation_requested_states", ())),
+        tuple(summary.get("presentation_publisher_states", ())),
+        summary.get("shell_config_count", 0),
+    )
+
+
 def _record_visual_ledger(event: str, config: Mapping[str, Any] | None = None, **fields) -> None:
     details = _visual_ledger_config_fields(config)
     details.update(fields)
@@ -407,6 +463,7 @@ class FullScreenCompositor:
         self._visual_ledger_last_capture_shape = None
         self._visual_ledger_last_present_trace_at = None
         self._visual_ledger_last_present_config_generation = None
+        self._visual_ledger_last_present_semantic_key = None
 
         # Brightness sampling from the captured IOSurface
         self._sampled_brightness = 0.5
@@ -445,6 +502,7 @@ class FullScreenCompositor:
         *,
         frame_generation: int,
         config_generation: int,
+        config_semantic_key: tuple | None,
         presented_count: int,
         was_first: bool,
         present_frame_ms: float,
@@ -457,7 +515,17 @@ class FullScreenCompositor:
             reason = "first_present"
         elif presented_count <= 3:
             reason = "first_frames"
-        elif config_generation != getattr(self, "_visual_ledger_last_present_config_generation", None):
+        elif (
+            config_semantic_key is not None
+            and config_semantic_key
+            != getattr(self, "_visual_ledger_last_present_semantic_key", None)
+        ):
+            reason = "config_changed"
+        elif (
+            config_semantic_key is None
+            and config_generation
+            != getattr(self, "_visual_ledger_last_present_config_generation", None)
+        ):
             reason = "config_changed"
         elif present_frame_ms >= _visual_ledger_slow_present_ms():
             reason = "slow_present"
@@ -471,6 +539,7 @@ class FullScreenCompositor:
                 return None
         self._visual_ledger_last_present_trace_at = now
         self._visual_ledger_last_present_config_generation = config_generation
+        self._visual_ledger_last_present_semantic_key = config_semantic_key
         return reason
 
     def start(self, shell_config: dict) -> bool:
@@ -551,21 +620,21 @@ class FullScreenCompositor:
         """Replace the active shell-config set."""
         normalized = _normalize_shell_configs(shell_configs)
         trace_config = None
+        trace_summary = None
         trace_generation = None
-        trace_count = 0
         with self._lock:
             if normalized == self._shell_configs:
                 return
             self._shell_configs = normalized
             self._config_generation += 1
             trace_generation = self._config_generation
-            trace_count = len(self._shell_configs)
             trace_config = dict(self._shell_configs[0]) if self._shell_configs else None
+            trace_summary = _visual_ledger_config_summary(self._shell_configs)
         _record_visual_ledger(
             "compositor.shell_configs.updated",
             trace_config,
             compositor_config_generation=trace_generation,
-            shell_config_count=trace_count,
+            **(trace_summary or {}),
         )
 
     def update_shell_config_key(self, key: str, value) -> None:
@@ -1285,6 +1354,8 @@ class FullScreenCompositor:
                 return
             if any("content_width_points" not in config or "center_x" not in config for config in warp_configs):
                 return
+            config_summary = _visual_ledger_config_summary(warp_configs)
+            config_semantic_key = _visual_ledger_semantic_key(warp_configs)
 
             if self._last_drawable_size != (w, h):
                 self._metal_layer.setDrawableSize_((w, h))
@@ -1341,6 +1412,7 @@ class FullScreenCompositor:
                 trace_reason = self._visual_ledger_present_trace_reason(
                     frame_generation=frame_generation,
                     config_generation=config_generation,
+                    config_semantic_key=config_semantic_key,
                     presented_count=self._presented_count,
                     was_first=was_first,
                     present_frame_ms=present_frame_ms,
@@ -1358,6 +1430,7 @@ class FullScreenCompositor:
                         warp_to_drawable_ms=warp_to_drawable_ms,
                         present_frame_ms=present_frame_ms,
                         trace_reason=trace_reason,
+                        **config_summary,
                     )
 
             elif self._frame_count <= 5:
