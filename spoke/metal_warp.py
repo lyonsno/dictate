@@ -232,10 +232,7 @@ float3 shellMaterialColorWithValueTarget(float3 color, float valueTarget, float 
     return clamp(color * (targetValue / currentValue), float3(0.0f), float3(1.0f));
 }}
 
-float shellMaterialAlphaForSdf(float2 p, constant WarpParams& params) {{
-    float opacity = clamp(params.gpuMaterialOpacity, 0.0f, 1.0f);
-    if (opacity <= 0.0f) return 0.0f;
-
+float shellMaterialFillSdf(float2 p, constant WarpParams& params) {{
     float baseWidth = max(params.gpuMaterialBaseWidth, params.rectWidth);
     float baseHeight = max(params.gpuMaterialBaseHeight, params.rectHeight);
     float baseRadius = params.gpuMaterialBaseCornerRadius > 0.0f
@@ -253,7 +250,26 @@ float shellMaterialAlphaForSdf(float2 p, constant WarpParams& params) {{
         max(baseHeight * 0.5f - baseRadius, 0.0f),
         baseRadius
     );
-    float fillSdf = baseSdf - max(params.gpuMaterialFillOverscan, 0.0f);
+    return baseSdf - max(params.gpuMaterialFillOverscan, 0.0f);
+}}
+
+float shellMaterialRimFactorForSdf(float fillSdf, constant WarpParams& params) {{
+    float feather = max(params.gpuMaterialFeather, 1.0f);
+    float rimWidth = max(feather * 0.16f, 10.0f);
+    float rim = 1.0f - smoothstep(0.0f, rimWidth, abs(fillSdf));
+    return clamp(rim, 0.0f, 1.0f);
+}}
+
+float3 shellMaterialSuppressChroma(float3 color, float amount) {{
+    float value = shellMaterialValueForColor(color);
+    float3 neutral = float3(value, value, value);
+    return mix(color, neutral, clamp(amount, 0.0f, 1.0f));
+}}
+
+float shellMaterialAlphaForSdf(float fillSdf, constant WarpParams& params) {{
+    float opacity = clamp(params.gpuMaterialOpacity, 0.0f, 1.0f);
+    if (opacity <= 0.0f) return 0.0f;
+
     float feather = max(params.gpuMaterialFeather, 1.0f);
     float materialScale = max(feather / 140.0f, 1.0f);
     if (fillSdf <= 0.0f) {{
@@ -277,7 +293,8 @@ float4 composeShellMaterial(float4 warpedColor, float2 p, constant WarpParams& p
     if (params.gpuMaterialEnabled < 0.5f || params.warpMode > 0.5f) {{
         return warpedColor;
     }}
-    float alpha = shellMaterialAlphaForSdf(p, params);
+    float fillSdf = shellMaterialFillSdf(p, params);
+    float alpha = shellMaterialAlphaForSdf(fillSdf, params);
     if (alpha <= 0.0f) return warpedColor;
     float valueTarget = shellMaterialValueTargetForBrightness(
         params.gpuMaterialBrightness,
@@ -285,7 +302,11 @@ float4 composeShellMaterial(float4 warpedColor, float2 p, constant WarpParams& p
     );
     float grayMix = mix(0.65f, 0.80f, clamp(params.gpuMaterialTextContrastBias, 0.0f, 1.0f));
     float3 materialColor = shellMaterialColorWithValueTarget(warpedColor.rgb, valueTarget, grayMix);
-    return float4(mix(warpedColor.rgb, materialColor, alpha), warpedColor.a);
+    float rimFactor = shellMaterialRimFactorForSdf(fillSdf, params);
+    float rimChromaSuppression = rimFactor * 0.82f;
+    materialColor = shellMaterialSuppressChroma(materialColor, rimChromaSuppression);
+    float rimAlpha = mix(alpha, alpha * 0.42f, rimFactor);
+    return float4(mix(warpedColor.rgb, materialColor, rimAlpha), warpedColor.a);
 }}
 
 constexpr sampler bilinearSampler(

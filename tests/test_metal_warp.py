@@ -191,6 +191,10 @@ def test_metal_shader_flat_interior_uses_true_average_mip_and_value_lerp():
 def test_metal_shader_shell_rim_reads_as_flat_boundary_not_glass_capsule():
     source = metal_warp._metal_shader_source()
 
+    assert "shellMaterialRimFactorForSdf" in source
+    assert "shellMaterialSuppressChroma" in source
+    assert "float rimChromaSuppression = rimFactor * 0.82f" in source
+    assert "float rimAlpha = mix(alpha, alpha * 0.42f, rimFactor)" in source
     assert "float ridgeScale = mix(0.35f, 0.75f" in source
     assert "edgeRidge * 0.22f" in source
     assert "0.07f * exp" in source
