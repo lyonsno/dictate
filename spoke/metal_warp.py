@@ -211,13 +211,25 @@ float shellMaterialChoiceForBrightness(float brightness) {{
     return t * t * (3.0f - 2.0f * t);
 }}
 
-float3 shellMaterialGrayTargetForBrightness(float brightness, float textContrastBias) {{
+float shellMaterialValueTargetForBrightness(float brightness, float textContrastBias) {{
     float choice = shellMaterialChoiceForBrightness(brightness);
     float contrast = clamp(textContrastBias, 0.0f, 1.0f);
     float darkGray = mix(0.08f, 0.14f, contrast);
     float lightGray = mix(0.30f, 0.20f, contrast);
-    float gray = mix(darkGray, lightGray, choice);
-    return float3(gray, gray, gray);
+    return mix(darkGray, lightGray, choice);
+}}
+
+float shellMaterialValueForColor(float3 color) {{
+    return max(max(color.r, color.g), color.b);
+}}
+
+float3 shellMaterialColorWithValueTarget(float3 color, float valueTarget, float amount) {{
+    float currentValue = shellMaterialValueForColor(color);
+    float targetValue = mix(currentValue, clamp(valueTarget, 0.0f, 1.0f), clamp(amount, 0.0f, 1.0f));
+    if (currentValue <= 1e-4f) {{
+        return float3(targetValue, targetValue, targetValue);
+    }}
+    return clamp(color * (targetValue / currentValue), float3(0.0f), float3(1.0f));
 }}
 
 float shellMaterialAlphaForSdf(float2 p, constant WarpParams& params) {{
@@ -267,12 +279,12 @@ float4 composeShellMaterial(float4 warpedColor, float2 p, constant WarpParams& p
     }}
     float alpha = shellMaterialAlphaForSdf(p, params);
     if (alpha <= 0.0f) return warpedColor;
-    float3 grayTarget = shellMaterialGrayTargetForBrightness(
+    float valueTarget = shellMaterialValueTargetForBrightness(
         params.gpuMaterialBrightness,
         params.gpuMaterialTextContrastBias
     );
     float grayMix = mix(0.65f, 0.80f, clamp(params.gpuMaterialTextContrastBias, 0.0f, 1.0f));
-    float3 materialColor = mix(warpedColor.rgb, grayTarget, grayMix);
+    float3 materialColor = shellMaterialColorWithValueTarget(warpedColor.rgb, valueTarget, grayMix);
     return float4(mix(warpedColor.rgb, materialColor, alpha), warpedColor.a);
 }}
 
@@ -512,11 +524,11 @@ kernel void opticalShellWarp(
     // Sample the flat interior average (max mip — one cached texel)
     float2 averageMipCoord = float2(0.5f, 0.5f);
     float4 flatColor = inTexture.sample(mipSampler, averageMipCoord, level(maxMipLod));
-    float3 grayTarget = shellMaterialGrayTargetForBrightness(
+    float valueTarget = shellMaterialValueTargetForBrightness(
         params.gpuMaterialBrightness,
         params.gpuMaterialTextContrastBias
     );
-    flatColor.rgb = mix(flatColor.rgb, grayTarget, 0.50f);
+    flatColor.rgb = shellMaterialColorWithValueTarget(flatColor.rgb, valueTarget, 0.90f);
 
     // In the band, lerp from the mipped sample toward the flat average.
     // At the outer edge (easedT=0): pure crisp warped sample.
