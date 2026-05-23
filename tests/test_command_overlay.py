@@ -3775,6 +3775,19 @@ class TestAdaptiveCompositing:
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
+    def test_shell_material_value_targets_are_striking_but_not_polarity_inverted(self, mock_pyobjc):
+        sys.modules.pop("spoke.command_overlay", None)
+        mod = importlib.import_module("spoke.command_overlay")
+        try:
+            dark = mod._shell_material_value_target_for_brightness(0.0)
+            light = mod._shell_material_value_target_for_brightness(1.0)
+
+            assert 0.20 <= dark <= 0.24, "dark substrate should lift to graphite, not collapse to black"
+            assert 0.60 <= light <= 0.68, "light substrate should settle to pewter, not wash out white"
+            assert dark < light, "material should keep substrate polarity until we deliberately invert it"
+        finally:
+            sys.modules.pop("spoke.command_overlay", None)
+
     def test_user_text_turns_dark_on_light_backgrounds(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
         mod = importlib.import_module("spoke.command_overlay")

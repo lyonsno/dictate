@@ -182,8 +182,8 @@ def test_metal_shader_flat_interior_uses_true_average_mip_and_value_lerp():
     assert "float maxMipLod = 12.0f" in source
     assert "float2 averageMipCoord = float2(0.5f, 0.5f)" in source
     assert "flatColor.rgb = shellMaterialColorWithValueTarget(flatColor.rgb, valueTarget, 0.90f)" in source
-    assert "float darkValue = mix(0.08f, 0.14f, contrast)" in source
-    assert "float lightValue = mix(0.82f, 0.72f, contrast)" in source
+    assert "float darkValue = mix(0.18f, 0.24f, contrast)" in source
+    assert "float lightValue = mix(0.70f, 0.62f, contrast)" in source
     assert "float crispMarginPixels = 0.0f" in source
     assert "params.bandWidth * 2.0f" in source
     assert "36.0f" in source

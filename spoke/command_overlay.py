@@ -467,11 +467,14 @@ def _background_color_for_brightness(brightness: float) -> tuple[float, float, f
     return _lerp_color(_PREVIEW_BG_COLOR_DARK, _PREVIEW_BG_COLOR_LIGHT, _clamp01(brightness))
 
 
-# Compositor graphic mode: fill matches background tone so text
-# punch-through reveals the contrasting warped content underneath.
-# Dark on dark, light on light — the overlay is a surface, not a glow.
-_COMPOSITOR_FILL_DARK = (0.40, 0.41, 0.43)   # medium fill on dark backgrounds — present, not icy
-_COMPOSITOR_FILL_LIGHT = (0.04, 0.04, 0.05)   # dark fill on light backgrounds — vivid, near-black
+# Compositor graphic mode: the field keeps substrate polarity, but with enough
+# value separation to read as pressure rather than a transparent object.
+_SHELL_MATERIAL_DARK_VALUE_BASE = 0.18
+_SHELL_MATERIAL_DARK_VALUE_CONTRAST = 0.24
+_SHELL_MATERIAL_LIGHT_VALUE_BASE = 0.70
+_SHELL_MATERIAL_LIGHT_VALUE_CONTRAST = 0.62
+_COMPOSITOR_FILL_DARK = (0.21, 0.22, 0.23)
+_COMPOSITOR_FILL_LIGHT = (0.66, 0.65, 0.62)
 _COMPOSITOR_FILL_INTERIOR_FLOOR = 0.66
 _COMPOSITOR_PUNCHTHROUGH_TEXT_CONTRAST_BIAS = 0.64
 _COMPOSITOR_DEFAULT_RIDGE_EMPHASIS = 0.35
@@ -495,6 +498,25 @@ def _compositor_fill_choice_for_brightness(brightness: float) -> float:
 def _compositor_fill_color_for_brightness(brightness: float) -> tuple[float, float, float]:
     t = _compositor_fill_choice_for_brightness(brightness)
     return _lerp_color(_COMPOSITOR_FILL_DARK, _COMPOSITOR_FILL_LIGHT, t)
+
+
+def _shell_material_value_target_for_brightness(
+    brightness: float,
+    text_contrast_bias: float = 0.5,
+) -> float:
+    choice = _compositor_fill_choice_for_brightness(brightness)
+    contrast = _clamp01(text_contrast_bias)
+    dark_value = _lerp(
+        _SHELL_MATERIAL_DARK_VALUE_BASE,
+        _SHELL_MATERIAL_DARK_VALUE_CONTRAST,
+        contrast,
+    )
+    light_value = _lerp(
+        _SHELL_MATERIAL_LIGHT_VALUE_BASE,
+        _SHELL_MATERIAL_LIGHT_VALUE_CONTRAST,
+        contrast,
+    )
+    return _lerp(dark_value, light_value, choice)
 
 
 def _compositor_fill_alpha_multiplier_for_brightness(brightness: float) -> float:

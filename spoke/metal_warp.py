@@ -56,6 +56,10 @@ _WARP_ALIAS_MIP_BIAS_DEADZONE = 0.12
 _WARP_ALIAS_MIP_BIAS_SCALE = 1.35
 _WARP_ALIAS_MIP_BIAS_MAX = 2.0
 _WARP_EXTERIOR_MIX_WIDTH_POINTS = 40.0
+_SHELL_MATERIAL_DARK_VALUE_BASE = 0.18
+_SHELL_MATERIAL_DARK_VALUE_CONTRAST = 0.24
+_SHELL_MATERIAL_LIGHT_VALUE_BASE = 0.70
+_SHELL_MATERIAL_LIGHT_VALUE_CONTRAST = 0.62
 
 _TEMPORAL_BLEND_FACTOR = 0.25  # EMA blend: 25% new frame, 75% accumulator
 
@@ -214,8 +218,8 @@ float shellMaterialChoiceForBrightness(float brightness) {{
 float shellMaterialValueTargetForBrightness(float brightness, float textContrastBias) {{
     float choice = shellMaterialChoiceForBrightness(brightness);
     float contrast = clamp(textContrastBias, 0.0f, 1.0f);
-    float darkValue = mix(0.08f, 0.14f, contrast);
-    float lightValue = mix(0.82f, 0.72f, contrast);
+    float darkValue = mix({_SHELL_MATERIAL_DARK_VALUE_BASE:.2f}f, {_SHELL_MATERIAL_DARK_VALUE_CONTRAST:.2f}f, contrast);
+    float lightValue = mix({_SHELL_MATERIAL_LIGHT_VALUE_BASE:.2f}f, {_SHELL_MATERIAL_LIGHT_VALUE_CONTRAST:.2f}f, contrast);
     return mix(darkValue, lightValue, choice);
 }}
 
