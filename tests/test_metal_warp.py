@@ -176,11 +176,12 @@ def test_metal_shader_composes_gpu_shell_material_after_warp_sampling():
     assert "warpedColor = composeShellMaterial" in source
 
 
-def test_metal_shader_flat_interior_uses_true_average_mip_and_value_lerp():
+def test_metal_shader_flat_interior_uses_live_local_mip_and_value_lerp():
     source = metal_warp._metal_shader_source()
 
     assert "float maxMipLod = 12.0f" in source
-    assert "float2 averageMipCoord = float2(0.5f, 0.5f)" in source
+    assert "float2 averageMipCoord = float2(0.5f, 0.5f)" not in source
+    assert "float4 flatColor = inTexture.sample(mipSampler, normPt, level(maxMipLod))" in source
     assert "flatColor.rgb = shellMaterialColorWithValueTarget(flatColor.rgb, valueTarget, 0.90f)" in source
     assert "float darkValue = mix(0.18f, 0.24f, contrast)" in source
     assert "float lightValue = mix(0.70f, 0.62f, contrast)" in source

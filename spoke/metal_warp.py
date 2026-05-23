@@ -546,9 +546,9 @@ kernel void opticalShellWarp(
         bandColor = inTexture.sample(mipSampler, normPt, level(mipLod));
     }}
 
-    // Sample the flat interior average (max mip — one cached texel)
-    float2 averageMipCoord = float2(0.5f, 0.5f);
-    float4 flatColor = inTexture.sample(mipSampler, averageMipCoord, level(maxMipLod));
+    // Sample a deep local mip from the live substrate. A fixed screen-center
+    // mip makes the interior look adapted at summon but stale after movement.
+    float4 flatColor = inTexture.sample(mipSampler, normPt, level(maxMipLod));
     float valueTarget = shellMaterialValueTargetForBrightness(
         params.gpuMaterialBrightness,
         params.gpuMaterialTextContrastBias
