@@ -3630,6 +3630,7 @@ class SpokeAppDelegate(NSObject):
         self._recovery_clipboard_state = "idle"
         if self._overlay is not None:
             self._overlay.show_tray(text, owner=entry.display_owner)
+            self._maybe_show_operator_ping_token_smoke()
         if self._menubar is not None:
             pos = f"{self._tray_index + 1}/{len(self._tray_stack)}"
             self._menubar.set_status_text(f"Tray [{pos}]")

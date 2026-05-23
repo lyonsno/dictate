@@ -8,7 +8,7 @@ See docs/keyboard-grammar.md "The tray" for the full spec.
 """
 
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -684,6 +684,27 @@ class TestTrayRecoveryUnification:
 
 
 class TestOperatorPingTokenVisualDelegate:
+    def test_tray_summon_repaints_operator_ping_tokens_after_tray_body(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._add_tray_entry("visible tray body", activate=True)
+        d._maybe_show_operator_ping_token_smoke = MagicMock()
+
+        sequence = MagicMock()
+        sequence.attach_mock(d._overlay.show_tray, "show_tray")
+        sequence.attach_mock(
+            d._maybe_show_operator_ping_token_smoke,
+            "show_operator_ping_tokens",
+        )
+
+        d._show_tray_current()
+
+        assert sequence.mock_calls[:2] == [
+            call.show_tray("visible tray body", owner="user"),
+            call.show_operator_ping_tokens(),
+        ]
+
     def test_backend_ping_events_project_to_overlay_visuals_without_tray_rows(
         self, main_module, monkeypatch
     ):
