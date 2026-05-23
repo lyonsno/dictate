@@ -15,7 +15,7 @@ Configure via environment variables:
 from __future__ import annotations
 
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import faulthandler
 import json
@@ -779,6 +779,8 @@ class TrayEntry:
     text: str
     owner: str = "user"
     acknowledged: bool = True
+    kind: str = "tray"
+    metadata: dict[str, object] = field(default_factory=dict)
 
     def __eq__(self, other):
         if isinstance(other, TrayEntry):
@@ -786,6 +788,8 @@ class TrayEntry:
                 self.text == other.text
                 and self.owner == other.owner
                 and self.acknowledged == other.acknowledged
+                and self.kind == other.kind
+                and self.metadata == other.metadata
             )
         if isinstance(other, str):
             return self.text == other
@@ -795,7 +799,102 @@ class TrayEntry:
     def display_owner(self) -> str:
         if self.owner == "assistant" and not self.acknowledged:
             return "assistant"
+        if self.owner == "directive":
+            return "directive"
         return "user"
+
+
+def _string_or_none(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _directive_identity_metadata(handle: str | None, identity_id: str | None) -> dict[str, str | None]:
+    return {"handle": handle, "id": identity_id}
+
+
+def directive_inbox_json_to_tray_entries(inbox_json: str) -> list[TrayEntry]:
+    """Convert canonical `epistaxis directive inbox --json` output to stack pressure.
+
+    This is a pure consumer: it parses already-resolved inbox JSON and never
+    shells out to Epistaxis or treats the resulting TrayEntry as mutation
+    authority.
+    """
+    try:
+        payload = json.loads(inbox_json)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"directive inbox JSON is invalid: {exc}") from exc
+    if not isinstance(payload, list):
+        raise ValueError("directive inbox JSON must be a list of entries")
+
+    entries: list[TrayEntry] = []
+    for raw_entry in payload:
+        if not isinstance(raw_entry, dict):
+            raise ValueError("directive inbox JSON entries must be objects")
+        source = raw_entry.get("source") or {}
+        if not isinstance(source, dict):
+            raise ValueError("directive inbox entry source must be an object")
+
+        source_handle = (
+            _string_or_none(source.get("diaulos"))
+            or _string_or_none(source.get("sign"))
+            or "unknown source"
+        )
+        target_handle = (
+            _string_or_none(raw_entry.get("target_diaulos"))
+            or _string_or_none(raw_entry.get("target_path"))
+            or "unknown target"
+        )
+        source_id = _string_or_none(source.get("diaulos_id"))
+        target_id = _string_or_none(raw_entry.get("target_diaulos_id"))
+        intent_class = _string_or_none(raw_entry.get("intent_class")) or "directive"
+        delivery_state = _string_or_none(raw_entry.get("delivery_state")) or "unknown"
+        disposition_state = _string_or_none(raw_entry.get("disposition_state")) or "pending"
+        directive_path = _string_or_none(raw_entry.get("path")) or "unknown directive"
+        authority_basis = _string_or_none(raw_entry.get("authority_basis")) or "unspecified authority"
+        required_rereads = raw_entry.get("required_rereads") or []
+        if not isinstance(required_rereads, list):
+            raise ValueError("directive inbox entry required_rereads must be a list")
+        rereads = [_string_or_none(item) for item in required_rereads]
+        rereads = [item for item in rereads if item]
+
+        reread_lines = "\n".join(f"- {item}" for item in rereads) or "- none recorded"
+        text = "\n".join(
+            [
+                f"{source_handle} -> {target_handle}",
+                f"Intent: {intent_class}",
+                f"Disposition: {disposition_state}",
+                f"Delivery: {delivery_state}",
+                f"Authority: {authority_basis}",
+                f"Directive: {directive_path}",
+                "Required rereads:",
+                reread_lines,
+            ]
+        )
+
+        entries.append(
+            TrayEntry(
+                text=text,
+                owner="directive",
+                acknowledged=False,
+                kind="directive_inbox_pressure",
+                metadata={
+                    "path": directive_path,
+                    "source": _directive_identity_metadata(source_handle, source_id),
+                    "target": _directive_identity_metadata(target_handle, target_id),
+                    "intent_class": intent_class,
+                    "authority_basis": authority_basis,
+                    "required_rereads": rereads,
+                    "delivery_state": delivery_state,
+                    "disposition_state": disposition_state,
+                    "packet_exists": bool(raw_entry.get("packet_exists")),
+                    "supersedes": _string_or_none(raw_entry.get("supersedes")),
+                },
+            )
+        )
+    return entries
 
 
 class SegmentAccumulator:
@@ -3257,11 +3356,16 @@ class SpokeAppDelegate(NSObject):
         owner: str = "user",
         activate: bool = True,
         position: str = "top",
+        acknowledged: bool | None = None,
+        kind: str = "tray",
+        metadata: dict[str, object] | None = None,
     ) -> TrayEntry:
         entry = TrayEntry(
             text=text,
             owner=owner,
-            acknowledged=(owner != "assistant"),
+            acknowledged=(owner != "assistant") if acknowledged is None else acknowledged,
+            kind=kind,
+            metadata=dict(metadata or {}),
         )
         if position == "bottom":
             had_entries = bool(self._tray_stack)
@@ -3293,6 +3397,29 @@ class SpokeAppDelegate(NSObject):
             self._show_tray_current()
 
         return entry
+
+    def _add_directive_inbox_json_to_stack(
+        self,
+        inbox_json: str,
+        *,
+        activate: bool = False,
+    ) -> dict:
+        """Add canonical directive inbox JSON entries to the tray stack as pressure."""
+        entries = directive_inbox_json_to_tray_entries(inbox_json)
+        for entry in entries:
+            self._add_tray_entry(
+                entry.text,
+                owner=entry.owner,
+                activate=activate,
+                acknowledged=entry.acknowledged,
+                kind=entry.kind,
+                metadata=entry.metadata,
+            )
+        return {
+            "status": "added",
+            "stack_size": len(self._tray_stack),
+            "entry_count": len(entries),
+        }
 
     def _show_tray_current(self, *, acknowledge: bool = False) -> None:
         """Update the tray overlay to display the current stack entry."""

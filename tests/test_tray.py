@@ -371,6 +371,103 @@ class TestTrayStack:
         assert d._tray_stack[0] != d._tray_stack[1]
 
 
+class TestDirectiveInboxStackPressure:
+    """Source-signed directive inbox entries become stack pressure, not truth."""
+
+    def test_inbox_json_entry_maps_to_handle_first_tray_pressure(self, main_module):
+        payload = [
+            {
+                "path": "metadosis/upstream-directives/route-smoke.md",
+                "target_path": "projects/epistaxis/topoi/badgestall.md",
+                "target_diaulos": "badgestall-proctocolips-cartographer",
+                "target_diaulos_id": None,
+                "packet_exists": True,
+                "source": {
+                    "kind": "diaulos",
+                    "sign": "opus-miserena-id-cartographer",
+                    "diaulos": "opus-miserena-id-cartographer",
+                    "diaulos_id": "dia-b715a7f9-ec67-4dcd-80a3-12688844f177",
+                    "topos": "projects/epistaxis/topoi/codex-opus.md",
+                    "refs": [
+                        "metadosis/coordination-packets/perceptasia-spoke_switchblade-reticule-post-office_2026-05-22.md"
+                    ],
+                },
+                "intent_class": "notice",
+                "authority_basis": "peer-diaulos pressure; non-binding unless separately authorized",
+                "required_rereads": [
+                    "metadosis/coordination-packets/perceptasia-spoke_switchblade-reticule-post-office_2026-05-22.md",
+                    "metadosis/source-signed-diaulos-switchboard_2026-05-20.md",
+                ],
+                "scope_refs": [],
+                "delivery_state": "pending-durable-badge",
+                "disposition_state": "pending",
+                "supersedes": None,
+            }
+        ]
+
+        entries = main_module.directive_inbox_json_to_tray_entries(
+            main_module.json.dumps(payload)
+        )
+
+        assert len(entries) == 1
+        entry = entries[0]
+        assert isinstance(entry, main_module.TrayEntry)
+        assert entry.owner == "directive"
+        assert entry.acknowledged is False
+        assert entry.kind == "directive_inbox_pressure"
+        assert entry.text.startswith(
+            "opus-miserena-id-cartographer -> badgestall-proctocolips-cartographer"
+        )
+        assert "dia-b715a7f9-ec67-4dcd-80a3-12688844f177" not in entry.text
+        assert "notice" in entry.text
+        assert "Disposition: pending" in entry.text
+        assert "Delivery: pending-durable-badge" in entry.text
+        assert "Required rereads:" in entry.text
+        assert entry.metadata["source"]["handle"] == "opus-miserena-id-cartographer"
+        assert entry.metadata["source"]["id"] == "dia-b715a7f9-ec67-4dcd-80a3-12688844f177"
+        assert entry.metadata["target"]["handle"] == "badgestall-proctocolips-cartographer"
+        assert entry.metadata["target"]["id"] is None
+        assert entry.metadata["disposition_state"] == "pending"
+        assert entry.metadata["delivery_state"] == "pending-durable-badge"
+
+    def test_delegate_adds_inbox_pressure_without_epistaxis_mutation(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        payload = [
+            {
+                "path": "metadosis/upstream-directives/route-smoke.md",
+                "target_path": "projects/epistaxis/topoi/badgestall.md",
+                "target_diaulos": "badgestall-proctocolips-cartographer",
+                "target_diaulos_id": "dia-target",
+                "packet_exists": True,
+                "source": {
+                    "kind": "diaulos",
+                    "sign": "opus-miserena-id-cartographer",
+                    "diaulos": "opus-miserena-id-cartographer",
+                    "diaulos_id": "dia-source",
+                    "topos": None,
+                    "refs": [],
+                },
+                "intent_class": "directive",
+                "authority_basis": "operator sign",
+                "required_rereads": [],
+                "scope_refs": [],
+                "delivery_state": "pending-durable-badge",
+                "disposition_state": "consumed",
+                "supersedes": None,
+            }
+        ]
+
+        with patch.object(main_module.subprocess, "run") as run:
+            result = d._add_directive_inbox_json_to_stack(main_module.json.dumps(payload))
+
+        run.assert_not_called()
+        assert result == {"status": "added", "stack_size": 1, "entry_count": 1}
+        entry = d._tray_stack[0]
+        assert isinstance(entry, main_module.TrayEntry)
+        assert entry.metadata["disposition_state"] == "consumed"
+        assert entry.metadata["delivery_state"] == "pending-durable-badge"
+
+
 class TestTrayGestures:
     """Gestures available while the tray is active."""
 
