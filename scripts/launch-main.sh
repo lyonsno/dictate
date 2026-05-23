@@ -159,7 +159,7 @@ def _apply_env_file(path: Path) -> None:
             if len(val) >= 2 and val[0] == val[-1] and val[0] in {"'", '"'}:
                 val = val[1:-1]
             if key:
-                child_env[key] = val
+                child_env[key] = os.path.expanduser(os.path.expandvars(val))
     except Exception:
         pass
 

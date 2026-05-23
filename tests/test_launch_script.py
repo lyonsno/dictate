@@ -46,7 +46,7 @@ def _launcher_apply_env_file():
             function_source = ast.get_source_segment(source, node)
             assert function_source is not None
             child_env: dict[str, str] = {}
-            namespace = {"Path": Path, "child_env": child_env}
+            namespace = {"Path": Path, "child_env": child_env, "os": os}
             exec(function_source, namespace)
             return namespace["_apply_env_file"], child_env
     raise AssertionError("launch-main.sh must define _apply_env_file")
@@ -300,6 +300,26 @@ class TestSecretsEnvLoading:
         assert overrides["SPOKE_PICOVOICE_PORCUPINE_ACCESS_KEY"] == "bare-value-123"
         assert overrides["OPENROUTER_API_KEY"] == "single-quoted"
         assert child_env == overrides
+
+    def test_launch_main_env_loader_expands_home_variables(self, tmp_path, monkeypatch):
+        """The Automator launcher must resolve smoke env paths like the
+        menubar launcher; otherwise real operator-ping rows are invisible and
+        the fallback smoke token wins."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        smoke_env = tmp_path / ".spoke-smoke-env"
+        smoke_env.write_text(
+            'export SPOKE_OPERATOR_PING_EVENTS_PATH="$HOME/.local/state/epistaxis/events.jsonl"\n',
+            encoding="utf-8",
+        )
+        apply_env_file, child_env = _launcher_apply_env_file()
+
+        apply_env_file(smoke_env)
+
+        assert child_env["SPOKE_OPERATOR_PING_EVENTS_PATH"] == (
+            str(home / ".local/state/epistaxis/events.jsonl")
+        )
 
 
 class TestLaunchTargetSecretsEnvLoading:
