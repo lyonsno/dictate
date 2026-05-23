@@ -65,6 +65,37 @@ def _record_visual_ledger(event: str, config: Mapping[str, Any] | None = None, *
     record_command_overlay_trace(event, **details)
 
 
+def _visual_ledger_full_frame_mode() -> bool:
+    return os.environ.get("SPOKE_VISUAL_LEDGER_FRAME_MODE", "summary").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "full",
+        "all",
+    }
+
+
+def _visual_ledger_heartbeat_s() -> float:
+    try:
+        return max(float(os.environ.get("SPOKE_VISUAL_LEDGER_HEARTBEAT_S", "0.5")), 0.05)
+    except ValueError:
+        return 0.5
+
+
+def _visual_ledger_slow_present_ms() -> float:
+    try:
+        return max(float(os.environ.get("SPOKE_VISUAL_LEDGER_SLOW_PRESENT_MS", "20.0")), 1.0)
+    except ValueError:
+        return 20.0
+
+
+def _visual_ledger_slow_warp_ms() -> float:
+    try:
+        return max(float(os.environ.get("SPOKE_VISUAL_LEDGER_SLOW_WARP_MS", "4.0")), 0.5)
+    except ValueError:
+        return 4.0
+
+
 @dataclass(frozen=True)
 class OverlayClientIdentity:
     client_id: str
@@ -372,11 +403,75 @@ class FullScreenCompositor:
         self._last_display_link_at = None
         self._last_presented_at = None
         self._last_brightness_sample_at = None
+        self._visual_ledger_last_capture_trace_at = None
+        self._visual_ledger_last_capture_shape = None
+        self._visual_ledger_last_present_trace_at = None
+        self._visual_ledger_last_present_config_generation = None
 
         # Brightness sampling from the captured IOSurface
         self._sampled_brightness = 0.5
         self._brightness_sample_frame = 0
         _BRIGHTNESS_SAMPLE_INTERVAL_FRAMES = 15  # every ~250ms at 60fps
+
+    def _visual_ledger_capture_trace_reason(
+        self,
+        *,
+        frame_generation: int,
+        width: int,
+        height: int,
+        has_pixel_buffer: bool,
+        now: float,
+    ) -> str | None:
+        if _visual_ledger_full_frame_mode():
+            reason = "full"
+        elif frame_generation <= 3:
+            reason = "first_frames"
+        else:
+            shape = (width, height, has_pixel_buffer)
+            last_shape = getattr(self, "_visual_ledger_last_capture_shape", None)
+            last_at = getattr(self, "_visual_ledger_last_capture_trace_at", None)
+            if shape != last_shape:
+                reason = "shape_changed"
+            elif last_at is None or now - float(last_at) >= _visual_ledger_heartbeat_s():
+                reason = "heartbeat"
+            else:
+                return None
+        self._visual_ledger_last_capture_trace_at = now
+        self._visual_ledger_last_capture_shape = (width, height, has_pixel_buffer)
+        return reason
+
+    def _visual_ledger_present_trace_reason(
+        self,
+        *,
+        frame_generation: int,
+        config_generation: int,
+        presented_count: int,
+        was_first: bool,
+        present_frame_ms: float,
+        warp_to_drawable_ms: float,
+        now: float,
+    ) -> str | None:
+        if _visual_ledger_full_frame_mode():
+            reason = "full"
+        elif was_first:
+            reason = "first_present"
+        elif presented_count <= 3:
+            reason = "first_frames"
+        elif config_generation != getattr(self, "_visual_ledger_last_present_config_generation", None):
+            reason = "config_changed"
+        elif present_frame_ms >= _visual_ledger_slow_present_ms():
+            reason = "slow_present"
+        elif warp_to_drawable_ms >= _visual_ledger_slow_warp_ms():
+            reason = "slow_warp"
+        else:
+            last_at = getattr(self, "_visual_ledger_last_present_trace_at", None)
+            if last_at is None or now - float(last_at) >= _visual_ledger_heartbeat_s():
+                reason = "heartbeat"
+            else:
+                return None
+        self._visual_ledger_last_present_trace_at = now
+        self._visual_ledger_last_present_config_generation = config_generation
+        return reason
 
     def start(self, shell_config: dict) -> bool:
         """Create the full-screen window and start capture + render loop."""
@@ -1082,13 +1177,23 @@ class FullScreenCompositor:
                     0.0,
                 )
             self._last_capture_frame_at = now
-        _record_visual_ledger(
-            "compositor.capture.frame",
-            capture_frame_generation=frame_generation,
-            capture_width=width,
-            capture_height=height,
-            has_pixel_buffer=pixel_buffer is not None,
+        has_pixel_buffer = pixel_buffer is not None
+        trace_reason = self._visual_ledger_capture_trace_reason(
+            frame_generation=frame_generation,
+            width=width,
+            height=height,
+            has_pixel_buffer=has_pixel_buffer,
+            now=now,
         )
+        if trace_reason is not None:
+            _record_visual_ledger(
+                "compositor.capture.frame",
+                capture_frame_generation=frame_generation,
+                capture_width=width,
+                capture_height=height,
+                has_pixel_buffer=has_pixel_buffer,
+                trace_reason=trace_reason,
+            )
 
     # ------------------------------------------------------------------
     # CVDisplayLink render loop
@@ -1231,16 +1336,29 @@ class FullScreenCompositor:
                     self._last_presented_at = present_end
                 self._rendered_frame_generation = frame_generation
                 self._rendered_config_generation = config_generation
-                _record_visual_ledger(
-                    "compositor.frame.presented",
-                    warp_configs[0] if warp_configs else None,
-                    capture_frame_generation=frame_generation,
-                    compositor_config_generation=config_generation,
+                warp_to_drawable_ms = max((warp_end - warp_start) * 1000.0, 0.0)
+                present_frame_ms = max((present_end - present_start) * 1000.0, 0.0)
+                trace_reason = self._visual_ledger_present_trace_reason(
+                    frame_generation=frame_generation,
+                    config_generation=config_generation,
                     presented_count=self._presented_count,
-                    was_first_present=was_first,
-                    warp_to_drawable_ms=max((warp_end - warp_start) * 1000.0, 0.0),
-                    present_frame_ms=max((present_end - present_start) * 1000.0, 0.0),
+                    was_first=was_first,
+                    present_frame_ms=present_frame_ms,
+                    warp_to_drawable_ms=warp_to_drawable_ms,
+                    now=present_end,
                 )
+                if trace_reason is not None:
+                    _record_visual_ledger(
+                        "compositor.frame.presented",
+                        warp_configs[0] if warp_configs else None,
+                        capture_frame_generation=frame_generation,
+                        compositor_config_generation=config_generation,
+                        presented_count=self._presented_count,
+                        was_first_present=was_first,
+                        warp_to_drawable_ms=warp_to_drawable_ms,
+                        present_frame_ms=present_frame_ms,
+                        trace_reason=trace_reason,
+                    )
 
             elif self._frame_count <= 5:
                 logger.info("Compositor tick[%d]: warp_to_drawable returned False", self._frame_count)

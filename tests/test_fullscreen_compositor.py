@@ -1225,6 +1225,76 @@ def test_fullscreen_compositor_traces_capture_sample_and_present_visual_ledger(m
     assert by_event["compositor.frame.presented"]["presented_count"] == 1
 
 
+def test_fullscreen_compositor_visual_ledger_suppresses_steady_frame_chatter(monkeypatch):
+    import spoke.fullscreen_compositor as fullscreen_compositor
+
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    traces = []
+    monkeypatch.delenv("SPOKE_VISUAL_LEDGER_FRAME_MODE", raising=False)
+    monkeypatch.setattr(
+        fullscreen_compositor,
+        "record_command_overlay_trace",
+        lambda event, **fields: traces.append((event, fields)),
+        raising=False,
+    )
+
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._visual_ledger_last_capture_trace_at = 100.0
+    compositor._visual_ledger_last_capture_shape = (100, 50, True)
+    compositor._latest_frame_generation = 10
+
+    assert (
+        compositor._visual_ledger_capture_trace_reason(
+            frame_generation=10,
+            width=100,
+            height=50,
+            has_pixel_buffer=True,
+            now=100.1,
+        )
+        is None
+    )
+
+    compositor._visual_ledger_last_present_trace_at = 100.0
+    compositor._visual_ledger_last_present_config_generation = 5
+    assert (
+        compositor._visual_ledger_present_trace_reason(
+            frame_generation=10,
+            config_generation=5,
+            presented_count=44,
+            was_first=False,
+            present_frame_ms=5.0,
+            warp_to_drawable_ms=0.2,
+            now=100.1,
+        )
+        is None
+    )
+
+    assert traces == []
+
+
+def test_fullscreen_compositor_visual_ledger_full_frame_mode_keeps_steady_frames(monkeypatch):
+    import spoke.fullscreen_compositor as fullscreen_compositor
+
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    monkeypatch.setenv("SPOKE_VISUAL_LEDGER_FRAME_MODE", "full")
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._visual_ledger_last_capture_trace_at = 100.0
+    compositor._visual_ledger_last_capture_shape = (100, 50, True)
+
+    assert (
+        compositor._visual_ledger_capture_trace_reason(
+            frame_generation=10,
+            width=100,
+            height=50,
+            has_pixel_buffer=True,
+            now=100.1,
+        )
+        == "full"
+    )
+
+
 def test_fullscreen_compositor_records_residency_diagnostics(monkeypatch):
     import spoke.fullscreen_compositor as fullscreen_compositor
 
