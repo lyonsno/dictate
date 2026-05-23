@@ -1551,6 +1551,33 @@ class TestOpticalShellMaterialization:
         assert material_calls
         assert material_calls[-1].args[1] == pytest.approx(overlay._brightness)
 
+    def test_compositor_brightness_timer_updates_material_when_pulse_is_shed(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_GPU_MATERIAL_ENABLED", True)
+        timer = MagicMock()
+        compositor = MagicMock()
+        compositor.sampled_brightness = 1.0
+        overlay._brightness_timer = timer
+        overlay._fullscreen_compositor = compositor
+        overlay._brightness = 0.0
+        overlay._brightness_target = 0.0
+        overlay._pulse_timer = None
+        overlay._text_view.textStorage.return_value.length.return_value = 0
+        overlay._apply_ridge_masks = MagicMock()
+
+        overlay.brightnessStep_(timer)
+
+        compositor.refresh_brightness.assert_called_once()
+        material_calls = [
+            call
+            for call in compositor.update_shell_config_key.call_args_list
+            if call.args[0] == "gpu_material_brightness"
+        ]
+        assert material_calls
+        assert material_calls[-1].args[1] == pytest.approx(overlay._brightness)
+
     def test_gpu_material_is_disabled_by_default_for_smoke_stability(
         self, mock_pyobjc, monkeypatch
     ):
@@ -4316,7 +4343,44 @@ class TestAdaptiveCompositing:
         overlay._start_fullscreen_compositor()
 
         timer.invalidate.assert_called_once()
-        assert overlay._brightness_timer is None
+        assert overlay._brightness_timer is not None
+
+    def test_fullscreen_compositor_start_pins_live_brightness_timer(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        scheduled = []
+
+        import spoke.fullscreen_compositor as fullscreen_compositor
+
+        monkeypatch.setattr(
+            fullscreen_compositor,
+            "start_overlay_compositor",
+            lambda **_kwargs: MagicMock(),
+        )
+
+        def _schedule(interval, _target, selector, _userinfo, repeats):
+            timer = MagicMock()
+            scheduled.append((interval, selector, repeats, timer))
+            return timer
+
+        monkeypatch.setattr(
+            mod.NSTimer,
+            "scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_",
+            MagicMock(side_effect=_schedule),
+        )
+        pinned = []
+        monkeypatch.setattr(mod, "_pin_timer_to_active_run_loop_modes", pinned.append)
+
+        overlay._start_fullscreen_compositor()
+
+        brightness_timers = [
+            item for item in scheduled if item[1] == "brightnessStep:"
+        ]
+        assert brightness_timers
+        assert brightness_timers[-1][2] is True
+        assert pinned[-1] is brightness_timers[-1][3]
 
     def test_compositor_startup_grace_does_not_resample_seeded_brightness(
         self, mock_pyobjc

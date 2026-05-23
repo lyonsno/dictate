@@ -2657,15 +2657,32 @@ class CommandOverlay(NSObject):
         self._brightness = 0.5
 
     def _start_brightness_sampling(self) -> None:
-        # Brightness is sampled by GlowOverlay (1 Hz) and pushed here via
-        # set_brightness() on every amplitude tick from __main__.py
-        # (_sync_command_overlay_brightness).  Running a second independent
-        # Quartz screen-capture timer here doubles the capture cost with no
-        # benefit.  No-op; cancel any leftover timer from prior sessions.
+        # Without the full-screen compositor, brightness is sampled by
+        # GlowOverlay (1 Hz) and pushed here via set_brightness() on amplitude
+        # ticks from __main__.py. The compositor path starts its own cheap
+        # material timer after the compositor exists so it can sample the live
+        # shell-region pixel buffer instead of Quartz.
         old_timer = getattr(self, "_brightness_timer", None)
         if old_timer is not None:
             old_timer.invalidate()
             self._brightness_timer = None
+
+    def _start_compositor_brightness_timer(self) -> None:
+        if getattr(self, "_fullscreen_compositor", None) is None:
+            return
+        self._cancel_brightness_sampling()
+        interval = max(
+            1.0 / _PULSE_HZ,
+            _BRIGHTNESS_COMPOSITOR_SAMPLE_TICKS / _PULSE_HZ,
+        )
+        self._brightness_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            interval,
+            self,
+            "brightnessStep:",
+            None,
+            True,
+        )
+        _pin_timer_to_active_run_loop_modes(self._brightness_timer)
 
     def brightnessResample_(self, timer) -> None:
         if not self._visible:
@@ -3276,6 +3293,52 @@ class CommandOverlay(NSObject):
             if metrics is not None:
                 metrics.record_display_tick(now=time.perf_counter())
 
+    def _refresh_compositor_brightness_target(self, *, force: bool = False) -> bool:
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is None:
+            return False
+        sample_tick = getattr(self, "_brightness_sample_tick", 0)
+        if force or sample_tick >= 0:
+            if force or sample_tick % _BRIGHTNESS_COMPOSITOR_SAMPLE_TICKS == 0:
+                refresher = getattr(compositor, "refresh_brightness", None)
+                if callable(refresher):
+                    try:
+                        refresher()
+                    except Exception:
+                        logger.debug("Failed to refresh compositor brightness", exc_info=True)
+                try:
+                    self._brightness_target = _clamp01(
+                        float(getattr(compositor, "sampled_brightness", self._brightness_target))
+                    )
+                except Exception:
+                    pass
+        self._brightness_sample_tick = sample_tick + 1
+        return True
+
+    def _publish_compositor_material_brightness(self) -> float:
+        target = getattr(self, "_brightness_target", 0.0)
+        current = getattr(self, "_brightness", 0.0)
+        if abs(target - current) > 0.001:
+            self._brightness = _advance_command_brightness(current, target)
+        t = getattr(self, "_brightness", 0.0)
+        self._apply_surface_theme()
+        compositor = getattr(self, "_fullscreen_compositor", None)
+        if compositor is not None and _COMMAND_GPU_MATERIAL_ENABLED:
+            updater = getattr(compositor, "update_shell_config_key", None)
+            last_material_brightness = getattr(self, "_last_gpu_material_brightness", -1.0)
+            if callable(updater) and abs(t - last_material_brightness) > 0.005:
+                updater("gpu_material_brightness", t)
+                self._last_gpu_material_brightness = t
+        return t
+
+    def brightnessStep_(self, timer) -> None:
+        if getattr(self, "_brightness_timer", None) is not timer:
+            return
+        if not self._refresh_compositor_brightness_target(force=True):
+            self._cancel_brightness_sampling()
+            return
+        self._publish_compositor_material_brightness()
+
     def _materialization_owns_fill_layers(self) -> bool:
         """Return True while slit materialization owns shell-body geometry."""
         return getattr(self, "_materialization_timer", None) is not None
@@ -3304,24 +3367,16 @@ class CommandOverlay(NSObject):
         # attached to the window underneath rather than arriving late.
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is not None:
-            _b_tick = getattr(self, '_brightness_sample_tick', 0)
-            if _b_tick >= 0:
-                if _b_tick % _BRIGHTNESS_COMPOSITOR_SAMPLE_TICKS == 0:
-                    compositor.refresh_brightness()
-                self._brightness_target = compositor.sampled_brightness
-            self._brightness_sample_tick = _b_tick + 1
-        target = getattr(self, "_brightness_target", 0.0)
-        current = getattr(self, "_brightness", 0.0)
-        if abs(target - current) > 0.001:
-            self._brightness = _advance_command_brightness(current, target)
-        t = getattr(self, "_brightness", 0.0)
-        self._apply_surface_theme()
-        if compositor is not None and _COMMAND_GPU_MATERIAL_ENABLED:
-            updater = getattr(compositor, "update_shell_config_key", None)
-            last_material_brightness = getattr(self, "_last_gpu_material_brightness", -1.0)
-            if callable(updater) and abs(t - last_material_brightness) > 0.005:
-                updater("gpu_material_brightness", t)
-                self._last_gpu_material_brightness = t
+            if getattr(self, "_brightness_timer", None) is None:
+                self._refresh_compositor_brightness_target()
+            t = self._publish_compositor_material_brightness()
+        else:
+            target = getattr(self, "_brightness_target", 0.0)
+            current = getattr(self, "_brightness", 0.0)
+            if abs(target - current) > 0.001:
+                self._brightness = _advance_command_brightness(current, target)
+            t = getattr(self, "_brightness", 0.0)
+            self._apply_surface_theme()
         if getattr(self, "_materialization_timer", None) is not None:
             self._apply_materialization_fill_state(
                 getattr(self, "_materialization_progress", 1.0)
@@ -5476,6 +5531,7 @@ class CommandOverlay(NSObject):
             self._apply_surface_theme()
         finally:
             self._suppress_stale_fill_until_ready = suppress_stale_fill
+        self._start_compositor_brightness_timer()
         self._start_deferred_materialization_if_ready()
 
     def _start_fullscreen_compositor(self):
@@ -5588,6 +5644,7 @@ class CommandOverlay(NSObject):
                     self._apply_surface_theme()
                 finally:
                     self._suppress_stale_fill_until_ready = suppress_stale_fill
+                self._start_compositor_brightness_timer()
                 self._start_deferred_materialization_if_ready()
                 logger.info("Command overlay: full-screen compositor started")
             else:
@@ -5829,6 +5886,7 @@ class CommandOverlay(NSObject):
                 logger.debug("Failed to unhide command scroll layer after compositor handoff", exc_info=True)
 
     def _stop_fullscreen_compositor(self, *, reveal_local_shell: bool = True):
+        self._cancel_brightness_sampling()
         self._cancel_materialization_animation()
         self._cancel_dismiss_pucker_tail_animation()
         compositor = getattr(self, "_fullscreen_compositor", None)
