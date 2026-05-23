@@ -214,9 +214,9 @@ float shellMaterialChoiceForBrightness(float brightness) {{
 float shellMaterialValueTargetForBrightness(float brightness, float textContrastBias) {{
     float choice = shellMaterialChoiceForBrightness(brightness);
     float contrast = clamp(textContrastBias, 0.0f, 1.0f);
-    float darkGray = mix(0.08f, 0.14f, contrast);
-    float lightGray = mix(0.30f, 0.20f, contrast);
-    return mix(darkGray, lightGray, choice);
+    float darkValue = mix(0.08f, 0.14f, contrast);
+    float lightValue = mix(0.82f, 0.72f, contrast);
+    return mix(darkValue, lightValue, choice);
 }}
 
 float shellMaterialValueForColor(float3 color) {{
@@ -258,18 +258,18 @@ float shellMaterialAlphaForSdf(float2 p, constant WarpParams& params) {{
     float materialScale = max(feather / 140.0f, 1.0f);
     if (fillSdf <= 0.0f) {{
         float insideD = max(-fillSdf, 0.0f);
-        float ridgeScale = mix(0.75f, 1.35f, clamp(params.gpuMaterialRidgeEmphasis, 0.0f, 1.0f));
+        float ridgeScale = mix(0.35f, 0.75f, clamp(params.gpuMaterialRidgeEmphasis, 0.0f, 1.0f));
         float edgeRidge = exp(-pow(insideD / max(1.5f * materialScale, 1e-6f), 2.0f)) * ridgeScale;
         float rawInterior = exp(sqrt(abs(fillSdf) / max(2.0f * materialScale, 1e-6f)) * -1.0f);
         float interiorFloor = 0.66f;
-        float interior = clamp(interiorFloor + (1.0f - interiorFloor) * rawInterior + edgeRidge * 0.50f, 0.0f, 1.0f);
+        float interior = clamp(interiorFloor + (1.0f - interiorFloor) * rawInterior + edgeRidge * 0.22f, 0.0f, 1.0f);
         return clamp(interior * opacity, 0.0f, 1.0f);
     }}
 
     float sigma = feather / 3.0f;
     float exterior = exp(-0.5f * pow(fillSdf / max(sigma, 1e-6f), 2.0f));
     float extT = clamp(fillSdf / feather, 0.0f, 1.0f);
-    float exteriorTail = exterior * (0.13f * exp(-pow(extT / 0.30f, 1.5f)) + 0.007f);
+    float exteriorTail = exterior * (0.07f * exp(-pow(extT / 0.30f, 1.5f)) + 0.003f);
     return clamp(exteriorTail * opacity, 0.0f, 1.0f);
 }}
 

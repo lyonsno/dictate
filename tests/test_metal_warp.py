@@ -182,9 +182,19 @@ def test_metal_shader_flat_interior_uses_true_average_mip_and_value_lerp():
     assert "float maxMipLod = 12.0f" in source
     assert "float2 averageMipCoord = float2(0.5f, 0.5f)" in source
     assert "flatColor.rgb = shellMaterialColorWithValueTarget(flatColor.rgb, valueTarget, 0.90f)" in source
-    assert "float darkGray = mix(0.08f, 0.14f, contrast)" in source
+    assert "float darkValue = mix(0.08f, 0.14f, contrast)" in source
+    assert "float lightValue = mix(0.82f, 0.72f, contrast)" in source
     assert "float crispMarginPixels = 0.0f" in source
     assert "params.bandWidth * 3.0f" in source
+
+
+def test_metal_shader_shell_rim_reads_as_flat_boundary_not_glass_capsule():
+    source = metal_warp._metal_shader_source()
+
+    assert "float ridgeScale = mix(0.35f, 0.75f" in source
+    assert "edgeRidge * 0.22f" in source
+    assert "0.07f * exp" in source
+    assert "+ 0.003f" in source
 
 
 def test_metal_material_alpha_is_not_locally_brightness_dependent():
