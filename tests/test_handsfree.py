@@ -200,6 +200,26 @@ class TestHandsFreeControllerWakeWords:
         controller._wakeword.start.assert_called_once_with()
         assert controller.state == HandsFreeState.LISTENING
 
+    def test_start_dictating_interrupts_codex_speech_before_audio_capture(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr("spoke.inject.save_pasteboard", lambda: None)
+        delegate = MagicMock()
+        delegate._glow = None
+        delegate._menubar = None
+        call_order: list[str] = []
+        delegate._interrupt_codex_speech.side_effect = lambda: call_order.append(
+            "interrupt"
+        )
+        delegate._capture.start.side_effect = lambda **_kwargs: call_order.append(
+            "capture"
+        )
+        controller = HandsFreeController(delegate=delegate)
+
+        controller._start_dictating()
+
+        assert call_order[:2] == ["interrupt", "capture"]
+
     def test_segment_transcription_of_sleep_word_routes_to_wake_handler(self, monkeypatch):
         class ImmediateThread:
             def __init__(self, target=None, args=(), kwargs=None, **_ignored):

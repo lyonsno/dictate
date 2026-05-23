@@ -343,6 +343,12 @@ class HandsFreeController:
 
         delegate = self._delegate
         capture = delegate._capture
+        interrupt_codex_speech = getattr(delegate, "_interrupt_codex_speech", None)
+        if callable(interrupt_codex_speech):
+            try:
+                interrupt_codex_speech()
+            except Exception:
+                logger.exception("Failed to interrupt Codex speech from hands-free")
 
         # Set up segment callback — each silence-bounded segment triggers
         # transcription and injection.

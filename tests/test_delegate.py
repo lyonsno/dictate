@@ -93,6 +93,35 @@ class TestHoldCallbacks:
 
         assert call_order[:3] == ["glow", "overlay", "capture"]
 
+    def test_hold_start_interrupts_codex_speech_before_starting_capture(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+        call_order: list[str] = []
+        d._capture.start.side_effect = lambda **_kwargs: call_order.append("capture")
+
+        def popen(*_args, **_kwargs):
+            call_order.append("interrupt")
+            return MagicMock()
+
+        with patch.object(main_module.subprocess, "Popen", side_effect=popen) as popen_mock:
+            d._on_hold_start()
+
+        assert call_order[:2] == ["interrupt", "capture"]
+        command = popen_mock.call_args.args[0]
+        assert command[-1] == "interrupt"
+        assert "epistaxis-codex-speech" in command[0]
+
+    def test_hold_start_continues_recording_if_codex_speech_interrupt_fails(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+
+        with patch.object(main_module.subprocess, "Popen", side_effect=OSError("missing")):
+            d._on_hold_start()
+
+        d._capture.start.assert_called_once()
+
     def test_hold_start_capture_failure_restores_idle_ui(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)
         d._capture.start.side_effect = RuntimeError("audio dead")

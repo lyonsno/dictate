@@ -209,6 +209,13 @@ _COMMAND_OVERLAY_RECALL_MAX_CHARS = int(
 _COMMAND_OVERLAY_RECALL_MAX_LINES = int(
     os.environ.get("SPOKE_COMMAND_OVERLAY_RECALL_MAX_LINES", "80")
 )
+_CODEX_SPEECH_INTERRUPT_ENABLED = os.environ.get(
+    "SPOKE_CODEX_SPEECH_INTERRUPT", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+_CODEX_SPEECH_COMMAND = os.environ.get(
+    "SPOKE_CODEX_SPEECH_COMMAND",
+    str(Path.home() / ".local" / "bin" / "epistaxis-codex-speech"),
+)
 
 
 def _command_overlay_recall_preview(text: str) -> str:
@@ -240,6 +247,23 @@ def _command_overlay_recall_preview(text: str) -> str:
         f"full transcript remains in command history; omitted ~{omitted} chars]\n\n"
         f"{visible}"
     )
+
+
+def _interrupt_codex_speech_async() -> None:
+    """Best-effort barge-in signal for external Codex speech playback."""
+    if not _CODEX_SPEECH_INTERRUPT_ENABLED:
+        return
+    try:
+        subprocess.Popen(
+            [_CODEX_SPEECH_COMMAND, "interrupt"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception:
+        logger.exception("Failed to interrupt Codex speech")
 
 
 def _url_host(url: str) -> str:
@@ -981,6 +1005,9 @@ class SegmentAccumulator:
 
 class SpokeAppDelegate(NSObject):
     """Main application delegate — wires input → capture → transcribe → inject."""
+
+    def _interrupt_codex_speech(self) -> None:
+        _interrupt_codex_speech_async()
 
     def init(self):
         self = objc.super(SpokeAppDelegate, self).init()
@@ -2063,6 +2090,7 @@ class SpokeAppDelegate(NSObject):
             logger.info("Hold started during recovery — waiting for release")
             return
         self._recovery_hold_active = False
+        self._interrupt_codex_speech()
 
         shift_at_press = getattr(self._detector, '_shift_at_press', False)
         logger.info(
