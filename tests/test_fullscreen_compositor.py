@@ -1088,6 +1088,143 @@ def test_fullscreen_compositor_ignores_duplicate_shell_config_updates():
     assert compositor._config_generation == 3
 
 
+def test_fullscreen_compositor_traces_config_key_visual_ledger(monkeypatch):
+    import spoke.fullscreen_compositor as fullscreen_compositor
+
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    traces = []
+    monkeypatch.setattr(
+        fullscreen_compositor,
+        "record_command_overlay_trace",
+        lambda event, **fields: traces.append((event, fields)),
+        raising=False,
+    )
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._lock = threading.Lock()
+    compositor._shell_configs = [
+        {
+            "client_id": "assistant.command",
+            "generation": 9,
+            "presentation_generation": 4,
+            "presentation_requested_state": "opening",
+            "materialization_progress": 0.75,
+            "gpu_material_brightness": 0.31,
+        }
+    ]
+    compositor._config_generation = 3
+
+    compositor.update_shell_config_key("gpu_material_brightness", 0.77)
+
+    assert traces
+    event, fields = traces[-1]
+    assert event == "compositor.shell_config_key.updated"
+    assert fields["compositor_config_generation"] == 4
+    assert fields["client_snapshot_generation"] == 9
+    assert fields["presentation_generation"] == 4
+    assert fields["presentation_requested_state"] == "opening"
+    assert fields["key"] == "gpu_material_brightness"
+    assert fields["value"] == pytest.approx(0.77)
+    assert fields["gpu_material_brightness"] == pytest.approx(0.77)
+
+
+def test_fullscreen_compositor_traces_capture_sample_and_present_visual_ledger(monkeypatch):
+    import spoke.fullscreen_compositor as fullscreen_compositor
+
+    from spoke.fullscreen_compositor import FullScreenCompositor
+
+    class Layer:
+        def setDrawableSize_(self, _size):
+            return None
+
+        def nextDrawable(self):
+            return object()
+
+    class Pipeline:
+        def warp_to_drawable(self, *_args, **_kwargs):
+            return True
+
+    traces = []
+    monkeypatch.setattr(
+        fullscreen_compositor,
+        "record_command_overlay_trace",
+        lambda event, **fields: traces.append((event, fields)),
+        raising=False,
+    )
+    compositor = FullScreenCompositor.__new__(FullScreenCompositor)
+    compositor._running = True
+    compositor._lock = threading.Lock()
+    compositor._latest_iosurface = None
+    compositor._latest_pixel_buffer = None
+    compositor._latest_width = 0
+    compositor._latest_height = 0
+    compositor._latest_frame_generation = 0
+    compositor._shell_configs = [
+        {
+            "client_id": "assistant.command",
+            "generation": 11,
+            "presentation_generation": 8,
+            "presentation_requested_state": "opening",
+            "content_width_points": 40,
+            "center_x": 20,
+            "gpu_material_brightness": 0.44,
+        }
+    ]
+    compositor._config_generation = 5
+    compositor._rendered_frame_generation = 0
+    compositor._rendered_config_generation = 0
+    compositor._frame_count = 0
+    compositor._interval_frame_count = 0
+    compositor._interval_presented = 0
+    compositor._last_report_time = time.monotonic()
+    compositor._last_drawable_size = (0, 0)
+    compositor._presented_count = 0
+    compositor._sampled_brightness = 0.5
+    compositor._metal_layer = Layer()
+    compositor._pipeline = Pipeline()
+    compositor._on_first_present = None
+    compositor._last_presented_at = None
+    compositor._last_display_link_at = None
+    compositor._last_capture_frame_at = None
+    compositor._display_link_ticks = 0
+    compositor._duplicate_frames = 0
+    compositor._skipped_frames = 0
+    compositor._capture_frame_count = 0
+    compositor._total_display_link_interval_ms = 0.0
+    compositor._total_presented_interval_ms = 0.0
+    compositor._total_capture_frame_interval_ms = 0.0
+    compositor._total_compositor_tick_ms = 0.0
+    compositor._total_presented_frame_ms = 0.0
+    compositor._total_warp_to_drawable_ms = 0.0
+    compositor._total_brightness_sample_ms = 0.0
+    compositor._total_windowserver_brightness_sample_ms = 0.0
+    compositor._windowserver_brightness_samples = 0
+    compositor._brightness_samples = 0
+    compositor._last_brightness_sample_at = None
+    compositor._total_brightness_sample_interval_ms = 0.0
+    compositor._warp_to_drawable_calls = 0
+    compositor._sample_iosurface_brightness = (
+        lambda _iosurface, _w, _h, _config, _pixel_buffer=None: setattr(
+            compositor, "_sampled_brightness", 0.66
+        )
+        or "pixel_buffer"
+    )
+
+    compositor.submit_iosurface(object(), width=100, height=50, pixel_buffer=object())
+    assert compositor.sample_brightness_for_config(compositor._shell_configs[0]) == pytest.approx(0.66)
+    compositor._on_display_link()
+
+    by_event = {event: fields for event, fields in traces}
+    assert by_event["compositor.capture.frame"]["capture_frame_generation"] == 1
+    assert by_event["compositor.brightness.sampled"]["capture_frame_generation"] == 1
+    assert by_event["compositor.brightness.sampled"]["brightness_source"] == "pixel_buffer"
+    assert by_event["compositor.brightness.sampled"]["sampled_brightness"] == pytest.approx(0.66)
+    assert by_event["compositor.frame.presented"]["capture_frame_generation"] == 1
+    assert by_event["compositor.frame.presented"]["compositor_config_generation"] == 5
+    assert by_event["compositor.frame.presented"]["presentation_generation"] == 8
+    assert by_event["compositor.frame.presented"]["presented_count"] == 1
+
+
 def test_fullscreen_compositor_records_residency_diagnostics(monkeypatch):
     import spoke.fullscreen_compositor as fullscreen_compositor
 

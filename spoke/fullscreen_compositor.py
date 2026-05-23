@@ -26,6 +26,8 @@ from typing import Any, Literal, Mapping
 
 import objc
 
+from .command_overlay_trace import record_command_overlay_trace
+
 logger = logging.getLogger(__name__)
 
 if hasattr(objc, "ObjCPointerWarning"):
@@ -34,6 +36,33 @@ if hasattr(objc, "ObjCPointerWarning"):
 _shared_overlay_hosts: dict[tuple[str, int], "_SharedOverlayHost"] = {}
 _SCK_TARGET_FPS = max(1, int(float(os.environ.get("SPOKE_FULLSCREEN_COMPOSITOR_FPS", "30"))))
 _SCK_FRAME_INTERVAL = (1, _SCK_TARGET_FPS, 0, 0)
+
+
+def _visual_ledger_config_fields(config: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not config:
+        return {}
+    return {
+        "client_id": config.get("client_id"),
+        "client_role": config.get("role"),
+        "client_snapshot_generation": config.get("generation"),
+        "presentation_generation": config.get("presentation_generation"),
+        "presentation_requested_state": config.get("presentation_requested_state"),
+        "presentation_publisher_state": config.get("presentation_publisher_state"),
+        "materialization_progress": config.get("materialization_progress"),
+        "text_mask_progress": config.get("text_mask_progress"),
+        "gpu_material_brightness": config.get("gpu_material_brightness"),
+        "initial_brightness": config.get("initial_brightness"),
+        "center_x": config.get("center_x"),
+        "center_y": config.get("center_y"),
+        "content_width_points": config.get("content_width_points"),
+        "content_height_points": config.get("content_height_points"),
+    }
+
+
+def _record_visual_ledger(event: str, config: Mapping[str, Any] | None = None, **fields) -> None:
+    details = _visual_ledger_config_fields(config)
+    details.update(fields)
+    record_command_overlay_trace(event, **details)
 
 
 @dataclass(frozen=True)
@@ -426,20 +455,44 @@ class FullScreenCompositor:
     def update_shell_configs(self, shell_configs) -> None:
         """Replace the active shell-config set."""
         normalized = _normalize_shell_configs(shell_configs)
+        trace_config = None
+        trace_generation = None
+        trace_count = 0
         with self._lock:
             if normalized == self._shell_configs:
                 return
             self._shell_configs = normalized
             self._config_generation += 1
+            trace_generation = self._config_generation
+            trace_count = len(self._shell_configs)
+            trace_config = dict(self._shell_configs[0]) if self._shell_configs else None
+        _record_visual_ledger(
+            "compositor.shell_configs.updated",
+            trace_config,
+            compositor_config_generation=trace_generation,
+            shell_config_count=trace_count,
+        )
 
     def update_shell_config_key(self, key: str, value) -> None:
         """Update a single key in the shell config without replacing."""
+        trace_config = None
+        trace_generation = None
         with self._lock:
             if self._shell_configs:
                 if self._shell_configs[0].get(key) == value:
                     return
                 self._shell_configs[0][key] = value
                 self._config_generation += 1
+                trace_generation = self._config_generation
+                trace_config = dict(self._shell_configs[0])
+        if trace_config is not None:
+            _record_visual_ledger(
+                "compositor.shell_config_key.updated",
+                trace_config,
+                compositor_config_generation=trace_generation,
+                key=key,
+                value=value,
+            )
 
     @property
     def sampled_brightness(self) -> float:
@@ -622,6 +675,18 @@ class FullScreenCompositor:
                         0.0,
                     )
                 self._last_brightness_sample_at = sample_end
+                sampled_brightness = self._sampled_brightness
+                capture_frame_generation = getattr(self, "_latest_frame_generation", 0)
+                config_generation = getattr(self, "_config_generation", 0)
+            _record_visual_ledger(
+                "compositor.brightness.sampled",
+                config,
+                compositor_config_generation=config_generation,
+                capture_frame_generation=capture_frame_generation,
+                brightness_source=source or "unknown",
+                sampled_brightness=sampled_brightness,
+                brightness_sample_ms=elapsed_ms,
+            )
 
     def _sample_iosurface_brightness(self, iosurface, w, h, config, pixel_buffer=None):
         """Sample average luminance of the capsule region.
@@ -1009,6 +1074,7 @@ class FullScreenCompositor:
             self._latest_width = width
             self._latest_height = height
             self._latest_frame_generation += 1
+            frame_generation = self._latest_frame_generation
             self._capture_frame_count += 1
             if self._last_capture_frame_at is not None:
                 self._total_capture_frame_interval_ms += max(
@@ -1016,6 +1082,13 @@ class FullScreenCompositor:
                     0.0,
                 )
             self._last_capture_frame_at = now
+        _record_visual_ledger(
+            "compositor.capture.frame",
+            capture_frame_generation=frame_generation,
+            capture_width=width,
+            capture_height=height,
+            has_pixel_buffer=pixel_buffer is not None,
+        )
 
     # ------------------------------------------------------------------
     # CVDisplayLink render loop
@@ -1158,6 +1231,16 @@ class FullScreenCompositor:
                     self._last_presented_at = present_end
                 self._rendered_frame_generation = frame_generation
                 self._rendered_config_generation = config_generation
+                _record_visual_ledger(
+                    "compositor.frame.presented",
+                    warp_configs[0] if warp_configs else None,
+                    capture_frame_generation=frame_generation,
+                    compositor_config_generation=config_generation,
+                    presented_count=self._presented_count,
+                    was_first_present=was_first,
+                    warp_to_drawable_ms=max((warp_end - warp_start) * 1000.0, 0.0),
+                    present_frame_ms=max((present_end - present_start) * 1000.0, 0.0),
+                )
 
             elif self._frame_count <= 5:
                 logger.info("Compositor tick[%d]: warp_to_drawable returned False", self._frame_count)

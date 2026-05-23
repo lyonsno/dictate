@@ -3307,8 +3307,15 @@ class CommandOverlay(NSObject):
                     except Exception:
                         logger.debug("Failed to refresh compositor brightness", exc_info=True)
                 try:
-                    self._brightness_target = _clamp01(
+                    sampled_brightness = _clamp01(
                         float(getattr(compositor, "sampled_brightness", self._brightness_target))
+                    )
+                    self._brightness_target = sampled_brightness
+                    record_command_overlay_trace(
+                        "overlay.material.sample_target",
+                        sampled_brightness=sampled_brightness,
+                        brightness_sample_tick=sample_tick,
+                        **self._optical_presentation_frame_bundle().to_trace_fields(),
                     )
                 except Exception:
                     pass
@@ -3329,6 +3336,12 @@ class CommandOverlay(NSObject):
             if callable(updater) and abs(t - last_material_brightness) > 0.005:
                 updater("gpu_material_brightness", t)
                 self._last_gpu_material_brightness = t
+                record_command_overlay_trace(
+                    "overlay.material.publish",
+                    gpu_material_brightness=t,
+                    brightness_target=target,
+                    **self._optical_presentation_frame_bundle().to_trace_fields(),
+                )
         return t
 
     def brightnessStep_(self, timer) -> None:

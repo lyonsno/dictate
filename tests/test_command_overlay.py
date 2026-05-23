@@ -1559,6 +1559,7 @@ class TestOpticalShellMaterialization:
         timer = MagicMock()
         compositor = MagicMock()
         compositor.sampled_brightness = 1.0
+        compositor.presented_count = 1
         overlay._brightness_timer = timer
         overlay._fullscreen_compositor = compositor
         overlay._brightness = 0.0
@@ -1577,6 +1578,45 @@ class TestOpticalShellMaterialization:
         ]
         assert material_calls
         assert material_calls[-1].args[1] == pytest.approx(overlay._brightness)
+
+    def test_compositor_brightness_step_traces_material_visual_ledger(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_GPU_MATERIAL_ENABLED", True)
+        traces = []
+        monkeypatch.setattr(
+            mod,
+            "record_command_overlay_trace",
+            lambda event, **fields: traces.append((event, fields)),
+        )
+        timer = MagicMock()
+        compositor = MagicMock()
+        compositor.sampled_brightness = 1.0
+        compositor.presented_count = 1
+        overlay._brightness_timer = timer
+        overlay._fullscreen_compositor = compositor
+        overlay._optical_presentation_generation = 12
+        overlay._requested_optical_presentation_state = "opening"
+        overlay._committed_optical_publisher_state = "opening"
+        overlay._optical_compositor_config_generation = 12
+        overlay._optical_presentation_ack_generation = 12
+        overlay._materialization_progress = 1.0
+        overlay._fill_hidden_until_signature = None
+        overlay._window.isVisible.return_value = True
+        overlay._brightness = 0.0
+        overlay._brightness_target = 0.0
+
+        overlay.brightnessStep_(timer)
+
+        events = {event: fields for event, fields in traces}
+        assert events["overlay.material.sample_target"]["sampled_brightness"] == pytest.approx(1.0)
+        assert events["overlay.material.sample_target"]["presentation_generation"] == 12
+        assert events["overlay.material.publish"]["gpu_material_brightness"] == pytest.approx(
+            overlay._brightness
+        )
+        assert events["overlay.material.publish"]["presentation_generation"] == 12
+        assert events["overlay.material.publish"]["presentation_acknowledged"] is True
 
     def test_gpu_material_is_disabled_by_default_for_smoke_stability(
         self, mock_pyobjc, monkeypatch
