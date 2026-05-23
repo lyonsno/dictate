@@ -211,12 +211,13 @@ float shellMaterialChoiceForBrightness(float brightness) {{
     return t * t * (3.0f - 2.0f * t);
 }}
 
-float3 shellMaterialColorForBrightness(float brightness, float textContrastBias) {{
+float3 shellMaterialGrayTargetForBrightness(float brightness, float textContrastBias) {{
     float choice = shellMaterialChoiceForBrightness(brightness);
     float contrast = clamp(textContrastBias, 0.0f, 1.0f);
-    float3 darkBackgroundFill = mix(float3(0.36f, 0.37f, 0.39f), float3(0.48f, 0.49f, 0.51f), contrast);
-    float3 lightBackgroundFill = mix(float3(0.065f, 0.065f, 0.075f), float3(0.025f, 0.025f, 0.032f), contrast);
-    return mix(darkBackgroundFill, lightBackgroundFill, choice);
+    float darkGray = mix(0.70f, 0.80f, contrast);
+    float lightGray = mix(0.30f, 0.20f, contrast);
+    float gray = mix(darkGray, lightGray, choice);
+    return float3(gray, gray, gray);
 }}
 
 float shellMaterialAlphaForSdf(float2 p, constant WarpParams& params) {{
@@ -266,10 +267,12 @@ float4 composeShellMaterial(float4 warpedColor, float2 p, constant WarpParams& p
     }}
     float alpha = shellMaterialAlphaForSdf(p, params);
     if (alpha <= 0.0f) return warpedColor;
-    float3 materialColor = shellMaterialColorForBrightness(
+    float3 grayTarget = shellMaterialGrayTargetForBrightness(
         params.gpuMaterialBrightness,
         params.gpuMaterialTextContrastBias
     );
+    float grayMix = mix(0.65f, 0.80f, clamp(params.gpuMaterialTextContrastBias, 0.0f, 1.0f));
+    float3 materialColor = mix(warpedColor.rgb, grayTarget, grayMix);
     return float4(mix(warpedColor.rgb, materialColor, alpha), warpedColor.a);
 }}
 
@@ -471,7 +474,7 @@ kernel void opticalShellWarp(
     // the capsule boundary before the mip band begins.
     float crispMarginPixels = 6.0f;
     float pixelsInside = max(-capsuleSdf - crispMarginPixels, 0.0f);
-    float bandPixels = max(params.bandWidth * 0.8f, 8.0f);
+    float bandPixels = max(params.bandWidth * 5.0f, 96.0f);
     float bandT = clamp(pixelsInside / bandPixels, 0.0f, 1.0f);
     // Ease-in / ease-out for the band transition
     float easedT = bandT * bandT * bandT * (bandT * (bandT * 6.0f - 15.0f) + 10.0f);
@@ -489,7 +492,7 @@ kernel void opticalShellWarp(
     // In the band: mip ramps from 0 (at the edge) toward a medium level.
     // Past the band: jump to max mip (flat average).
     float bandMipLod = easedT * 4.0f + warpAliasBias;
-    float maxMipLod = 6.0f;
+    float maxMipLod = 12.0f;
     float mipLod = (bandT < 1.0f)
         ? clamp(bandMipLod, 0.0f, maxMipLod)
         : maxMipLod;
@@ -507,13 +510,20 @@ kernel void opticalShellWarp(
     }}
 
     // Sample the flat interior average (max mip — one cached texel)
-    float4 flatColor = inTexture.sample(mipSampler, normPt, level(maxMipLod));
+    float2 averageMipCoord = float2(0.5f, 0.5f);
+    float4 flatColor = inTexture.sample(mipSampler, averageMipCoord, level(maxMipLod));
+    float3 grayTarget = shellMaterialGrayTargetForBrightness(
+        params.gpuMaterialBrightness,
+        params.gpuMaterialTextContrastBias
+    );
+    flatColor.rgb = mix(flatColor.rgb, grayTarget, 0.50f);
 
     // In the band, lerp from the mipped sample toward the flat average.
     // At the outer edge (easedT=0): pure crisp warped sample.
     // At the inner edge (easedT=1): pure flat average.
     // Past the band: flat average only.
-    float4 warpedColor = mix(bandColor, flatColor, easedT);
+    float flatMix = easedT * clamp(params.mipBlurStrength, 0.0f, 1.0f);
+    float4 warpedColor = mix(bandColor, flatColor, flatMix);
 
     // Temporal accumulation: EMA blend tied to blur depth.
     // High mip LOD (deep interior) = heavy temporal smoothing.
@@ -522,8 +532,8 @@ kernel void opticalShellWarp(
     if (capsuleSdf <= 0.0f) {{
         // Interior: temporal weight scales with mip LOD (blur depth).
         // mipLod 0 (rim, no blur) → weight 1.0 (no temporal).
-        // mipLod 6 (deep interior, max blur) → weight = params.temporalBlend.
-        float mipFrac = clamp(mipLod / 6.0f, 0.0f, 1.0f);
+        // mipLod max (deep interior, flat average) → weight = params.temporalBlend.
+        float mipFrac = clamp(mipLod / max(maxMipLod, 1.0f), 0.0f, 1.0f);
         float temporalWeight = mix(1.0f, params.temporalBlend, mipFrac);
         float4 prev = accumIn.read(gid);
         float4 blended = mix(prev, warpedColor, temporalWeight);

@@ -3102,21 +3102,15 @@ class CommandOverlay(NSObject):
     def _make_response_fragment(self, token: str):
         """Create an attributed string fragment for a response token.
 
-        The colorful identity lives in a blurred underlay while the readable
-        foreground stays high-contrast against the adaptive surface.
+        Keep response text typographic and adaptive; the optical body now
+        carries the material identity.
         """
         from AppKit import (
             NSMutableAttributedString,
             NSForegroundColorAttributeName,
             NSFontAttributeName,
-            NSShadowAttributeName,
-            NSShadow,
         )
         fg_r, fg_g, fg_b = _assistant_foreground_color_for_brightness(self._brightness)
-        if getattr(self, "_response_chroma_active", True):
-            blur_r, blur_g, blur_b = self._current_hue_rgb()
-        else:
-            blur_r, blur_g, blur_b = fg_r, fg_g, fg_b
         frag = NSMutableAttributedString.alloc().initWithString_(token)
         response_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
             fg_r, fg_g, fg_b, _ASSISTANT_TEXT_ALPHA_MAX
@@ -3128,16 +3122,6 @@ class CommandOverlay(NSObject):
             NSFontAttributeName,
             NSFont.systemFontOfSize_weight_(_FONT_SIZE, 0.0),
             (0, len(token)),
-        )
-        # Blurred colorful underlay behind the crisp readable text.
-        glow = NSShadow.alloc().init()
-        glow.setShadowColor_(
-            NSColor.colorWithSRGBRed_green_blue_alpha_(blur_r, blur_g, blur_b, 0.7)
-        )
-        glow.setShadowOffset_((0, 0))
-        glow.setShadowBlurRadius_(_ASSISTANT_BLUR_RADIUS)
-        frag.addAttribute_value_range_(
-            NSShadowAttributeName, glow, (0, len(token))
         )
         self._apply_approval_card_style(frag, token)
         return frag
@@ -3443,28 +3427,6 @@ class CommandOverlay(NSObject):
             r, g, b = c + m, m, x + m
         response_r, response_g, response_b = _assistant_foreground_color_for_brightness(t)
 
-        # Alternate color: offset hue by ~0.4, slightly out of phase so
-        # when the main color is bright the alt is dark and vice versa.
-        alt_hue = (hue + 0.4) % 1.0
-        alt_breath = 1.0 - breath  # out of phase
-        alt_v = base_v + (0.65 - base_v) * spring
-        alt_v = alt_v * (0.6 + 0.4 * alt_breath)  # modulate darker
-        alt_c = alt_v * s
-        alt_x = alt_c * (1.0 - abs((alt_hue * 6.0) % 2.0 - 1.0))
-        alt_m = alt_v - alt_c
-        alt_h6 = alt_hue * 6.0
-        if alt_h6 < 1:
-            alt_r, alt_g, alt_b = alt_c + alt_m, alt_x + alt_m, alt_m
-        elif alt_h6 < 2:
-            alt_r, alt_g, alt_b = alt_x + alt_m, alt_c + alt_m, alt_m
-        elif alt_h6 < 3:
-            alt_r, alt_g, alt_b = alt_m, alt_c + alt_m, alt_x + alt_m
-        elif alt_h6 < 4:
-            alt_r, alt_g, alt_b = alt_m, alt_x + alt_m, alt_c + alt_m
-        elif alt_h6 < 5:
-            alt_r, alt_g, alt_b = alt_x + alt_m, alt_m, alt_c + alt_m
-        else:
-            alt_r, alt_g, alt_b = alt_c + alt_m, alt_m, alt_x + alt_m
         # Update text colors per-range
         if self._text_view is not None:
             from AppKit import NSForegroundColorAttributeName as _FG_pulse
@@ -3488,19 +3450,13 @@ class CommandOverlay(NSObject):
                     )
                 except Exception:
                     pass
-                # Response text has two visual layers per character:
-                # a crisp adaptive foreground for legibility, plus a colored
-                # blurred shadow that carries the chromatic identity. In
-                # punch-through mode the live NSTextView is hidden and only
-                # supplies the mask source, so per-tick restyling is invisible
-                # main-thread work.
+                # In punch-through mode the live NSTextView is hidden and only
+                # supplies the mask source.
                 resp_start = utt_len + 2
                 resp_len = total_len - resp_start
                 _punchthrough = getattr(self, "_text_punchthrough", False)
                 if resp_start < total_len and resp_len > 0 and not _punchthrough:
                     from AppKit import (
-                        NSShadowAttributeName as _SH_pulse,
-                        NSShadow,
                         NSFontAttributeName as _FN_pulse,
                         NSFont,
                     )
@@ -3509,11 +3465,6 @@ class CommandOverlay(NSObject):
                         _FONT_SIZE, 0.0  # regular weight — matches _make_response_fragment
                     )
                     try:
-                        # Bulk span path: 3 coarse spans (edge, center, edge)
-                        # instead of per-character iteration. The gradient
-                        # approximation is sufficient for the 2-5s breathing
-                        # animation on this fallback rendering path.
-                        # Foreground and font are uniform across the full range.
                         ts.addAttribute_value_range_(
                             _FG_pulse,
                             NSColor.colorWithSRGBRed_green_blue_alpha_(
@@ -3527,47 +3478,6 @@ class CommandOverlay(NSObject):
                         ts.addAttribute_value_range_(
                             _FN_pulse, light_font, (resp_start, resp_len)
                         )
-                        if resp_len <= 3:
-                            # Too short for span splits; single shadow pass.
-                            lum = 0.299 * r + 0.587 * g + 0.114 * b
-                            shadow = NSShadow.alloc().init()
-                            shadow.setShadowColor_(
-                                NSColor.colorWithSRGBRed_green_blue_alpha_(
-                                    r, g, b, 0.7 + 0.3 * lum
-                                )
-                            )
-                            shadow.setShadowOffset_((0, 0))
-                            shadow.setShadowBlurRadius_(5.0 + lum * 14.0)
-                            ts.addAttribute_value_range_(
-                                _SH_pulse, shadow, (resp_start, resp_len)
-                            )
-                        else:
-                            # Three spans: edge (0..e), center (e..m), edge (m..end)
-                            edge = max(1, resp_len // 4)
-                            mid = max(edge + 1, resp_len * 3 // 4)
-                            spans = [
-                                (resp_start,        edge,           0.0),   # edge: main color
-                                (resp_start + edge, mid - edge,     1.0),   # center: alt color
-                                (resp_start + mid,  resp_len - mid, 0.0),   # edge: main color
-                            ]
-                            for span_start, span_len, weight in spans:
-                                if span_len <= 0:
-                                    continue
-                                cr = _lerp(r, alt_r, weight)
-                                cg = _lerp(g, alt_g, weight)
-                                cb = _lerp(b, alt_b, weight)
-                                lum = 0.299 * cr + 0.587 * cg + 0.114 * cb
-                                shadow = NSShadow.alloc().init()
-                                shadow.setShadowColor_(
-                                    NSColor.colorWithSRGBRed_green_blue_alpha_(
-                                        cr, cg, cb, 0.7 + 0.3 * lum
-                                    )
-                                )
-                                shadow.setShadowOffset_((0, 0))
-                                shadow.setShadowBlurRadius_(5.0 + lum * 14.0)
-                                ts.addAttribute_value_range_(
-                                    _SH_pulse, shadow, (span_start, span_len)
-                                )
                     except Exception:
                         pass
             elif total_len > 0:
@@ -3749,7 +3659,6 @@ class CommandOverlay(NSObject):
 
     def _start_pulse_timer(self) -> None:
         self._cancel_pulse()
-        self._response_chroma_active = True
         self._pulse_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             1.0 / _PULSE_HZ, self, "pulseStep:", None, True
         )

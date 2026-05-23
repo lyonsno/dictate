@@ -169,10 +169,19 @@ def test_metal_shader_composes_gpu_shell_material_after_warp_sampling():
     assert "gpuMaterialHeightFrac" in source
     assert "gpuMaterialTextContrastBias" in source
     assert "gpuMaterialRidgeEmphasis" in source
-    assert "shellMaterialColorForBrightness" in source
+    assert "shellMaterialGrayTargetForBrightness" in source
     assert "shellMaterialAlphaForSdf" in source
     assert "composeShellMaterial" in source
     assert "warpedColor = composeShellMaterial" in source
+
+
+def test_metal_shader_flat_interior_uses_true_average_mip_and_gray_lerp():
+    source = metal_warp._metal_shader_source()
+
+    assert "float maxMipLod = 12.0f" in source
+    assert "float2 averageMipCoord = float2(0.5f, 0.5f)" in source
+    assert "flatColor.rgb = mix(flatColor.rgb, grayTarget" in source
+    assert "params.bandWidth * 5.0f" in source
 
 
 def test_metal_material_alpha_is_not_locally_brightness_dependent():

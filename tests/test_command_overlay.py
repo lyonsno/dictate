@@ -1596,6 +1596,20 @@ class TestOpticalShellMaterialization:
         assert max(mod._assistant_foreground_color_for_brightness(0.0)) <= 0.84
         assert max(mod._user_text_color_for_brightness(0.0)) <= 0.84
 
+    def test_response_text_no_longer_carries_chromatic_shadow(self, mock_pyobjc):
+        import inspect
+
+        mod = importlib.import_module("spoke.command_overlay")
+
+        fragment_source = inspect.getsource(mod.CommandOverlay._make_response_fragment)
+        pulse_source = inspect.getsource(mod.CommandOverlay._pulseStepInner)
+        start_pulse_source = inspect.getsource(mod.CommandOverlay._start_pulse_timer)
+
+        assert "_current_hue_rgb" not in fragment_source
+        assert "NSShadowAttributeName" not in fragment_source
+        assert "NSShadowAttributeName as _SH_pulse" not in pulse_source
+        assert "_response_chroma_active = True" not in start_pulse_source
+
     def test_pulse_skips_gpu_material_key_updates_when_gate_is_off(
         self, mock_pyobjc, monkeypatch
     ):
@@ -4362,7 +4376,7 @@ class TestAdaptiveCompositing:
         assert max(color[:3]) < 0.08
         overlay._boost_layer.setHidden_.assert_called_with(False)
 
-    def test_response_fragment_uses_blurry_colored_underlay_with_crisp_foreground(
+    def test_response_fragment_uses_crisp_foreground_without_chroma_shadow(
         self, mock_pyobjc, monkeypatch
     ):
         sys.modules.pop("spoke.command_overlay", None)
@@ -4385,34 +4399,8 @@ class TestAdaptiveCompositing:
                 def alloc(self):
                     return _AttrBuilder()
 
-            class _FakeShadow:
-                def __init__(self):
-                    self.color = None
-                    self.offset = None
-                    self.blur = None
-
-                def setShadowColor_(self, color):
-                    self.color = color
-
-                def setShadowOffset_(self, offset):
-                    self.offset = offset
-
-                def setShadowBlurRadius_(self, radius):
-                    self.blur = radius
-
-            class _ShadowBuilder:
-                def init(self):
-                    return _FakeShadow()
-
-            class _ShadowAlloc:
-                def alloc(self):
-                    return _ShadowBuilder()
-
             monkeypatch.setattr(
                 sys.modules["AppKit"], "NSMutableAttributedString", _AttrAlloc(), raising=False
-            )
-            monkeypatch.setattr(
-                sys.modules["AppKit"], "NSShadow", _ShadowAlloc(), raising=False
             )
             monkeypatch.setattr(
                 sys.modules["AppKit"].NSColor,
@@ -4428,12 +4416,11 @@ class TestAdaptiveCompositing:
             frag = overlay._make_response_fragment("Done.")
 
             fg = next(value for name, value, _ in frag.attrs if name == "NSForegroundColor")
-            shadow = next(value for name, value, _ in frag.attrs if name == "NSShadow")
+            shadows = [value for name, value, _ in frag.attrs if name == "NSShadow"]
 
             assert max(fg[:3]) < 0.2, "dark text on light backdrop"
             assert fg[3] == pytest.approx(mod._ASSISTANT_TEXT_ALPHA_MAX)
-            assert shadow.blur == pytest.approx(mod._ASSISTANT_BLUR_RADIUS)
-            assert shadow.color[:3] != fg[:3]
+            assert shadows == []
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
@@ -4551,7 +4538,7 @@ class TestAdaptiveCompositing:
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
-    def test_pulse_batches_long_response_shadow_symmetrically(
+    def test_pulse_batches_long_response_foreground_without_shadow(
         self, mock_pyobjc, monkeypatch
     ):
         monkeypatch.setenv("SPOKE_COMMAND_RESPONSE_ANIMATION_CHAR_LIMIT", "8")
@@ -4570,30 +4557,6 @@ class TestAdaptiveCompositing:
                 def addAttribute_value_range_(self, name, value, rng):
                     self.attrs.append((name, value, rng))
 
-            class _FakeShadow:
-                def __init__(self):
-                    self.color = None
-                    self.offset = None
-                    self.blur = None
-
-                def setShadowColor_(self, color):
-                    self.color = color
-
-                def setShadowOffset_(self, offset):
-                    self.offset = offset
-
-                def setShadowBlurRadius_(self, radius):
-                    self.blur = radius
-
-            class _ShadowBuilder:
-                def init(self):
-                    return _FakeShadow()
-
-            class _ShadowAlloc:
-                def alloc(self):
-                    return _ShadowBuilder()
-
-            monkeypatch.setattr(sys.modules["AppKit"], "NSShadow", _ShadowAlloc(), raising=False)
             monkeypatch.setattr(
                 sys.modules["AppKit"].NSColor,
                 "colorWithSRGBRed_green_blue_alpha_",
@@ -4622,15 +4585,15 @@ class TestAdaptiveCompositing:
             overlay._pulseStepInner()
 
             response_start = len("Prompt\n\n")
-            shadow_attrs = [
-                (rng, value)
-                for name, value, rng in storage.attrs
-                if name == "NSShadow" and rng[0] >= response_start
+            response_attrs = [
+                (name, rng)
+                for name, _value, rng in storage.attrs
+                if rng[0] >= response_start
             ]
 
-            assert len(shadow_attrs) == 3
-            assert shadow_attrs[0][1].color == shadow_attrs[-1][1].color
-            assert shadow_attrs[1][1].color != shadow_attrs[0][1].color
+            assert ("NSForegroundColor", (response_start, len(response))) in response_attrs
+            assert ("NSFont", (response_start, len(response))) in response_attrs
+            assert not any(name == "NSShadow" for name, _rng in response_attrs)
         finally:
             sys.modules.pop("spoke.command_overlay", None)
 
