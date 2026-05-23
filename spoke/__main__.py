@@ -152,6 +152,14 @@ from .handsfree import (
 )
 from .scene_capture import SceneCaptureCache
 from .optical_shell_metrics import OpticalShellMetrics
+from .coordination_surfaces import (
+    CoordinationStack,
+    SurfaceEntry,
+    SurfaceKind,
+    SurfaceTypeRegistry,
+    build_default_registry,
+    text_surface_from_str,
+)
 from .subagents import SubagentManager, run_search_subagent_query
 from .tool_dispatch import execute_tool, get_search_subagent_tool_schemas, get_tool_schemas
 from .glow import GlowOverlay
@@ -781,6 +789,7 @@ class TrayEntry:
     acknowledged: bool = True
     kind: str = "tray"
     metadata: dict[str, object] = field(default_factory=dict)
+    coordination_surface_id: str = ""
 
     def __eq__(self, other):
         if isinstance(other, TrayEntry):
@@ -1294,6 +1303,9 @@ class SpokeAppDelegate(NSObject):
         self._tray_index: int = 0
         self._tray_active: bool = False
         self._tray_tool_result: dict | None = None
+        # Typed coordination surface stack (new backing store, coexists during migration)
+        self._surface_registry = build_default_registry()
+        self._coordination_stack = CoordinationStack(registry=self._surface_registry)
 
         # Recovery mode state (implementation detail of tray)
         # _NOT_CAPTURED sentinel distinguishes "not captured yet" from
@@ -3362,6 +3374,49 @@ class SpokeAppDelegate(NSObject):
         entry = self._get_tray_entry(index)
         if entry.owner == "assistant" and not entry.acknowledged:
             entry.acknowledged = True
+            self._mirror_tray_entry_acknowledged(entry)
+
+    def _mirror_tray_entry_acknowledged(self, entry: TrayEntry) -> None:
+        surface_id = getattr(entry, "coordination_surface_id", "")
+        if not surface_id:
+            return
+        surface = self._coordination_stack.find_by_id(surface_id)
+        if surface is not None:
+            surface.acknowledged = entry.acknowledged
+
+    def _focus_surface_for_tray_entry(self, entry: TrayEntry) -> None:
+        surface_id = getattr(entry, "coordination_surface_id", "")
+        if surface_id:
+            self._coordination_stack.focus_by_id(surface_id)
+
+    def _remove_surface_for_tray_entry(self, entry: TrayEntry) -> None:
+        surface_id = getattr(entry, "coordination_surface_id", "")
+        if surface_id:
+            self._coordination_stack.remove_by_id(surface_id)
+
+    def _add_surface(
+        self,
+        surface: SurfaceEntry,
+        *,
+        activate: bool = True,
+        position: str = "top",
+    ) -> SurfaceEntry:
+        """Push a typed coordination surface into the stack.
+
+        This is the new primary entry point for adding surfaces. Legacy
+        text entries should use _add_tray_entry which delegates here.
+
+        During migration, legacy tray mutators mirror focus, acknowledgement,
+        and removals onto their paired typed surfaces when a pair exists.
+        """
+        if position == "priority":
+            self._coordination_stack.push_by_priority(surface)
+        else:
+            self._coordination_stack.push(surface, to_top=(position == "top"))
+        if activate:
+            self._coordination_stack.activate()
+            self._coordination_stack.focus_by_id(surface.surface_id)
+        return surface
 
     def _add_tray_entry(
         self,
@@ -3381,6 +3436,9 @@ class SpokeAppDelegate(NSObject):
             kind=kind,
             metadata=dict(metadata or {}),
         )
+        surface = text_surface_from_str(text, owner=owner)
+        entry.coordination_surface_id = surface.surface_id
+
         if position == "bottom":
             had_entries = bool(self._tray_stack)
             self._tray_stack.insert(0, entry)
@@ -3391,6 +3449,13 @@ class SpokeAppDelegate(NSObject):
         else:
             self._tray_stack.append(entry)
             self._tray_index = len(self._tray_stack) - 1
+
+        # Dual-write: also push to typed coordination stack
+        self._add_surface(
+            surface,
+            activate=activate,
+            position=position,
+        )
 
         if activate:
             self._tray_active = True
@@ -3446,6 +3511,7 @@ class SpokeAppDelegate(NSObject):
         if acknowledge:
             self._acknowledge_tray_entry(self._tray_index)
         entry = self._get_tray_entry(self._tray_index)
+        self._focus_surface_for_tray_entry(entry)
         text = entry.text
         # Set recovery_text for compatibility with existing dismiss/cleanup
         self._recovery_text = text
@@ -3661,6 +3727,8 @@ class SpokeAppDelegate(NSObject):
         """Delete the currently displayed tray entry."""
         if not self._tray_active or not self._tray_stack:
             return
+        entry = self._get_tray_entry(self._tray_index)
+        self._remove_surface_for_tray_entry(entry)
         del self._tray_stack[self._tray_index]
         if not self._tray_stack:
             self._dismiss_tray()
@@ -3683,6 +3751,7 @@ class SpokeAppDelegate(NSObject):
         self._detector.tray_active = False
 
         # Remove consumed entry from stack
+        self._remove_surface_for_tray_entry(entry)
         del self._tray_stack[self._tray_index]
         if self._tray_index >= len(self._tray_stack) and self._tray_stack:
             self._tray_index = len(self._tray_stack) - 1
@@ -3726,6 +3795,7 @@ class SpokeAppDelegate(NSObject):
         text = entry.text
 
         # Remove consumed entry from stack
+        self._remove_surface_for_tray_entry(entry)
         del self._tray_stack[self._tray_index]
         if self._tray_index >= len(self._tray_stack) and self._tray_stack:
             self._tray_index = len(self._tray_stack) - 1
