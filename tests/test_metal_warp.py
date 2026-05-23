@@ -181,9 +181,9 @@ def test_metal_shader_flat_interior_uses_true_average_mip_and_gray_lerp():
     assert "float maxMipLod = 12.0f" in source
     assert "float2 averageMipCoord = float2(0.5f, 0.5f)" in source
     assert "flatColor.rgb = mix(flatColor.rgb, grayTarget" in source
-    assert "float darkGray = mix(0.40f, 0.50f, contrast)" in source
-    assert "float crispMarginPixels = 2.0f" in source
-    assert "params.bandWidth * 4.5f" in source
+    assert "float darkGray = mix(0.28f, 0.36f, contrast)" in source
+    assert "float crispMarginPixels = 0.0f" in source
+    assert "params.bandWidth * 3.0f" in source
 
 
 def test_metal_material_alpha_is_not_locally_brightness_dependent():

@@ -214,7 +214,7 @@ float shellMaterialChoiceForBrightness(float brightness) {{
 float3 shellMaterialGrayTargetForBrightness(float brightness, float textContrastBias) {{
     float choice = shellMaterialChoiceForBrightness(brightness);
     float contrast = clamp(textContrastBias, 0.0f, 1.0f);
-    float darkGray = mix(0.40f, 0.50f, contrast);
+    float darkGray = mix(0.28f, 0.36f, contrast);
     float lightGray = mix(0.30f, 0.20f, contrast);
     float gray = mix(darkGray, lightGray, choice);
     return float3(gray, gray, gray);
@@ -470,11 +470,11 @@ kernel void opticalShellWarp(
     //
     // The band width is narrow and the easing makes it read as a designed
     // material edge rather than an artifact of the blur kernel.
-    // Crisp warp margin: ~1mm of un-blurred warped backdrop inside
-    // the capsule boundary before the mip band begins.
-    float crispMarginPixels = 2.0f;
+    // No crisp interior shelf: the flattened material should take over
+    // almost immediately inside the capsule boundary.
+    float crispMarginPixels = 0.0f;
     float pixelsInside = max(-capsuleSdf - crispMarginPixels, 0.0f);
-    float bandPixels = max(params.bandWidth * 4.5f, 88.0f);
+    float bandPixels = max(params.bandWidth * 3.0f, 56.0f);
     float bandT = clamp(pixelsInside / bandPixels, 0.0f, 1.0f);
     // Ease-in / ease-out for the band transition
     float easedT = bandT * bandT * bandT * (bandT * (bandT * 6.0f - 15.0f) + 10.0f);
