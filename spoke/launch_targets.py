@@ -139,5 +139,5 @@ def parse_env_overrides(env_file: Path) -> dict[str, str]:
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
             value = value[1:-1]
         if key:
-            overrides[key] = value
+            overrides[key] = os.path.expanduser(os.path.expandvars(value))
     return overrides

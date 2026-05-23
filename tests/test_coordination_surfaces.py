@@ -6,6 +6,7 @@ vocabulary and compact/expanded renderers.
 """
 
 import threading
+import json
 
 from spoke.coordination_surfaces import (
     CoordinationStack,
@@ -22,6 +23,9 @@ from spoke.coordination_surfaces import (
     SurfaceTypeRegistration,
     SurfaceTypeRegistry,
     build_default_registry,
+    derive_operator_ping_tokens,
+    layout_operator_ping_token_visuals,
+    load_operator_ping_events_from_jsonl,
     surface_actions_to_resolver_intents,
     text_surface_from_str,
 )
@@ -681,3 +685,255 @@ class TestSurfaceMessageBus:
         delivered = bus.drain()
         assert len(delivered) == n_threads * n_per_thread
         assert stack.size == n_threads * n_per_thread
+
+
+class TestOperatorPingTokenProjection:
+    def test_operator_ping_event_log_reader_replays_jsonl_without_capping(self, tmp_path):
+        event_log = tmp_path / "events.jsonl"
+        events = [
+            {
+                "kind": "operator_ping.created",
+                "event_id": f"epistaxis.event.v1:operator_ping.created:spoke:ping-{index}",
+                "operator_ping": {
+                    "ping_id": f"ping-{index}",
+                    "created_at": f"2026-05-22T12:{index:02d}:00Z",
+                    "diaulos": "chairside-sparkwright",
+                    "reason_token": f"q{index}",
+                },
+            }
+            for index in range(24)
+        ]
+        event_log.write_text(
+            "\n".join(json.dumps(event, sort_keys=True) for event in events) + "\n\n",
+            encoding="utf-8",
+        )
+
+        loaded = load_operator_ping_events_from_jsonl(event_log)
+
+        assert [event["operator_ping"]["ping_id"] for event in loaded] == [
+            f"ping-{index}" for index in range(24)
+        ]
+
+    def test_operator_ping_event_log_reader_missing_file_is_quiet(self, tmp_path):
+        assert load_operator_ping_events_from_jsonl(tmp_path / "missing.jsonl") == []
+
+    def test_unresolved_operator_pings_project_to_ephemeral_source_tokens(self):
+        events = [
+            {
+                "kind": "operator_ping.created",
+                "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-1",
+                "source_tool": "epistaxis ping-operator",
+                "operator_ping": {
+                    "ping_id": "ping-1",
+                    "created_at": "2026-05-22T12:00:00Z",
+                    "diaulos": "chairside-sparkwright",
+                    "topos": "projects/spoke/epistaxis.md#codex-source-sparks-near-the-chair-0522",
+                    "thread_id": "019e50eb-1a5f-7cc1-96e0-ea9adb751ef8",
+                    "pane_id": "77",
+                    "message": "assay needs operator glance",
+                    "reason": "Need operator choice before seating the token surface.",
+                    "reason_token": "question",
+                },
+            },
+            {
+                "kind": "operator_ping.created",
+                "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-2",
+                "source_tool": "epistaxis ping-operator",
+                "operator_ping": {
+                    "ping_id": "ping-2",
+                    "created_at": "2026-05-22T12:01:00Z",
+                    "topos": "projects/spoke/epistaxis.md#other-lane",
+                    "message": "already handled",
+                    "reason_token": "done",
+                },
+            },
+            {
+                "kind": "operator_ping.cleared",
+                "event_id": "epistaxis.event.v1:operator_ping.cleared:spoke:ping-2",
+                "operator_ping": {
+                    "ping_id": "ping-2",
+                    "cleared_at": "2026-05-22T12:02:00Z",
+                },
+            },
+        ]
+
+        tokens = derive_operator_ping_tokens(events)
+
+        assert [token.ping_id for token in tokens] == ["ping-1"]
+        token = tokens[0]
+        assert token.anchor == "operator_stack_body"
+        assert token.source_signature == "Diaulos: chairside-sparkwright"
+        assert token.label == "question"
+        assert token.reason_token == "question"
+        assert token.source_event_id == "epistaxis.event.v1:operator_ping.created:spoke:ping-1"
+        assert token.message == "assay needs operator glance"
+
+    def test_operator_ping_tokens_do_not_enter_or_focus_durable_stack_rows(self):
+        stack = CoordinationStack()
+        primary = _agent_entry("active-lane", "Active lane")
+        stack.push(primary)
+        stack.activate()
+
+        tokens = derive_operator_ping_tokens(
+            [
+                {
+                    "kind": "operator_ping.created",
+                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-1",
+                    "operator_ping": {
+                        "ping_id": "ping-1",
+                        "created_at": "2026-05-22T12:00:00Z",
+                        "diaulos": "chairside-sparkwright",
+                        "reason_token": "question",
+                    },
+                }
+            ],
+            stack=stack,
+        )
+
+        assert len(tokens) == 1
+        assert stack.entries == [primary]
+        assert stack.primary is primary
+        assert stack.active is True
+
+    def test_operator_ping_token_activation_routes_to_source_without_write_authority(self):
+        token = derive_operator_ping_tokens(
+            [
+                {
+                    "kind": "operator_ping.created",
+                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-1",
+                    "refs": {
+                        "topoi": ["projects/spoke/epistaxis.md#codex-source-sparks-near-the-chair-0522"],
+                    },
+                    "operator_ping": {
+                        "ping_id": "ping-1",
+                        "created_at": "2026-05-22T12:00:00Z",
+                        "diaulos": "chairside-sparkwright",
+                        "topos": "projects/spoke/epistaxis.md#codex-source-sparks-near-the-chair-0522",
+                        "thread_id": "019e50eb-1a5f-7cc1-96e0-ea9adb751ef8",
+                        "pane_id": "77",
+                        "session_address": "codex resume 019e50eb-1a5f-7cc1-96e0-ea9adb751ef8",
+                        "reason": "Need operator choice before seating the token surface.",
+                        "reason_token": "question",
+                    },
+                }
+            ]
+        )[0]
+
+        routing = token.activation_routing(gesture="select")
+
+        assert routing.destination_kind == SurfaceDestinationKind.SOURCE_ORGAN
+        assert routing.destination_id == "operator_ping:ping-1"
+        assert routing.reread_refs == [
+            "projects/spoke/epistaxis.md#codex-source-sparks-near-the-chair-0522"
+        ]
+        assert routing.scope == {
+            "operator_pings": ["ping-1"],
+            "topoi": ["projects/spoke/epistaxis.md#codex-source-sparks-near-the-chair-0522"],
+        }
+        assert routing.writeback_target == ""
+        assert routing.cargo["gesture"] == "select"
+        assert routing.cargo["reason_token"] == "question"
+        assert routing.cargo["source_signature"] == "Diaulos: chairside-sparkwright"
+        assert routing.cargo["authority"] == "event_fact_only"
+        assert routing.cargo["may_clear_ping"] is False
+        assert routing.cargo["may_focus_pane"] is False
+        assert routing.cargo["may_write_state"] is False
+
+
+class TestOperatorPingTokenVisualAssay:
+    def test_token_visuals_render_as_quiet_source_sparks_near_stack_body(self):
+        token = derive_operator_ping_tokens(
+            [
+                {
+                    "kind": "operator_ping.created",
+                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-1",
+                    "operator_ping": {
+                        "ping_id": "ping-1",
+                        "created_at": "2026-05-22T12:00:00Z",
+                        "diaulos": "chairside-sparkwright",
+                        "message": "assay needs operator glance",
+                        "reason_token": "question",
+                    },
+                }
+            ]
+        )[0]
+
+        visuals = layout_operator_ping_token_visuals(
+            [token],
+            stack_body_frame=(100.0, 80.0, 360.0, 96.0),
+        )
+
+        assert len(visuals) == 1
+        visual = visuals[0]
+        assert visual.ping_id == "ping-1"
+        assert visual.anchor == "operator_stack_body"
+        assert visual.presentation_text == "Diaulos: chairside-sparkwright · question"
+        assert visual.accessibility_label == (
+            "Operator ping from Diaulos: chairside-sparkwright: question"
+        )
+        assert visual.style_role == "quiet_source_spark"
+        assert visual.authority == "event_fact_only"
+        assert visual.steals_primary_focus is False
+        assert visual.frame.x >= 100.0
+        assert visual.frame.y >= 176.0
+
+    def test_token_visual_layout_keeps_all_tokens_without_capping(self):
+        tokens = derive_operator_ping_tokens(
+            [
+                {
+                    "kind": "operator_ping.created",
+                    "event_id": f"epistaxis.event.v1:operator_ping.created:spoke:ping-{index}",
+                    "operator_ping": {
+                        "ping_id": f"ping-{index}",
+                        "created_at": f"2026-05-22T12:{index:02d}:00Z",
+                        "diaulos": "chairside-sparkwright",
+                        "reason_token": f"q{index}",
+                    },
+                }
+                for index in range(18)
+            ]
+        )
+
+        visuals = layout_operator_ping_token_visuals(
+            tokens,
+            stack_body_frame=(100.0, 80.0, 360.0, 96.0),
+        )
+
+        assert len(visuals) == 18
+        assert [visual.ping_id for visual in visuals] == [
+            f"ping-{index}" for index in range(18)
+        ]
+        assert [visual.visual_index for visual in visuals] == list(range(18))
+        assert all(visual.diagnostic_count == 18 for visual in visuals)
+        assert len({(visual.frame.x, visual.frame.y) for visual in visuals}) == 18
+
+    def test_token_visual_layout_does_not_mutate_stack_focus_or_rows(self):
+        stack = CoordinationStack()
+        primary = _agent_entry("active-lane", "Active lane")
+        stack.push(primary)
+        stack.activate()
+        token = derive_operator_ping_tokens(
+            [
+                {
+                    "kind": "operator_ping.created",
+                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-1",
+                    "operator_ping": {
+                        "ping_id": "ping-1",
+                        "created_at": "2026-05-22T12:00:00Z",
+                        "diaulos": "chairside-sparkwright",
+                        "reason_token": "question",
+                    },
+                }
+            ]
+        )[0]
+
+        visuals = layout_operator_ping_token_visuals(
+            [token],
+            stack_body_frame=(100.0, 80.0, 360.0, 96.0),
+            stack=stack,
+        )
+
+        assert len(visuals) == 1
+        assert stack.entries == [primary]
+        assert stack.primary is primary
+        assert stack.active is True

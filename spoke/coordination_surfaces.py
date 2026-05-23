@@ -11,10 +11,12 @@ type's action vocabulary.
 
 from __future__ import annotations
 
+import json
 import threading
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
@@ -704,3 +706,279 @@ class SurfaceMessageBus:
                 self._on_delivery(msg.entry)
 
         return delivered
+
+
+# ---------------------------------------------------------------------------
+# Operator-ping tokens: ephemeral source-linked attention near the Stack body
+# ---------------------------------------------------------------------------
+
+
+OPERATOR_PING_TOKEN_ANCHOR = "operator_stack_body"
+OPERATOR_PING_TOKEN_GAP = 8.0
+OPERATOR_PING_TOKEN_WIDTH = 248.0
+OPERATOR_PING_TOKEN_HEIGHT = 28.0
+OPERATOR_PING_TOKEN_CASCADE_X = 12.0
+OPERATOR_PING_TOKEN_CASCADE_Y = 34.0
+
+
+@dataclass(frozen=True)
+class OperatorPingToken:
+    """Ephemeral presentation token derived from a source-owned ping event.
+
+    These tokens are not CoordinationStack rows. They carry enough source
+    cargo for a gesture to expand or navigate back to the ping source while
+    preserving the event as the only authority.
+    """
+
+    ping_id: str
+    source_event_id: str
+    source_signature: str
+    label: str
+    anchor: str = OPERATOR_PING_TOKEN_ANCHOR
+    diaulos: str = ""
+    topos: str = ""
+    thread_id: str = ""
+    pane_id: str = ""
+    session_address: str = ""
+    message: str = ""
+    reason: str = ""
+    reason_token: str = ""
+    refs: dict[str, list[str]] = field(default_factory=dict)
+
+    def activation_routing(self, *, gesture: str = "select") -> SurfaceRoutingContext:
+        """Return read-only routing cargo for expanding or navigating the ping source."""
+        reread_refs = _operator_ping_reread_refs(self.topos, self.refs)
+        scope: dict[str, list[str]] = {"operator_pings": [self.ping_id]}
+        if reread_refs:
+            scope["topoi"] = reread_refs
+
+        return SurfaceRoutingContext(
+            destination_kind=SurfaceDestinationKind.SOURCE_ORGAN,
+            destination_id=f"operator_ping:{self.ping_id}",
+            reread_refs=reread_refs,
+            scope=scope,
+            cargo={
+                "gesture": gesture,
+                "ping_id": self.ping_id,
+                "source_event_id": self.source_event_id,
+                "source_signature": self.source_signature,
+                "diaulos": self.diaulos,
+                "topos": self.topos,
+                "thread_id": self.thread_id,
+                "pane_id": self.pane_id,
+                "session_address": self.session_address,
+                "message": self.message,
+                "reason": self.reason,
+                "reason_token": self.reason_token,
+                "authority": "event_fact_only",
+                "may_clear_ping": False,
+                "may_focus_pane": False,
+                "may_write_state": False,
+            },
+            writeback_target="",
+        )
+
+
+@dataclass(frozen=True)
+class TokenVisualFrame:
+    """Renderer-neutral rectangle for an ephemeral token visual."""
+
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+@dataclass(frozen=True)
+class OperatorPingTokenVisual:
+    """Renderer-neutral visual presentation for an operator-ping token."""
+
+    ping_id: str
+    visual_index: int
+    diagnostic_count: int
+    frame: TokenVisualFrame
+    presentation_text: str
+    accessibility_label: str
+    anchor: str = OPERATOR_PING_TOKEN_ANCHOR
+    style_role: str = "quiet_source_spark"
+    authority: str = "event_fact_only"
+    steals_primary_focus: bool = False
+
+
+def _operator_ping_reread_refs(
+    topos: str,
+    refs: dict[str, list[str]] | None,
+) -> list[str]:
+    reread_refs: list[str] = []
+    if topos:
+        reread_refs.append(topos)
+    if refs:
+        for ref in refs.get("topoi", []):
+            if ref and ref not in reread_refs:
+                reread_refs.append(ref)
+    return reread_refs
+
+
+def _operator_ping_source_signature(ping: dict[str, Any]) -> str:
+    diaulos = str(ping.get("diaulos") or "").strip()
+    if diaulos:
+        return f"Diaulos: {diaulos}"
+    topos = str(ping.get("topos") or "").strip()
+    if topos:
+        return f"Topos: {topos}"
+    thread_id = str(ping.get("thread_id") or "").strip()
+    if thread_id:
+        return f"Thread: {thread_id}"
+    ping_id = str(ping.get("ping_id") or "").strip()
+    return f"Ping: {ping_id}" if ping_id else "Operator ping"
+
+
+def _operator_ping_token_label(ping: dict[str, Any]) -> str:
+    reason_token = str(ping.get("reason_token") or "").strip()
+    if reason_token:
+        return reason_token
+    message = " ".join(str(ping.get("message") or "").split())
+    if message:
+        return message[:60]
+    return "operator ping"
+
+
+def _operator_ping_visual_text(token: OperatorPingToken) -> str:
+    parts = [token.source_signature]
+    if token.label:
+        parts.append(token.label)
+    return " · ".join(parts)
+
+
+def _operator_ping_visual_accessibility_label(token: OperatorPingToken) -> str:
+    label = token.label or token.message or token.ping_id
+    return f"Operator ping from {token.source_signature}: {label}"
+
+
+def _operator_ping_created_at(ping: dict[str, Any], event: dict[str, Any]) -> str:
+    return str(ping.get("created_at") or event.get("observed_at") or "")
+
+
+def _operator_ping_sort_key(event: dict[str, Any]) -> tuple[str, str]:
+    ping = event.get("operator_ping") if isinstance(event.get("operator_ping"), dict) else {}
+    return (_operator_ping_created_at(ping, event), str(event.get("event_id") or ""))
+
+
+def load_operator_ping_events_from_jsonl(path: str | Path) -> list[dict[str, Any]]:
+    """Load operator ping rows from an Epistaxis Spark-Tendon JSONL stream."""
+    event_log = Path(path).expanduser()
+    if not event_log.exists():
+        return []
+
+    events: list[dict[str, Any]] = []
+    with event_log.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                event = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"invalid operator ping event JSON on line {line_number}: {exc.msg}"
+                ) from exc
+            if not isinstance(event, dict):
+                raise ValueError(
+                    f"invalid operator ping event JSON on line {line_number}: row is not an object"
+                )
+            if str(event.get("kind", "")).startswith("operator_ping."):
+                events.append(event)
+    return events
+
+
+def derive_operator_ping_tokens(
+    events: list[dict[str, Any]],
+    *,
+    stack: CoordinationStack | None = None,
+) -> list[OperatorPingToken]:
+    """Project unresolved operator pings into ephemeral source-linked tokens.
+
+    Replays append-only Epistaxis events: latest create for a ping id wins,
+    clear removes that id from the unresolved set. The optional stack argument
+    is accepted to make the non-mutation contract explicit; it is never
+    inspected or mutated.
+    """
+    del stack
+
+    unresolved: dict[str, dict[str, Any]] = {}
+    for event in events:
+        kind = event.get("kind")
+        ping = event.get("operator_ping")
+        if not isinstance(ping, dict):
+            continue
+        ping_id = str(ping.get("ping_id") or "").strip()
+        if not ping_id:
+            continue
+        if kind == "operator_ping.created":
+            unresolved[ping_id] = event
+        elif kind == "operator_ping.cleared":
+            unresolved.pop(ping_id, None)
+
+    tokens: list[OperatorPingToken] = []
+    for event in sorted(unresolved.values(), key=_operator_ping_sort_key):
+        ping = event["operator_ping"]
+        tokens.append(
+            OperatorPingToken(
+                ping_id=str(ping["ping_id"]),
+                source_event_id=str(event.get("event_id") or ""),
+                source_signature=_operator_ping_source_signature(ping),
+                label=_operator_ping_token_label(ping),
+                diaulos=str(ping.get("diaulos") or ""),
+                topos=str(ping.get("topos") or ""),
+                thread_id=str(ping.get("thread_id") or ""),
+                pane_id=str(ping.get("pane_id") or ""),
+                session_address=str(ping.get("session_address") or ""),
+                message=str(ping.get("message") or ""),
+                reason=str(ping.get("reason") or ""),
+                reason_token=str(ping.get("reason_token") or ""),
+                refs={
+                    str(key): [str(item) for item in value if item]
+                    for key, value in (event.get("refs") or {}).items()
+                    if isinstance(value, list)
+                },
+            )
+        )
+    return tokens
+
+
+def layout_operator_ping_token_visuals(
+    tokens: list[OperatorPingToken],
+    *,
+    stack_body_frame: tuple[float, float, float, float],
+    stack: CoordinationStack | None = None,
+) -> list[OperatorPingTokenVisual]:
+    """Lay out operator-ping tokens near the Stack body without row mutation.
+
+    The layout deliberately does not cap tokens. If a caller sees too many
+    visuals, that is upstream salience pressure to diagnose, not data to drop.
+    """
+    del stack
+
+    stack_x, stack_y, stack_width, stack_height = stack_body_frame
+    base_x = stack_x + max(0.0, stack_width - OPERATOR_PING_TOKEN_WIDTH)
+    base_y = stack_y + stack_height + OPERATOR_PING_TOKEN_GAP
+    count = len(tokens)
+    visuals: list[OperatorPingTokenVisual] = []
+    for index, token in enumerate(tokens):
+        frame = TokenVisualFrame(
+            x=base_x + (index % 3) * OPERATOR_PING_TOKEN_CASCADE_X,
+            y=base_y + index * OPERATOR_PING_TOKEN_CASCADE_Y,
+            width=OPERATOR_PING_TOKEN_WIDTH,
+            height=OPERATOR_PING_TOKEN_HEIGHT,
+        )
+        visuals.append(
+            OperatorPingTokenVisual(
+                ping_id=token.ping_id,
+                visual_index=index,
+                diagnostic_count=count,
+                frame=frame,
+                presentation_text=_operator_ping_visual_text(token),
+                accessibility_label=_operator_ping_visual_accessibility_label(token),
+            )
+        )
+    return visuals

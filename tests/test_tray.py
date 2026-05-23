@@ -681,3 +681,32 @@ class TestTrayRecoveryUnification:
 
         assert d._tray_active is True
         assert "failed paste text" in d._tray_stack
+
+
+class TestOperatorPingTokenVisualDelegate:
+    def test_backend_ping_events_project_to_overlay_visuals_without_tray_rows(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._overlay = MagicMock()
+
+        visuals = d._show_operator_ping_tokens_from_events(
+            [
+                {
+                    "kind": "operator_ping.created",
+                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-1",
+                    "operator_ping": {
+                        "ping_id": "ping-1",
+                        "created_at": "2026-05-22T12:00:00Z",
+                        "diaulos": "chairside-sparkwright",
+                        "reason_token": "question",
+                    },
+                }
+            ],
+            stack_body_frame=(100.0, 80.0, 360.0, 96.0),
+        )
+
+        assert [visual.ping_id for visual in visuals] == ["ping-1"]
+        assert d._tray_stack == []
+        assert d._coordination_stack.entries == []
+        d._overlay.show_operator_ping_token_visuals.assert_called_once_with(visuals)

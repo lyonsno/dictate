@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 import faulthandler
 import json
 import logging
@@ -158,6 +158,9 @@ from .coordination_surfaces import (
     SurfaceKind,
     SurfaceTypeRegistry,
     build_default_registry,
+    derive_operator_ping_tokens,
+    layout_operator_ping_token_visuals,
+    load_operator_ping_events_from_jsonl,
     text_surface_from_str,
 )
 from .subagents import SubagentManager, run_search_subagent_query
@@ -1366,6 +1369,7 @@ class SpokeAppDelegate(NSObject):
         self._overlay = TranscriptionOverlay.alloc().initWithScreen_(None)
         self._overlay.setup()
         self._overlay.set_compositor_registry(self._overlay_compositor_registry)
+        self._maybe_show_operator_ping_token_smoke()
 
         # Command output overlay — separate surface for command responses
         if self._command_client is not None:
@@ -2109,6 +2113,9 @@ class SpokeAppDelegate(NSObject):
                     immediate=True,
                 )
             self._overlay.show()
+            self._refresh_operator_ping_tokens_from_configured_event_log(
+                update_status=False,
+            )
 
         try:
             def on_vad_state(is_speech: bool):
@@ -3499,6 +3506,111 @@ class SpokeAppDelegate(NSObject):
             "stack_size": len(self._tray_stack),
             "entry_count": len(entries),
         }
+
+    def _show_operator_ping_tokens_from_events(
+        self,
+        events: list[dict],
+        *,
+        stack_body_frame: tuple[float, float, float, float],
+    ) -> list:
+        """Project backend ping events into ephemeral overlay visuals.
+
+        This does not add tray entries, focus CoordinationStack rows, clear
+        pings, or route to panes. It only hands renderer-neutral token visuals
+        to the overlay when that surface is present.
+        """
+        tokens = derive_operator_ping_tokens(events, stack=self._coordination_stack)
+        visuals = layout_operator_ping_token_visuals(
+            tokens,
+            stack_body_frame=stack_body_frame,
+            stack=self._coordination_stack,
+        )
+        overlay = getattr(self, "_overlay", None)
+        presenter = getattr(overlay, "show_operator_ping_token_visuals", None)
+        if callable(presenter):
+            presenter(visuals)
+        return visuals
+
+    def _operator_ping_token_smoke_frame(self) -> tuple[float, float, float, float]:
+        """Approximate the preview overlay body for token-only visual smoke."""
+        return (220.0, 220.0, 600.0, 80.0)
+
+    def _show_operator_ping_tokens_from_event_log(
+        self,
+        event_log_path: str,
+        *,
+        stack_body_frame: tuple[float, float, float, float],
+    ) -> list:
+        events = load_operator_ping_events_from_jsonl(event_log_path)
+        return self._show_operator_ping_tokens_from_events(
+            events,
+            stack_body_frame=stack_body_frame,
+        )
+
+    def _refresh_operator_ping_tokens_from_configured_event_log(
+        self,
+        *,
+        stack_body_frame: tuple[float, float, float, float] | None = None,
+        update_status: bool = True,
+    ) -> bool:
+        event_log_path = os.environ.get("SPOKE_OPERATOR_PING_EVENTS_PATH", "").strip()
+        if not event_log_path:
+            return False
+        try:
+            visuals = self._show_operator_ping_tokens_from_event_log(
+                event_log_path,
+                stack_body_frame=stack_body_frame or self._operator_ping_token_smoke_frame(),
+            )
+        except (OSError, ValueError) as exc:
+            logger.warning("Chairside ping token event log unreadable: %s", exc)
+            if update_status and self._menubar is not None:
+                self._menubar.set_status_text("Chairside ping token event log unreadable")
+            return False
+        if not visuals:
+            return False
+        if update_status and self._menubar is not None:
+            self._menubar.set_status_text("Chairside ping token event log")
+        return True
+
+    def _maybe_show_operator_ping_token_smoke(self) -> bool:
+        """Show a sample Chairside token when explicit smoke env is enabled."""
+        stack_body_frame = self._operator_ping_token_smoke_frame()
+        if self._refresh_operator_ping_tokens_from_configured_event_log(
+            stack_body_frame=stack_body_frame
+        ):
+            return True
+
+        value = os.environ.get("SPOKE_OPERATOR_PING_TOKEN_SMOKE", "")
+        if value in {"", "0", "false", "False", "no", "off"}:
+            return False
+
+        event = {
+            "kind": "operator_ping.created",
+            "event_id": "epistaxis.event.v1:operator_ping.created:spoke:chairside-smoke",
+            "source_tool": "epistaxis ping-operator",
+            "operator_ping": {
+                "ping_id": "chairside-smoke",
+                "created_at": datetime.now(timezone.utc)
+                .isoformat(timespec="seconds")
+                .replace("+00:00", "Z"),
+                "diaulos": "Chairside Sparkwright",
+                "message": os.environ.get(
+                    "SPOKE_OPERATOR_PING_TOKEN_SMOKE_MESSAGE",
+                    "Chairside visible token smoke",
+                ),
+                "reason_token": os.environ.get(
+                    "SPOKE_OPERATOR_PING_TOKEN_SMOKE_REASON_TOKEN",
+                    "smoke",
+                ),
+            },
+        }
+        self._show_operator_ping_tokens_from_events(
+            [event],
+            stack_body_frame=stack_body_frame,
+        )
+        if self._menubar is not None:
+            self._menubar.set_status_text("Chairside ping token smoke")
+        return True
 
     def _show_tray_current(self, *, acknowledge: bool = False) -> None:
         """Update the tray overlay to display the current stack entry."""
