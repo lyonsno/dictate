@@ -10,6 +10,8 @@ See docs/keyboard-grammar.md "The tray" for the full spec.
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 def _make_delegate(main_module, monkeypatch, *, command_client=False):
     """Create a SpokeAppDelegate with mocked sub-components."""
@@ -467,6 +469,85 @@ class TestDirectiveInboxStackPressure:
             getattr(entry, "kind", None) != "directive_inbox_pressure"
             for entry in d._tray_stack
         )
+
+    def test_directive_inbox_accepts_spool_envelope_rows(self, main_module):
+        payload = {
+            "schema": "epistaxis.directive_inbox_spool.v1",
+            "generated_at": "2026-05-23T00:00:00Z",
+            "rows": [
+                {
+                    "path": "metadosis/upstream-directives/pending.md",
+                    "target_path": "projects/epistaxis/topoi/badgestall.md",
+                    "target_diaulos": "badgestall-proctocolips-cartographer",
+                    "target_diaulos_id": None,
+                    "packet_exists": True,
+                    "source": {
+                        "kind": "diaulos",
+                        "sign": "opus-miserena-id-cartographer",
+                        "diaulos": "opus-miserena-id-cartographer",
+                        "diaulos_id": "dia-source",
+                        "topos": None,
+                        "refs": [],
+                    },
+                    "intent_class": "notice",
+                    "authority_basis": "peer-diaulos pressure; non-binding unless separately authorized",
+                    "required_rereads": ["metadosis/source-signed-diaulos-switchboard_2026-05-20.md"],
+                    "scope_refs": [],
+                    "delivery_state": "pending-durable-badge",
+                    "disposition_state": "pending",
+                    "supersedes": None,
+                },
+                {
+                    "path": "metadosis/upstream-directives/consumed.md",
+                    "target_path": "projects/epistaxis/topoi/badgestall.md",
+                    "target_diaulos": "badgestall-proctocolips-cartographer",
+                    "target_diaulos_id": None,
+                    "packet_exists": True,
+                    "source": {
+                        "kind": "diaulos",
+                        "sign": "opus-miserena-id-cartographer",
+                        "diaulos": "opus-miserena-id-cartographer",
+                        "diaulos_id": "dia-source",
+                        "topos": None,
+                        "refs": [],
+                    },
+                    "intent_class": "notice",
+                    "authority_basis": "peer-diaulos pressure; non-binding unless separately authorized",
+                    "required_rereads": [],
+                    "scope_refs": [],
+                    "delivery_state": "pending-durable-badge",
+                    "disposition_state": "consumed",
+                    "supersedes": None,
+                },
+            ],
+        }
+
+        entries = main_module.directive_inbox_json_to_tray_entries(
+            main_module.json.dumps(payload)
+        )
+
+        assert len(entries) == 1
+        assert entries[0].kind == "directive_inbox_pressure"
+        assert entries[0].metadata["path"] == "metadosis/upstream-directives/pending.md"
+        assert entries[0].metadata["disposition_state"] == "pending"
+        assert entries[0].metadata["required_rereads"] == [
+            "metadosis/source-signed-diaulos-switchboard_2026-05-20.md"
+        ]
+
+    def test_directive_inbox_rejects_non_spool_mapping_payload(self, main_module):
+        with pytest.raises(ValueError, match="list of entries or spool envelope"):
+            main_module.directive_inbox_json_to_tray_entries(
+                main_module.json.dumps({"rows": [], "schema": "wrong.schema"})
+            )
+
+    def test_directive_inbox_rejects_spool_envelope_without_list_rows(self, main_module):
+        with pytest.raises(ValueError, match="spool envelope rows must be a list"):
+            main_module.directive_inbox_json_to_tray_entries(
+                main_module.json.dumps({
+                    "schema": "epistaxis.directive_inbox_spool.v1",
+                    "rows": {"not": "a list"},
+                })
+            )
 
 
 class TestTrayGestures:

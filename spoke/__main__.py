@@ -815,8 +815,21 @@ def _directive_identity_metadata(handle: str | None, identity_id: str | None) ->
     return {"handle": handle, "id": identity_id}
 
 
+def _directive_inbox_payload_rows(payload) -> list:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        if payload.get("schema") != "epistaxis.directive_inbox_spool.v1":
+            raise ValueError("directive inbox JSON must be a list of entries or spool envelope")
+        rows = payload.get("rows")
+        if not isinstance(rows, list):
+            raise ValueError("directive inbox spool envelope rows must be a list")
+        return rows
+    raise ValueError("directive inbox JSON must be a list of entries or spool envelope")
+
+
 def directive_inbox_json_to_tray_entries(inbox_json: str) -> list[TrayEntry]:
-    """Convert canonical `epistaxis directive inbox --json` output to stack pressure.
+    """Convert canonical directive inbox rows or spool envelopes to stack pressure.
 
     This is a pure consumer: it parses already-resolved inbox JSON and never
     shells out to Epistaxis or treats the resulting TrayEntry as mutation
@@ -826,11 +839,10 @@ def directive_inbox_json_to_tray_entries(inbox_json: str) -> list[TrayEntry]:
         payload = json.loads(inbox_json)
     except json.JSONDecodeError as exc:
         raise ValueError(f"directive inbox JSON is invalid: {exc}") from exc
-    if not isinstance(payload, list):
-        raise ValueError("directive inbox JSON must be a list of entries")
+    rows = _directive_inbox_payload_rows(payload)
 
     entries: list[TrayEntry] = []
-    for raw_entry in payload:
+    for raw_entry in rows:
         if not isinstance(raw_entry, dict):
             raise ValueError("directive inbox JSON entries must be objects")
         source = raw_entry.get("source") or {}
