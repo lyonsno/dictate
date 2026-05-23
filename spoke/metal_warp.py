@@ -214,7 +214,7 @@ float shellMaterialChoiceForBrightness(float brightness) {{
 float3 shellMaterialGrayTargetForBrightness(float brightness, float textContrastBias) {{
     float choice = shellMaterialChoiceForBrightness(brightness);
     float contrast = clamp(textContrastBias, 0.0f, 1.0f);
-    float darkGray = mix(0.28f, 0.36f, contrast);
+    float darkGray = mix(0.08f, 0.14f, contrast);
     float lightGray = mix(0.30f, 0.20f, contrast);
     float gray = mix(darkGray, lightGray, choice);
     return float3(gray, gray, gray);
