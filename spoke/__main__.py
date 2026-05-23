@@ -852,6 +852,8 @@ def directive_inbox_json_to_tray_entries(inbox_json: str) -> list[TrayEntry]:
         intent_class = _string_or_none(raw_entry.get("intent_class")) or "directive"
         delivery_state = _string_or_none(raw_entry.get("delivery_state")) or "unknown"
         disposition_state = _string_or_none(raw_entry.get("disposition_state")) or "pending"
+        if disposition_state != "pending":
+            continue
         directive_path = _string_or_none(raw_entry.get("path")) or "unknown directive"
         authority_basis = _string_or_none(raw_entry.get("authority_basis")) or "unspecified authority"
         required_rereads = raw_entry.get("required_rereads") or []

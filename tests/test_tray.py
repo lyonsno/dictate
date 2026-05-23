@@ -430,7 +430,7 @@ class TestDirectiveInboxStackPressure:
         assert entry.metadata["disposition_state"] == "pending"
         assert entry.metadata["delivery_state"] == "pending-durable-badge"
 
-    def test_delegate_adds_inbox_pressure_without_epistaxis_mutation(self, main_module, monkeypatch):
+    def test_delegate_skips_consumed_inbox_rows_as_active_pressure(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch, command_client=True)
         payload = [
             {
@@ -461,11 +461,12 @@ class TestDirectiveInboxStackPressure:
             result = d._add_directive_inbox_json_to_stack(main_module.json.dumps(payload))
 
         run.assert_not_called()
-        assert result == {"status": "added", "stack_size": 1, "entry_count": 1}
-        entry = d._tray_stack[0]
-        assert isinstance(entry, main_module.TrayEntry)
-        assert entry.metadata["disposition_state"] == "consumed"
-        assert entry.metadata["delivery_state"] == "pending-durable-badge"
+        assert result == {"status": "added", "stack_size": 0, "entry_count": 0}
+        assert d._tray_stack == []
+        assert all(
+            getattr(entry, "kind", None) != "directive_inbox_pressure"
+            for entry in d._tray_stack
+        )
 
 
 class TestTrayGestures:
