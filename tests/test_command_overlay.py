@@ -823,6 +823,64 @@ class TestOpticalShellMaterialization:
 
         assert alphas[-1] == pytest.approx(0.0)
 
+    def test_fullscreen_start_preserves_quarantined_text_plane_before_body_ready(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        alpha_state = {"value": 1.0}
+        hidden_state = {"value": False}
+        overlay._scroll_view.setAlphaValue_.side_effect = (
+            lambda alpha: alpha_state.__setitem__("value", float(alpha))
+        )
+        overlay._scroll_view.alphaValue.side_effect = lambda: alpha_state["value"]
+        overlay._scroll_view.setHidden_.side_effect = (
+            lambda hidden: hidden_state.__setitem__("value", bool(hidden))
+        )
+        overlay._scroll_view.isHidden.side_effect = lambda: hidden_state["value"]
+        overlay._fill_hidden_until_signature = ("pending-fill",)
+
+        import spoke.fullscreen_compositor as fullscreen_compositor
+
+        monkeypatch.setattr(
+            fullscreen_compositor,
+            "start_overlay_compositor",
+            lambda **_kwargs: MagicMock(),
+        )
+
+        overlay._prime_scroll_for_optical_entrance()
+        overlay._start_fullscreen_compositor()
+
+        assert overlay._materialization_progress == pytest.approx(0.0)
+        assert alpha_state["value"] == pytest.approx(0.0)
+        assert overlay._text_publication_state() == "hidden"
+
+    def test_disabling_punchthrough_does_not_unhide_pre_body_opening_text(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        hidden_state = {"value": True}
+        alpha_state = {"value": 0.0}
+        overlay._scroll_view.setHidden_.side_effect = (
+            lambda hidden: hidden_state.__setitem__("value", bool(hidden))
+        )
+        overlay._scroll_view.isHidden.side_effect = lambda: hidden_state["value"]
+        overlay._scroll_view.setAlphaValue_.side_effect = (
+            lambda alpha: alpha_state.__setitem__("value", float(alpha))
+        )
+        overlay._scroll_view.alphaValue.side_effect = lambda: alpha_state["value"]
+        overlay._text_punchthrough = True
+        overlay._requested_optical_presentation_state = "opening"
+        overlay._materialization_progress = (
+            mod._OPTICAL_MATERIALIZATION_BODY_READY * 0.5
+        )
+
+        overlay._enable_text_punchthrough(False)
+
+        assert hidden_state["value"] is True
+        assert alpha_state["value"] == pytest.approx(0.0)
+        assert overlay._text_publication_state() == "hidden"
+
     def test_body_ready_entrance_materialization_releases_text_plane(
         self, mock_pyobjc
     ):

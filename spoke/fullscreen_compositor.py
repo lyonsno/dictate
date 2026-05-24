@@ -103,6 +103,9 @@ class OverlayRenderSnapshot:
     presentation_layer: str | None = None
     presentation_order: int = 0
     visibility_scope: str = "independent"
+    presentation_generation: int | None = None
+    presentation_requested_state: str | None = None
+    presentation_publisher_state: str | None = None
     optical_field: Mapping[str, Any] | None = None
 
 
@@ -1313,6 +1316,12 @@ def _snapshot_to_shell_config(snapshot: OverlayRenderSnapshot) -> dict:
         config["presentation_layer"] = snapshot.presentation_layer
         config["presentation_order"] = int(snapshot.presentation_order)
         config["visibility_scope"] = snapshot.visibility_scope
+    if snapshot.presentation_generation is not None:
+        config["presentation_generation"] = int(snapshot.presentation_generation)
+    if snapshot.presentation_requested_state is not None:
+        config["presentation_requested_state"] = snapshot.presentation_requested_state
+    if snapshot.presentation_publisher_state is not None:
+        config["presentation_publisher_state"] = snapshot.presentation_publisher_state
     for key in (
         "bleed_zone_frac",
         "exterior_mix_width_points",
@@ -1417,6 +1426,21 @@ def _snapshot_from_shell_config(
         ),
         presentation_order=int(config.get("presentation_order", 0)),
         visibility_scope=str(config.get("visibility_scope", "independent")),
+        presentation_generation=(
+            int(config["presentation_generation"])
+            if config.get("presentation_generation") is not None
+            else None
+        ),
+        presentation_requested_state=(
+            str(config["presentation_requested_state"])
+            if config.get("presentation_requested_state") is not None
+            else None
+        ),
+        presentation_publisher_state=(
+            str(config["presentation_publisher_state"])
+            if config.get("presentation_publisher_state") is not None
+            else None
+        ),
         optical_field=optical_field,
     )
 

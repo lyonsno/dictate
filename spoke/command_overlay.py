@@ -1909,6 +1909,17 @@ class CommandOverlay(NSObject):
                 scroll.setAlphaValue_(0.0)
             except Exception:
                 logger.debug("Failed to quarantine command overlay text plane", exc_info=True)
+        if scroll is not None and hasattr(scroll, "setHidden_"):
+            try:
+                scroll.setHidden_(True)
+            except Exception:
+                logger.debug("Failed to hide command overlay text plane", exc_info=True)
+
+    def _opening_text_should_stay_quarantined(self) -> bool:
+        return (
+            str(getattr(self, "_requested_optical_presentation_state", "")) == "opening"
+            and not self._optical_body_content_ready()
+        )
 
     def _current_optical_presentation_generation(self) -> int | None:
         generation = getattr(self, "_optical_presentation_generation", None)
@@ -4349,6 +4360,8 @@ class CommandOverlay(NSObject):
             # Fully open — remove mask and restore full alpha
             if hasattr(layer, "setMask_"):
                 layer.setMask_(None)
+            if hasattr(scroll, "setHidden_"):
+                scroll.setHidden_(False)
             if hasattr(scroll, "setAlphaValue_"):
                 scroll.setAlphaValue_(1.0)
             self._scroll_materialization_mask = None
@@ -4372,6 +4385,8 @@ class CommandOverlay(NSObject):
                 if progress is not None and progress < _OPTICAL_MATERIALIZATION_BODY_READY:
                     alpha = 0.0
                 else:
+                    if hasattr(scroll, "setHidden_"):
+                        scroll.setHidden_(False)
                     alpha = min(hf * 5.0, 1.0)
                 scroll.setAlphaValue_(alpha)
         else:
@@ -4410,6 +4425,8 @@ class CommandOverlay(NSObject):
             direction=1,
         )
         scroll = getattr(self, "_scroll_view", None)
+        if scroll is not None and hasattr(scroll, "setHidden_"):
+            scroll.setHidden_(True)
         if scroll is not None and hasattr(scroll, "setAlphaValue_"):
             scroll.setAlphaValue_(0.0)
 
@@ -5691,7 +5708,12 @@ class CommandOverlay(NSObject):
                 boost.setMask_(None)
                 self._boost_mask_layer = None
             if scroll is not None:
-                scroll.setHidden_(False)
+                if self._opening_text_should_stay_quarantined():
+                    if hasattr(scroll, "setAlphaValue_"):
+                        scroll.setAlphaValue_(0.0)
+                    scroll.setHidden_(True)
+                else:
+                    scroll.setHidden_(False)
 
     def _update_punchthrough_mask(self) -> None:
         """Render text into an inverted mask for the fill layer.
