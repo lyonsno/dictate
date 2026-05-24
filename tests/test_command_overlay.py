@@ -3444,6 +3444,14 @@ class TestAdaptiveCompositing:
         assert overlay._brightness == pytest.approx(0.04)
         assert overlay._brightness_target == pytest.approx(0.04)
 
+    def test_window_order_enforcement_handles_absent_compositor(self, mock_pyobjc):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay._fullscreen_compositor = None
+
+        overlay._enforce_compositor_window_order()
+
+        overlay._window.orderFrontRegardless.assert_called_once()
+
     def test_visual_ready_registration_handles_first_present_race(
         self, mock_pyobjc
     ):

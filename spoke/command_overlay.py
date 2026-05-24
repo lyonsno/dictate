@@ -4142,6 +4142,7 @@ class CommandOverlay(NSObject):
         comp_presented = 0
         comp_capture_frames = 0
         comp_frame_gen = 0
+        comp_inner = None
         if compositor is not None:
             host = getattr(compositor, "_host", None)
             comp_inner = getattr(host, "_compositor", None) if host else None
