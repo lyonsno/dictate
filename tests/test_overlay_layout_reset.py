@@ -362,6 +362,47 @@ def test_show_tray_keeps_content_background_clear(mock_pyobjc, monkeypatch):
     assert overlay._fill_layer.opacity() == pytest.approx(overlay_module._RECOVERY_BG_ALPHA)
 
 
+def test_show_stack_body_shell_marks_source_pressure_without_entering_tray_mode(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay._window = _FakeWindow()
+    overlay._content_view = _FakeView(
+        _make_rect(40.0, 40.0, overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)
+    )
+    overlay._text_view = _FakeTextView(
+        _make_rect(0.0, 0.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        "live words stay on the bar",
+    )
+    overlay._scroll_view = _FakeScrollView(
+        _make_rect(12.0, 8.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        overlay._text_view,
+        y_offset=0.0,
+    )
+    overlay._fill_layer = _FakeLayer(
+        _make_rect(
+            0.0,
+            0.0,
+            overlay_module._OVERLAY_WIDTH + 2 * overlay_module._OUTER_FEATHER,
+            overlay_module._OVERLAY_HEIGHT + 2 * overlay_module._OUTER_FEATHER,
+        )
+    )
+    overlay._tray_mode = False
+
+    overlay.show_stack_body_shell(owner="source")
+
+    assert overlay._tray_mode is False
+    assert overlay._text_view.string() == "live words stay on the bar"
+    assert overlay._content_view.layer().backgroundColor() is None
+    assert overlay._fill_override_rgb == pytest.approx((0.10, 0.13, 0.19))
+    assert overlay._fill_layer.opacity() == pytest.approx(overlay_module._RECOVERY_BG_ALPHA)
+    assert overlay._window.alpha == pytest.approx(1.0)
+    assert overlay._window.ordered_front is True
+
+
 def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, monkeypatch):
     overlay_module = _import_overlay(mock_pyobjc)
     monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)

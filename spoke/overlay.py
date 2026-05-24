@@ -1617,8 +1617,45 @@ class TranscriptionOverlay(NSObject):
 
     def show_stack_body_shell(self, *, owner: str = "source") -> None:
         """Show an empty visual Stack body for source tokens without app stack rows."""
-        shell_owner = "assistant" if owner == "source" else owner
-        self.show_tray("", owner=shell_owner)
+        if self._window is None:
+            return
+        self._cancel_tray_capture_flash()
+        if self._recovery_mode:
+            self._recovery_mode = False
+            self._teardown_recovery_views()
+            self._window.setIgnoresMouseEvents_(True)
+        self._cancel_fade()
+
+        if self._scroll_view is not None:
+            self._scroll_view.setHidden_(False)
+        self._tray_mode = False
+        self._content_view.layer().setBackgroundColor_(None)
+
+        screen_frame = self._screen.frame()
+        sw = screen_frame.size.width
+        f = _OUTER_FEATHER
+        x = (sw - _OVERLAY_WIDTH) / 2 - f
+        self._window.setFrame_display_animate_(
+            NSMakeRect(
+                x,
+                _window_origin_y(_OVERLAY_HEIGHT),
+                _OVERLAY_WIDTH + 2 * f,
+                _OVERLAY_HEIGHT + 2 * f,
+            ),
+            True,
+            False,
+        )
+        self._content_view.setFrame_(NSMakeRect(f, f, _OVERLAY_WIDTH, _OVERLAY_HEIGHT))
+        self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
+        fill_rgb = (0.10, 0.13, 0.19) if owner == "source" else (0.1, 0.1, 0.12)
+        self._set_fill_override(fill_rgb, _RECOVERY_BG_ALPHA)
+
+        self._visible = True
+        self._window.setAlphaValue_(1.0)
+        self._window.orderFrontRegardless()
+        if not getattr(self, "_recovery_mode", False):
+            self._publish_preview_compositor_snapshot(visible=True, state="rest")
+        logger.info("Stack body shell shown (%s)", owner)
 
     def show_tray(self, text: str, *, owner: str = "user") -> None:
         """Show the tray overlay with the given text.
