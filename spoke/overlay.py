@@ -1130,11 +1130,33 @@ class TranscriptionOverlay(NSObject):
         ontology_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
             ontology_r, ontology_g, ontology_b, alpha
         )
-        self._set_text_view_content(
-            self._visible_text_string(),
-            base_color=base_color,
-            ontology_color=ontology_color,
+        self._current_text_color = base_color
+        self._current_ontology_text_color = ontology_color
+        text_view = getattr(self, "_text_view", None)
+        if text_view is None:
+            return
+        displayed = self._visible_text_string()
+        cached_text, _cached_spans = getattr(self, "_ontology_spans_cache", ("", []))
+        if displayed and cached_text != displayed:
+            self._ontology_spans_cache = (displayed, list(ontology_term_spans(displayed)))
+        color_key = (
+            "fill-contrast",
+            round(tr * 100.0),
+            round(alpha * 100.0),
+            round(ontology_r * 100.0),
+            round(ontology_g * 100.0),
+            round(ontology_b * 100.0),
         )
+        self._last_color_key = None
+        if displayed:
+            self._update_text_color_inplace(
+                displayed,
+                base_color,
+                ontology_color,
+                color_key,
+            )
+        if hasattr(text_view, "setTextColor_"):
+            text_view.setTextColor_(base_color)
 
     # ── typewriter effect ────────────────────────────────────
 

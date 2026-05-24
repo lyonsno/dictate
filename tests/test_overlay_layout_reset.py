@@ -90,8 +90,10 @@ class _FakeTextView:
         self._layout_manager = None
         self.scrolled_range = None
         self.text_color = None
+        self.set_string_calls = []
 
     def setString_(self, text):
+        self.set_string_calls.append(text)
         self._text = text
 
     def string(self):
@@ -444,6 +446,43 @@ def test_source_stack_body_shell_keeps_live_preview_text_light(
     for _ in range(20):
         overlay.update_text_amplitude(10.0)
     assert overlay._text_lum > 0.9
+
+
+def test_source_stack_body_shell_repaints_text_without_rewriting_preview_content(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay._window = _FakeWindow()
+    overlay._content_view = _FakeView(
+        _make_rect(40.0, 40.0, overlay_module._OVERLAY_WIDTH, overlay_module._OVERLAY_HEIGHT)
+    )
+    overlay._text_view = _FakeTextView(
+        _make_rect(0.0, 0.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        "live preview text",
+    )
+    overlay._typewriter_displayed = "live preview text"
+    overlay._scroll_view = _FakeScrollView(
+        _make_rect(12.0, 8.0, overlay_module._OVERLAY_WIDTH - 24, overlay_module._OVERLAY_HEIGHT - 16),
+        overlay._text_view,
+        y_offset=0.0,
+    )
+    overlay._fill_layer = _FakeLayer(
+        _make_rect(
+            0.0,
+            0.0,
+            overlay_module._OVERLAY_WIDTH + 2 * overlay_module._OUTER_FEATHER,
+            overlay_module._OVERLAY_HEIGHT + 2 * overlay_module._OUTER_FEATHER,
+        )
+    )
+
+    overlay.show_stack_body_shell(owner="source")
+
+    assert overlay._text_view.string() == "live preview text"
+    assert overlay._text_view.set_string_calls == []
+    assert overlay._text_view.text_color is not None
 
 
 def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, monkeypatch):
