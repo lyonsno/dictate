@@ -1323,6 +1323,40 @@ def test_fullscreen_compositor_visual_ledger_summarizes_multi_config_presentatio
     assert summary["text_mask_progress_max"] == pytest.approx(0.9)
 
 
+def test_shared_compositor_roundtrip_preserves_presentation_ledger_fields():
+    import spoke.fullscreen_compositor as fullscreen_compositor
+
+    identity = fullscreen_compositor.OverlayClientIdentity(
+        client_id="assistant.command",
+        display_id=1,
+        role="assistant",
+    )
+    shell_config = {
+        "center_x": 640.0,
+        "center_y": 420.0,
+        "content_width_points": 900.0,
+        "content_height_points": 260.0,
+        "corner_radius_points": 34.0,
+        "band_width_points": 10.0,
+        "tail_width_points": 8.0,
+        "initial_brightness": 0.32,
+        "presentation_generation": 13,
+        "presentation_requested_state": "opening",
+        "presentation_publisher_state": "compositor_configured",
+    }
+
+    snapshot = fullscreen_compositor._snapshot_from_shell_config(
+        identity,
+        shell_config,
+        generation=5,
+    )
+    roundtripped = fullscreen_compositor._snapshot_to_shell_config(snapshot)
+
+    assert roundtripped["presentation_generation"] == 13
+    assert roundtripped["presentation_requested_state"] == "opening"
+    assert roundtripped["presentation_publisher_state"] == "compositor_configured"
+
+
 def test_fullscreen_compositor_visual_ledger_does_not_log_every_materialization_step(monkeypatch):
     from spoke.fullscreen_compositor import FullScreenCompositor
 
