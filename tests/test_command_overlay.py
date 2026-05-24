@@ -11,7 +11,7 @@ import math
 import sys
 import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -4114,7 +4114,11 @@ class TestAdaptiveCompositing:
             time.perf_counter() - mod._OPTICAL_ENTRANCE_HARD_DEADLINE_S - 0.01
         )
 
-        overlay.visualReadyDeadline_(timer)
+        with patch.object(
+            mod.CommandOverlay,
+            "_enforce_compositor_window_order",
+        ) as enforce_compositor_window_order:
+            overlay.visualReadyDeadline_(timer)
 
         assert overlay._entrance_started is False
         overlay._start_entrance_animation.assert_not_called()
@@ -4123,6 +4127,7 @@ class TestAdaptiveCompositing:
         assert overlay._brightness == pytest.approx(0.91)
         assert overlay._brightness_target == pytest.approx(0.91)
         compositor.refresh_brightness.assert_not_called()
+        enforce_compositor_window_order.assert_not_called()
 
     def test_brightness_crossing_reaches_contrast_band_in_one_pulse(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)
