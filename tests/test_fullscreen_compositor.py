@@ -71,6 +71,22 @@ class _FakeFullScreenCompositor:
         return dict(self.diagnostics)
 
 
+class _ResidentFakeFullScreenCompositor(_FakeFullScreenCompositor):
+    def __init__(self, screen):
+        super().__init__(screen)
+        self._presented_count = 5
+        self._config_generation = 0
+        self._rendered_config_generation = 0
+        self.config_present_callbacks = []
+
+    def update_shell_configs(self, shell_configs):
+        super().update_shell_configs(shell_configs)
+        self._config_generation += 1
+
+    def set_on_config_present(self, callback, *, min_config_generation=None):
+        self.config_present_callbacks.append((min_config_generation, callback))
+
+
 def _reset_fake_compositor(monkeypatch):
     import spoke.fullscreen_compositor as fullscreen_compositor
 
@@ -718,6 +734,32 @@ def test_client_reports_shared_compositor_presented_count(monkeypatch):
 
     assert host.presented_count == 3
     assert assistant.presented_count == 3
+
+
+def test_client_first_present_waits_for_current_config_on_resident_host(monkeypatch):
+    fullscreen_compositor = _reset_fake_compositor(monkeypatch)
+    monkeypatch.setattr(
+        fullscreen_compositor,
+        "FullScreenCompositor",
+        _ResidentFakeFullScreenCompositor,
+    )
+    host = fullscreen_compositor.OverlayCompositorRegistry().host_for_screen(object())
+    assistant = host.register_client(
+        _identity("assistant.command", host.display_id, "assistant"),
+        window=_FakeWindow(412),
+        content_view=object(),
+    )
+    assistant.publish(_snapshot("assistant.command", brightness=0.17))
+    compositor = _ResidentFakeFullScreenCompositor.instances[0]
+    compositor._rendered_config_generation = compositor._config_generation - 1
+    callbacks = []
+
+    assistant.set_on_first_present(lambda: callbacks.append("presented"))
+
+    assert callbacks == []
+    assert compositor.config_present_callbacks == [
+        (compositor._config_generation, compositor.config_present_callbacks[0][1])
+    ]
 
 
 def test_shared_host_and_client_expose_residency_diagnostics(monkeypatch):

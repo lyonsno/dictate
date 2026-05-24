@@ -316,8 +316,9 @@ class FullScreenCompositor:
         self._capture_content = None
         self._capture_display = None
 
-        # First-present callback (called once from render thread on 0→1 transition)
+        # First-present callback (called once from render thread on 0->1 transition)
         self._on_first_present = None
+        self._present_callbacks: list[tuple[int, object]] = []
 
         # Diagnostics
         self._frame_count = 0
@@ -356,6 +357,7 @@ class FullScreenCompositor:
         """Create the full-screen window and start capture + render loop."""
         if self._running:
             return True
+        self._ensure_diagnostics_fields()
         try:
             self._shell_configs = _normalize_shell_configs(shell_config)
             if self._shell_configs:
@@ -368,6 +370,8 @@ class FullScreenCompositor:
             # correctly wait for the new session's first present.
             if self._pipeline is not None:
                 self._pipeline.reset_temporal_state()
+            self._config_generation += 1
+            self._rendered_config_generation = -1
             self._presented_count = 0
             self._create_fullscreen_window()
             self._start_display_link()
@@ -454,8 +458,50 @@ class FullScreenCompositor:
         """Number of frames the compositor has successfully presented."""
         return self._presented_count
 
+    @property
+    def config_generation(self) -> int:
+        """Current compositor config generation."""
+        return int(getattr(self, "_config_generation", 0))
+
+    @property
+    def rendered_config_generation(self) -> int:
+        """Most recent config generation that reached a presented frame."""
+        return int(getattr(self, "_rendered_config_generation", -1))
+
+    def set_on_config_present(self, callback, *, min_config_generation=None) -> None:
+        """Invoke callback once a frame containing min_config_generation presents."""
+        if callback is None:
+            return
+        try:
+            target_generation = int(
+                self._config_generation
+                if min_config_generation is None
+                else min_config_generation
+            )
+        except (TypeError, ValueError):
+            target_generation = int(self._config_generation)
+        should_fire = False
+        with self._lock:
+            if (
+                self._presented_count > 0
+                and self._rendered_config_generation >= target_generation
+            ):
+                should_fire = True
+            else:
+                self._present_callbacks.append((target_generation, callback))
+        if should_fire:
+            try:
+                callback()
+            except Exception:
+                pass
+
     def _ensure_diagnostics_fields(self) -> None:
         defaults = {
+            "_config_generation": 0,
+            "_rendered_config_generation": -1,
+            "_rendered_frame_generation": 0,
+            "_on_first_present": None,
+            "_present_callbacks": [],
             "_capture_frame_count": 0,
             "_display_link_ticks": 0,
             "_duplicate_frames": 0,
@@ -1136,17 +1182,30 @@ class FullScreenCompositor:
                 )
 
             if did_present:
-                was_first = self._presented_count == 0
-                self._presented_count += 1
-                self._interval_presented += 1
-                if was_first:
-                    cb = getattr(self, "_on_first_present", None)
-                    self._on_first_present = None
-                    if cb is not None:
-                        try:
-                            cb()
-                        except Exception:
-                            pass
+                callbacks_to_fire = []
+                with self._lock:
+                    was_first = self._presented_count == 0
+                    self._presented_count += 1
+                    self._interval_presented += 1
+                    self._rendered_frame_generation = frame_generation
+                    self._rendered_config_generation = config_generation
+                    if was_first:
+                        cb = getattr(self, "_on_first_present", None)
+                        self._on_first_present = None
+                        if cb is not None:
+                            callbacks_to_fire.append(cb)
+                    remaining_callbacks = []
+                    for target_generation, cb in self._present_callbacks:
+                        if config_generation >= target_generation:
+                            callbacks_to_fire.append(cb)
+                        else:
+                            remaining_callbacks.append((target_generation, cb))
+                    self._present_callbacks = remaining_callbacks
+                for cb in callbacks_to_fire:
+                    try:
+                        cb()
+                    except Exception:
+                        pass
                 present_end = time.monotonic()
                 with self._lock:
                     self._total_presented_frame_ms += max(
@@ -1159,9 +1218,6 @@ class FullScreenCompositor:
                             0.0,
                         )
                     self._last_presented_at = present_end
-                self._rendered_frame_generation = frame_generation
-                self._rendered_config_generation = config_generation
-
             elif self._frame_count <= 5:
                 logger.info("Compositor tick[%d]: warp_to_drawable returned False", self._frame_count)
         except Exception:
@@ -1835,6 +1891,21 @@ class OverlayCompositorClient:
             return
         compositor = getattr(self._host, "_compositor", None)
         if compositor is not None:
+            config_generation = getattr(compositor, "config_generation", None)
+            if callable(config_generation):
+                try:
+                    config_generation = config_generation()
+                except Exception:
+                    config_generation = None
+            if config_generation is None:
+                config_generation = getattr(compositor, "_config_generation", None)
+            on_config_present = getattr(compositor, "set_on_config_present", None)
+            if callable(on_config_present):
+                on_config_present(
+                    callback,
+                    min_config_generation=config_generation,
+                )
+                return
             compositor._on_first_present = callback
             # If the compositor already presented before the callback was
             # set, fire it immediately — the render-thread check for

@@ -5900,7 +5900,7 @@ class CommandOverlay(NSObject):
             except Exception:
                 logger.debug("Failed to hide command scroll layer for compositor handoff", exc_info=True)
 
-    def _thaw_local_shell_layers(self) -> None:
+    def _thaw_local_shell_layers(self, *, reveal_text: bool = True) -> None:
         """Restore fallback AppKit layers after a compositor handoff freeze."""
         self._set_layer_hidden_without_actions(
             getattr(self, "_backdrop_layer", None),
@@ -5913,7 +5913,12 @@ class CommandOverlay(NSObject):
         scroll = getattr(self, "_scroll_view", None)
         if scroll is not None and hasattr(scroll, "setHidden_"):
             try:
-                scroll.setHidden_(False)
+                if reveal_text and not self._opening_text_should_stay_quarantined():
+                    scroll.setHidden_(False)
+                else:
+                    if hasattr(scroll, "setAlphaValue_"):
+                        scroll.setAlphaValue_(0.0)
+                    scroll.setHidden_(True)
             except Exception:
                 logger.debug("Failed to unhide command scroll layer after compositor handoff", exc_info=True)
 

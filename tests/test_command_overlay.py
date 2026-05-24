@@ -4063,7 +4063,18 @@ class TestAdaptiveCompositing:
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay._visible = True
         overlay._entrance_started = False
+        overlay._requested_optical_presentation_state = "opening"
         overlay._materialization_progress = 0.10
+        hidden_state = {"value": True}
+        alpha_state = {"value": 0.0}
+        overlay._scroll_view.setHidden_.side_effect = (
+            lambda hidden: hidden_state.__setitem__("value", bool(hidden))
+        )
+        overlay._scroll_view.isHidden.side_effect = lambda: hidden_state["value"]
+        overlay._scroll_view.setAlphaValue_.side_effect = (
+            lambda alpha: alpha_state.__setitem__("value", float(alpha))
+        )
+        overlay._scroll_view.alphaValue.side_effect = lambda: alpha_state["value"]
         timer = MagicMock()
         overlay._visual_ready_timer = timer
         compositor = MagicMock()
@@ -4078,6 +4089,8 @@ class TestAdaptiveCompositing:
 
         overlay._start_entrance_animation.assert_called_once()
         assert overlay._fullscreen_compositor is None
+        assert hidden_state["value"] is True
+        assert alpha_state["value"] == pytest.approx(0.0)
 
     def test_hard_deadline_does_not_certify_semantic_content_over_tiny_slit(
         self, mock_pyobjc
