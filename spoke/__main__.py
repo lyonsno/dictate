@@ -2116,7 +2116,7 @@ class SpokeAppDelegate(NSObject):
             self._overlay.show()
             self._refresh_operator_ping_tokens_from_configured_event_log(
                 update_status=False,
-                summon_stack_body=True,
+                summon_stack_body=False,
             )
 
         try:

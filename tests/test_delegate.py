@@ -256,6 +256,12 @@ class TestOperatorPingTokenSmokeHook:
         monkeypatch.setenv("SPOKE_OPERATOR_PING_EVENTS_PATH", str(event_log))
         d = _make_delegate(main_module, monkeypatch)
         d._overlay = MagicMock()
+        d._overlay.operator_ping_token_body_frame.return_value = (
+            220.0,
+            220.0,
+            600.0,
+            80.0,
+        )
         sequence = MagicMock()
         sequence.attach_mock(d._overlay.show, "show")
         sequence.attach_mock(d._overlay.show_stack_body_shell, "show_stack_body_shell")
@@ -270,11 +276,11 @@ class TestOperatorPingTokenSmokeHook:
         visuals = d._overlay.show_operator_ping_token_visuals.call_args.args[0]
         assert [visual.ping_id for visual in visuals] == ["preview-ping"]
         assert visuals[0].presentation_text == "Diaulos: Chairside Sparkwright · live"
-        assert sequence.mock_calls[:3] == [
+        assert sequence.mock_calls[:2] == [
             call.show(),
-            call.show_stack_body_shell(owner="source"),
             call.show_operator_ping_token_visuals(visuals),
         ]
+        d._overlay.show_stack_body_shell.assert_not_called()
         assert d._tray_stack == []
         assert d._coordination_stack.entries == []
 
