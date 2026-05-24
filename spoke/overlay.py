@@ -1615,6 +1615,11 @@ class TranscriptionOverlay(NSObject):
             self._window.setAlphaValue_(1.0)
             self._window.orderFrontRegardless()
 
+    def show_stack_body_shell(self, *, owner: str = "source") -> None:
+        """Show an empty visual Stack body for source tokens without app stack rows."""
+        shell_owner = "assistant" if owner == "source" else owner
+        self.show_tray("", owner=shell_owner)
+
     def show_tray(self, text: str, *, owner: str = "user") -> None:
         """Show the tray overlay with the given text.
 

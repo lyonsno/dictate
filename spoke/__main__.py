@@ -3512,6 +3512,7 @@ class SpokeAppDelegate(NSObject):
         events: list[dict],
         *,
         stack_body_frame: tuple[float, float, float, float],
+        summon_stack_body: bool = False,
     ) -> list:
         """Project backend ping events into ephemeral overlay visuals.
 
@@ -3526,6 +3527,10 @@ class SpokeAppDelegate(NSObject):
             stack=self._coordination_stack,
         )
         overlay = getattr(self, "_overlay", None)
+        if visuals and summon_stack_body and not getattr(self, "_tray_active", False):
+            shell_presenter = getattr(overlay, "show_stack_body_shell", None)
+            if callable(shell_presenter):
+                shell_presenter(owner="source")
         presenter = getattr(overlay, "show_operator_ping_token_visuals", None)
         if callable(presenter):
             presenter(visuals)
@@ -3540,11 +3545,13 @@ class SpokeAppDelegate(NSObject):
         event_log_path: str,
         *,
         stack_body_frame: tuple[float, float, float, float],
+        summon_stack_body: bool = False,
     ) -> list:
         events = load_operator_ping_events_from_jsonl(event_log_path)
         return self._show_operator_ping_tokens_from_events(
             events,
             stack_body_frame=stack_body_frame,
+            summon_stack_body=summon_stack_body,
         )
 
     def _refresh_operator_ping_tokens_from_configured_event_log(
@@ -3552,6 +3559,7 @@ class SpokeAppDelegate(NSObject):
         *,
         stack_body_frame: tuple[float, float, float, float] | None = None,
         update_status: bool = True,
+        summon_stack_body: bool = False,
     ) -> bool:
         event_log_path = os.environ.get("SPOKE_OPERATOR_PING_EVENTS_PATH", "").strip()
         if not event_log_path:
@@ -3560,6 +3568,7 @@ class SpokeAppDelegate(NSObject):
             visuals = self._show_operator_ping_tokens_from_event_log(
                 event_log_path,
                 stack_body_frame=stack_body_frame or self._operator_ping_token_smoke_frame(),
+                summon_stack_body=summon_stack_body,
             )
         except (OSError, ValueError) as exc:
             logger.warning("Chairside ping token event log unreadable: %s", exc)
@@ -3576,7 +3585,8 @@ class SpokeAppDelegate(NSObject):
         """Show a sample Chairside token when explicit smoke env is enabled."""
         stack_body_frame = self._operator_ping_token_smoke_frame()
         if self._refresh_operator_ping_tokens_from_configured_event_log(
-            stack_body_frame=stack_body_frame
+            stack_body_frame=stack_body_frame,
+            summon_stack_body=True,
         ):
             return True
 
@@ -3607,6 +3617,7 @@ class SpokeAppDelegate(NSObject):
         self._show_operator_ping_tokens_from_events(
             [event],
             stack_body_frame=stack_body_frame,
+            summon_stack_body=True,
         )
         if self._menubar is not None:
             self._menubar.set_status_text("Chairside ping token smoke")
