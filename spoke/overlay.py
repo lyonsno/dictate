@@ -111,6 +111,16 @@ _TEXT_COLOR_DARK = (0.0, 0.0, 0.0)     # dark text on light fill
 _BG_COLOR_LIGHT = (0.10, 0.10, 0.12)   # dark fill on light backgrounds
 _TEXT_COLOR_LIGHT = (1.0, 1.0, 1.0)     # white text on dark fill (light backgrounds)
 
+
+def _luminance(rgb: tuple[float, float, float]) -> float:
+    r, g, b = rgb
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def _target_text_lum_for_fill(fill_rgb: tuple[float, float, float]) -> float:
+    return 0.0 if _luminance(fill_rgb) > 0.5 else 1.0
+
+
 # Inner glow — matches screen border glow, scaled to overlay size
 _GLOW_COLOR = _scale_color_saturation(
     (0.38, 0.52, 1.0), 0.13
@@ -1094,6 +1104,38 @@ class TranscriptionOverlay(NSObject):
         self._current_ontology_text_color = ontology_color
         self._last_color_key = color_key
 
+    def _visible_text_string(self) -> str:
+        displayed = getattr(self, "_typewriter_displayed", "")
+        if displayed:
+            return displayed
+        text_view = getattr(self, "_text_view", None)
+        if text_view is None:
+            return ""
+        try:
+            return str(text_view.string())
+        except Exception:
+            return ""
+
+    def _snap_text_contrast_to_fill(
+        self,
+        fill_rgb: tuple[float, float, float],
+        *,
+        alpha: float,
+    ) -> None:
+        target_text_lum = _target_text_lum_for_fill(fill_rgb)
+        self._text_lum = target_text_lum
+        tr = tg = tb = target_text_lum
+        ontology_r, ontology_g, ontology_b = _ontology_text_rgb(target_text_lum)
+        base_color = NSColor.colorWithSRGBRed_green_blue_alpha_(tr, tg, tb, alpha)
+        ontology_color = NSColor.colorWithSRGBRed_green_blue_alpha_(
+            ontology_r, ontology_g, ontology_b, alpha
+        )
+        self._set_text_view_content(
+            self._visible_text_string(),
+            base_color=base_color,
+            ontology_color=ontology_color,
+        )
+
     # ── typewriter effect ────────────────────────────────────
 
     def set_text(self, text: str) -> None:
@@ -1216,11 +1258,12 @@ class TranscriptionOverlay(NSObject):
             _TEXT_ANCHOR_ALPHA = _lerp(0.80, 1.0, scaled)
         else:
             _TEXT_ANCHOR_ALPHA = 0.88
-        # Text contrasts against the fill: light fill (dark bg) → dark text,
-        # dark fill (light bg) → white text.
-        bg_r, bg_g, bg_b = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
-        bg_lum = 0.299 * bg_r + 0.587 * bg_g + 0.114 * bg_b
-        target_text_lum = 0.0 if bg_lum > 0.5 else 1.0
+        # Text contrasts against the actual fill. Source/tray shells can hold
+        # a fixed fill color that intentionally differs from sampled brightness.
+        fill_rgb = getattr(self, "_fill_override_rgb", None)
+        if fill_rgb is None:
+            fill_rgb = _lerp_color(_BG_COLOR_DARK, _BG_COLOR_LIGHT, t)
+        target_text_lum = _target_text_lum_for_fill(fill_rgb)
 
         # Ease-out snap: chase the target with a fast-start, slow-finish curve.
         # ~200ms at 60Hz = ~12 frames.  The ease-out makes the snap feel
@@ -1649,6 +1692,7 @@ class TranscriptionOverlay(NSObject):
         self._reset_overlay_chrome_geometry(_OVERLAY_HEIGHT)
         fill_rgb = (0.10, 0.13, 0.19) if owner == "source" else (0.1, 0.1, 0.12)
         self._set_fill_override(fill_rgb, _RECOVERY_BG_ALPHA)
+        self._snap_text_contrast_to_fill(fill_rgb, alpha=0.88)
 
         self._visible = True
         self._window.setAlphaValue_(1.0)
