@@ -4098,12 +4098,16 @@ class TestAdaptiveCompositing:
         overlay, mod = _make_overlay(mock_pyobjc)
         overlay._visible = True
         overlay._entrance_started = False
+        overlay._brightness = 0.91
+        overlay._brightness_target = 0.91
+        overlay._visual_ready_brightness_synced = False
         overlay._materialization_progress = 0.10
         overlay._fill_hidden_until_signature = None
         timer = MagicMock()
         overlay._visual_ready_timer = timer
         compositor = MagicMock()
         compositor.presented_count = 1
+        compositor.sampled_brightness = 0.04
         overlay._fullscreen_compositor = compositor
         overlay._start_entrance_animation = MagicMock()
         overlay._visual_ready_wait_started_at = (
@@ -4115,6 +4119,10 @@ class TestAdaptiveCompositing:
         assert overlay._entrance_started is False
         overlay._start_entrance_animation.assert_not_called()
         assert overlay._fullscreen_compositor is compositor
+        assert overlay._visual_ready_brightness_synced is False
+        assert overlay._brightness == pytest.approx(0.91)
+        assert overlay._brightness_target == pytest.approx(0.91)
+        compositor.refresh_brightness.assert_not_called()
 
     def test_brightness_crossing_reaches_contrast_band_in_one_pulse(self, mock_pyobjc):
         sys.modules.pop("spoke.command_overlay", None)

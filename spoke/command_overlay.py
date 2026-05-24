@@ -4631,12 +4631,8 @@ class CommandOverlay(NSObject):
         )
         if compositor_ready and not self._optical_body_content_ready():
             self._cancel_visual_ready_start()
-            if not getattr(self, "_visual_ready_brightness_synced", False):
-                self._sync_optical_compositor_brightness(
-                    hide_stale_fill=True,
-                    refresh_fill=True,
-                )
-                self._visual_ready_brightness_synced = True
+            # This deadline keeps the compositor ordered while materialization
+            # catches up; it must not certify or repaint the body over a slit.
             self._enforce_compositor_window_order()
             record_command_overlay_trace(
                 "overlay.visual_ready.hard_deadline.body_not_ready",
