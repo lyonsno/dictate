@@ -87,6 +87,78 @@ class TestOperatorPingTokenSmokeHook:
         assert d._tray_stack == []
         assert d._coordination_stack.entries == []
 
+
+class TestDiaulosCardStackHook:
+    def test_add_diaulos_card_seats_typed_surface_and_visible_stack_entry(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+
+        entry = d._add_diaulos_card_to_stack(
+            {
+                "diaulos": "chairside-sparkwright",
+                "diaulos_id": "dia-chair-1",
+                "display_name": "Chairside Sparkwright",
+                "topos": "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md",
+                "status": "Κίνησις",
+                "summary": "Read-only card slice in progress.",
+            },
+            activate=True,
+        )
+
+        assert entry.kind == main_module.SurfaceKind.DIAULOS
+        assert d._coordination_stack.primary is entry
+        assert len(d._tray_stack) == 1
+        tray_entry = d._tray_stack[0]
+        assert tray_entry.kind == "diaulos_card"
+        assert tray_entry.coordination_surface_id == entry.surface_id
+        assert tray_entry.acknowledged is True
+        assert "Diaulos: Chairside Sparkwright" in tray_entry.text
+        assert "Read-only card" in tray_entry.text
+        d._overlay.show_tray.assert_called_once_with(tray_entry.text, owner="user")
+        assert d._detector.tray_active is True
+
+    def test_diaulos_card_does_not_use_operator_ping_overlay_path(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch)
+
+        d._add_diaulos_card_to_stack(
+            {
+                "diaulos": "opus-miserena-id-cartographer",
+                "display_name": "Opus Miserena",
+            },
+            activate=True,
+        )
+
+        d._overlay.show_operator_ping_token_visuals.assert_not_called()
+        assert d._coordination_stack.find_by_kind(main_module.SurfaceKind.DIAULOS)
+
+    def test_diaulos_card_smoke_is_quiet_without_env(self, main_module, monkeypatch):
+        d = _make_delegate(main_module, monkeypatch)
+
+        assert d._maybe_show_diaulos_card_smoke() is False
+
+        assert d._tray_stack == []
+        assert d._coordination_stack.find_by_kind(main_module.SurfaceKind.DIAULOS) == []
+        d._overlay.show_tray.assert_not_called()
+
+    def test_diaulos_card_smoke_seats_visible_read_only_card(
+        self, main_module, monkeypatch
+    ):
+        monkeypatch.setenv("SPOKE_DIAULOS_CARD_SMOKE", "1")
+        d = _make_delegate(main_module, monkeypatch)
+
+        assert d._maybe_show_diaulos_card_smoke() is True
+
+        cards = d._coordination_stack.find_by_kind(main_module.SurfaceKind.DIAULOS)
+        assert len(cards) == 1
+        assert cards[0].payload["diaulos"] == "chairside-sparkwright"
+        assert d._tray_stack[0].kind == "diaulos_card"
+        assert "Diaulos: Chairside Sparkwright" in d._tray_stack[0].text
+        d._overlay.show_tray.assert_called_once_with(d._tray_stack[0].text, owner="user")
+        d._menubar.set_status_text.assert_called_with("Diaulos card smoke")
+
     def test_smoke_hook_projects_sample_ping_to_visible_overlay(
         self, main_module, monkeypatch
     ):

@@ -158,6 +158,7 @@ from .coordination_surfaces import (
     SurfaceKind,
     SurfaceTypeRegistry,
     build_default_registry,
+    diaulos_surface_from_record,
     derive_operator_ping_tokens,
     layout_operator_ping_token_visuals,
     load_operator_ping_events_from_jsonl,
@@ -1582,6 +1583,7 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_status_text("Models ready — mic unavailable, retrying…")
         self._hide_startup_status()
         self._maybe_show_operator_ping_token_smoke()
+        self._maybe_show_diaulos_card_smoke()
 
         # Warn if cloud preview is active — each partial is a paid API call.
         if getattr(self, "_preview_backend", "local") == "cloud":
@@ -3431,6 +3433,55 @@ class SpokeAppDelegate(NSObject):
             self._coordination_stack.focus_by_id(surface.surface_id)
         return surface
 
+    def _add_diaulos_card_to_stack(
+        self,
+        record: dict,
+        *,
+        activate: bool = True,
+        position: str = "top",
+    ) -> SurfaceEntry:
+        """Add a read-only Diaulos identity card to the visible stack."""
+        surface = diaulos_surface_from_record(record)
+        text = self._coordination_stack.expanded_view(surface)
+        entry = TrayEntry(
+            text=text,
+            owner="user",
+            acknowledged=True,
+            kind="diaulos_card",
+            metadata={
+                "surface_kind": SurfaceKind.DIAULOS.value,
+                "diaulos": surface.payload.get("diaulos", ""),
+                "diaulos_id": surface.payload.get("diaulos_id", ""),
+                "topos": surface.payload.get("topos", ""),
+            },
+            coordination_surface_id=surface.surface_id,
+        )
+
+        if position == "bottom":
+            had_entries = bool(self._tray_stack)
+            self._tray_stack.insert(0, entry)
+            if activate or not had_entries:
+                self._tray_index = 0
+            elif self._tray_active:
+                self._tray_index += 1
+        else:
+            self._tray_stack.append(entry)
+            self._tray_index = len(self._tray_stack) - 1
+
+        self._add_surface(surface, activate=activate, position=position)
+
+        if activate:
+            self._tray_active = True
+            self._detector.tray_active = True
+            if self._glow is not None:
+                if hasattr(self._glow, "show_tray_dim"):
+                    self._glow.show_tray_dim()
+                else:
+                    self._glow.hide()
+            self._show_tray_current()
+
+        return surface
+
     def _add_tray_entry(
         self,
         text: str,
@@ -3640,6 +3691,50 @@ class SpokeAppDelegate(NSObject):
         )
         if self._menubar is not None:
             self._menubar.set_status_text("Chairside ping token smoke")
+        return True
+
+    def _maybe_show_diaulos_card_smoke(self) -> bool:
+        """Seat a sample read-only Diaulos card when explicit smoke env is enabled."""
+        value = os.environ.get("SPOKE_DIAULOS_CARD_SMOKE", "")
+        if value in {"", "0", "false", "False", "no", "off"}:
+            return False
+
+        self._add_diaulos_card_to_stack(
+            {
+                "diaulos": os.environ.get(
+                    "SPOKE_DIAULOS_CARD_SMOKE_DIAULOS",
+                    "chairside-sparkwright",
+                ),
+                "diaulos_id": os.environ.get("SPOKE_DIAULOS_CARD_SMOKE_ID", ""),
+                "display_name": os.environ.get(
+                    "SPOKE_DIAULOS_CARD_SMOKE_DISPLAY",
+                    "Chairside Sparkwright",
+                ),
+                "topos": os.environ.get(
+                    "SPOKE_DIAULOS_CARD_SMOKE_TOPOS",
+                    "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md",
+                ),
+                "status": os.environ.get("SPOKE_DIAULOS_CARD_SMOKE_STATUS", "Κίνησις"),
+                "summary": os.environ.get(
+                    "SPOKE_DIAULOS_CARD_SMOKE_SUMMARY",
+                    "Read-only Diaulos card smoke; no authority routing or writeback.",
+                ),
+                "refs": {
+                    "topoi": [
+                        os.environ.get(
+                            "SPOKE_DIAULOS_CARD_SMOKE_TOPOS",
+                            "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md",
+                        )
+                    ],
+                    "metadosis": [
+                        "metadosis/source-signed-diaulos-switchboard_2026-05-20.md"
+                    ],
+                },
+            },
+            activate=True,
+        )
+        if self._menubar is not None:
+            self._menubar.set_status_text("Diaulos card smoke")
         return True
 
     def _show_tray_current(self, *, acknowledge: bool = False) -> None:

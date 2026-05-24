@@ -23,6 +23,7 @@ from spoke.coordination_surfaces import (
     SurfaceTypeRegistration,
     SurfaceTypeRegistry,
     build_default_registry,
+    diaulos_surface_from_record,
     derive_operator_ping_tokens,
     layout_operator_ping_token_visuals,
     load_operator_ping_events_from_jsonl,
@@ -579,6 +580,115 @@ class TestVoiceActionRouting:
             assert dismiss.requires_interlocutor is False
             assert dismiss.source_owned is False
             assert dismiss.writeback_allowed is False
+
+
+class TestDiaulosCardSurface:
+    def test_diaulos_record_projects_to_read_only_stack_card(self):
+        entry = diaulos_surface_from_record(
+            {
+                "diaulos": "chairside-sparkwright",
+                "diaulos_id": "dia-chair-1",
+                "display_name": "Chairside Sparkwright",
+                "topos": "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md",
+                "status": "Κίνησις",
+                "summary": "Read-only card slice in progress.",
+                "refs": {
+                    "topoi": [
+                        "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md"
+                    ],
+                    "metadosis": [
+                        "metadosis/source-signed-diaulos-switchboard_2026-05-20.md"
+                    ],
+                },
+            }
+        )
+
+        assert entry.kind == SurfaceKind.DIAULOS
+        assert entry.surface_id == "diaulos:dia-chair-1"
+        assert entry.label == "Chairside Sparkwright"
+        assert entry.acknowledged is True
+        assert entry.routing is not None
+        assert entry.routing.destination_kind == SurfaceDestinationKind.DIAULOS
+        assert entry.routing.destination_id == "dia-chair-1"
+        assert entry.routing.writeback_target == ""
+        assert entry.routing.reread_refs == [
+            "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md"
+        ]
+        assert entry.routing.cargo["authority"] == "read_only_identity_fact"
+        assert entry.routing.cargo["may_focus_pane"] is False
+        assert entry.routing.cargo["may_write_state"] is False
+        assert entry.routing.cargo["may_send_directive"] is False
+        assert entry.payload["diaulos"] == "chairside-sparkwright"
+        assert entry.payload["diaulos_id"] == "dia-chair-1"
+        assert entry.payload["summary"] == "Read-only card slice in progress."
+
+    def test_diaulos_card_uses_handle_as_stable_fallback_without_topos_shadow(self):
+        entry = diaulos_surface_from_record(
+            {
+                "diaulos": "kynormous-bastards",
+                "topos": "projects/epistaxis/topoi/codex-kynormous-weight-of-staggering-kinesthesia-0514.md",
+            }
+        )
+
+        assert entry.surface_id == "diaulos:kynormous-bastards"
+        assert entry.label == "kynormous-bastards"
+        assert entry.routing is not None
+        assert entry.routing.destination_id == "kynormous-bastards"
+        assert "codex-kynormous-weight" not in entry.surface_id
+
+    def test_diaulos_card_renderer_keeps_compact_and_expanded_text_boring(self):
+        reg = build_default_registry()
+        stack = CoordinationStack(registry=reg)
+        entry = diaulos_surface_from_record(
+            {
+                "diaulos": "opus-miserena-id-cartographer",
+                "diaulos_id": "dia-b715a7f9-ec67-4dcd-80a3-12688844f177",
+                "display_name": "Opus Miserena",
+                "topos": "projects/epistaxis/topoi/codex-opus-miserena-id-cartographer-0521.md",
+                "status": "Κίνησις",
+                "summary": "Diaulos ID coherence and switchboard routing custody.",
+            }
+        )
+        stack.push(entry)
+
+        compact = stack.compact_summary(entry)
+        expanded = stack.expanded_view(entry)
+
+        assert compact == "Diaulos: Opus Miserena · Κίνησις"
+        assert "Handle: opus-miserena-id-cartographer" in expanded
+        assert "ID: dia-b715a7f9-ec67-4dcd-80a3-12688844f177" in expanded
+        assert "Status: Κίνησις" in expanded
+        assert "Read-only card" in expanded
+        assert "Send directive" not in expanded
+        assert "Focus pane" not in expanded
+
+    def test_default_diaulos_actions_do_not_claim_write_authority(self):
+        reg = build_default_registry()
+        actions = reg.actions_for(SurfaceKind.DIAULOS)
+
+        assert [action.name for action in actions] == ["dismiss"]
+        dismiss = actions[0]
+        assert dismiss.requires_interlocutor is False
+        assert dismiss.source_owned is False
+        assert dismiss.writeback_allowed is False
+
+    def test_operator_ping_events_do_not_project_to_diaulos_cards(self):
+        stack = CoordinationStack(registry=build_default_registry())
+        ping = {
+            "kind": "operator_ping.created",
+            "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ping-1",
+            "operator_ping": {
+                "ping_id": "ping-1",
+                "created_at": "2026-05-24T14:00:00Z",
+                "diaulos": "chairside-sparkwright",
+                "reason_token": "pingy",
+            },
+        }
+
+        tokens = derive_operator_ping_tokens([ping], stack=stack)
+
+        assert [token.ping_id for token in tokens] == ["ping-1"]
+        assert stack.find_by_kind(SurfaceKind.DIAULOS) == []
 
 
 class TestRendererIntegration:

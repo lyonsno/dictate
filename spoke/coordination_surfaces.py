@@ -30,6 +30,7 @@ class SurfaceKind(str, Enum):
     FINDING = "finding"
     PERCEPTASIA_VIEW = "perceptasia_view"
     METAMORPHOSIS_RESULT = "metamorphosis_result"
+    DIAULOS = "diaulos"
     TEXT = "text"  # legacy fallback — raw text entry
 
 
@@ -139,6 +140,37 @@ class SurfaceTypeRegistration:
     kind: SurfaceKind
     actions: list[SurfaceAction] = field(default_factory=list)
     renderer: SurfaceRenderer | None = None
+
+
+class DiaulosCardRenderer:
+    """Read-only renderer for Diaulos identity cards."""
+
+    def compact(self, entry: SurfaceEntry) -> str:
+        status = str(entry.payload.get("status") or "").strip()
+        if status:
+            return f"Diaulos: {entry.label} · {status}"
+        return f"Diaulos: {entry.label}"
+
+    def expanded(self, entry: SurfaceEntry) -> str:
+        diaulos = str(entry.payload.get("diaulos") or "").strip()
+        diaulos_id = str(entry.payload.get("diaulos_id") or "").strip()
+        topos = str(entry.payload.get("topos") or "").strip()
+        status = str(entry.payload.get("status") or "").strip()
+        summary = str(entry.payload.get("summary") or "").strip()
+
+        lines = [f"Diaulos: {entry.label}"]
+        if diaulos:
+            lines.append(f"Handle: {diaulos}")
+        if diaulos_id:
+            lines.append(f"ID: {diaulos_id}")
+        if status:
+            lines.append(f"Status: {status}")
+        if topos:
+            lines.append(f"Topos: {topos}")
+        if summary:
+            lines.append(summary)
+        lines.append("Read-only card: selection and expansion only.")
+        return "\n".join(lines)
 
 
 class SurfaceTypeRegistry:
@@ -606,6 +638,14 @@ def build_default_registry() -> SurfaceTypeRegistry:
     ))
 
     reg.register(SurfaceTypeRegistration(
+        kind=SurfaceKind.DIAULOS,
+        actions=[
+            SurfaceAction("dismiss", ["dismiss", "close"], "Remove from stack"),
+        ],
+        renderer=DiaulosCardRenderer(),
+    ))
+
+    reg.register(SurfaceTypeRegistration(
         kind=SurfaceKind.TEXT,
         actions=[
             SurfaceAction("send", ["send", "send this", "to assistant"], "Send to assistant"),
@@ -628,6 +668,87 @@ def text_surface_from_str(text: str, *, owner: str = "user") -> SurfaceEntry:
         ),
         payload={"text": text, "owner": owner},
         acknowledged=(owner != "assistant"),
+    )
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item).strip()]
+
+
+def _diaulos_refs(record: dict[str, Any]) -> dict[str, list[str]]:
+    raw_refs = record.get("refs")
+    if not isinstance(raw_refs, dict):
+        return {}
+    return {
+        str(key): _string_list(value)
+        for key, value in raw_refs.items()
+        if _string_list(value)
+    }
+
+
+def diaulos_surface_from_record(record: dict[str, Any]) -> SurfaceEntry:
+    """Project a Diaulos identity record into a read-only Stack card.
+
+    The input is intentionally dict-shaped for now because the authoritative
+    Diaulos resolver surfaces are still settling. This function preserves only
+    identity/display facts and refuses to imply live pane focus, directive
+    sending, or Epistaxis write authority.
+    """
+    diaulos = str(record.get("diaulos") or "").strip()
+    diaulos_id = str(record.get("diaulos_id") or "").strip()
+    display_name = str(record.get("display_name") or "").strip()
+    topos = str(record.get("topos") or "").strip()
+    status = str(record.get("status") or "").strip()
+    summary = str(record.get("summary") or "").strip()
+    refs = _diaulos_refs(record)
+
+    stable_id = diaulos_id or diaulos
+    if not stable_id:
+        raise ValueError("diaulos record requires diaulos_id or diaulos")
+
+    label = display_name or diaulos or diaulos_id
+    reread_refs = [topos] if topos else []
+    for ref in refs.get("topoi", []):
+        if ref not in reread_refs:
+            reread_refs.append(ref)
+
+    payload = {
+        "diaulos": diaulos,
+        "diaulos_id": diaulos_id,
+        "display_name": display_name,
+        "topos": topos,
+        "status": status,
+        "summary": summary,
+        "refs": refs,
+    }
+
+    return SurfaceEntry(
+        identity=SurfaceIdentity(
+            kind=SurfaceKind.DIAULOS,
+            surface_id=f"diaulos:{stable_id}",
+            label=label,
+        ),
+        payload=payload,
+        routing=SurfaceRoutingContext(
+            destination_kind=SurfaceDestinationKind.DIAULOS,
+            destination_id=stable_id,
+            reread_refs=reread_refs,
+            scope={"diauloi": [stable_id]},
+            cargo={
+                "diaulos": diaulos,
+                "diaulos_id": diaulos_id,
+                "topos": topos,
+                "refs": refs,
+                "authority": "read_only_identity_fact",
+                "may_focus_pane": False,
+                "may_write_state": False,
+                "may_send_directive": False,
+            },
+            writeback_target="",
+        ),
+        acknowledged=True,
     )
 
 
