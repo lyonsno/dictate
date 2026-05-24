@@ -155,6 +155,9 @@ class DiaulosCardRenderer:
         diaulos = str(entry.payload.get("diaulos") or "").strip()
         diaulos_id = str(entry.payload.get("diaulos_id") or "").strip()
         topos = str(entry.payload.get("topos") or "").strip()
+        source_topoi = _string_list(entry.payload.get("source_topoi"))
+        custody_refs = _string_list(entry.payload.get("custody_refs"))
+        warnings = _string_list(entry.payload.get("warnings"))
         status = str(entry.payload.get("status") or "").strip()
         summary = str(entry.payload.get("summary") or "").strip()
 
@@ -167,6 +170,12 @@ class DiaulosCardRenderer:
             lines.append(f"Status: {status}")
         if topos:
             lines.append(f"Topos: {topos}")
+        if source_topoi:
+            lines.append(f"Source topoi: {', '.join(source_topoi)}")
+        if custody_refs:
+            lines.append(f"Custody refs: {', '.join(custody_refs)}")
+        if warnings:
+            lines.append(f"Warnings: {', '.join(warnings)}")
         if summary:
             lines.append(summary)
         lines.append("Read-only card: selection and expansion only.")
@@ -700,6 +709,9 @@ def diaulos_surface_from_record(record: dict[str, Any]) -> SurfaceEntry:
     diaulos_id = str(record.get("diaulos_id") or "").strip()
     display_name = str(record.get("display_name") or "").strip()
     topos = str(record.get("topos") or "").strip()
+    source_topoi = _string_list(record.get("source_topoi"))
+    custody_refs = _string_list(record.get("custody_refs"))
+    warnings = _string_list(record.get("warnings"))
     status = str(record.get("status") or "").strip()
     summary = str(record.get("summary") or "").strip()
     refs = _diaulos_refs(record)
@@ -710,6 +722,12 @@ def diaulos_surface_from_record(record: dict[str, Any]) -> SurfaceEntry:
 
     label = display_name or diaulos or diaulos_id
     reread_refs = [topos] if topos else []
+    for ref in source_topoi:
+        if ref not in reread_refs:
+            reread_refs.append(ref)
+    for ref in custody_refs:
+        if ref not in reread_refs:
+            reread_refs.append(ref)
     for ref in refs.get("topoi", []):
         if ref not in reread_refs:
             reread_refs.append(ref)
@@ -719,6 +737,9 @@ def diaulos_surface_from_record(record: dict[str, Any]) -> SurfaceEntry:
         "diaulos_id": diaulos_id,
         "display_name": display_name,
         "topos": topos,
+        "source_topoi": source_topoi,
+        "custody_refs": custody_refs,
+        "warnings": warnings,
         "status": status,
         "summary": summary,
         "refs": refs,
@@ -740,6 +761,9 @@ def diaulos_surface_from_record(record: dict[str, Any]) -> SurfaceEntry:
                 "diaulos": diaulos,
                 "diaulos_id": diaulos_id,
                 "topos": topos,
+                "source_topoi": source_topoi,
+                "custody_refs": custody_refs,
+                "warnings": warnings,
                 "refs": refs,
                 "authority": "read_only_identity_fact",
                 "may_focus_pane": False,

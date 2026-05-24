@@ -3705,7 +3705,10 @@ class SpokeAppDelegate(NSObject):
                     "SPOKE_DIAULOS_CARD_SMOKE_DIAULOS",
                     "chairside-sparkwright",
                 ),
-                "diaulos_id": os.environ.get("SPOKE_DIAULOS_CARD_SMOKE_ID", ""),
+                "diaulos_id": os.environ.get(
+                    "SPOKE_DIAULOS_CARD_SMOKE_ID",
+                    "dia-f054023f-d93b-485c-af0c-942698434d11",
+                ),
                 "display_name": os.environ.get(
                     "SPOKE_DIAULOS_CARD_SMOKE_DISPLAY",
                     "Chairside Sparkwright",
@@ -3714,6 +3717,24 @@ class SpokeAppDelegate(NSObject):
                     "SPOKE_DIAULOS_CARD_SMOKE_TOPOS",
                     "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md",
                 ),
+                "source_topoi": [
+                    os.environ.get(
+                        "SPOKE_DIAULOS_CARD_SMOKE_SOURCE_TOPOS",
+                        "projects/spoke/epistaxis.md#codex-diaulos-stack-current-main-graft-0523",
+                    )
+                ],
+                "custody_refs": [
+                    os.environ.get(
+                        "SPOKE_DIAULOS_CARD_SMOKE_TOPOS",
+                        "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md",
+                    )
+                ],
+                "warnings": [
+                    os.environ.get(
+                        "SPOKE_DIAULOS_CARD_SMOKE_WARNING",
+                        "current_topos_not_registry_source_topos",
+                    )
+                ],
                 "status": os.environ.get("SPOKE_DIAULOS_CARD_SMOKE_STATUS", "Κίνησις"),
                 "summary": os.environ.get(
                     "SPOKE_DIAULOS_CARD_SMOKE_SUMMARY",

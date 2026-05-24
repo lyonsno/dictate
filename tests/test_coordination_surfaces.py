@@ -645,6 +645,9 @@ class TestDiaulosCardSurface:
                 "diaulos_id": "dia-b715a7f9-ec67-4dcd-80a3-12688844f177",
                 "display_name": "Opus Miserena",
                 "topos": "projects/epistaxis/topoi/codex-opus-miserena-id-cartographer-0521.md",
+                "source_topoi": [
+                    "projects/epistaxis/topoi/codex-opus-miserena-id-cartographer-0521.md"
+                ],
                 "status": "Κίνησις",
                 "summary": "Diaulos ID coherence and switchboard routing custody.",
             }
@@ -658,9 +661,44 @@ class TestDiaulosCardSurface:
         assert "Handle: opus-miserena-id-cartographer" in expanded
         assert "ID: dia-b715a7f9-ec67-4dcd-80a3-12688844f177" in expanded
         assert "Status: Κίνησις" in expanded
+        assert (
+            "Source topoi: projects/epistaxis/topoi/codex-opus-miserena-id-cartographer-0521.md"
+            in expanded
+        )
         assert "Read-only card" in expanded
         assert "Send directive" not in expanded
         assert "Focus pane" not in expanded
+
+    def test_diaulos_card_preserves_registry_source_topoi_and_current_custody_refs(self):
+        entry = diaulos_surface_from_record(
+            {
+                "diaulos": "chairside-sparkwright",
+                "diaulos_id": "dia-f054023f-d93b-485c-af0c-942698434d11",
+                "display_name": "Chairside Sparkwright",
+                "topos": "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md",
+                "source_topoi": [
+                    "projects/spoke/epistaxis.md#codex-diaulos-stack-current-main-graft-0523"
+                ],
+                "custody_refs": [
+                    "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md"
+                ],
+                "warnings": ["current_topos_not_registry_source_topos"],
+            }
+        )
+
+        assert entry.surface_id == "diaulos:dia-f054023f-d93b-485c-af0c-942698434d11"
+        assert entry.routing is not None
+        assert entry.routing.reread_refs == [
+            "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md",
+            "projects/spoke/epistaxis.md#codex-diaulos-stack-current-main-graft-0523",
+        ]
+        assert entry.payload["source_topoi"] == [
+            "projects/spoke/epistaxis.md#codex-diaulos-stack-current-main-graft-0523"
+        ]
+        assert entry.payload["custody_refs"] == [
+            "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md"
+        ]
+        assert entry.payload["warnings"] == ["current_topos_not_registry_source_topos"]
 
     def test_default_diaulos_actions_do_not_claim_write_authority(self):
         reg = build_default_registry()

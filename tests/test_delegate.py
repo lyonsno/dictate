@@ -154,8 +154,14 @@ class TestDiaulosCardStackHook:
         cards = d._coordination_stack.find_by_kind(main_module.SurfaceKind.DIAULOS)
         assert len(cards) == 1
         assert cards[0].payload["diaulos"] == "chairside-sparkwright"
+        assert cards[0].payload["diaulos_id"] == "dia-f054023f-d93b-485c-af0c-942698434d11"
+        assert cards[0].payload["source_topoi"] == [
+            "projects/spoke/epistaxis.md#codex-diaulos-stack-current-main-graft-0523"
+        ]
+        assert cards[0].payload["warnings"] == ["current_topos_not_registry_source_topos"]
         assert d._tray_stack[0].kind == "diaulos_card"
         assert "Diaulos: Chairside Sparkwright" in d._tray_stack[0].text
+        assert "ID: dia-f054023f-d93b-485c-af0c-942698434d11" in d._tray_stack[0].text
         d._overlay.show_tray.assert_called_once_with(d._tray_stack[0].text, owner="user")
         d._menubar.set_status_text.assert_called_with("Diaulos card smoke")
 
