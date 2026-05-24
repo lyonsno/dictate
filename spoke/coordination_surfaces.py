@@ -161,24 +161,27 @@ class DiaulosCardRenderer:
         status = str(entry.payload.get("status") or "").strip()
         summary = str(entry.payload.get("summary") or "").strip()
 
-        lines = [f"Diaulos: {entry.label}"]
+        heading = f"Diaulos: {entry.label}"
+        if status:
+            heading = f"{heading} · {status}"
+        lines = [heading]
         if diaulos:
             lines.append(f"Handle: {diaulos}")
         if diaulos_id:
             lines.append(f"ID: {diaulos_id}")
-        if status:
-            lines.append(f"Status: {status}")
-        if topos:
-            lines.append(f"Topos: {topos}")
+        custody_labels = [_ref_label(ref) for ref in (custody_refs or ([topos] if topos else []))]
+        custody_labels = [label for label in custody_labels if label]
+        if custody_labels:
+            lines.append(f"Custody: {', '.join(custody_labels[:2])}")
         if source_topoi:
-            lines.append(f"Source topoi: {', '.join(source_topoi)}")
-        if custody_refs:
-            lines.append(f"Custody refs: {', '.join(custody_refs)}")
-        if warnings:
-            lines.append(f"Warnings: {', '.join(warnings)}")
-        if summary:
+            source_labels = [_ref_label(ref) for ref in source_topoi]
+            caveat = ""
+            if "current_topos_not_registry_source_topos" in warnings:
+                caveat = " (currentness caveat)"
+            lines.append(f"Registry source: {', '.join(source_labels[:2])}{caveat}")
+        if summary and not (source_topoi or custody_refs or warnings):
             lines.append(summary)
-        lines.append("Read-only card: selection and expansion only.")
+        lines.append("Read-only card: selection/expansion only; no focus/send/writeback.")
         return "\n".join(lines)
 
 
@@ -684,6 +687,17 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item).strip()]
+
+
+def _ref_label(value: str) -> str:
+    ref = str(value).strip()
+    if not ref:
+        return ""
+    if "#" in ref:
+        anchor = ref.rsplit("#", 1)[1].strip()
+        if anchor:
+            return anchor
+    return Path(ref).name or ref
 
 
 def _diaulos_refs(record: dict[str, Any]) -> dict[str, list[str]]:

@@ -658,13 +658,11 @@ class TestDiaulosCardSurface:
         expanded = stack.expanded_view(entry)
 
         assert compact == "Diaulos: Opus Miserena · Κίνησις"
+        assert "Diaulos: Opus Miserena · Κίνησις" in expanded
         assert "Handle: opus-miserena-id-cartographer" in expanded
         assert "ID: dia-b715a7f9-ec67-4dcd-80a3-12688844f177" in expanded
-        assert "Status: Κίνησις" in expanded
-        assert (
-            "Source topoi: projects/epistaxis/topoi/codex-opus-miserena-id-cartographer-0521.md"
-            in expanded
-        )
+        assert "Registry source: codex-opus-miserena-id-cartographer-0521.md" in expanded
+        assert "projects/epistaxis/topoi/" not in expanded
         assert "Read-only card" in expanded
         assert "Send directive" not in expanded
         assert "Focus pane" not in expanded
@@ -699,6 +697,34 @@ class TestDiaulosCardSurface:
             "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md"
         ]
         assert entry.payload["warnings"] == ["current_topos_not_registry_source_topos"]
+
+    def test_diaulos_card_renderer_keeps_registry_backed_smoke_card_overlay_sized(self):
+        reg = build_default_registry()
+        stack = CoordinationStack(registry=reg)
+        entry = diaulos_surface_from_record(
+            {
+                "diaulos": "chairside-sparkwright",
+                "diaulos_id": "dia-f054023f-d93b-485c-af0c-942698434d11",
+                "display_name": "Chairside Sparkwright",
+                "topos": "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md",
+                "source_topoi": [
+                    "projects/spoke/epistaxis.md#codex-diaulos-stack-current-main-graft-0523"
+                ],
+                "custody_refs": [
+                    "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md"
+                ],
+                "warnings": ["current_topos_not_registry_source_topos"],
+                "status": "Κίνησις",
+                "summary": "Read-only Diaulos card smoke; no authority routing or writeback.",
+            }
+        )
+
+        expanded = stack.expanded_view(entry)
+
+        assert len(expanded.splitlines()) <= 6
+        assert "Custody: codex-diaulos-card-carrying-bastards-0524.md" in expanded
+        assert "Registry source: codex-diaulos-stack-current-main-graft-0523" in expanded
+        assert "current_topos_not_registry_source_topos" not in expanded
 
     def test_default_diaulos_actions_do_not_claim_write_authority(self):
         reg = build_default_registry()
