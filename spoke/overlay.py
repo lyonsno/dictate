@@ -1680,6 +1680,19 @@ class TranscriptionOverlay(NSObject):
             self._window.setAlphaValue_(1.0)
             self._window.orderFrontRegardless()
 
+    def operator_ping_token_body_frame(self) -> tuple[float, float, float, float]:
+        """Return the current preview body frame in wrapper-view coordinates."""
+        content = getattr(self, "_content_view", None)
+        if content is None:
+            return (_OUTER_FEATHER, _OUTER_FEATHER, _OVERLAY_WIDTH, _OVERLAY_HEIGHT)
+        frame = content.frame()
+        return (
+            float(frame.origin.x),
+            float(frame.origin.y),
+            float(frame.size.width),
+            float(frame.size.height),
+        )
+
     def show_stack_body_shell(self, *, owner: str = "source") -> None:
         """Show an empty visual Stack body for source tokens without app stack rows."""
         if self._window is None:

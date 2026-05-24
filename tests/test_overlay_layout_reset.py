@@ -485,6 +485,20 @@ def test_source_stack_body_shell_repaints_text_without_rewriting_preview_content
     assert overlay._text_view.text_color is not None
 
 
+def test_operator_ping_token_body_frame_tracks_live_preview_body(
+    mock_pyobjc, monkeypatch
+):
+    overlay_module = _import_overlay(mock_pyobjc)
+    monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)
+
+    overlay = overlay_module.TranscriptionOverlay.alloc().initWithScreen_(_FakeScreen())
+    overlay._content_view = _FakeView(_make_rect(220.0, 220.0, 640.0, 112.0))
+
+    assert overlay.operator_ping_token_body_frame() == pytest.approx(
+        (220.0, 220.0, 640.0, 112.0)
+    )
+
+
 def test_update_layout_caps_preview_growth_below_assistant_overlay(mock_pyobjc, monkeypatch):
     overlay_module = _import_overlay(mock_pyobjc)
     monkeypatch.setattr(overlay_module, "NSMakeRect", _make_rect)

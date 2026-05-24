@@ -684,6 +684,58 @@ class TestPreviewFinalizationContract:
         assert d._last_preview_text == "fresh preview"
         d._overlay.set_text.assert_called_once_with("fresh preview")
 
+    def test_preview_text_update_repaints_operator_ping_tokens_after_live_text(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        event_log = tmp_path / "events.jsonl"
+        event_log.write_text(
+            json.dumps(
+                {
+                    "kind": "operator_ping.created",
+                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:live-bar-ping",
+                    "source_tool": "epistaxis ping-operator",
+                    "operator_ping": {
+                        "ping_id": "live-bar-ping",
+                        "created_at": "2026-05-24T12:10:00Z",
+                        "diaulos": "Chairside Sparkwright",
+                        "message": "live bar ping",
+                        "reason_token": "pingy",
+                    },
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("SPOKE_OPERATOR_PING_EVENTS_PATH", str(event_log))
+        d = _make_delegate(main_module, monkeypatch)
+        d._preview_active = True
+        d._preview_session_token = 7
+        d._overlay.operator_ping_token_body_frame.return_value = (
+            220.0,
+            220.0,
+            600.0,
+            80.0,
+        )
+        sequence = MagicMock()
+        sequence.attach_mock(d._overlay.set_text, "set_text")
+        sequence.attach_mock(
+            d._overlay.show_operator_ping_token_visuals,
+            "show_operator_ping_token_visuals",
+        )
+
+        d.previewTextUpdate_({"token": 7, "text": "fresh preview"})
+
+        visuals = d._overlay.show_operator_ping_token_visuals.call_args.args[0]
+        assert [visual.ping_id for visual in visuals] == ["live-bar-ping"]
+        assert sequence.mock_calls[:2] == [
+            call.set_text("fresh preview"),
+            call.show_operator_ping_token_visuals(visuals),
+        ]
+        d._overlay.show_stack_body_shell.assert_not_called()
+        assert d._tray_stack == []
+        assert d._coordination_stack.entries == []
+
     def test_preview_text_update_ignored_after_release(self, main_module, monkeypatch):
         """Late preview text should not overwrite the post-release UI state."""
         d = _make_delegate(main_module, monkeypatch)

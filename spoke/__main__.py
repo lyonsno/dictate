@@ -2482,6 +2482,10 @@ class SpokeAppDelegate(NSObject):
         self._last_preview_text = text
         if self._overlay is not None:
             self._overlay.set_text(text)
+            self._refresh_operator_ping_tokens_from_configured_event_log(
+                update_status=False,
+                summon_stack_body=False,
+            )
 
     def _on_hold_end(
         self,
@@ -3542,6 +3546,19 @@ class SpokeAppDelegate(NSObject):
         """Approximate the preview overlay body for token-only visual smoke."""
         return (220.0, 220.0, 600.0, 80.0)
 
+    def _operator_ping_token_body_frame(self) -> tuple[float, float, float, float]:
+        """Use the live preview body frame when the overlay can report one."""
+        overlay = getattr(self, "_overlay", None)
+        frame_provider = getattr(overlay, "operator_ping_token_body_frame", None)
+        if callable(frame_provider):
+            try:
+                frame = frame_provider()
+                if isinstance(frame, (tuple, list)) and len(frame) == 4:
+                    return tuple(float(value) for value in frame)
+            except Exception:
+                logger.debug("Failed to read live operator ping token frame", exc_info=True)
+        return self._operator_ping_token_smoke_frame()
+
     def _show_operator_ping_tokens_from_event_log(
         self,
         event_log_path: str,
@@ -3569,7 +3586,7 @@ class SpokeAppDelegate(NSObject):
         try:
             visuals = self._show_operator_ping_tokens_from_event_log(
                 event_log_path,
-                stack_body_frame=stack_body_frame or self._operator_ping_token_smoke_frame(),
+                stack_body_frame=stack_body_frame or self._operator_ping_token_body_frame(),
                 summon_stack_body=summon_stack_body,
             )
         except (OSError, ValueError) as exc:
