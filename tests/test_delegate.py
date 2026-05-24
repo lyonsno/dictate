@@ -184,6 +184,52 @@ class TestOperatorPingTokenSmokeHook:
         assert d._tray_stack == []
         assert d._coordination_stack.entries == []
 
+    def test_startup_ready_repaints_real_event_log_token_body_after_loading_hide(
+        self, main_module, monkeypatch, tmp_path
+    ):
+        event_log = tmp_path / "events.jsonl"
+        event_log.write_text(
+            json.dumps(
+                {
+                    "kind": "operator_ping.created",
+                    "event_id": "epistaxis.event.v1:operator_ping.created:spoke:ready-ping",
+                    "source_tool": "epistaxis ping-operator",
+                    "operator_ping": {
+                        "ping_id": "ready-ping",
+                        "created_at": "2026-05-24T12:05:00Z",
+                        "diaulos": "Chairside Sparkwright",
+                        "message": "startup ready shell ping",
+                        "reason_token": "content",
+                    },
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("SPOKE_OPERATOR_PING_EVENTS_PATH", str(event_log))
+        d = _make_delegate(main_module, monkeypatch)
+        d._overlay = MagicMock()
+        sequence = MagicMock()
+        sequence.attach_mock(d._overlay.hide, "hide")
+        sequence.attach_mock(d._overlay.show_stack_body_shell, "show_stack_body_shell")
+        sequence.attach_mock(
+            d._overlay.show_operator_ping_token_visuals,
+            "show_operator_ping_token_visuals",
+        )
+
+        d.clientWarmupSucceeded_(None)
+
+        visuals = d._overlay.show_operator_ping_token_visuals.call_args.args[0]
+        assert [visual.ping_id for visual in visuals] == ["ready-ping"]
+        assert sequence.mock_calls[:3] == [
+            call.hide(),
+            call.show_stack_body_shell(owner="source"),
+            call.show_operator_ping_token_visuals(visuals),
+        ]
+        assert d._tray_stack == []
+        assert d._coordination_stack.entries == []
+
     def test_hold_start_refreshes_real_event_log_tokens_on_preview_overlay(
         self, main_module, monkeypatch, tmp_path
     ):

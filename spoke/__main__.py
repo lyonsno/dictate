@@ -1581,6 +1581,7 @@ class SpokeAppDelegate(NSObject):
         else:
             self._menubar.set_status_text("Models ready — mic unavailable, retrying…")
         self._hide_startup_status()
+        self._maybe_show_operator_ping_token_smoke()
 
         # Warn if cloud preview is active — each partial is a paid API call.
         if getattr(self, "_preview_backend", "local") == "cloud":
