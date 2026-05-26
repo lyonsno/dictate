@@ -58,6 +58,7 @@ from Quartz import (
 logger = logging.getLogger(__name__)
 
 SPACEBAR_KEYCODE = 49
+SLASH_KEYCODE = 44
 RETURN_KEYCODE = 36
 ENTER_KEYCODE = RETURN_KEYCODE
 KEYPAD_ENTER_KEYCODE = 76
@@ -198,6 +199,7 @@ class SpacebarHoldDetector(NSObject):
         self._on_shift_tap_idle: Callable[[], None] | None = None
         self._on_enter_pressed: Callable[[], None] | None = None
         self._on_tray_delete: Callable[[], None] | None = None
+        self._on_tray_deck_switch: Callable[[], None] | None = None
         self._on_approval_enter_pressed: Callable[[bool], None] | None = None
         self._on_approval_delete_pressed: Callable[[], None] | None = None
         self._tray_shift_down = False
@@ -326,6 +328,18 @@ class SpacebarHoldDetector(NSObject):
 
     def handle_key_down(self, keycode: int, flags: int) -> bool:
         """Handle a keyDown event. Returns True to suppress, False to pass through."""
+        if keycode == SLASH_KEYCODE and getattr(self, "tray_active", False):
+            if self._state == _State.WAITING:
+                self._cancel_hold_timer()
+                self._state = _State.IDLE
+                self._awaiting_space_release = True
+            elif self._state != _State.IDLE:
+                return False
+            cb = getattr(self, "_on_tray_deck_switch", None)
+            if cb is not None:
+                cb()
+            return True
+
         if keycode != SPACEBAR_KEYCODE:
             return False
 

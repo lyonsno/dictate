@@ -48,6 +48,16 @@ _RECORDING_LOAD_SHED_RELEASE_DELAY_S = 0.36
 # Keep _PastableTextField as an alias so existing alloc() calls don't break.
 _PastableTextField = NSTextField
 
+_TRAY_DECK_TEXT = "text"
+_TRAY_DECK_COORDINATION = "coordination"
+_TRAY_DECKS = (_TRAY_DECK_TEXT, _TRAY_DECK_COORDINATION)
+_COORDINATION_TRAY_KINDS = frozenset(
+    {
+        "diaulos_card",
+        "directive_inbox_pressure",
+    }
+)
+
 
 def _extract_command_error_detail(raw: bytes) -> str | None:
     """Best-effort extraction of a useful provider error message."""
@@ -1094,6 +1104,7 @@ class SpokeAppDelegate(NSObject):
         self._detector._on_shift_tap = self._on_tray_shift_tap
         self._detector._on_shift_tap_during_hold = self._on_tray_navigate_up
         self._detector._on_shift_tap_idle = self._on_audio_shift_tap
+        self._detector._on_tray_deck_switch = self._tray_switch_deck
         # Bare Enter should belong to the foreground app; tray actions stay
         # on explicit space-rooted gestures instead of ambient key capture.
         self._detector._on_enter_pressed = None
@@ -1306,6 +1317,7 @@ class SpokeAppDelegate(NSObject):
         self._tray_stack: list[TrayEntry | str] = []
         self._tray_index: int = 0
         self._tray_active: bool = False
+        self._tray_deck: str = _TRAY_DECK_TEXT
         self._tray_tool_result: dict | None = None
         # Typed coordination surface stack (new backing store, coexists during migration)
         self._surface_registry = build_default_registry()
@@ -2591,15 +2603,23 @@ class SpokeAppDelegate(NSObject):
             if self._glow is not None:
                 self._glow.hide()
             if shift_held:
-                if self._tray_stack:
-                    logger.info("Shift+empty — recalling tray (stack has %d entries)", len(self._tray_stack))
+                recall_index = self._latest_tray_index_for_deck()
+                if recall_index is not None:
+                    logger.info(
+                        "Shift+empty — recalling %s deck (stack has %d entries)",
+                        self._active_tray_deck(),
+                        len(self._tray_stack),
+                    )
                     self._tray_active = True
                     self._detector.tray_active = True
-                    self._tray_index = len(self._tray_stack) - 1
+                    self._tray_index = recall_index
                     self._show_tray_current(acknowledge=True)
                     return
                 else:
-                    logger.info("Shift+empty — no tray entries to recall")
+                    logger.info(
+                        "Shift+empty — no %s deck entries to recall",
+                        self._active_tray_deck(),
+                    )
             elif enter_held and self._command_client is not None:
                 command_overlay_visible = (
                     self._command_overlay is not None
@@ -3466,11 +3486,13 @@ class SpokeAppDelegate(NSObject):
                 self._tray_index += 1
         else:
             self._tray_stack.append(entry)
-            self._tray_index = len(self._tray_stack) - 1
+            if activate or not self._tray_active:
+                self._tray_index = len(self._tray_stack) - 1
 
         self._add_surface(surface, activate=activate, position=position)
 
         if activate:
+            self._tray_deck = _TRAY_DECK_COORDINATION
             self._tray_active = True
             self._detector.tray_active = True
             if self._glow is not None:
@@ -3512,7 +3534,8 @@ class SpokeAppDelegate(NSObject):
                 self._tray_index += 1
         else:
             self._tray_stack.append(entry)
-            self._tray_index = len(self._tray_stack) - 1
+            if activate or not self._tray_active:
+                self._tray_index = len(self._tray_stack) - 1
 
         # Dual-write: also push to typed coordination stack
         self._add_surface(
@@ -3522,6 +3545,7 @@ class SpokeAppDelegate(NSObject):
         )
 
         if activate:
+            self._tray_deck = self._tray_entry_deck(entry)
             self._tray_active = True
             self._detector.tray_active = True
             logger.info(
@@ -3758,6 +3782,82 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_status_text("Diaulos card smoke")
         return True
 
+    def _tray_entry_deck(self, entry: TrayEntry | str) -> str:
+        """Return the user-visible tray deck for a legacy stack entry."""
+        if not isinstance(entry, TrayEntry):
+            return _TRAY_DECK_TEXT
+        if entry.owner == "directive" or entry.kind in _COORDINATION_TRAY_KINDS:
+            return _TRAY_DECK_COORDINATION
+        surface_kind = entry.metadata.get("surface_kind")
+        if surface_kind and surface_kind != SurfaceKind.TEXT.value:
+            return _TRAY_DECK_COORDINATION
+        return _TRAY_DECK_TEXT
+
+    def _active_tray_deck(self) -> str:
+        deck = getattr(self, "_tray_deck", _TRAY_DECK_TEXT)
+        if deck not in _TRAY_DECKS:
+            return _TRAY_DECK_TEXT
+        return deck
+
+    def _tray_indices_for_deck(self, deck: str | None = None) -> list[int]:
+        active_deck = deck or self._active_tray_deck()
+        return [
+            index
+            for index, entry in enumerate(self._tray_stack)
+            if self._tray_entry_deck(entry) == active_deck
+        ]
+
+    def _nearest_tray_index_for_deck(self, deck: str | None = None) -> int | None:
+        indices = self._tray_indices_for_deck(deck)
+        if not indices:
+            return None
+        current = min(max(getattr(self, "_tray_index", 0), 0), len(self._tray_stack) - 1)
+        if current in indices:
+            return current
+        older = [index for index in indices if index < current]
+        if older:
+            return older[-1]
+        return indices[-1]
+
+    def _latest_tray_index_for_deck(self, deck: str | None = None) -> int | None:
+        indices = self._tray_indices_for_deck(deck)
+        if not indices:
+            return None
+        return indices[-1]
+
+    def _coerce_tray_index_to_active_deck(self) -> bool:
+        if not self._tray_stack:
+            return False
+        deck = self._active_tray_deck()
+        if self._tray_entry_deck(self._tray_stack[self._tray_index]) == deck:
+            return True
+        nearest = self._nearest_tray_index_for_deck(deck)
+        if nearest is None:
+            return False
+        self._tray_index = nearest
+        return True
+
+    def _tray_switch_deck(self) -> None:
+        """Rock the visible tray between text history and coordination stack."""
+        current_deck = self._active_tray_deck()
+        target_deck = (
+            _TRAY_DECK_COORDINATION
+            if current_deck == _TRAY_DECK_TEXT
+            else _TRAY_DECK_TEXT
+        )
+        target_index = self._latest_tray_index_for_deck(target_deck)
+        if target_index is None:
+            if self._menubar is not None:
+                label = "Coordination stack" if target_deck == _TRAY_DECK_COORDINATION else "Tray"
+                self._menubar.set_status_text(f"{label} empty")
+            return
+        self._tray_deck = target_deck
+        self._tray_index = target_index
+        self._tray_active = True
+        self._detector.tray_active = True
+        logger.info("Tray deck switch -> %s index=%d", target_deck, target_index)
+        self._show_tray_current(acknowledge=True)
+
     def _show_tray_current(self, *, acknowledge: bool = False) -> None:
         """Update the tray overlay to display the current stack entry."""
         if not self._tray_stack:
@@ -3766,6 +3866,9 @@ class SpokeAppDelegate(NSObject):
         # Defensive bounds clamp
         if self._tray_index >= len(self._tray_stack):
             self._tray_index = len(self._tray_stack) - 1
+        if not self._coerce_tray_index_to_active_deck():
+            self._dismiss_tray()
+            return
         if acknowledge:
             self._acknowledge_tray_entry(self._tray_index)
         entry = self._get_tray_entry(self._tray_index)
@@ -3778,8 +3881,10 @@ class SpokeAppDelegate(NSObject):
             self._overlay.show_tray(text, owner=entry.display_owner)
             self._maybe_show_operator_ping_token_smoke()
         if self._menubar is not None:
-            pos = f"{self._tray_index + 1}/{len(self._tray_stack)}"
-            self._menubar.set_status_text(f"Tray [{pos}]")
+            indices = self._tray_indices_for_deck()
+            deck_pos = indices.index(self._tray_index) + 1 if self._tray_index in indices else 1
+            label = "Stack" if self._active_tray_deck() == _TRAY_DECK_COORDINATION else "Tray"
+            self._menubar.set_status_text(f"{label} [{deck_pos}/{len(indices)}]")
 
     def _dismiss_tray(self) -> None:
         """Dismiss the tray overlay. Stack is preserved for re-entry."""
@@ -3958,28 +4063,49 @@ class SpokeAppDelegate(NSObject):
 
     def _tray_cycle(self) -> None:
         """Cycle to the next tray entry, wrapping at the edges."""
-        if not self._tray_active or len(self._tray_stack) < 2:
+        if not self._tray_active:
             return
-        self._tray_index = (self._tray_index - 1) % len(self._tray_stack)
+        indices = self._tray_indices_for_deck()
+        if len(indices) < 2:
+            return
+        current_pos = indices.index(self._tray_index) if self._tray_index in indices else len(indices) - 1
+        self._tray_index = indices[(current_pos - 1) % len(indices)]
         self._show_tray_current()
 
     def _tray_navigate_up(self) -> None:
         """Navigate up toward more recent entries. Stop at top."""
         if not self._tray_active:
             return
-        if self._tray_index >= len(self._tray_stack) - 1:
+        indices = self._tray_indices_for_deck()
+        if not indices:
+            self._dismiss_tray()
+            return
+        if self._tray_index not in indices:
+            self._tray_index = indices[-1]
+            self._show_tray_current(acknowledge=True)
+            return
+        current_pos = indices.index(self._tray_index)
+        if current_pos >= len(indices) - 1:
             # Already at the top — stay put (don't dismiss mid-hold)
             return
-        else:
-            self._tray_index += 1
-            self._show_tray_current(acknowledge=True)
+        self._tray_index = indices[current_pos + 1]
+        self._show_tray_current(acknowledge=True)
 
     def _tray_navigate_down(self) -> None:
         """Navigate down toward older entries. Stop at bottom."""
         if not self._tray_active:
             return
-        if self._tray_index > 0:
-            self._tray_index -= 1
+        indices = self._tray_indices_for_deck()
+        if not indices:
+            self._dismiss_tray()
+            return
+        if self._tray_index not in indices:
+            self._tray_index = indices[-1]
+            self._show_tray_current(acknowledge=True)
+            return
+        current_pos = indices.index(self._tray_index)
+        if current_pos > 0:
+            self._tray_index = indices[current_pos - 1]
             self._show_tray_current(acknowledge=True)
 
     def _tray_delete_current(self) -> None:
@@ -3995,6 +4121,14 @@ class SpokeAppDelegate(NSObject):
         # Adjust index: stay at same position or move up if we were at the end
         if self._tray_index >= len(self._tray_stack):
             self._tray_index = len(self._tray_stack) - 1
+        if self._nearest_tray_index_for_deck() is None:
+            replacement_deck = (
+                _TRAY_DECK_TEXT
+                if self._active_tray_deck() == _TRAY_DECK_COORDINATION
+                else _TRAY_DECK_COORDINATION
+            )
+            if self._nearest_tray_index_for_deck(replacement_deck) is not None:
+                self._tray_deck = replacement_deck
         self._show_tray_current(acknowledge=True)
 
     def _tray_insert_current(self) -> None:

@@ -26,6 +26,8 @@ class TestSpacebarStateMachine:
         det._tap = None
         det._tap_source = None
         det._awaiting_space_release = False
+        det.tray_active = False
+        det._on_tray_deck_switch = None
         return det, on_start, on_end
 
     def test_tap_spacebar_passes_through_on_quick_release(self, input_tap_module):
@@ -94,6 +96,42 @@ class TestSpacebarStateMachine:
         for keycode in [0, 1, 13, 36, 48, 50, 51]:
             assert det.handle_key_down(keycode, 0) is False
             assert det.handle_key_up(keycode) is False
+
+    def test_slash_switches_decks_only_while_tray_is_active(self, input_tap_module):
+        """Slash is a modal tray deck-rocker, not a global typing capture."""
+        det, _, _ = self._make_detector(input_tap_module)
+        mod = input_tap_module
+        det._on_tray_deck_switch = MagicMock()
+
+        assert det.handle_key_down(mod.SLASH_KEYCODE, 0) is False
+        det._on_tray_deck_switch.assert_not_called()
+
+        det.tray_active = True
+
+        assert det.handle_key_down(mod.SLASH_KEYCODE, 0) is True
+        det._on_tray_deck_switch.assert_called_once_with()
+
+    def test_space_slash_rocks_decks_without_starting_tray_recording(
+        self, input_tap_module
+    ):
+        """The tray-active space/slash chord switches decks and swallows release."""
+        det, on_start, _ = self._make_detector(input_tap_module)
+        mod = input_tap_module
+        det.tray_active = True
+        det._on_tray_deck_switch = MagicMock()
+
+        assert det.handle_key_down(mod.SPACEBAR_KEYCODE, 0) is True
+        assert det._state == mod._State.WAITING
+
+        assert det.handle_key_down(mod.SLASH_KEYCODE, 0) is True
+
+        assert det._state == mod._State.IDLE
+        assert det._awaiting_space_release is True
+        det._on_tray_deck_switch.assert_called_once_with()
+        on_start.assert_not_called()
+
+        assert det.handle_key_up(mod.SPACEBAR_KEYCODE) is True
+        assert det._awaiting_space_release is False
 
     def test_key_repeat_suppressed_while_waiting(self, input_tap_module):
         """Repeated keyDown events while WAITING should be suppressed."""
