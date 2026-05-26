@@ -181,6 +181,43 @@ def drive_retarget_during_dismiss_pattern(
             sleep(cycle_pause_seconds)
 
 
+def build_evidence_split(
+    *,
+    manifest_loaded: bool,
+    frame_count: int,
+    trace_event_count: int,
+) -> dict[str, Any]:
+    """Describe what the witness can and cannot prove."""
+    return {
+        "schema": "spoke.retina_lasso_evidence_split.v1",
+        "visual_witness": {
+            "role": "perturbing_visual_stress_witness",
+            "manifest_loaded": manifest_loaded,
+            "frame_count": frame_count,
+            "can_prove_absence": False,
+            "can_raise_candidate_bad_frame": True,
+            "known_perturbations": [
+                "WindowServer/SCK capture pressure",
+                "GPU pressure",
+                "frame-cadence sampling gaps",
+                "capture-path visual artifacts",
+            ],
+        },
+        "lifecycle_trace": {
+            "role": "generation_lifecycle_receipts",
+            "trace_event_count": trace_event_count,
+            "required_for_extraction_clearance": True,
+            "can_adjudicate_publication_law": True,
+        },
+        "classification_rule": {
+            "witness_clean": "not_clearance",
+            "witness_bad_frame": "candidate_violation_until_trace_correlated",
+            "trace_unlawful_publication": "primitive_lifecycle_blocker",
+            "trace_lawful_with_visual_artifact": "witness_reliability_or_capture_artifact",
+        },
+    }
+
+
 def write_witness_index(
     *,
     output_dir: str | Path,
@@ -197,20 +234,29 @@ def write_witness_index(
     manifest: dict[str, Any] | None = None
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_loaded = manifest is not None
+    frame_count = len((manifest or {}).get("frames", []))
+    trace_event_count = len(trace_events)
     payload = {
         "schema": "spoke.retina_lasso_trace_witness.v1",
         "started_at": _format_instant(started_at),
         "ended_at": _format_instant(ended_at),
         "trace_path": str(Path(trace_path).expanduser()),
         "retina_lasso_manifest": str(manifest_path),
-        "retina_lasso_manifest_loaded": manifest is not None,
-        "frame_count": len((manifest or {}).get("frames", [])),
-        "trace_event_count": len(trace_events),
+        "retina_lasso_manifest_loaded": manifest_loaded,
+        "frame_count": frame_count,
+        "trace_event_count": trace_event_count,
         "trace_events": trace_events,
+        "evidence_split": build_evidence_split(
+            manifest_loaded=manifest_loaded,
+            frame_count=frame_count,
+            trace_event_count=trace_event_count,
+        ),
         "command": list(command),
         "stimulus": stimulus or {},
         "uncertainty": [
             "Retina Lasso stills are visual evidence, not operator approval.",
+            "Retina Lasso stills are perturbing stress evidence, not an absence oracle.",
             "Still-frame cadence can miss a single display-refresh flash; use trace events to narrow the gap.",
             "Trace alignment is wall-clock based and does not prove exact compositor frame identity.",
         ],

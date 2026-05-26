@@ -2,6 +2,7 @@ import json
 from datetime import datetime, timezone
 
 from spoke.retina_lasso_witness import (
+    build_evidence_split,
     build_launch_target_command,
     build_retina_lasso_command,
     capture_count_for_window,
@@ -116,6 +117,22 @@ def test_collect_trace_events_filters_to_capture_window(tmp_path):
     assert [event["trace_line"] for event in events] == [2, 3]
 
 
+def test_build_evidence_split_keeps_witness_and_lifecycle_roles_separate():
+    split = build_evidence_split(
+        manifest_loaded=True,
+        frame_count=4,
+        trace_event_count=7,
+    )
+
+    assert split["visual_witness"]["role"] == "perturbing_visual_stress_witness"
+    assert split["visual_witness"]["can_prove_absence"] is False
+    assert split["visual_witness"]["can_raise_candidate_bad_frame"] is True
+    assert split["lifecycle_trace"]["role"] == "generation_lifecycle_receipts"
+    assert split["lifecycle_trace"]["required_for_extraction_clearance"] is True
+    assert split["classification_rule"]["witness_clean"] == "not_clearance"
+    assert split["classification_rule"]["trace_unlawful_publication"] == "primitive_lifecycle_blocker"
+
+
 def test_write_witness_index_links_manifest_and_trace_events(tmp_path):
     (tmp_path / "manifest.json").write_text(
         json.dumps({"frames": [{"path": "a.png"}, {"path": "b.png"}]}),
@@ -136,3 +153,8 @@ def test_write_witness_index_links_manifest_and_trace_events(tmp_path):
     assert payload["frame_count"] == 2
     assert payload["trace_event_count"] == 1
     assert payload["trace_events"][0]["event"] == "overlay.show.begin"
+    assert payload["evidence_split"]["visual_witness"]["frame_count"] == 2
+    assert payload["evidence_split"]["lifecycle_trace"]["trace_event_count"] == 1
+    assert payload["evidence_split"]["classification_rule"]["witness_bad_frame"] == (
+        "candidate_violation_until_trace_correlated"
+    )
