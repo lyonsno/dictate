@@ -3858,6 +3858,15 @@ class SpokeAppDelegate(NSObject):
         logger.info("Tray deck switch -> %s index=%d", target_deck, target_index)
         self._show_tray_current(acknowledge=True)
 
+    def _tray_entry_allows_text_action(self, entry: TrayEntry | str) -> bool:
+        """Return whether a tray entry can be pasted or sent as plain text."""
+        return self._tray_entry_deck(entry) == _TRAY_DECK_TEXT
+
+    def _deny_read_only_stack_action(self) -> None:
+        logger.info("Read-only Stack entry ignored text action")
+        if self._menubar is not None:
+            self._menubar.set_status_text("Stack entry is read-only")
+
     def _show_tray_current(self, *, acknowledge: bool = False) -> None:
         """Update the tray overlay to display the current stack entry."""
         if not self._tray_stack:
@@ -4136,6 +4145,9 @@ class SpokeAppDelegate(NSObject):
         if not self._tray_active or not self._tray_stack:
             return
         entry = self._get_tray_entry(self._tray_index)
+        if not self._tray_entry_allows_text_action(entry):
+            self._deny_read_only_stack_action()
+            return
         text = entry.text
 
         # Dismiss tray first, then inject. Dismissing before inject ensures
@@ -4185,6 +4197,9 @@ class SpokeAppDelegate(NSObject):
         if not self._tray_active:
             return
         entry = self._get_tray_entry(self._tray_index)
+        if not self._tray_entry_allows_text_action(entry):
+            self._deny_read_only_stack_action()
+            return
         text = entry.text
 
         # Remove consumed entry from stack
