@@ -44,6 +44,7 @@ def _make_delegate(main_module, monkeypatch, *, command_client=False):
     delegate._tray_stack = []
     delegate._tray_index = 0
     delegate._tray_active = False
+    delegate._tray_deck = "text"
     # Typed coordination surface stack
     from spoke.coordination_surfaces import CoordinationStack, build_default_registry
     delegate._surface_registry = build_default_registry()
@@ -272,6 +273,66 @@ class TestTrayStack:
         d._enter_tray("newest")
 
         assert d._tray_index == 2  # viewing the newest
+
+    def test_switch_deck_moves_between_text_and_coordination_entries(
+        self, main_module, monkeypatch
+    ):
+        """The tray can rock between ordinary text and coordination decks."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+
+        d._add_tray_entry("ordinary one", activate=True)
+        d._add_diaulos_card_to_stack(
+            {
+                "diaulos": "chairside-sparkwright",
+                "diaulos_id": "dia-test",
+                "display_name": "Chairside Sparkwright",
+                "topos": "projects/spoke/topoi/test.md",
+            },
+            activate=True,
+        )
+        d._add_tray_entry("ordinary two", activate=False)
+
+        assert d._tray_deck == "coordination"
+        assert d._tray_index == 1
+
+        d._tray_switch_deck()
+
+        assert d._tray_deck == "text"
+        assert d._tray_index == 2
+        d._overlay.show_tray.assert_called_with("ordinary two", owner="user")
+
+        d._tray_switch_deck()
+
+        assert d._tray_deck == "coordination"
+        assert d._tray_index == 1
+        assert "Chairside Sparkwright" in d._overlay.show_tray.call_args.args[0]
+
+    def test_navigation_skips_entries_outside_active_deck(
+        self, main_module, monkeypatch
+    ):
+        """Up/down only walks entries from the active deck."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._tray_stack = [
+            main_module.TrayEntry("old text"),
+            main_module.TrayEntry("diaulos card", kind="diaulos_card"),
+            main_module.TrayEntry("new text"),
+        ]
+        d._tray_active = True
+        d._detector.tray_active = True
+        d._tray_deck = "text"
+        d._tray_index = 2
+
+        d._tray_navigate_down()
+
+        assert d._tray_index == 0
+
+        d._tray_deck = "coordination"
+        d._tray_index = 1
+
+        d._tray_navigate_up()
+        d._tray_navigate_down()
+
+        assert d._tray_index == 1
 
     def test_assistant_add_to_closed_tray_stays_silent(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch, command_client=True)
