@@ -334,6 +334,51 @@ class TestTrayStack:
 
         assert d._tray_index == 1
 
+    def test_coordination_entry_space_does_not_insert_or_consume(
+        self, main_module, monkeypatch
+    ):
+        """Stack cards are readable surfaces, not pasteable tray text."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._tray_stack = [
+            main_module.TrayEntry("Diaulos card body", kind="diaulos_card"),
+        ]
+        d._tray_active = True
+        d._detector.tray_active = True
+        d._tray_deck = "coordination"
+        d._tray_index = 0
+
+        with patch("spoke.__main__.inject_text") as inject:
+            d._tray_insert_current()
+
+        inject.assert_not_called()
+        assert len(d._tray_stack) == 1
+        assert d._tray_active is True
+        assert d._detector.tray_active is True
+        d._overlay.hide.assert_not_called()
+        d._menubar.set_status_text.assert_called_with("Stack entry is read-only")
+
+    def test_coordination_entry_send_does_not_route_or_consume(
+        self, main_module, monkeypatch
+    ):
+        """Stack cards do not become assistant prompts through the tray send path."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._tray_stack = [
+            main_module.TrayEntry("Diaulos card body", kind="diaulos_card"),
+        ]
+        d._tray_active = True
+        d._detector.tray_active = True
+        d._tray_deck = "coordination"
+        d._tray_index = 0
+        d._send_text_as_command = MagicMock()
+
+        d._tray_send_current()
+
+        d._send_text_as_command.assert_not_called()
+        assert len(d._tray_stack) == 1
+        assert d._tray_active is True
+        assert d._detector.tray_active is True
+        d._menubar.set_status_text.assert_called_with("Stack entry is read-only")
+
     def test_assistant_add_to_closed_tray_stays_silent(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch, command_client=True)
         _run_main_thread_selector(d)
