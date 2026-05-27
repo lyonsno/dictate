@@ -97,8 +97,10 @@ class TestSpacebarStateMachine:
             assert det.handle_key_down(keycode, 0) is False
             assert det.handle_key_up(keycode) is False
 
-    def test_slash_switches_decks_only_while_tray_is_active(self, input_tap_module):
-        """Slash is a modal tray deck-rocker, not a global typing capture."""
+    def test_slash_alone_passes_through_even_while_tray_is_active(
+        self, input_tap_module
+    ):
+        """Slash alone remains available for future tray editing grammar."""
         det, _, _ = self._make_detector(input_tap_module)
         mod = input_tap_module
         det._on_tray_deck_switch = MagicMock()
@@ -108,8 +110,8 @@ class TestSpacebarStateMachine:
 
         det.tray_active = True
 
-        assert det.handle_key_down(mod.SLASH_KEYCODE, 0) is True
-        det._on_tray_deck_switch.assert_called_once_with()
+        assert det.handle_key_down(mod.SLASH_KEYCODE, 0) is False
+        det._on_tray_deck_switch.assert_not_called()
 
     def test_space_slash_rocks_decks_without_starting_tray_recording(
         self, input_tap_module

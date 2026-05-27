@@ -329,12 +329,11 @@ class SpacebarHoldDetector(NSObject):
     def handle_key_down(self, keycode: int, flags: int) -> bool:
         """Handle a keyDown event. Returns True to suppress, False to pass through."""
         if keycode == SLASH_KEYCODE and getattr(self, "tray_active", False):
-            if self._state == _State.WAITING:
-                self._cancel_hold_timer()
-                self._state = _State.IDLE
-                self._awaiting_space_release = True
-            elif self._state != _State.IDLE:
+            if self._state != _State.WAITING:
                 return False
+            self._cancel_hold_timer()
+            self._state = _State.IDLE
+            self._awaiting_space_release = True
             cb = getattr(self, "_on_tray_deck_switch", None)
             if cb is not None:
                 cb()
