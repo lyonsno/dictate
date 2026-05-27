@@ -21,6 +21,13 @@ DEFAULT_SOURCE_WINDOW = "Command Overlay"
 INDEX_NAME = "witness-index.json"
 SPACEBAR_KEYCODE = 49
 RETURN_KEYCODE = 36
+SUPPORTED_CAPTURE_PROFILES = {"low_perturbation", "stress"}
+DEFAULT_PASSIVE_CAPTURE_PROFILE = "low_perturbation"
+DEFAULT_STRESS_CAPTURE_PROFILE = "stress"
+CAPTURE_PROFILE_FPS = {
+    "low_perturbation": 6.0,
+    "stress": 15.0,
+}
 
 
 def _utc_now() -> datetime:
@@ -53,6 +60,16 @@ def capture_interval_for_fps(fps: float) -> float:
     if fps <= 0:
         raise ValueError("fps must be positive")
     return 1.0 / fps
+
+
+def _capture_profile_from_cli(value: str) -> str:
+    return value.replace("-", "_")
+
+
+def default_fps_for_capture_profile(capture_profile: str) -> float:
+    if capture_profile not in SUPPORTED_CAPTURE_PROFILES:
+        raise ValueError(f"unsupported capture profile: {capture_profile}")
+    return CAPTURE_PROFILE_FPS[capture_profile]
 
 
 def collect_trace_events(
@@ -186,14 +203,18 @@ def build_evidence_split(
     manifest_loaded: bool,
     frame_count: int,
     trace_event_count: int,
+    capture_profile: str,
 ) -> dict[str, Any]:
     """Describe what the witness can and cannot prove."""
+    if capture_profile not in SUPPORTED_CAPTURE_PROFILES:
+        raise ValueError(f"unsupported capture profile: {capture_profile}")
     return {
         "schema": "spoke.retina_lasso_evidence_split.v1",
         "visual_witness": {
             "role": "perturbing_visual_stress_witness",
             "manifest_loaded": manifest_loaded,
             "frame_count": frame_count,
+            "capture_profile": capture_profile,
             "can_prove_absence": False,
             "can_raise_candidate_bad_frame": True,
             "known_perturbations": [
@@ -201,6 +222,24 @@ def build_evidence_split(
                 "GPU pressure",
                 "frame-cadence sampling gaps",
                 "capture-path visual artifacts",
+            ],
+            "known_capture_artifact_signatures": [
+                {
+                    "signature": "horizontal_tear_or_phase_split",
+                    "description": (
+                        "A horizontal or banded discontinuity where one screen slice appears "
+                        "one display phase older than another."
+                    ),
+                    "classification_without_trace": "witness_contamination_candidate",
+                },
+                {
+                    "signature": "stale_slice_or_partial_frame_composite",
+                    "description": (
+                        "A still frame that appears composited from two different capture instants "
+                        "while the live UI later lands in a lawful state."
+                    ),
+                    "classification_without_trace": "witness_contamination_candidate",
+                },
             ],
         },
         "lifecycle_trace": {
@@ -214,6 +253,7 @@ def build_evidence_split(
             "witness_bad_frame": "candidate_violation_until_trace_correlated",
             "trace_unlawful_publication": "primitive_lifecycle_blocker",
             "trace_lawful_with_visual_artifact": "witness_reliability_or_capture_artifact",
+            "known_capture_artifact_without_trace_violation": "not_a_primitive_blocker_by_itself",
         },
     }
 
@@ -228,6 +268,7 @@ def write_witness_index(
     trace_events: list[dict[str, Any]],
     manifest_name: str = "manifest.json",
     stimulus: dict[str, Any] | None = None,
+    capture_profile: str = DEFAULT_PASSIVE_CAPTURE_PROFILE,
 ) -> Path:
     output = Path(output_dir).expanduser()
     manifest_path = output / manifest_name
@@ -251,12 +292,15 @@ def write_witness_index(
             manifest_loaded=manifest_loaded,
             frame_count=frame_count,
             trace_event_count=trace_event_count,
+            capture_profile=capture_profile,
         ),
         "command": list(command),
         "stimulus": stimulus or {},
+        "capture_profile": capture_profile,
         "uncertainty": [
             "Retina Lasso stills are visual evidence, not operator approval.",
             "Retina Lasso stills are perturbing stress evidence, not an absence oracle.",
+            "Known Retina Lasso capture artifacts include horizontal tear/phase split and stale-slice composites.",
             "Still-frame cadence can miss a single display-refresh flash; use trace events to narrow the gap.",
             "Trace alignment is wall-clock based and does not prove exact compositor frame identity.",
         ],
@@ -273,7 +317,8 @@ def run_autonomous_hammer_witness(
     repo_root: str | Path,
     perceptasia_root: str | Path = DEFAULT_PERCEPTASIA_ROOT,
     duration_seconds: float = 8.0,
-    fps: float = 15.0,
+    fps: float | None = None,
+    capture_profile: str = DEFAULT_STRESS_CAPTURE_PROFILE,
     hammer_toggles: int = 0,
     toggle_interval_seconds: float = 0.18,
     pre_hammer_delay_seconds: float = 0.35,
@@ -295,6 +340,8 @@ def run_autonomous_hammer_witness(
     hammer_driver: Callable[..., None] = drive_hammer_toggles,
     retarget_driver: Callable[..., None] = drive_retarget_during_dismiss_pattern,
 ) -> Path:
+    if fps is None:
+        fps = default_fps_for_capture_profile(capture_profile)
     if launch_target:
         runner(build_launch_target_command(repo_root, launch_target), check=True)
         sleep(launch_wait_seconds)
@@ -356,6 +403,7 @@ def run_autonomous_hammer_witness(
         command=command,
         trace_events=trace_events,
         stimulus=stimulus,
+        capture_profile=capture_profile,
     )
 
 
@@ -365,7 +413,8 @@ def run_witness_window(
     output_dir: str | Path,
     perceptasia_root: str | Path = DEFAULT_PERCEPTASIA_ROOT,
     duration_seconds: float = 8.0,
-    fps: float = 15.0,
+    fps: float | None = None,
+    capture_profile: str = DEFAULT_PASSIVE_CAPTURE_PROFILE,
     lane: str = DEFAULT_LANE,
     diaulos: str = DEFAULT_DIAULOS,
     source_app: str = DEFAULT_SOURCE_APP,
@@ -373,6 +422,8 @@ def run_witness_window(
     runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
     now: Callable[[], datetime] = _utc_now,
 ) -> Path:
+    if fps is None:
+        fps = default_fps_for_capture_profile(capture_profile)
     count = capture_count_for_window(duration_seconds, fps)
     interval = capture_interval_for_fps(fps)
     command = build_retina_lasso_command(
@@ -395,6 +446,7 @@ def run_witness_window(
         ended_at=ended_at,
         command=command,
         trace_events=trace_events,
+        capture_profile=capture_profile,
     )
 
 
@@ -406,7 +458,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", required=True, help="Directory for Retina Lasso frames and witness index.")
     parser.add_argument("--perceptasia-root", default=str(DEFAULT_PERCEPTASIA_ROOT))
     parser.add_argument("--duration", type=float, default=8.0, help="Capture window length in seconds.")
-    parser.add_argument("--fps", type=float, default=15.0, help="Requested still capture cadence.")
+    parser.add_argument(
+        "--fps",
+        type=float,
+        help=(
+            "Requested still capture cadence. Defaults to the selected capture profile "
+            "(6fps low-perturbation, 15fps stress)."
+        ),
+    )
+    parser.add_argument(
+        "--capture-profile",
+        choices=("low-perturbation", "stress"),
+        default=None,
+        help=(
+            "Witness pressure profile. Passive/manual windows default to low-perturbation; "
+            "hammer or launch-driven windows default to stress."
+        ),
+    )
     parser.add_argument("--lane", default=DEFAULT_LANE)
     parser.add_argument("--diaulos", default=DEFAULT_DIAULOS)
     parser.add_argument("--source-app", default=DEFAULT_SOURCE_APP)
@@ -473,7 +541,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    if args.hammer_toggles or args.retarget_during_dismiss_repeats or args.launch_target:
+    stimulus_mode = bool(args.hammer_toggles or args.retarget_during_dismiss_repeats or args.launch_target)
+    capture_profile = _capture_profile_from_cli(
+        args.capture_profile
+        or (DEFAULT_STRESS_CAPTURE_PROFILE if stimulus_mode else DEFAULT_PASSIVE_CAPTURE_PROFILE)
+    )
+    if stimulus_mode:
         index_path = run_autonomous_hammer_witness(
             trace_path=args.trace,
             output_dir=args.output_dir,
@@ -481,6 +554,7 @@ def main(argv: list[str] | None = None) -> int:
             perceptasia_root=args.perceptasia_root,
             duration_seconds=args.duration,
             fps=args.fps,
+            capture_profile=capture_profile,
             hammer_toggles=args.hammer_toggles,
             toggle_interval_seconds=args.toggle_interval,
             pre_hammer_delay_seconds=args.pre_hammer_delay,
@@ -503,6 +577,7 @@ def main(argv: list[str] | None = None) -> int:
             perceptasia_root=args.perceptasia_root,
             duration_seconds=args.duration,
             fps=args.fps,
+            capture_profile=capture_profile,
             lane=args.lane,
             diaulos=args.diaulos,
             source_app=args.source_app,

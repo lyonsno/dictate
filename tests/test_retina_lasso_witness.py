@@ -7,6 +7,7 @@ from spoke.retina_lasso_witness import (
     build_retina_lasso_command,
     capture_count_for_window,
     collect_trace_events,
+    default_fps_for_capture_profile,
     drive_hammer_toggles,
     drive_retarget_during_dismiss_pattern,
     write_witness_index,
@@ -16,6 +17,11 @@ from spoke.retina_lasso_witness import (
 def test_capture_count_for_window_rounds_up():
     assert capture_count_for_window(2.1, 10.0) == 21
     assert capture_count_for_window(0.01, 10.0) == 1
+
+
+def test_capture_profile_defaults_separate_passive_and_stress_pressure():
+    assert default_fps_for_capture_profile("low_perturbation") == 6.0
+    assert default_fps_for_capture_profile("stress") == 15.0
 
 
 def test_build_retina_lasso_command_preserves_custody_fields(tmp_path):
@@ -122,15 +128,23 @@ def test_build_evidence_split_keeps_witness_and_lifecycle_roles_separate():
         manifest_loaded=True,
         frame_count=4,
         trace_event_count=7,
+        capture_profile="stress",
     )
 
     assert split["visual_witness"]["role"] == "perturbing_visual_stress_witness"
     assert split["visual_witness"]["can_prove_absence"] is False
     assert split["visual_witness"]["can_raise_candidate_bad_frame"] is True
+    assert split["visual_witness"]["capture_profile"] == "stress"
+    assert split["visual_witness"]["known_capture_artifact_signatures"][0]["signature"] == (
+        "horizontal_tear_or_phase_split"
+    )
     assert split["lifecycle_trace"]["role"] == "generation_lifecycle_receipts"
     assert split["lifecycle_trace"]["required_for_extraction_clearance"] is True
     assert split["classification_rule"]["witness_clean"] == "not_clearance"
     assert split["classification_rule"]["trace_unlawful_publication"] == "primitive_lifecycle_blocker"
+    assert split["classification_rule"]["known_capture_artifact_without_trace_violation"] == (
+        "not_a_primitive_blocker_by_itself"
+    )
 
 
 def test_write_witness_index_links_manifest_and_trace_events(tmp_path):
@@ -146,6 +160,7 @@ def test_write_witness_index_links_manifest_and_trace_events(tmp_path):
         ended_at=datetime(2026, 5, 22, 0, 0, 2, tzinfo=timezone.utc),
         command=["uv", "run", "perceptasia-screen-capture"],
         trace_events=[{"event": "overlay.show.begin"}],
+        capture_profile="low_perturbation",
     )
 
     payload = json.loads(index_path.read_text(encoding="utf-8"))
@@ -154,6 +169,8 @@ def test_write_witness_index_links_manifest_and_trace_events(tmp_path):
     assert payload["trace_event_count"] == 1
     assert payload["trace_events"][0]["event"] == "overlay.show.begin"
     assert payload["evidence_split"]["visual_witness"]["frame_count"] == 2
+    assert payload["capture_profile"] == "low_perturbation"
+    assert payload["evidence_split"]["visual_witness"]["capture_profile"] == "low_perturbation"
     assert payload["evidence_split"]["lifecycle_trace"]["trace_event_count"] == 1
     assert payload["evidence_split"]["classification_rule"]["witness_bad_frame"] == (
         "candidate_violation_until_trace_correlated"
