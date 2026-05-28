@@ -6,6 +6,19 @@
 export SPOKE_COMMAND_OVERLAY_TRACE_PATH="/tmp/warpstorm-pit-boss-retina-lasso-quarantine-lens-command-overlay-trace.jsonl"
 export SPOKE_BACKDROP_FRAME_TIMING="1"
 
+# Arm the selected launcher target with a real low-perturbation Retina Lasso
+# capture window. This makes the smoke surface "Spoke plus witness", not just
+# "Spoke with witness code available".
+export SPOKE_RETINA_LASSO_AUTO_WITNESS="1"
+export SPOKE_RETINA_LASSO_CAPTURE_PROFILE="low-perturbation"
+export SPOKE_RETINA_LASSO_DURATION_SECONDS="45"
+export SPOKE_RETINA_LASSO_PERCEPTASIA_ROOT="/private/tmp/perceptasia-codex-screen-slice-smoke-loop-0521"
+export SPOKE_RETINA_LASSO_OUTPUT_ROOT="/tmp/warpstorm-pit-boss-retina-lasso-quarantine-lens"
+export SPOKE_RETINA_LASSO_LANE="warpstorm-pit-boss"
+export SPOKE_RETINA_LASSO_DIAULOS="Warpstorm Pit Boss"
+export SPOKE_RETINA_LASSO_SOURCE_APP="Spoke"
+export SPOKE_RETINA_LASSO_SOURCE_WINDOW="Command Overlay"
+
 # Preserve the optical geometry/tuning contract from the witness baseline.
 # These are part of the visual surface under smoke, not incidental fixtures.
 export SPOKE_COMMAND_BACKDROP_BLUR_RADIUS="0.75"

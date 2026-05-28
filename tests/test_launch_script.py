@@ -379,6 +379,33 @@ class TestLauncherPythonOverride:
         )
 
 
+class TestLauncherRetinaLassoWitness:
+    """Launcher-selected smoke surfaces may arm a trace-aligned visual
+    witness sidecar. That is intentionally launcher-side instrumentation:
+    the app does not need to learn about the visual witness, but a selected
+    target can still mean "Spoke plus Retina Lasso" when its smoke env asks
+    for it.
+    """
+
+    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    def test_launchers_can_arm_retina_lasso_witness(self, script_text):
+        text = script_text()
+        assert "SPOKE_RETINA_LASSO_AUTO_WITNESS" in text
+        assert "command-overlay-retina-lasso-witness.py" in text
+        assert "SPOKE_COMMAND_OVERLAY_TRACE_PATH" in text
+        assert "SPOKE_RETINA_LASSO_PERCEPTASIA_ROOT" in text
+        assert "SPOKE_RETINA_LASSO_OUTPUT_ROOT" in text
+
+    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    def test_retina_lasso_witness_is_sidecar_only(self, script_text):
+        text = script_text()
+        app_launch = text.find('"-m", "spoke"')
+        witness_launch = text.find("        _start_retina_lasso_witness(")
+        assert app_launch != -1
+        assert witness_launch != -1
+        assert app_launch < witness_launch
+
+
 class TestSecretsEnvExampleTemplate:
     """A committed .example template documents the expected shape without
     leaking real values. This is the discoverability contract on new boxes."""

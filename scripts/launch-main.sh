@@ -90,6 +90,106 @@ def _flash_notification(title: str, message: str, sound: str = "Basso") -> None:
         )
 
 
+def _env_flag(child_env: dict[str, str], name: str) -> bool:
+    return child_env.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _safe_path_slug(value: str) -> str:
+    slug = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value.strip())
+    return slug.strip("-") or "selected"
+
+
+def _start_retina_lasso_witness(
+    *,
+    repo_root: Path,
+    target_id: str,
+    python_exe: Path,
+    uv_bin: Optional[Path],
+    child_env: dict[str, str],
+    log,
+) -> None:
+    """Start the optional low-perturbation visual witness sidecar."""
+    if not _env_flag(child_env, "SPOKE_RETINA_LASSO_AUTO_WITNESS"):
+        return
+
+    trace_path = child_env.get("SPOKE_COMMAND_OVERLAY_TRACE_PATH", "").strip()
+    if not trace_path:
+        log.write("Retina Lasso auto witness skipped: SPOKE_COMMAND_OVERLAY_TRACE_PATH is unset.\n")
+        return
+
+    script = repo_root / "scripts" / "command-overlay-retina-lasso-witness.py"
+    if not script.is_file():
+        log.write(f"Retina Lasso auto witness skipped: witness script missing at {script}.\n")
+        return
+
+    perceptasia_root = Path(
+        child_env.get(
+            "SPOKE_RETINA_LASSO_PERCEPTASIA_ROOT",
+            "/private/tmp/perceptasia-codex-screen-slice-smoke-loop-0521",
+        )
+    ).expanduser()
+    if not perceptasia_root.is_dir():
+        log.write(
+            "Retina Lasso auto witness skipped: "
+            f"perceptasia root missing at {perceptasia_root}.\n"
+        )
+        return
+
+    output_root = Path(
+        child_env.get("SPOKE_RETINA_LASSO_OUTPUT_ROOT", "/tmp/spoke-retina-lasso-witnesses")
+    ).expanduser()
+    stamp = time.strftime("%Y%m%dT%H%M%S")
+    output_dir = output_root / f"{_safe_path_slug(target_id)}-{stamp}"
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    args = [
+        str(script),
+        "--trace",
+        trace_path,
+        "--output-dir",
+        str(output_dir),
+        "--perceptasia-root",
+        str(perceptasia_root),
+        "--duration",
+        child_env.get("SPOKE_RETINA_LASSO_DURATION_SECONDS", "45"),
+        "--capture-profile",
+        child_env.get("SPOKE_RETINA_LASSO_CAPTURE_PROFILE", "low-perturbation"),
+        "--lane",
+        child_env.get("SPOKE_RETINA_LASSO_LANE", "warpstorm-pit-boss"),
+        "--diaulos",
+        child_env.get("SPOKE_RETINA_LASSO_DIAULOS", "Warpstorm Pit Boss"),
+        "--source-app",
+        child_env.get("SPOKE_RETINA_LASSO_SOURCE_APP", "Spoke"),
+        "--source-window",
+        child_env.get("SPOKE_RETINA_LASSO_SOURCE_WINDOW", "Command Overlay"),
+    ]
+    fps = child_env.get("SPOKE_RETINA_LASSO_FPS", "").strip()
+    if fps:
+        args.extend(["--fps", fps])
+
+    if python_exe.is_file():
+        command = [str(python_exe), *args]
+    elif uv_bin is not None:
+        command = [str(uv_bin), "run", "--directory", str(repo_root), "python", *args]
+    else:
+        log.write("Retina Lasso auto witness skipped: no Python or UV runner found.\n")
+        return
+
+    log.write(f"Retina Lasso auto witness output: {output_dir}\n")
+    log.write(f"Retina Lasso auto witness command: {command!r}\n")
+    log.flush()
+    subprocess.Popen(
+        command,
+        cwd=repo_root,
+        env=child_env,
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        close_fds=True,
+    )
+
+
 targets_file = Path(os.environ["TARGETS_FILE"])
 fallback_repo_root = Path(os.environ["FALLBACK_REPO_ROOT"])
 log_file = Path(os.environ["LOG_FILE"])
@@ -210,6 +310,14 @@ with log_file.open("a", encoding="utf-8") as log:
             stderr=subprocess.STDOUT,
             start_new_session=True,
             close_fds=True,
+        )
+        _start_retina_lasso_witness(
+            repo_root=repo_root,
+            target_id=target.get("id", "selected") if target is not None else "fallback",
+            python_exe=python_exe,
+            uv_bin=uv_bin,
+            child_env=child_env,
+            log=log,
         )
     except Exception:
         traceback.print_exc(file=log)
