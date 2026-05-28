@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timezone
 
+import spoke.retina_lasso_witness as witness
 from spoke.retina_lasso_witness import (
     build_evidence_split,
     build_launch_target_command,
@@ -33,6 +34,7 @@ def test_build_retina_lasso_command_preserves_custody_fields(tmp_path):
         diaulos="Warpstorm Pit Boss",
         source_app="Spoke",
         source_window="Command Overlay",
+        uv_command="uv",
     )
 
     assert command[:3] == ["uv", "run", "perceptasia-screen-capture"]
@@ -57,6 +59,29 @@ def test_build_retina_lasso_command_uses_absolute_uv_from_env(tmp_path, monkeypa
     )
 
     assert command[:3] == ["/opt/homebrew/bin/uv", "run", "perceptasia-screen-capture"]
+
+
+def test_build_retina_lasso_command_uses_common_uv_path_without_shell_path(tmp_path, monkeypatch):
+    monkeypatch.delenv("UV_BIN", raising=False)
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(witness.shutil, "which", lambda name: None)
+    monkeypatch.setattr(witness.Path, "home", staticmethod(lambda: tmp_path))
+    local_uv = tmp_path / ".local" / "bin" / "uv"
+    local_uv.parent.mkdir(parents=True)
+    local_uv.write_text("#!/bin/sh\n", encoding="utf-8")
+    local_uv.chmod(0o755)
+
+    command = build_retina_lasso_command(
+        output_dir=tmp_path,
+        count=1,
+        interval_seconds=1.0,
+        lane="warpstorm-pit-boss",
+        diaulos="Warpstorm Pit Boss",
+        source_app="Spoke",
+        source_window="Command Overlay",
+    )
+
+    assert command[:3] == [str(local_uv), "run", "perceptasia-screen-capture"]
 
 
 def test_build_launch_target_command_uses_repo_script(tmp_path):

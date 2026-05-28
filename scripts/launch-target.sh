@@ -45,6 +45,14 @@ def _resolve_uv_bin(repo_root: Path, child_env: dict[str, str]) -> Optional[Path
     which_uv = shutil.which("uv")
     if which_uv:
         candidates.append(Path(which_uv))
+    candidates.extend(
+        [
+            Path.home() / ".local" / "bin" / "uv",
+            Path.home() / ".cargo" / "bin" / "uv",
+            Path("/opt/homebrew/bin/uv"),
+            Path("/usr/local/bin/uv"),
+        ]
+    )
     candidates.append(Path("/Users/noahlyons/.pyenv/shims/uv"))
 
     seen: set[str] = set()
@@ -152,10 +160,15 @@ def _start_retina_lasso_witness(
     else:
         log.write("Retina Lasso auto witness skipped: no Python or UV runner found.\n")
         return
+    if uv_bin is None:
+        log.write(
+            "Retina Lasso auto witness skipped: UV_BIN is required for "
+            "nested Perceptasia capture.\n"
+        )
+        return
 
     witness_env = child_env.copy()
-    if uv_bin is not None:
-        witness_env.setdefault("UV_BIN", str(uv_bin))
+    witness_env["UV_BIN"] = str(uv_bin)
 
     log.write(f"Retina Lasso auto witness output: {output_dir}\n")
     log.write(f"Retina Lasso auto witness command: {command!r}\n")

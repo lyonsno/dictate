@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import os
+import shutil
 import subprocess
 import time
 from collections.abc import Callable, Sequence
@@ -29,6 +30,25 @@ CAPTURE_PROFILE_FPS = {
     "low_perturbation": 6.0,
     "stress": 15.0,
 }
+
+
+def _default_uv_command() -> str:
+    env_uv = os.environ.get("UV_BIN")
+    if env_uv:
+        return str(Path(env_uv).expanduser())
+    which_uv = shutil.which("uv")
+    if which_uv:
+        return which_uv
+    for candidate in (
+        Path.home() / ".local" / "bin" / "uv",
+        Path.home() / ".cargo" / "bin" / "uv",
+        Path("/opt/homebrew/bin/uv"),
+        Path("/usr/local/bin/uv"),
+        Path("/Users/noahlyons/.pyenv/shims/uv"),
+    ):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return "uv"
 
 
 def _utc_now() -> datetime:
@@ -114,7 +134,7 @@ def build_retina_lasso_command(
     source_window: str,
     uv_command: str | Path | None = None,
 ) -> list[str]:
-    resolved_uv = str(Path(uv_command).expanduser()) if uv_command is not None else os.environ.get("UV_BIN", "uv")
+    resolved_uv = str(Path(uv_command).expanduser()) if uv_command is not None else _default_uv_command()
     return [
         resolved_uv,
         "run",
