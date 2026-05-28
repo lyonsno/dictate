@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import subprocess
 import time
 from collections.abc import Callable, Sequence
@@ -111,9 +112,11 @@ def build_retina_lasso_command(
     diaulos: str,
     source_app: str,
     source_window: str,
+    uv_command: str | Path | None = None,
 ) -> list[str]:
+    resolved_uv = str(Path(uv_command).expanduser()) if uv_command is not None else os.environ.get("UV_BIN", "uv")
     return [
-        "uv",
+        resolved_uv,
         "run",
         "perceptasia-screen-capture",
         "--output-dir",

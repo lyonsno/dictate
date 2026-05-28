@@ -153,13 +153,17 @@ def _start_retina_lasso_witness(
         log.write("Retina Lasso auto witness skipped: no Python or UV runner found.\n")
         return
 
+    witness_env = child_env.copy()
+    if uv_bin is not None:
+        witness_env.setdefault("UV_BIN", str(uv_bin))
+
     log.write(f"Retina Lasso auto witness output: {output_dir}\n")
     log.write(f"Retina Lasso auto witness command: {command!r}\n")
     log.flush()
     subprocess.Popen(
         command,
         cwd=repo_root,
-        env=child_env,
+        env=witness_env,
         stdin=subprocess.DEVNULL,
         stdout=log,
         stderr=subprocess.STDOUT,

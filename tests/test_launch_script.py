@@ -395,6 +395,7 @@ class TestLauncherRetinaLassoWitness:
         assert "SPOKE_COMMAND_OVERLAY_TRACE_PATH" in text
         assert "SPOKE_RETINA_LASSO_PERCEPTASIA_ROOT" in text
         assert "SPOKE_RETINA_LASSO_OUTPUT_ROOT" in text
+        assert 'witness_env.setdefault("UV_BIN"' in text
 
     @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
     def test_retina_lasso_witness_is_sidecar_only(self, script_text):

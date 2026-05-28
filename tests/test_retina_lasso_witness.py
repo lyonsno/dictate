@@ -43,6 +43,22 @@ def test_build_retina_lasso_command_preserves_custody_fields(tmp_path):
     assert command[command.index("--diaulos") + 1] == "Warpstorm Pit Boss"
 
 
+def test_build_retina_lasso_command_uses_absolute_uv_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("UV_BIN", "/opt/homebrew/bin/uv")
+
+    command = build_retina_lasso_command(
+        output_dir=tmp_path,
+        count=1,
+        interval_seconds=1.0,
+        lane="warpstorm-pit-boss",
+        diaulos="Warpstorm Pit Boss",
+        source_app="Spoke",
+        source_window="Command Overlay",
+    )
+
+    assert command[:3] == ["/opt/homebrew/bin/uv", "run", "perceptasia-screen-capture"]
+
+
 def test_build_launch_target_command_uses_repo_script(tmp_path):
     command = build_launch_target_command(tmp_path, "habeas_target")
 
