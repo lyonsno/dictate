@@ -45,6 +45,7 @@ def _make_delegate(main_module, monkeypatch, *, command_client=False):
     delegate._tray_index = 0
     delegate._tray_active = False
     delegate._tray_deck = "text"
+    delegate._current_stack_card = None
     # Typed coordination surface stack
     from spoke.coordination_surfaces import CoordinationStack, build_default_registry
     delegate._surface_registry = build_default_registry()
@@ -379,6 +380,29 @@ class TestTrayStack:
         assert d._detector.tray_active is True
         d._menubar.set_status_text.assert_called_with("Stack entry is read-only")
 
+    def test_coordination_deck_renders_alloy_card_not_raw_tray_text(
+        self, main_module, monkeypatch
+    ):
+        """Stack display comes from the structured card model, not raw tray text."""
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        d._add_diaulos_card_to_stack(
+            {
+                "diaulos": "chairside-sparkwright",
+                "diaulos_id": "dia-test",
+                "display_name": "Chairside Sparkwright",
+                "topos": "projects/spoke/topoi/test.md",
+            },
+            activate=True,
+        )
+        d._tray_stack[0].text = "RAW FALLBACK SHOULD NOT RENDER"
+
+        d._show_tray_current()
+
+        assert d._overlay.show_tray.call_args.args[0] != "RAW FALLBACK SHOULD NOT RENDER"
+        assert "Diaulos: Chairside Sparkwright" in d._overlay.show_tray.call_args.args[0]
+        assert d._current_stack_card.schema == "spoke.stack_card.alloy.v1"
+        assert d._current_stack_card.action_allowed("paste") is False
+
     def test_assistant_add_to_closed_tray_stays_silent(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch, command_client=True)
         _run_main_thread_selector(d)
@@ -634,6 +658,52 @@ class TestDirectiveInboxStackPressure:
             getattr(entry, "kind", None) != "directive_inbox_pressure"
             for entry in d._tray_stack
         )
+
+    def test_delegate_dual_writes_directive_pressure_as_typed_stack_card(
+        self, main_module, monkeypatch
+    ):
+        d = _make_delegate(main_module, monkeypatch, command_client=True)
+        payload = [
+            {
+                "path": "metadosis/upstream-directives/route-smoke.md",
+                "target_path": "projects/spoke/topoi/chairside.md",
+                "target_diaulos": "chairside-sparkwright",
+                "target_diaulos_id": "dia-target",
+                "packet_exists": True,
+                "source": {
+                    "kind": "diaulos",
+                    "sign": "opus-miserena",
+                    "diaulos": "opus-miserena",
+                    "diaulos_id": "dia-source",
+                    "topos": None,
+                    "refs": [],
+                },
+                "intent_class": "notice",
+                "authority_basis": "source pressure only",
+                "required_rereads": ["metadosis/source-signed-diaulos-switchboard_2026-05-20.md"],
+                "scope_refs": [],
+                "delivery_state": "pending-durable-badge",
+                "disposition_state": "pending",
+                "supersedes": None,
+            }
+        ]
+
+        result = d._add_directive_inbox_json_to_stack(main_module.json.dumps(payload))
+
+        assert result == {"status": "added", "stack_size": 1, "entry_count": 1}
+        tray_entry = d._tray_stack[0]
+        surface = d._coordination_stack.find_by_id(tray_entry.coordination_surface_id)
+        assert surface is not None
+        assert surface.kind == main_module.SurfaceKind.DIRECTIVE_INBOX
+
+        d._tray_active = True
+        d._detector.tray_active = True
+        d._tray_deck = "coordination"
+        d._tray_index = 0
+        d._show_tray_current()
+
+        assert d._current_stack_card.kind == "directive_inbox"
+        assert d._current_stack_card.action_allowed("writeback") is False
 
     def test_directive_inbox_accepts_spool_envelope_rows(self, main_module):
         payload = {

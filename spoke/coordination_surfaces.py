@@ -31,6 +31,7 @@ class SurfaceKind(str, Enum):
     PERCEPTASIA_VIEW = "perceptasia_view"
     METAMORPHOSIS_RESULT = "metamorphosis_result"
     DIAULOS = "diaulos"
+    DIRECTIVE_INBOX = "directive_inbox"
     TEXT = "text"  # legacy fallback — raw text entry
 
 
@@ -142,6 +143,51 @@ class SurfaceTypeRegistration:
     renderer: SurfaceRenderer | None = None
 
 
+@dataclass(frozen=True)
+class AlloyCardAction:
+    """Render-neutral action affordance for a Stack card."""
+
+    name: str
+    label: str = ""
+    allowed: bool = True
+    reason: str = ""
+    source_owned: bool = False
+    writeback_allowed: bool = False
+    interlocutor_act: str = ""
+
+
+@dataclass(frozen=True)
+class AlloyStackCard:
+    """Alloy-style card view model for a coordination surface.
+
+    This is intentionally renderer-neutral. It names identity, display,
+    routing, and action/authority facts without granting runtime behavior.
+    """
+
+    surface_id: str
+    kind: str
+    label: str
+    compact: str
+    body: str
+    status: str = ""
+    read_only: bool = False
+    routing: dict[str, Any] = field(default_factory=dict)
+    actions: tuple[AlloyCardAction, ...] = field(default_factory=tuple)
+    schema: str = "spoke.stack_card.alloy.v1"
+
+    @property
+    def allowed_actions(self) -> dict[str, AlloyCardAction]:
+        return {action.name: action for action in self.actions if action.allowed}
+
+    @property
+    def forbidden_actions(self) -> dict[str, AlloyCardAction]:
+        return {action.name: action for action in self.actions if not action.allowed}
+
+    def action_allowed(self, name: str) -> bool:
+        action = {action.name: action for action in self.actions}.get(name)
+        return bool(action and action.allowed)
+
+
 class DiaulosCardRenderer:
     """Read-only renderer for Diaulos identity cards."""
 
@@ -182,6 +228,27 @@ class DiaulosCardRenderer:
         if summary and not (source_topoi or custody_refs or warnings):
             lines.append(summary)
         lines.append("Read-only card: selection/expansion only; no focus/send/writeback.")
+        return "\n".join(lines)
+
+
+class DirectiveInboxRenderer:
+    """Read-only renderer for directive inbox pressure."""
+
+    def compact(self, entry: SurfaceEntry) -> str:
+        intent = str(entry.payload.get("intent_class") or "").strip()
+        if intent:
+            return f"Directive: {entry.label} · {intent}"
+        return f"Directive: {entry.label}"
+
+    def expanded(self, entry: SurfaceEntry) -> str:
+        text = str(entry.payload.get("text") or "").strip()
+        if text:
+            return text
+        path = str(entry.payload.get("path") or "").strip()
+        lines = [f"Directive: {entry.label}"]
+        if path:
+            lines.append(f"Path: {path}")
+        lines.append("Read-only pressure: review/reread only; no send/writeback.")
         return "\n".join(lines)
 
 
@@ -658,6 +725,14 @@ def build_default_registry() -> SurfaceTypeRegistry:
     ))
 
     reg.register(SurfaceTypeRegistration(
+        kind=SurfaceKind.DIRECTIVE_INBOX,
+        actions=[
+            SurfaceAction("dismiss", ["dismiss", "close"], "Remove from stack"),
+        ],
+        renderer=DirectiveInboxRenderer(),
+    ))
+
+    reg.register(SurfaceTypeRegistration(
         kind=SurfaceKind.TEXT,
         actions=[
             SurfaceAction("send", ["send", "send this", "to assistant"], "Send to assistant"),
@@ -787,6 +862,173 @@ def diaulos_surface_from_record(record: dict[str, Any]) -> SurfaceEntry:
             writeback_target="",
         ),
         acknowledged=True,
+    )
+
+
+def _metadata_identity_label(value: Any, fallback: str = "unknown") -> str:
+    if isinstance(value, dict):
+        handle = str(value.get("handle") or "").strip()
+        if handle:
+            return handle
+        ident = str(value.get("id") or "").strip()
+        if ident:
+            return ident
+    text = str(value or "").strip()
+    return text or fallback
+
+
+def directive_surface_from_pressure(
+    text: str,
+    *,
+    metadata: dict[str, Any] | None = None,
+) -> SurfaceEntry:
+    """Project directive inbox pressure into a read-only Stack surface."""
+    data = dict(metadata or {})
+    directive_path = str(data.get("path") or "").strip()
+    source_label = _metadata_identity_label(data.get("source"), "unknown source")
+    target_label = _metadata_identity_label(data.get("target"), "unknown target")
+    label = f"{source_label} -> {target_label}"
+    required_rereads = _string_list(data.get("required_rereads"))
+    reread_refs: list[str] = []
+    if directive_path:
+        reread_refs.append(directive_path)
+    for ref in required_rereads:
+        if ref not in reread_refs:
+            reread_refs.append(ref)
+    surface_id = f"directive_inbox:{directive_path or uuid4().hex[:8]}"
+    payload = {
+        **data,
+        "text": text,
+        "path": directive_path,
+        "source_label": source_label,
+        "target_label": target_label,
+    }
+
+    return SurfaceEntry(
+        identity=SurfaceIdentity(
+            kind=SurfaceKind.DIRECTIVE_INBOX,
+            surface_id=surface_id,
+            label=label,
+        ),
+        payload=payload,
+        routing=SurfaceRoutingContext(
+            destination_kind=SurfaceDestinationKind.SOURCE_ORGAN,
+            destination_id=surface_id,
+            reread_refs=reread_refs,
+            scope={"directives": [directive_path]} if directive_path else {},
+            cargo={
+                "path": directive_path,
+                "source": data.get("source"),
+                "target": data.get("target"),
+                "intent_class": data.get("intent_class"),
+                "authority_basis": data.get("authority_basis"),
+                "required_rereads": required_rereads,
+                "delivery_state": data.get("delivery_state"),
+                "disposition_state": data.get("disposition_state"),
+                "authority": "source_signed_pressure_only",
+                "may_write_state": False,
+                "may_send_directive": False,
+            },
+            writeback_target="",
+        ),
+        acknowledged=False,
+    )
+
+
+def _routing_context_to_card_dict(
+    routing: SurfaceRoutingContext | None,
+) -> dict[str, Any]:
+    if routing is None:
+        return {}
+    return {
+        "destination_kind": routing.destination_kind.value,
+        "destination_id": routing.destination_id,
+        "reread_refs": list(routing.reread_refs),
+        "scope": dict(routing.scope),
+        "cargo": dict(routing.cargo),
+        "writeback_target": routing.writeback_target,
+    }
+
+
+def _surface_status(entry: SurfaceEntry) -> str:
+    for key in ("status", "disposition_state", "delivery_state"):
+        value = str(entry.payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _forbidden_text_action_reason(entry: SurfaceEntry) -> str:
+    if entry.kind == SurfaceKind.DIAULOS:
+        return "read-only identity card"
+    if entry.kind == SurfaceKind.DIRECTIVE_INBOX:
+        return "source-signed pressure only"
+    return "not a text tray entry"
+
+
+def _alloy_actions_for_surface(
+    entry: SurfaceEntry,
+    registry: SurfaceTypeRegistry,
+) -> tuple[AlloyCardAction, ...]:
+    actions: list[AlloyCardAction] = [
+        AlloyCardAction("select", "Select", True),
+        AlloyCardAction("expand", "Expand", True),
+    ]
+
+    for action in registry.actions_for(entry.kind):
+        actions.append(
+            AlloyCardAction(
+                action.name,
+                action.description or action.name,
+                True,
+                source_owned=action.source_owned,
+                writeback_allowed=action.writeback_allowed,
+                interlocutor_act=action.interlocutor_act,
+            )
+        )
+
+    if entry.kind == SurfaceKind.TEXT:
+        names = {action.name for action in actions}
+        if "paste" not in names:
+            actions.append(AlloyCardAction("paste", "Paste", True))
+        if "send" not in names:
+            actions.append(AlloyCardAction("send", "Send", True))
+        return tuple(actions)
+
+    reason = _forbidden_text_action_reason(entry)
+    actions.extend(
+        [
+            AlloyCardAction("paste", "Paste", False, reason),
+            AlloyCardAction("send", "Send", False, reason),
+            AlloyCardAction("writeback", "Write back", False, reason),
+        ]
+    )
+    if entry.kind == SurfaceKind.DIAULOS:
+        actions.append(AlloyCardAction("focus", "Focus pane", False, reason))
+    return tuple(actions)
+
+
+def alloy_card_from_surface(
+    entry: SurfaceEntry,
+    *,
+    registry: SurfaceTypeRegistry | None = None,
+) -> AlloyStackCard:
+    """Project a typed surface into an Alloy-style Stack card model."""
+    active_registry = registry or build_default_registry()
+    stack = CoordinationStack(registry=active_registry)
+    compact = stack.compact_summary(entry)
+    body = stack.expanded_view(entry)
+    read_only = entry.kind in {SurfaceKind.DIAULOS, SurfaceKind.DIRECTIVE_INBOX}
+    return AlloyStackCard(
+        surface_id=entry.surface_id,
+        kind=entry.kind.value,
+        label=entry.label,
+        compact=compact,
+        body=body,
+        status=_surface_status(entry),
+        read_only=read_only,
+        routing=_routing_context_to_card_dict(entry.routing),
+        actions=_alloy_actions_for_surface(entry, active_registry),
     )
 
 

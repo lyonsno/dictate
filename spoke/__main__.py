@@ -163,12 +163,15 @@ from .handsfree import (
 from .scene_capture import SceneCaptureCache
 from .optical_shell_metrics import OpticalShellMetrics
 from .coordination_surfaces import (
+    AlloyStackCard,
     CoordinationStack,
     SurfaceEntry,
     SurfaceKind,
     SurfaceTypeRegistry,
+    alloy_card_from_surface,
     build_default_registry,
     diaulos_surface_from_record,
+    directive_surface_from_pressure,
     derive_operator_ping_tokens,
     layout_operator_ping_token_visuals,
     load_operator_ping_events_from_jsonl,
@@ -1319,6 +1322,7 @@ class SpokeAppDelegate(NSObject):
         self._tray_active: bool = False
         self._tray_deck: str = _TRAY_DECK_TEXT
         self._tray_tool_result: dict | None = None
+        self._current_stack_card: AlloyStackCard | None = None
         # Typed coordination surface stack (new backing store, coexists during migration)
         self._surface_registry = build_default_registry()
         self._coordination_stack = CoordinationStack(registry=self._surface_registry)
@@ -3522,7 +3526,10 @@ class SpokeAppDelegate(NSObject):
             kind=kind,
             metadata=dict(metadata or {}),
         )
-        surface = text_surface_from_str(text, owner=owner)
+        if kind == "directive_inbox_pressure":
+            surface = directive_surface_from_pressure(text, metadata=entry.metadata)
+        else:
+            surface = text_surface_from_str(text, owner=owner)
         entry.coordination_surface_id = surface.surface_id
 
         if position == "bottom":
@@ -3867,6 +3874,17 @@ class SpokeAppDelegate(NSObject):
         if self._menubar is not None:
             self._menubar.set_status_text("Stack entry is read-only")
 
+    def _alloy_card_for_tray_entry(self, entry: TrayEntry | str) -> AlloyStackCard | None:
+        """Return the structured Stack card for a coordination tray entry."""
+        if self._tray_entry_deck(entry) != _TRAY_DECK_COORDINATION:
+            return None
+        if not isinstance(entry, TrayEntry) or not entry.coordination_surface_id:
+            return None
+        surface = self._coordination_stack.find_by_id(entry.coordination_surface_id)
+        if surface is None:
+            return None
+        return alloy_card_from_surface(surface, registry=self._surface_registry)
+
     def _show_tray_current(self, *, acknowledge: bool = False) -> None:
         """Update the tray overlay to display the current stack entry."""
         if not self._tray_stack:
@@ -3882,7 +3900,9 @@ class SpokeAppDelegate(NSObject):
             self._acknowledge_tray_entry(self._tray_index)
         entry = self._get_tray_entry(self._tray_index)
         self._focus_surface_for_tray_entry(entry)
-        text = entry.text
+        card = self._alloy_card_for_tray_entry(entry)
+        self._current_stack_card = card
+        text = card.body if card is not None else entry.text
         # Set recovery_text for compatibility with existing dismiss/cleanup
         self._recovery_text = text
         self._recovery_clipboard_state = "idle"
@@ -3905,6 +3925,7 @@ class SpokeAppDelegate(NSObject):
         )
         self._tray_active = False
         self._detector.tray_active = False
+        self._current_stack_card = None
         if self._glow is not None:
             self._glow.hide()
         self._cancel_recovery()

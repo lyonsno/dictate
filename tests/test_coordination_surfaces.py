@@ -22,8 +22,10 @@ from spoke.coordination_surfaces import (
     SurfaceRoutingContext,
     SurfaceTypeRegistration,
     SurfaceTypeRegistry,
+    alloy_card_from_surface,
     build_default_registry,
     diaulos_surface_from_record,
+    directive_surface_from_pressure,
     derive_operator_ping_tokens,
     layout_operator_ping_token_visuals,
     load_operator_ping_events_from_jsonl,
@@ -736,6 +738,37 @@ class TestDiaulosCardSurface:
         assert dismiss.source_owned is False
         assert dismiss.writeback_allowed is False
 
+    def test_diaulos_projects_to_alloy_card_with_forbidden_text_actions(self):
+        entry = diaulos_surface_from_record(
+            {
+                "diaulos": "chairside-sparkwright",
+                "diaulos_id": "dia-chair-1",
+                "display_name": "Chairside Sparkwright",
+                "topos": "projects/spoke/topoi/codex-diaulos-card-carrying-bastards-0524.md",
+                "status": "Κίνησις",
+            }
+        )
+
+        card = alloy_card_from_surface(entry, registry=build_default_registry())
+
+        assert card.schema == "spoke.stack_card.alloy.v1"
+        assert card.kind == "diaulos"
+        assert card.surface_id == "diaulos:dia-chair-1"
+        assert card.label == "Chairside Sparkwright"
+        assert card.status == "Κίνησις"
+        assert card.read_only is True
+        assert "Handle: chairside-sparkwright" in card.body
+        assert card.action_allowed("select") is True
+        assert card.action_allowed("expand") is True
+        assert card.action_allowed("dismiss") is True
+        assert card.action_allowed("paste") is False
+        assert card.action_allowed("send") is False
+        assert card.action_allowed("writeback") is False
+        assert card.forbidden_actions["writeback"].reason == "read-only identity card"
+        assert card.routing["destination_kind"] == "diaulos"
+        assert card.routing["destination_id"] == "dia-chair-1"
+        assert card.routing["writeback_target"] == ""
+
     def test_operator_ping_events_do_not_project_to_diaulos_cards(self):
         stack = CoordinationStack(registry=build_default_registry())
         ping = {
@@ -753,6 +786,49 @@ class TestDiaulosCardSurface:
 
         assert [token.ping_id for token in tokens] == ["ping-1"]
         assert stack.find_by_kind(SurfaceKind.DIAULOS) == []
+
+
+class TestDirectiveAlloyCardSurface:
+    def test_directive_pressure_projects_to_alloy_card_without_writeback(self):
+        entry = directive_surface_from_pressure(
+            text="opus-miserena -> chairside\nIntent: notice",
+            metadata={
+                "path": "metadosis/upstream-directives/route-smoke.md",
+                "source": {"handle": "opus-miserena", "id": "dia-source"},
+                "target": {"handle": "chairside-sparkwright", "id": "dia-target"},
+                "intent_class": "notice",
+                "authority_basis": "peer pressure only",
+                "required_rereads": [
+                    "metadosis/source-signed-diaulos-switchboard_2026-05-20.md"
+                ],
+                "delivery_state": "pending-durable-badge",
+                "disposition_state": "pending",
+            },
+        )
+
+        card = alloy_card_from_surface(entry, registry=build_default_registry())
+
+        assert entry.kind == SurfaceKind.DIRECTIVE_INBOX
+        assert entry.label == "opus-miserena -> chairside-sparkwright"
+        assert card.schema == "spoke.stack_card.alloy.v1"
+        assert card.kind == "directive_inbox"
+        assert card.read_only is True
+        assert card.status == "pending"
+        assert card.action_allowed("select") is True
+        assert card.action_allowed("expand") is True
+        assert card.action_allowed("paste") is False
+        assert card.action_allowed("send") is False
+        assert card.action_allowed("writeback") is False
+        assert card.routing["destination_kind"] == "source_organ"
+        assert card.routing["destination_id"] == (
+            "directive_inbox:metadosis/upstream-directives/route-smoke.md"
+        )
+        assert card.routing["reread_refs"] == [
+            "metadosis/upstream-directives/route-smoke.md",
+            "metadosis/source-signed-diaulos-switchboard_2026-05-20.md",
+        ]
+        assert card.routing["cargo"]["authority"] == "source_signed_pressure_only"
+        assert card.routing["cargo"]["may_write_state"] is False
 
 
 class TestRendererIntegration:
