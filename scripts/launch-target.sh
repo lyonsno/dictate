@@ -114,12 +114,6 @@ def _start_retina_lasso_witness(
             "/private/tmp/perceptasia-codex-screen-slice-smoke-loop-0521",
         )
     ).expanduser()
-    if not perceptasia_root.is_dir():
-        log.write(
-            "Retina Lasso auto witness skipped: "
-            f"perceptasia root missing at {perceptasia_root}.\n"
-        )
-        return
 
     output_root = Path(
         child_env.get("SPOKE_RETINA_LASSO_OUTPUT_ROOT", "/tmp/spoke-retina-lasso-witnesses")
@@ -152,6 +146,24 @@ def _start_retina_lasso_witness(
     fps = child_env.get("SPOKE_RETINA_LASSO_FPS", "").strip()
     if fps:
         args.extend(["--fps", fps])
+    capture_command = (
+        child_env.get("SPOKE_RETINA_LASSO_CAPTURE_COMMAND", "").strip()
+        or child_env.get("SPOKE_RETINA_LASSO_CAPTURE_BIN", "").strip()
+        or child_env.get("GLOBAL_WITNESS_CAPTURE_COMMAND", "").strip()
+        or child_env.get("GLOBAL_WITNESS_CAPTURE_BIN", "").strip()
+    )
+    if capture_command:
+        args.extend(["--capture-command", capture_command])
+    if _env_flag(child_env, "SPOKE_RETINA_LASSO_WATCH_TRACE"):
+        args.append("--watch-trace")
+        args.extend(["--watch-timeout", child_env.get("SPOKE_RETINA_LASSO_WATCH_TIMEOUT_SECONDS", "7200")])
+        args.extend(
+            [
+                "--event-capture-duration",
+                child_env.get("SPOKE_RETINA_LASSO_EVENT_CAPTURE_DURATION_SECONDS", "1.5"),
+            ]
+        )
+        args.extend(["--watch-max-captures", child_env.get("SPOKE_RETINA_LASSO_WATCH_MAX_CAPTURES", "96")])
 
     if python_exe.is_file():
         command = [str(python_exe), *args]

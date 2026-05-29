@@ -35,6 +35,11 @@ CAPTURE_PROFILE_FPS = {
     "low_perturbation": 6.0,
     "stress": 15.0,
 }
+DEFAULT_TRACE_TRIGGER_EVENTS = {
+    "overlay.show.begin",
+    "overlay.cancel_dismiss.begin",
+    "overlay.show.retarget_dismiss_to_summon",
+}
 
 
 def _default_uv_command() -> str:
@@ -166,6 +171,36 @@ def collect_trace_events(
         event["trace_line"] = line_number
         events.append(event)
     return events
+
+
+def read_trace_events_from_offset(
+    trace_path: str | Path,
+    *,
+    offset: int = 0,
+) -> tuple[int, list[dict[str, Any]]]:
+    path = Path(trace_path).expanduser()
+    if not path.exists():
+        return 0, []
+    events: list[dict[str, Any]] = []
+    with path.open("rb") as handle:
+        handle.seek(offset)
+        for raw_line in handle:
+            try:
+                event = json.loads(raw_line.decode("utf-8"))
+                _parse_trace_timestamp(str(event["timestamp"]))
+            except Exception:
+                continue
+            events.append(dict(event))
+        return handle.tell(), events
+
+
+def trace_event_output_slug(event: dict[str, Any], *, index: int) -> str:
+    event_name = str(event.get("event", "event"))
+    safe_event = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in event_name)
+    safe_event = safe_event.strip("-") or "event"
+    timestamp = str(event.get("timestamp", "unknown"))
+    safe_timestamp = "".join(ch if ch.isalnum() else "-" for ch in timestamp).strip("-") or "unknown"
+    return f"{index:03d}-{safe_event}-{safe_timestamp}"
 
 
 def build_retina_lasso_command(
@@ -525,6 +560,7 @@ def run_witness_window(
     source_app: str = DEFAULT_SOURCE_APP,
     source_window: str = DEFAULT_SOURCE_WINDOW,
     capture_command: str | Path | None = None,
+    stimulus: dict[str, Any] | None = None,
     runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
     now: Callable[[], datetime] = _utc_now,
 ) -> Path:
@@ -556,8 +592,112 @@ def run_witness_window(
         ended_at=ended_at,
         command=command,
         trace_events=trace_events,
+        stimulus=stimulus,
         capture_profile=capture_profile,
     )
+
+
+def run_trace_triggered_witness(
+    *,
+    trace_path: str | Path,
+    output_dir: str | Path,
+    perceptasia_root: str | Path = DEFAULT_PERCEPTASIA_ROOT,
+    watch_timeout_seconds: float = 3600.0,
+    event_capture_duration_seconds: float = 1.5,
+    poll_interval_seconds: float = 0.05,
+    max_captures: int = 48,
+    fps: float | None = None,
+    capture_profile: str = DEFAULT_STRESS_CAPTURE_PROFILE,
+    trigger_events: set[str] | None = None,
+    lane: str = DEFAULT_LANE,
+    diaulos: str = DEFAULT_DIAULOS,
+    source_app: str = DEFAULT_SOURCE_APP,
+    source_window: str = DEFAULT_SOURCE_WINDOW,
+    capture_command: str | Path | None = None,
+    runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
+    now: Callable[[], datetime] = _utc_now,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> Path:
+    if watch_timeout_seconds <= 0:
+        raise ValueError("watch_timeout_seconds must be positive")
+    if event_capture_duration_seconds <= 0:
+        raise ValueError("event_capture_duration_seconds must be positive")
+    if poll_interval_seconds <= 0:
+        raise ValueError("poll_interval_seconds must be positive")
+    if max_captures <= 0:
+        raise ValueError("max_captures must be positive")
+
+    triggers = set(trigger_events or DEFAULT_TRACE_TRIGGER_EVENTS)
+    root = Path(output_dir).expanduser()
+    root.mkdir(parents=True, exist_ok=True)
+    started_at = now()
+    offset = Path(trace_path).expanduser().stat().st_size if Path(trace_path).expanduser().exists() else 0
+    deadline = monotonic() + watch_timeout_seconds
+    captures: list[dict[str, Any]] = []
+
+    while monotonic() < deadline and len(captures) < max_captures:
+        offset, events = read_trace_events_from_offset(trace_path, offset=offset)
+        for event in events:
+            event_name = str(event.get("event", ""))
+            if event_name not in triggers:
+                continue
+            capture_index = len(captures) + 1
+            capture_output = root / trace_event_output_slug(event, index=capture_index)
+            index_path = run_witness_window(
+                trace_path=trace_path,
+                output_dir=capture_output,
+                perceptasia_root=perceptasia_root,
+                duration_seconds=event_capture_duration_seconds,
+                fps=fps,
+                capture_profile=capture_profile,
+                lane=lane,
+                diaulos=diaulos,
+                source_app=source_app,
+                source_window=source_window,
+                capture_command=capture_command,
+                stimulus={
+                    "mode": "trace-triggered",
+                    "trigger_event": event,
+                    "trigger_events": sorted(triggers),
+                },
+                runner=runner,
+                now=now,
+            )
+            captures.append(
+                {
+                    "trigger_event": event,
+                    "output_dir": str(capture_output),
+                    "witness_index": str(index_path),
+                }
+            )
+            if len(captures) >= max_captures:
+                break
+        if len(captures) >= max_captures:
+            break
+        sleep(poll_interval_seconds)
+
+    ended_at = now()
+    watch_index = {
+        "schema": "spoke.retina_lasso_trace_trigger_watch.v1",
+        "started_at": _format_instant(started_at),
+        "ended_at": _format_instant(ended_at),
+        "trace_path": str(Path(trace_path).expanduser()),
+        "trigger_events": sorted(triggers),
+        "capture_count": len(captures),
+        "max_captures": max_captures,
+        "watch_timeout_seconds": watch_timeout_seconds,
+        "event_capture_duration_seconds": event_capture_duration_seconds,
+        "capture_profile": capture_profile,
+        "captures": captures,
+        "uncertainty": [
+            "Trace-triggered capture starts after the triggering trace receipt, so it is not a pre-roll witness.",
+            "A single-frame flash before the first screencapture call can still be missed.",
+        ],
+    }
+    watch_index_path = root / "watch-index.json"
+    watch_index_path.write_text(json.dumps(watch_index, indent=2) + "\n", encoding="utf-8")
+    return watch_index_path
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -595,6 +735,44 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "Optional global capture command. Defaults to global-witness-capture "
             "or epistaxis-global-witness-capture when installed; falls back to "
             "legacy uv-run perceptasia-screen-capture."
+        ),
+    )
+    parser.add_argument(
+        "--watch-trace",
+        action="store_true",
+        help="Watch the trace for lifecycle trigger events and capture short burst windows.",
+    )
+    parser.add_argument(
+        "--watch-timeout",
+        type=float,
+        default=3600.0,
+        help="Maximum seconds to keep a trace-triggered witness sidecar alive.",
+    )
+    parser.add_argument(
+        "--event-capture-duration",
+        type=float,
+        default=1.5,
+        help="Seconds of visual evidence to capture after each trace trigger.",
+    )
+    parser.add_argument(
+        "--watch-poll-interval",
+        type=float,
+        default=0.05,
+        help="Seconds between trace polls in watch mode.",
+    )
+    parser.add_argument(
+        "--watch-max-captures",
+        type=int,
+        default=48,
+        help="Maximum trigger capture bursts in one watch-mode sidecar.",
+    )
+    parser.add_argument(
+        "--trigger-event",
+        action="append",
+        dest="trigger_events",
+        help=(
+            "Trace event that should trigger a short capture burst. "
+            "May be supplied more than once; defaults to show/dismiss/retarget lifecycle edges."
         ),
     )
     parser.add_argument(
@@ -659,12 +837,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    stimulus_mode = bool(args.hammer_toggles or args.retarget_during_dismiss_repeats or args.launch_target)
+    stimulus_mode = bool(
+        args.watch_trace or args.hammer_toggles or args.retarget_during_dismiss_repeats or args.launch_target
+    )
     capture_profile = _capture_profile_from_cli(
         args.capture_profile
         or (DEFAULT_STRESS_CAPTURE_PROFILE if stimulus_mode else DEFAULT_PASSIVE_CAPTURE_PROFILE)
     )
-    if stimulus_mode:
+    if args.watch_trace:
+        index_path = run_trace_triggered_witness(
+            trace_path=args.trace,
+            output_dir=args.output_dir,
+            perceptasia_root=args.perceptasia_root,
+            watch_timeout_seconds=args.watch_timeout,
+            event_capture_duration_seconds=args.event_capture_duration,
+            poll_interval_seconds=args.watch_poll_interval,
+            max_captures=args.watch_max_captures,
+            fps=args.fps,
+            capture_profile=capture_profile,
+            trigger_events=set(args.trigger_events) if args.trigger_events else None,
+            lane=args.lane,
+            diaulos=args.diaulos,
+            source_app=args.source_app,
+            source_window=args.source_window,
+            capture_command=args.capture_command,
+        )
+    elif stimulus_mode:
         index_path = run_autonomous_hammer_witness(
             trace_path=args.trace,
             output_dir=args.output_dir,

@@ -10,6 +10,10 @@ export SPOKE_BACKDROP_FRAME_TIMING="1"
 # capture window. This makes the smoke surface "Spoke plus witness", not just
 # "Spoke with witness code available".
 export SPOKE_RETINA_LASSO_AUTO_WITNESS="1"
+export SPOKE_RETINA_LASSO_WATCH_TRACE="1"
+export SPOKE_RETINA_LASSO_WATCH_TIMEOUT_SECONDS="7200"
+export SPOKE_RETINA_LASSO_EVENT_CAPTURE_DURATION_SECONDS="1.5"
+export SPOKE_RETINA_LASSO_WATCH_MAX_CAPTURES="96"
 export SPOKE_RETINA_LASSO_CAPTURE_PROFILE="low-perturbation"
 export SPOKE_RETINA_LASSO_DURATION_SECONDS="45"
 export SPOKE_RETINA_LASSO_CAPTURE_BIN="/private/tmp/epistaxis-global-witness-live-0528/tools/global_witness_capture.py"

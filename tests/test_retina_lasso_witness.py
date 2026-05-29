@@ -11,6 +11,8 @@ from spoke.retina_lasso_witness import (
     default_fps_for_capture_profile,
     drive_hammer_toggles,
     drive_retarget_during_dismiss_pattern,
+    read_trace_events_from_offset,
+    trace_event_output_slug,
     write_witness_index,
 )
 
@@ -206,6 +208,32 @@ def test_collect_trace_events_filters_to_capture_window(tmp_path):
         "overlay.visual_ready.push",
     ]
     assert [event["trace_line"] for event in events] == [2, 3]
+
+
+def test_read_trace_events_from_offset_returns_only_new_valid_jsonl(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text(
+        json.dumps({"timestamp": "2026-05-22T00:00:00Z", "event": "before"}) + "\n",
+        encoding="utf-8",
+    )
+    offset = trace_path.stat().st_size
+    with trace_path.open("a", encoding="utf-8") as handle:
+        handle.write("not-json\n")
+        handle.write(json.dumps({"timestamp": "2026-05-22T00:00:01Z", "event": "overlay.show.begin"}) + "\n")
+
+    new_offset, events = read_trace_events_from_offset(trace_path, offset=offset)
+
+    assert new_offset == trace_path.stat().st_size
+    assert [event["event"] for event in events] == ["overlay.show.begin"]
+
+
+def test_trace_event_output_slug_keeps_event_and_index_legible():
+    slug = trace_event_output_slug(
+        {"event": "overlay.show.retarget_dismiss_to_summon", "timestamp": "2026-05-22T00:00:01-04:00"},
+        index=7,
+    )
+
+    assert slug.startswith("007-overlay-show-retarget_dismiss_to_summon-2026-05-22T00-00-01-04-00")
 
 
 def test_build_evidence_split_keeps_witness_and_lifecycle_roles_separate():
