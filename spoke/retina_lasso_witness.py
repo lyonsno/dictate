@@ -16,6 +16,11 @@ from typing import Any
 
 
 DEFAULT_PERCEPTASIA_ROOT = Path("/private/tmp/perceptasia-codex-screen-slice-smoke-loop-0521")
+GLOBAL_CAPTURE_COMMAND_NAMES = {
+    "global-witness-capture",
+    "epistaxis-global-witness-capture",
+    "global_witness_capture.py",
+}
 DEFAULT_LANE = "warpstorm-pit-boss"
 DEFAULT_DIAULOS = "Warpstorm Pit Boss"
 DEFAULT_SOURCE_APP = "Spoke"
@@ -49,6 +54,46 @@ def _default_uv_command() -> str:
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
     return "uv"
+
+
+def _global_capture_command_is_healthy(command: str) -> bool:
+    try:
+        subprocess.run(
+            [command, "--version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+            timeout=2.0,
+        )
+    except Exception:
+        return False
+    return True
+
+
+def _default_global_capture_command() -> str | None:
+    env_command = (
+        os.environ.get("SPOKE_RETINA_LASSO_CAPTURE_COMMAND")
+        or os.environ.get("GLOBAL_WITNESS_CAPTURE_COMMAND")
+    )
+    if env_command:
+        return str(Path(env_command).expanduser())
+    for name in ("global-witness-capture", "epistaxis-global-witness-capture"):
+        which_command = shutil.which(name)
+        if which_command and _global_capture_command_is_healthy(which_command):
+            return which_command
+    for candidate in (
+        Path.home() / ".local" / "bin" / "global-witness-capture",
+        Path.home() / ".local" / "bin" / "epistaxis-global-witness-capture",
+    ):
+        if candidate.is_file() and os.access(candidate, os.X_OK) and _global_capture_command_is_healthy(
+            str(candidate)
+        ):
+            return str(candidate)
+    return None
+
+
+def _is_global_capture_command(command: Sequence[str]) -> bool:
+    return bool(command) and Path(command[0]).name in GLOBAL_CAPTURE_COMMAND_NAMES
 
 
 def _utc_now() -> datetime:
@@ -132,8 +177,40 @@ def build_retina_lasso_command(
     diaulos: str,
     source_app: str,
     source_window: str,
+    trace_path: str | Path | None = None,
+    capture_profile: str = DEFAULT_PASSIVE_CAPTURE_PROFILE,
+    capture_command: str | Path | None = None,
     uv_command: str | Path | None = None,
 ) -> list[str]:
+    resolved_capture_command = (
+        str(Path(capture_command).expanduser())
+        if capture_command is not None
+        else _default_global_capture_command()
+    )
+    if resolved_capture_command is not None:
+        command = [
+            resolved_capture_command,
+            "--output-dir",
+            str(Path(output_dir).expanduser()),
+            "--count",
+            str(count),
+            "--interval",
+            f"{interval_seconds:.6f}",
+            "--capture-profile",
+            capture_profile.replace("_", "-"),
+            "--lane",
+            lane,
+            "--diaulos",
+            diaulos,
+            "--source-app",
+            source_app,
+            "--source-window",
+            source_window,
+        ]
+        if trace_path is not None:
+            command.extend(["--trace-path", str(Path(trace_path).expanduser())])
+        return command
+
     resolved_uv = str(Path(uv_command).expanduser()) if uv_command is not None else _default_uv_command()
     return [
         resolved_uv,
@@ -354,6 +431,7 @@ def run_autonomous_hammer_witness(
     diaulos: str = DEFAULT_DIAULOS,
     source_app: str = DEFAULT_SOURCE_APP,
     source_window: str = DEFAULT_SOURCE_WINDOW,
+    capture_command: str | Path | None = None,
     launch_target: str | None = None,
     launch_wait_seconds: float = 3.0,
     runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
@@ -379,9 +457,13 @@ def run_autonomous_hammer_witness(
         diaulos=diaulos,
         source_app=source_app,
         source_window=source_window,
+        trace_path=trace_path,
+        capture_profile=capture_profile,
+        capture_command=capture_command,
     )
     started_at = now()
-    capture = popen(command, cwd=Path(perceptasia_root).expanduser())
+    capture_cwd = None if _is_global_capture_command(command) else Path(perceptasia_root).expanduser()
+    capture = popen(command, cwd=capture_cwd)
     try:
         sleep(pre_hammer_delay_seconds)
         if retarget_during_dismiss_repeats:
@@ -442,6 +524,7 @@ def run_witness_window(
     diaulos: str = DEFAULT_DIAULOS,
     source_app: str = DEFAULT_SOURCE_APP,
     source_window: str = DEFAULT_SOURCE_WINDOW,
+    capture_command: str | Path | None = None,
     runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
     now: Callable[[], datetime] = _utc_now,
 ) -> Path:
@@ -457,9 +540,13 @@ def run_witness_window(
         diaulos=diaulos,
         source_app=source_app,
         source_window=source_window,
+        trace_path=trace_path,
+        capture_profile=capture_profile,
+        capture_command=capture_command,
     )
     started_at = now()
-    runner(command, cwd=Path(perceptasia_root).expanduser(), check=True)
+    capture_cwd = None if _is_global_capture_command(command) else Path(perceptasia_root).expanduser()
+    runner(command, cwd=capture_cwd, check=True)
     ended_at = now()
     trace_events = collect_trace_events(trace_path, started_at=started_at, ended_at=ended_at)
     return write_witness_index(
@@ -502,6 +589,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diaulos", default=DEFAULT_DIAULOS)
     parser.add_argument("--source-app", default=DEFAULT_SOURCE_APP)
     parser.add_argument("--source-window", default=DEFAULT_SOURCE_WINDOW)
+    parser.add_argument(
+        "--capture-command",
+        help=(
+            "Optional global capture command. Defaults to global-witness-capture "
+            "or epistaxis-global-witness-capture when installed; falls back to "
+            "legacy uv-run perceptasia-screen-capture."
+        ),
+    )
     parser.add_argument(
         "--hammer-toggles",
         type=int,
@@ -590,6 +685,7 @@ def main(argv: list[str] | None = None) -> int:
             diaulos=args.diaulos,
             source_app=args.source_app,
             source_window=args.source_window,
+            capture_command=args.capture_command,
             launch_target=args.launch_target,
             launch_wait_seconds=args.launch_wait,
         )
@@ -605,6 +701,7 @@ def main(argv: list[str] | None = None) -> int:
             diaulos=args.diaulos,
             source_app=args.source_app,
             source_window=args.source_window,
+            capture_command=args.capture_command,
         )
     print(index_path)
     return 0

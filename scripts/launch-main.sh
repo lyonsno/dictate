@@ -182,15 +182,9 @@ def _start_retina_lasso_witness(
     else:
         log.write("Retina Lasso auto witness skipped: no Python or UV runner found.\n")
         return
-    if uv_bin is None:
-        log.write(
-            "Retina Lasso auto witness skipped: UV_BIN is required for "
-            "nested Perceptasia capture.\n"
-        )
-        return
-
     witness_env = child_env.copy()
-    witness_env["UV_BIN"] = str(uv_bin)
+    if uv_bin is not None:
+        witness_env["UV_BIN"] = str(uv_bin)
 
     log.write(f"Retina Lasso auto witness output: {output_dir}\n")
     log.write(f"Retina Lasso auto witness command: {command!r}\n")

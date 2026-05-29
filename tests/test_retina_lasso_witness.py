@@ -25,7 +25,7 @@ def test_capture_profile_defaults_separate_passive_and_stress_pressure():
     assert default_fps_for_capture_profile("stress") == 15.0
 
 
-def test_build_retina_lasso_command_preserves_custody_fields(tmp_path):
+def test_build_retina_lasso_command_prefers_global_capture_custody(tmp_path):
     command = build_retina_lasso_command(
         output_dir=tmp_path,
         count=3,
@@ -34,18 +34,61 @@ def test_build_retina_lasso_command_preserves_custody_fields(tmp_path):
         diaulos="Warpstorm Pit Boss",
         source_app="Spoke",
         source_window="Command Overlay",
-        uv_command="uv",
+        trace_path=tmp_path / "trace.jsonl",
+        capture_profile="low_perturbation",
+        capture_command="/usr/local/bin/global-witness-capture",
     )
 
-    assert command[:3] == ["uv", "run", "perceptasia-screen-capture"]
+    assert command[0] == "/usr/local/bin/global-witness-capture"
     assert command[command.index("--output-dir") + 1] == str(tmp_path)
     assert command[command.index("--count") + 1] == "3"
     assert command[command.index("--interval") + 1] == "0.125000"
+    assert command[command.index("--capture-profile") + 1] == "low-perturbation"
     assert command[command.index("--lane") + 1] == "warpstorm-pit-boss"
     assert command[command.index("--diaulos") + 1] == "Warpstorm Pit Boss"
+    assert command[command.index("--source-app") + 1] == "Spoke"
+    assert command[command.index("--source-window") + 1] == "Command Overlay"
+    assert command[command.index("--trace-path") + 1] == str(tmp_path / "trace.jsonl")
+
+
+def test_build_retina_lasso_command_uses_healthy_global_capture_by_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(witness.shutil, "which", lambda name: "/usr/local/bin/global-witness-capture")
+    monkeypatch.setattr(witness, "_global_capture_command_is_healthy", lambda command: True)
+
+    command = build_retina_lasso_command(
+        output_dir=tmp_path,
+        count=1,
+        interval_seconds=1.0,
+        lane="warpstorm-pit-boss",
+        diaulos="Warpstorm Pit Boss",
+        source_app="Spoke",
+        source_window="Command Overlay",
+    )
+
+    assert command[0] == "/usr/local/bin/global-witness-capture"
+
+
+def test_build_retina_lasso_command_skips_unhealthy_global_capture(tmp_path, monkeypatch):
+    monkeypatch.setenv("UV_BIN", "/opt/homebrew/bin/uv")
+    monkeypatch.setattr(witness.shutil, "which", lambda name: "/usr/local/bin/global-witness-capture")
+    monkeypatch.setattr(witness, "_global_capture_command_is_healthy", lambda command: False)
+    monkeypatch.setattr(witness.Path, "home", staticmethod(lambda: tmp_path))
+
+    command = build_retina_lasso_command(
+        output_dir=tmp_path,
+        count=1,
+        interval_seconds=1.0,
+        lane="warpstorm-pit-boss",
+        diaulos="Warpstorm Pit Boss",
+        source_app="Spoke",
+        source_window="Command Overlay",
+    )
+
+    assert command[:3] == ["/opt/homebrew/bin/uv", "run", "perceptasia-screen-capture"]
 
 
 def test_build_retina_lasso_command_uses_absolute_uv_from_env(tmp_path, monkeypatch):
+    monkeypatch.setattr(witness, "_default_global_capture_command", lambda: None)
     monkeypatch.setenv("UV_BIN", "/opt/homebrew/bin/uv")
 
     command = build_retina_lasso_command(
@@ -62,6 +105,7 @@ def test_build_retina_lasso_command_uses_absolute_uv_from_env(tmp_path, monkeypa
 
 
 def test_build_retina_lasso_command_uses_common_uv_path_without_shell_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(witness, "_default_global_capture_command", lambda: None)
     monkeypatch.delenv("UV_BIN", raising=False)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.setattr(witness.shutil, "which", lambda name: None)
