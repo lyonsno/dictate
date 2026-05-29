@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import spoke.retina_lasso_witness as witness
 from spoke.retina_lasso_witness import (
@@ -12,6 +13,7 @@ from spoke.retina_lasso_witness import (
     drive_hammer_toggles,
     drive_retarget_during_dismiss_pattern,
     read_trace_events_from_offset,
+    run_autonomous_hammer_witness,
     trace_event_output_slug,
     write_witness_index,
 )
@@ -288,3 +290,78 @@ def test_write_witness_index_links_manifest_and_trace_events(tmp_path):
     assert payload["evidence_split"]["classification_rule"]["witness_bad_frame"] == (
         "candidate_violation_until_trace_correlated"
     )
+
+
+def test_autonomous_retarget_witness_starts_capture_before_stimulus(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"timestamp": "2026-05-22T00:00:01Z", "event": "overlay.cancel_dismiss.begin"}),
+                json.dumps(
+                    {
+                        "timestamp": "2026-05-22T00:00:01.050Z",
+                        "event": "overlay.show.retarget_dismiss_to_summon",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "capture"
+    calls = []
+    instants = iter(
+        [
+            datetime(2026, 5, 22, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 5, 22, 0, 0, 2, tzinfo=timezone.utc),
+        ]
+    )
+
+    class Capture:
+        def wait(self):
+            calls.append("capture_wait")
+            return 0
+
+        def terminate(self):
+            calls.append("capture_terminate")
+
+    def popen(command, cwd=None):
+        calls.append("capture_start")
+        out = command[command.index("--output-dir") + 1]
+        Path(out).mkdir(parents=True, exist_ok=True)
+        (Path(out) / "manifest.json").write_text(
+            json.dumps({"frames": [{"path": "frame-000.png"}]}),
+            encoding="utf-8",
+        )
+        return Capture()
+
+    def retarget_driver(**kwargs):
+        calls.append(("stimulus_start", kwargs["repeats"]))
+
+    index_path = run_autonomous_hammer_witness(
+        trace_path=trace_path,
+        output_dir=output_dir,
+        repo_root=tmp_path,
+        duration_seconds=2.0,
+        fps=4.0,
+        capture_profile="stress",
+        retarget_during_dismiss_repeats=2,
+        pre_hammer_delay_seconds=0.25,
+        capture_command="/usr/local/bin/global-witness-capture",
+        popen=popen,
+        now=lambda: next(instants),
+        sleep=lambda seconds: calls.append(("sleep", seconds)),
+        retarget_driver=retarget_driver,
+    )
+
+    payload = json.loads(index_path.read_text(encoding="utf-8"))
+    assert calls[:3] == ["capture_start", ("sleep", 0.25), ("stimulus_start", 2)]
+    assert "capture_wait" in calls
+    assert payload["stimulus"]["mode"] == "retarget-during-dismiss"
+    assert payload["stimulus"]["repeats"] == 2
+    assert payload["frame_count"] == 1
+    assert [event["event"] for event in payload["trace_events"]] == [
+        "overlay.cancel_dismiss.begin",
+        "overlay.show.retarget_dismiss_to_summon",
+    ]

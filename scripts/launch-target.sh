@@ -85,6 +85,51 @@ def _safe_path_slug(value: str) -> str:
     return slug.strip("-") or "selected"
 
 
+def _positive_int_env(child_env: dict[str, str], name: str) -> bool:
+    try:
+        return int(child_env.get(name, "0").strip() or "0") > 0
+    except ValueError:
+        return False
+
+
+def _append_retina_lasso_stimulus_args(
+    args: list[str],
+    *,
+    child_env: dict[str, str],
+    log,
+) -> bool:
+    """Append capture-first stimulus args and return whether one was armed."""
+    capture_first = False
+    hammer_toggles = child_env.get("SPOKE_RETINA_LASSO_HAMMER_TOGGLES", "").strip()
+    if _positive_int_env(child_env, "SPOKE_RETINA_LASSO_HAMMER_TOGGLES"):
+        args.extend(["--hammer-toggles", hammer_toggles])
+        args.extend(["--toggle-interval", child_env.get("SPOKE_RETINA_LASSO_TOGGLE_INTERVAL_SECONDS", "0.18")])
+        capture_first = True
+
+    retarget_repeats = child_env.get("SPOKE_RETINA_LASSO_RETARGET_DURING_DISMISS_REPEATS", "").strip()
+    if _positive_int_env(child_env, "SPOKE_RETINA_LASSO_RETARGET_DURING_DISMISS_REPEATS"):
+        args.extend(["--retarget-during-dismiss-repeats", retarget_repeats])
+        args.extend(["--open-dwell", child_env.get("SPOKE_RETINA_LASSO_OPEN_DWELL_SECONDS", "0.75")])
+        args.extend(
+            [
+                "--dismiss-retarget-delay",
+                child_env.get("SPOKE_RETINA_LASSO_DISMISS_RETARGET_DELAY_SECONDS", "0.08"),
+            ]
+        )
+        args.extend(["--reopen-dwell", child_env.get("SPOKE_RETINA_LASSO_REOPEN_DWELL_SECONDS", "0.75")])
+        args.extend(["--cycle-pause", child_env.get("SPOKE_RETINA_LASSO_CYCLE_PAUSE_SECONDS", "0.2")])
+        capture_first = True
+
+    if capture_first:
+        args.extend(["--pre-hammer-delay", child_env.get("SPOKE_RETINA_LASSO_PRE_HAMMER_DELAY_SECONDS", "0.35")])
+        if _env_flag(child_env, "SPOKE_RETINA_LASSO_WATCH_TRACE"):
+            log.write(
+                "Retina Lasso auto witness: capture-first stimulus armed; "
+                "trace-trigger watch mode suppressed for this sidecar.\n"
+            )
+    return capture_first
+
+
 def _start_retina_lasso_witness(
     *,
     repo_root: Path,
@@ -154,7 +199,8 @@ def _start_retina_lasso_witness(
     )
     if capture_command:
         args.extend(["--capture-command", capture_command])
-    if _env_flag(child_env, "SPOKE_RETINA_LASSO_WATCH_TRACE"):
+    capture_first_stimulus = _append_retina_lasso_stimulus_args(args, child_env=child_env, log=log)
+    if _env_flag(child_env, "SPOKE_RETINA_LASSO_WATCH_TRACE") and not capture_first_stimulus:
         args.append("--watch-trace")
         args.extend(["--watch-timeout", child_env.get("SPOKE_RETINA_LASSO_WATCH_TIMEOUT_SECONDS", "7200")])
         args.extend(

@@ -6,20 +6,27 @@
 export SPOKE_COMMAND_OVERLAY_TRACE_PATH="/tmp/warpstorm-pit-boss-retina-lasso-quarantine-lens-command-overlay-trace.jsonl"
 export SPOKE_BACKDROP_FRAME_TIMING="1"
 
-# Arm the selected launcher target with a real low-perturbation Retina Lasso
-# capture window. This makes the smoke surface "Spoke plus witness", not just
-# "Spoke with witness code available".
+# Arm the selected launcher target with a real capture-first Retina Lasso
+# stress window. The camera starts before the synthetic dismiss-retarget
+# pattern so first-frame lifecycle violations are witnessable.
 export SPOKE_RETINA_LASSO_AUTO_WITNESS="1"
-export SPOKE_RETINA_LASSO_WATCH_TRACE="1"
+export SPOKE_RETINA_LASSO_WATCH_TRACE="0"
 export SPOKE_RETINA_LASSO_WATCH_TIMEOUT_SECONDS="7200"
 export SPOKE_RETINA_LASSO_EVENT_CAPTURE_DURATION_SECONDS="1.5"
 export SPOKE_RETINA_LASSO_WATCH_MAX_CAPTURES="96"
-export SPOKE_RETINA_LASSO_CAPTURE_PROFILE="low-perturbation"
-export SPOKE_RETINA_LASSO_DURATION_SECONDS="45"
+export SPOKE_RETINA_LASSO_CAPTURE_PROFILE="stress"
+export SPOKE_RETINA_LASSO_FPS="12"
+export SPOKE_RETINA_LASSO_DURATION_SECONDS="12"
+export SPOKE_RETINA_LASSO_PRE_HAMMER_DELAY_SECONDS="3.0"
+export SPOKE_RETINA_LASSO_RETARGET_DURING_DISMISS_REPEATS="3"
+export SPOKE_RETINA_LASSO_OPEN_DWELL_SECONDS="0.75"
+export SPOKE_RETINA_LASSO_DISMISS_RETARGET_DELAY_SECONDS="0.08"
+export SPOKE_RETINA_LASSO_REOPEN_DWELL_SECONDS="0.55"
+export SPOKE_RETINA_LASSO_CYCLE_PAUSE_SECONDS="0.25"
 export SPOKE_RETINA_LASSO_CAPTURE_BIN="/private/tmp/epistaxis-global-witness-live-0528/tools/global_witness_capture.py"
 export SPOKE_RETINA_LASSO_CAPTURE_COMMAND="/private/tmp/epistaxis-global-witness-live-0528/tools/global_witness_capture.py"
 export SPOKE_RETINA_LASSO_PERCEPTASIA_ROOT="/private/tmp/perceptasia-codex-screen-slice-smoke-loop-0521"
-export SPOKE_RETINA_LASSO_OUTPUT_ROOT="/tmp/warpstorm-pit-boss-retina-lasso-quarantine-lens"
+export SPOKE_RETINA_LASSO_OUTPUT_ROOT="/tmp/warpstorm-pit-boss-retina-lasso-capture-first"
 export SPOKE_RETINA_LASSO_LANE="warpstorm-pit-boss"
 export SPOKE_RETINA_LASSO_DIAULOS="Warpstorm Pit Boss"
 export SPOKE_RETINA_LASSO_SOURCE_APP="Spoke"

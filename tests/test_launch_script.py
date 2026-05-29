@@ -398,6 +398,16 @@ class TestLauncherRetinaLassoWitness:
         assert 'Path("/opt/homebrew/bin/uv")' in text
         assert 'witness_env["UV_BIN"] = str(uv_bin)' in text
         assert "if uv_bin is not None:" in text
+        assert "SPOKE_RETINA_LASSO_RETARGET_DURING_DISMISS_REPEATS" in text
+        assert "SPOKE_RETINA_LASSO_HAMMER_TOGGLES" in text
+        assert "--retarget-during-dismiss-repeats" in text
+        assert "--pre-hammer-delay" in text
+
+    @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
+    def test_capture_first_witness_suppresses_post_trigger_watch_mode(self, script_text):
+        text = script_text()
+        assert "capture-first stimulus armed" in text
+        assert 'and not capture_first_stimulus' in text
 
     @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
     def test_retina_lasso_witness_is_sidecar_only(self, script_text):
