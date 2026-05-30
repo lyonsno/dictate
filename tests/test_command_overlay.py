@@ -852,6 +852,10 @@ class TestOpticalShellMaterialization:
         )
         overlay._scroll_view.isHidden.side_effect = lambda: hidden_state["value"]
         overlay._fill_hidden_until_signature = ("pending-fill",)
+        overlay._requested_optical_presentation_state = "opening"
+        # A completed prior presentation must not license text publication
+        # while the next compositor generation is being seeded back to a slit.
+        overlay._materialization_progress = 1.0
 
         import spoke.fullscreen_compositor as fullscreen_compositor
 

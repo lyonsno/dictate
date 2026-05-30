@@ -5522,12 +5522,12 @@ class CommandOverlay(NSObject):
             except Exception:
                 pass
             self._metal_display_link_renderer = None
-        self._enable_text_punchthrough(False)
         self._sdf_appearance_b = -1.0
         self._fill_image_brightness = -1.0
         self._materialization_progress = start_progress
         self._deferred_materialization_shell_config = dict(final_shell_config)
         self._deferred_materialization_start_progress = start_progress
+        self._enable_text_punchthrough(False)
         suppress_stale_fill = getattr(
             self,
             "_suppress_stale_fill_until_ready",
@@ -5647,6 +5647,9 @@ class CommandOverlay(NSObject):
                 # Fill layer is hidden during compositor mode, so punch-through
                 # text (which renders via the fill mask) would be invisible.
                 # Keep the live NSTextView visible for direct text rendering.
+                self._materialization_progress = 0.0
+                self._deferred_materialization_shell_config = dict(final_shell_config)
+                self._deferred_materialization_start_progress = None
                 self._enable_text_punchthrough(False)
                 # Force one compositor-owned fill image rebuild with the
                 # current geometry. Brightness-only updates skip this path
@@ -5658,9 +5661,6 @@ class CommandOverlay(NSObject):
                     "_suppress_stale_fill_until_ready",
                     False,
                 )
-                self._materialization_progress = 0.0
-                self._deferred_materialization_shell_config = dict(final_shell_config)
-                self._deferred_materialization_start_progress = None
                 self._suppress_stale_fill_until_ready = True
                 sampled_brightness = self._seed_brightness_from_optical_compositor()
                 if sampled_brightness is not None:
