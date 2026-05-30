@@ -11,6 +11,7 @@ from typing import NamedTuple
 
 OPTICAL_BODY_READY_PROGRESS = 0.55
 OPTICAL_MAG_SEED_PROGRESS = 0.04
+OPTICAL_SLIT_REENTRY_PROGRESS = 0.24
 
 
 class RetargetDecision(NamedTuple):
@@ -25,8 +26,14 @@ def _clamp01(value: float) -> float:
 def retarget_progress_for_dismiss(progress: float) -> RetargetDecision:
     """Map dismiss-local body progress onto a lawful summon re-entry point."""
     p = _clamp01(progress)
+    if p <= 0.0:
+        return RetargetDecision(should_retarget=True, start_progress=0.0)
     if p < OPTICAL_BODY_READY_PROGRESS:
         start_progress = min(p, OPTICAL_MAG_SEED_PROGRESS)
     else:
-        start_progress = min(p, OPTICAL_BODY_READY_PROGRESS)
+        # Dismiss is not the inverse of summon: by the time a close has entered
+        # the body-ready scalar band, the visible text/body path may already be
+        # collapsing through a slit. Re-enter below text release so timer lag
+        # cannot flash a full readable body during hammered reversal.
+        start_progress = min(p, OPTICAL_SLIT_REENTRY_PROGRESS)
     return RetargetDecision(should_retarget=True, start_progress=start_progress)

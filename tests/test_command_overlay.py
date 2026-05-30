@@ -1272,7 +1272,8 @@ class TestOpticalShellMaterialization:
         overlay, mod = _make_overlay(mock_pyobjc)
         retarget_progress = mod._summon_retarget_progress_for_dismiss_progress(0.72)
 
-        assert retarget_progress == pytest.approx(mod._OPTICAL_MATERIALIZATION_BODY_READY)
+        assert retarget_progress == pytest.approx(mod.OPTICAL_SLIT_REENTRY_PROGRESS)
+        assert retarget_progress < mod._OPTICAL_MATERIALIZATION_BODY_READY
         assert retarget_progress < 0.72
 
     def test_pre_body_dismiss_retarget_restarts_from_tiny_seed_not_full_width_spread(
@@ -1294,8 +1295,20 @@ class TestOpticalShellMaterialization:
             mod._OPTICAL_MATERIALIZATION_BODY_READY
         )
 
-        assert retarget_progress == pytest.approx(mod._OPTICAL_MATERIALIZATION_BODY_READY)
+        assert retarget_progress == pytest.approx(mod.OPTICAL_SLIT_REENTRY_PROGRESS)
+        assert retarget_progress < mod._OPTICAL_MATERIALIZATION_BODY_READY
         assert retarget_progress < 1.0
+
+    def test_trace_backed_early_dismiss_retarget_keeps_text_quarantined(
+        self, mock_pyobjc
+    ):
+        _, mod = _make_overlay(mock_pyobjc)
+        retarget_progress = mod._summon_retarget_progress_for_dismiss_progress(
+            0.7998328110364075
+        )
+
+        assert retarget_progress == pytest.approx(mod.OPTICAL_SLIT_REENTRY_PROGRESS)
+        assert retarget_progress < mod._OPTICAL_MATERIALIZATION_BODY_READY
 
     def test_pre_body_dismiss_retarget_cannot_publish_late_summon_magnification(
         self, mock_pyobjc

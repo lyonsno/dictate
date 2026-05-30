@@ -60,6 +60,7 @@ from .optical_presentation import (
 from .optical_lifecycle import (
     OPTICAL_BODY_READY_PROGRESS,
     OPTICAL_MAG_SEED_PROGRESS,
+    OPTICAL_SLIT_REENTRY_PROGRESS,
     retarget_progress_for_dismiss,
 )
 
