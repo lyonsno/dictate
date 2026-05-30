@@ -42,6 +42,7 @@ DEFAULT_TRACE_TRIGGER_EVENTS = {
     "overlay.fade_out.complete",
     "overlay.show.retarget_dismiss_to_summon",
 }
+DEFAULT_TRACE_TRIGGER_MAX_LAG_SECONDS = 1.0
 
 
 def _default_uv_command() -> str:
@@ -731,6 +732,7 @@ def run_trace_triggered_witness(
     event_capture_duration_seconds: float = 1.5,
     poll_interval_seconds: float = 0.05,
     max_captures: int = 48,
+    max_trigger_lag_seconds: float = DEFAULT_TRACE_TRIGGER_MAX_LAG_SECONDS,
     fps: float | None = None,
     capture_profile: str = DEFAULT_STRESS_CAPTURE_PROFILE,
     trigger_events: set[str] | None = None,
@@ -752,6 +754,8 @@ def run_trace_triggered_witness(
         raise ValueError("poll_interval_seconds must be positive")
     if max_captures <= 0:
         raise ValueError("max_captures must be positive")
+    if max_trigger_lag_seconds <= 0:
+        raise ValueError("max_trigger_lag_seconds must be positive")
 
     triggers = set(trigger_events or DEFAULT_TRACE_TRIGGER_EVENTS)
     root = Path(output_dir).expanduser()
@@ -760,12 +764,31 @@ def run_trace_triggered_witness(
     offset = Path(trace_path).expanduser().stat().st_size if Path(trace_path).expanduser().exists() else 0
     deadline = monotonic() + watch_timeout_seconds
     captures: list[dict[str, Any]] = []
+    skipped_triggers: list[dict[str, Any]] = []
 
     while monotonic() < deadline and len(captures) < max_captures:
         offset, events = read_trace_events_from_offset(trace_path, offset=offset)
         for event in events:
             event_name = str(event.get("event", ""))
             if event_name not in triggers:
+                continue
+            trigger_seen_at = now()
+            try:
+                trigger_lag_seconds = (
+                    trigger_seen_at - _parse_trace_timestamp(str(event["timestamp"]))
+                ).total_seconds()
+            except Exception:
+                trigger_lag_seconds = 0.0
+            if trigger_lag_seconds > max_trigger_lag_seconds:
+                skipped_triggers.append(
+                    {
+                        "trigger_event": event,
+                        "skipped_at": _format_instant(trigger_seen_at),
+                        "trigger_lag_seconds": trigger_lag_seconds,
+                        "max_trigger_lag_seconds": max_trigger_lag_seconds,
+                        "reason": "stale_trigger_capture_suppressed",
+                    }
+                )
                 continue
             capture_index = len(captures) + 1
             capture_output = root / trace_event_output_slug(event, index=capture_index)
@@ -792,6 +815,8 @@ def run_trace_triggered_witness(
             captures.append(
                 {
                     "trigger_event": event,
+                    "trigger_seen_at": _format_instant(trigger_seen_at),
+                    "trigger_lag_seconds": trigger_lag_seconds,
                     "output_dir": str(capture_output),
                     "witness_index": str(index_path),
                 }
@@ -810,13 +835,17 @@ def run_trace_triggered_witness(
         "trace_path": str(Path(trace_path).expanduser()),
         "trigger_events": sorted(triggers),
         "capture_count": len(captures),
+        "skipped_trigger_count": len(skipped_triggers),
         "max_captures": max_captures,
+        "max_trigger_lag_seconds": max_trigger_lag_seconds,
         "watch_timeout_seconds": watch_timeout_seconds,
         "event_capture_duration_seconds": event_capture_duration_seconds,
         "capture_profile": capture_profile,
         "captures": captures,
+        "skipped_triggers": skipped_triggers,
         "uncertainty": [
             "Trace-triggered capture starts after the triggering trace receipt, so it is not a pre-roll witness.",
+            "Trace triggers older than max_trigger_lag_seconds are recorded as skipped instead of stale visual evidence.",
             "A single-frame flash before the first screencapture call can still be missed.",
         ],
     }
@@ -890,6 +919,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=48,
         help="Maximum trigger capture bursts in one watch-mode sidecar.",
+    )
+    parser.add_argument(
+        "--max-trigger-lag",
+        type=float,
+        default=DEFAULT_TRACE_TRIGGER_MAX_LAG_SECONDS,
+        help=(
+            "Maximum seconds between a trace trigger timestamp and starting its capture burst. "
+            "Older triggers are recorded as skipped stale-trigger receipts."
+        ),
     )
     parser.add_argument(
         "--trigger-event",
@@ -990,6 +1028,7 @@ def main(argv: list[str] | None = None) -> int:
             event_capture_duration_seconds=args.event_capture_duration,
             poll_interval_seconds=args.watch_poll_interval,
             max_captures=args.watch_max_captures,
+            max_trigger_lag_seconds=args.max_trigger_lag,
             fps=args.fps,
             capture_profile=capture_profile,
             trigger_events=set(args.trigger_events) if args.trigger_events else None,

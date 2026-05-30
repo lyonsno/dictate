@@ -469,7 +469,7 @@ def test_trace_triggered_witness_captures_fade_out_receipts_by_default(tmp_path)
     runner_calls = []
     sleep_calls = []
     monotonic_instants = iter([0.0, 0.0, 0.1])
-    now_seconds = iter(range(6))
+    now_seconds = iter(range(8))
 
     def now():
         return datetime(2026, 5, 22, 0, 0, next(now_seconds), tzinfo=timezone.utc)
@@ -515,6 +515,7 @@ def test_trace_triggered_witness_captures_fade_out_receipts_by_default(tmp_path)
         event_capture_duration_seconds=0.25,
         poll_interval_seconds=0.01,
         max_captures=2,
+        max_trigger_lag_seconds=10.0,
         fps=4.0,
         capture_command="/usr/local/bin/global-witness-capture",
         runner=runner,
@@ -532,6 +533,68 @@ def test_trace_triggered_witness_captures_fade_out_receipts_by_default(tmp_path)
     ]
     assert "overlay.fade_out.start" in payload["trigger_events"]
     assert "overlay.fade_out.complete" in payload["trigger_events"]
+    assert payload["skipped_trigger_count"] == 0
+    assert all("trigger_lag_seconds" in capture for capture in payload["captures"])
+
+
+def test_trace_triggered_witness_skips_stale_trigger_instead_of_late_capture(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text("", encoding="utf-8")
+    output_dir = tmp_path / "watch"
+    runner_calls = []
+    sleep_calls = []
+    monotonic_instants = iter([0.0, 0.0, 0.1, 1.1])
+    now_values = iter(
+        [
+            datetime(2026, 5, 22, 0, 0, 0, tzinfo=timezone.utc),
+            datetime(2026, 5, 22, 0, 0, 5, tzinfo=timezone.utc),
+            datetime(2026, 5, 22, 0, 0, 6, tzinfo=timezone.utc),
+        ]
+    )
+
+    def now():
+        return next(now_values)
+
+    def sleep(seconds):
+        sleep_calls.append(seconds)
+        if len(sleep_calls) == 1:
+            with trace_path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "timestamp": "2026-05-22T00:00:01Z",
+                            "event": "overlay.fade_out.start",
+                            "presentation_generation": 4,
+                        }
+                    )
+                    + "\n"
+                )
+
+    def runner(command, cwd=None, check=False):
+        runner_calls.append(command)
+
+    watch_index_path = run_trace_triggered_witness(
+        trace_path=trace_path,
+        output_dir=output_dir,
+        watch_timeout_seconds=1.0,
+        event_capture_duration_seconds=0.25,
+        poll_interval_seconds=0.01,
+        max_captures=2,
+        max_trigger_lag_seconds=1.0,
+        fps=4.0,
+        capture_command="/usr/local/bin/global-witness-capture",
+        runner=runner,
+        now=now,
+        sleep=sleep,
+        monotonic=lambda: next(monotonic_instants),
+    )
+
+    payload = json.loads(watch_index_path.read_text(encoding="utf-8"))
+    assert runner_calls == []
+    assert payload["capture_count"] == 0
+    assert payload["skipped_trigger_count"] == 1
+    assert payload["skipped_triggers"][0]["reason"] == "stale_trigger_capture_suppressed"
+    assert payload["skipped_triggers"][0]["trigger_lag_seconds"] == 4.0
 
 
 def test_build_evidence_split_keeps_witness_and_lifecycle_roles_separate():

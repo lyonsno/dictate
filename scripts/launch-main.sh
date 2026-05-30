@@ -239,6 +239,7 @@ def _start_retina_lasso_witness(
             ]
         )
         args.extend(["--watch-max-captures", child_env.get("SPOKE_RETINA_LASSO_WATCH_MAX_CAPTURES", "96")])
+        args.extend(["--max-trigger-lag", child_env.get("SPOKE_RETINA_LASSO_MAX_TRIGGER_LAG_SECONDS", "1.0")])
 
     if python_exe.is_file():
         command = [str(python_exe), *args]
