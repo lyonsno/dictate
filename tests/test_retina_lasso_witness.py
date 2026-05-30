@@ -14,6 +14,7 @@ from spoke.retina_lasso_witness import (
     drive_retarget_during_dismiss_pattern,
     read_trace_events_from_offset,
     run_autonomous_hammer_witness,
+    run_trace_triggered_witness,
     trace_event_is_open_ready,
     trace_event_output_slug,
     wait_for_open_ready_trace,
@@ -459,6 +460,78 @@ def test_trace_event_output_slug_keeps_event_and_index_legible():
     )
 
     assert slug.startswith("007-overlay-show-retarget_dismiss_to_summon-2026-05-22T00-00-01-04-00")
+
+
+def test_trace_triggered_witness_captures_fade_out_receipts_by_default(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text("", encoding="utf-8")
+    output_dir = tmp_path / "watch"
+    runner_calls = []
+    sleep_calls = []
+    monotonic_instants = iter([0.0, 0.0, 0.1])
+    now_seconds = iter(range(6))
+
+    def now():
+        return datetime(2026, 5, 22, 0, 0, next(now_seconds), tzinfo=timezone.utc)
+
+    def sleep(seconds):
+        sleep_calls.append(seconds)
+        if len(sleep_calls) == 1:
+            with trace_path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "timestamp": "2026-05-22T00:00:01Z",
+                            "event": "overlay.fade_out.start",
+                            "presentation_generation": 4,
+                        }
+                    )
+                    + "\n"
+                )
+                handle.write(
+                    json.dumps(
+                        {
+                            "timestamp": "2026-05-22T00:00:02Z",
+                            "event": "overlay.fade_out.complete",
+                            "presentation_generation": 4,
+                        }
+                    )
+                    + "\n"
+                )
+
+    def runner(command, cwd=None, check=False):
+        runner_calls.append(command)
+        capture_dir = Path(command[command.index("--output-dir") + 1])
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        (capture_dir / "manifest.json").write_text(
+            json.dumps({"frames": [{"path": "frame-000.png"}]}),
+            encoding="utf-8",
+        )
+
+    watch_index_path = run_trace_triggered_witness(
+        trace_path=trace_path,
+        output_dir=output_dir,
+        watch_timeout_seconds=1.0,
+        event_capture_duration_seconds=0.25,
+        poll_interval_seconds=0.01,
+        max_captures=2,
+        fps=4.0,
+        capture_command="/usr/local/bin/global-witness-capture",
+        runner=runner,
+        now=now,
+        sleep=sleep,
+        monotonic=lambda: next(monotonic_instants),
+    )
+
+    payload = json.loads(watch_index_path.read_text(encoding="utf-8"))
+    assert len(runner_calls) == 2
+    assert payload["capture_count"] == 2
+    assert [capture["trigger_event"]["event"] for capture in payload["captures"]] == [
+        "overlay.fade_out.start",
+        "overlay.fade_out.complete",
+    ]
+    assert "overlay.fade_out.start" in payload["trigger_events"]
+    assert "overlay.fade_out.complete" in payload["trigger_events"]
 
 
 def test_build_evidence_split_keeps_witness_and_lifecycle_roles_separate():

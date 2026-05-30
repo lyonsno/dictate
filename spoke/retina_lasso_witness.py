@@ -38,6 +38,8 @@ CAPTURE_PROFILE_FPS = {
 DEFAULT_TRACE_TRIGGER_EVENTS = {
     "overlay.show.begin",
     "overlay.cancel_dismiss.begin",
+    "overlay.fade_out.start",
+    "overlay.fade_out.complete",
     "overlay.show.retarget_dismiss_to_summon",
 }
 
@@ -895,7 +897,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         dest="trigger_events",
         help=(
             "Trace event that should trigger a short capture burst. "
-            "May be supplied more than once; defaults to show/dismiss/retarget lifecycle edges."
+            "May be supplied more than once; defaults to show/dismiss/fade/retarget lifecycle edges."
         ),
     )
     parser.add_argument(
