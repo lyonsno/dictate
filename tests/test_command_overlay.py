@@ -1310,6 +1310,23 @@ class TestOpticalShellMaterialization:
         assert retarget_progress == pytest.approx(mod.OPTICAL_SLIT_REENTRY_PROGRESS)
         assert retarget_progress < mod._OPTICAL_MATERIALIZATION_BODY_READY
 
+    def test_dismiss_text_collapse_is_bounded_by_visible_body_height(
+        self, mock_pyobjc
+    ):
+        _, mod = _make_overlay(mock_pyobjc)
+
+        text_progress = mod._dismiss_text_collapse_progress_for_body_height(
+            0.8236982521227807,
+            0.014139625425175906,
+        )
+        text_state = mod._dismiss_text_collapse_state(text_progress)
+
+        assert text_progress < mod._OPTICAL_DISMISS_TEXT_BLOB_AT_PROGRESS
+        assert text_state["alpha"] == pytest.approx(0.0)
+        assert text_state["height_frac"] == pytest.approx(
+            mod._OPTICAL_DISMISS_TEXT_BLOB_FRAC
+        )
+
     def test_pre_body_dismiss_retarget_cannot_publish_late_summon_magnification(
         self, mock_pyobjc
     ):

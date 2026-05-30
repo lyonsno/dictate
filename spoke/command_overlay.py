@@ -877,6 +877,22 @@ def _dismiss_text_collapse_state(progress: float) -> dict[str, float]:
     }
 
 
+def _dismiss_text_collapse_progress_for_body_height(
+    progress: float,
+    body_height_frac: float,
+) -> float:
+    """Bound dismiss text publication by the body height actually on screen."""
+    p = _clamp01(progress)
+    hf = _clamp01(body_height_frac)
+    if hf >= 0.99:
+        return p
+    gone_at = _OPTICAL_MATERIALIZATION_PUCKER_OVERLAP_START_PROGRESS
+    min_h = _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC
+    body_t = _clamp01((hf - min_h) / max(1.0 - min_h, 1e-6))
+    body_limited_progress = _lerp(gone_at, 1.0, body_t)
+    return min(p, body_limited_progress)
+
+
 def _dismiss_pucker_amount(progress: float) -> float:
     """Signed radial ringdown: an underdamped pucker after the seam vanishes."""
     p = _clamp01(progress)
@@ -4429,7 +4445,12 @@ class CommandOverlay(NSObject):
                     alpha = min(hf * 5.0, 1.0)
                 scroll.setAlphaValue_(alpha)
         else:
-            text_state = _dismiss_text_collapse_state(hf if progress is None else progress)
+            text_progress = (
+                hf
+                if progress is None
+                else _dismiss_text_collapse_progress_for_body_height(progress, hf)
+            )
+            text_state = _dismiss_text_collapse_state(text_progress)
             visible_w = max(w * text_state["width_frac"], 0.0)
             visible_h = max(h * text_state["height_frac"], 0.0)
             x_offset = (w - visible_w) * 0.5
