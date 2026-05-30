@@ -2478,12 +2478,22 @@ class CommandOverlay(NSObject):
         had_compositor = getattr(self, "_fullscreen_compositor", None) is not None
         self._reset_fill_generation_latches_for_show()
         retarget_seeded_for_show = False
+        defer_retarget_materialization_start = (
+            had_compositor and summon_retarget_progress is not None
+        )
+        if defer_retarget_materialization_start:
+            self._defer_materialization_start_until_after_show_cancel = True
         if had_compositor and summon_retarget_progress is not None:
             retarget_seeded_for_show = self._retarget_fullscreen_compositor_for_show(
                 dismiss_progress=dismiss_reversal_progress,
                 start_progress=summon_retarget_progress,
+                start_deferred=False,
             )
-        self._cancel_all_timers()
+        try:
+            self._cancel_all_timers()
+        finally:
+            if defer_retarget_materialization_start:
+                self._defer_materialization_start_until_after_show_cancel = False
         if retarget_seeded_for_show:
             self._start_deferred_materialization_if_ready()
         if had_compositor and summon_retarget_progress is None:
@@ -4999,6 +5009,8 @@ class CommandOverlay(NSObject):
         self._start_deferred_materialization_if_ready()
 
     def _start_deferred_materialization_if_ready(self) -> None:
+        if getattr(self, "_defer_materialization_start_until_after_show_cancel", False):
+            return
         if not self._optical_fill_ready():
             return
         if getattr(self, "_pending_fill_image_signature", None) is not None:
@@ -5503,6 +5515,7 @@ class CommandOverlay(NSObject):
         *,
         dismiss_progress: float | None = None,
         start_progress: float,
+        start_deferred: bool = True,
     ) -> bool:
         """Reverse an in-flight optical dismiss into a summon without restart."""
         compositor = getattr(self, "_fullscreen_compositor", None)
@@ -5603,7 +5616,8 @@ class CommandOverlay(NSObject):
             self._apply_surface_theme()
         finally:
             self._suppress_stale_fill_until_ready = suppress_stale_fill
-        self._start_deferred_materialization_if_ready()
+        if start_deferred:
+            self._start_deferred_materialization_if_ready()
         return True
 
     def _start_fullscreen_compositor(self):

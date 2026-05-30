@@ -1121,6 +1121,53 @@ class TestOpticalShellMaterialization:
         assert event_names.index("compositor_seed") < event_names.index("mask_reset")
         assert event_names.index("cancel_all") < event_names.index("materialize")
 
+    def test_pucker_tail_retarget_does_not_start_materialization_before_cancel_all(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "initial_brightness": 0.35,
+            "gpu_material_brightness": 0.35,
+        }
+        events = []
+        compositor = MagicMock()
+        compositor.update_shell_config.side_effect = (
+            lambda config: events.append(("compositor_seed", dict(config))) or True
+        )
+        overlay._fullscreen_compositor = compositor
+        overlay._visible = False
+        overlay._pucker_tail_timer = MagicMock()
+        overlay._materialization_timer = None
+        overlay._materialization_progress = 0.0
+        overlay._materialization_final_shell_config = dict(shell_config)
+        overlay._display_local_optical_shell_config = MagicMock(return_value=shell_config)
+        overlay._start_materialization_animation = MagicMock(
+            side_effect=lambda *_args, **kwargs: events.append(
+                ("materialize", kwargs.get("start_progress"))
+            )
+        )
+        original_cancel_all = overlay._cancel_all_timers
+        overlay._cancel_all_timers = MagicMock(
+            side_effect=lambda: events.append(("cancel_all", None)) or original_cancel_all()
+        )
+
+        overlay.show(
+            initial_utterance="ask again",
+            initial_response="answer again",
+            start_thinking_timer=False,
+        )
+
+        event_names = [event[0] for event in events]
+        assert event_names.index("compositor_seed") < event_names.index("cancel_all")
+        assert event_names.index("cancel_all") < event_names.index("materialize")
+        assert overlay._pucker_tail_timer is None
+
     def test_retarget_seed_publishes_before_material_rebuild_work(
         self, mock_pyobjc
     ):
