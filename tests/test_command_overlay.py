@@ -1168,6 +1168,49 @@ class TestOpticalShellMaterialization:
         assert event_names.index("cancel_all") < event_names.index("materialize")
         assert overlay._pucker_tail_timer is None
 
+    def test_layout_during_deferred_retarget_preserves_materialized_shell(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        base_shell = {
+            "content_width_points": 2480.0,
+            "content_height_points": 840.0,
+            "corner_radius_points": 140.0,
+            "core_magnification": 14.0,
+        }
+        compositor = MagicMock()
+        overlay._fullscreen_compositor = compositor
+        overlay._materialization_timer = None
+        overlay._materialization_progress = 0.55
+        overlay._deferred_materialization_shell_config = dict(base_shell)
+        overlay._display_local_optical_shell_config = MagicMock(
+            return_value=dict(base_shell)
+        )
+        overlay._current_optical_shell_config = MagicMock(return_value=dict(base_shell))
+        overlay._sync_narrator_visibility = MagicMock()
+        overlay._apply_ridge_masks = MagicMock()
+        overlay._update_backdrop_capture_geometry = MagicMock()
+        overlay._refresh_backdrop_snapshot = MagicMock()
+        overlay._reset_text_geometry = MagicMock()
+
+        layout = overlay._text_view.layoutManager.return_value
+        layout.usedRectForTextContainer_.return_value = _make_rect(
+            0.0,
+            0.0,
+            528.0,
+            280.0,
+        )
+        overlay._text_view.string.return_value.length.return_value = 0
+
+        overlay._update_layout()
+
+        published = compositor.update_shell_config.call_args.args[0]
+        expected = mod._materialized_optical_shell_config(base_shell, 0.55)
+        assert published["content_height_points"] == pytest.approx(
+            expected["content_height_points"]
+        )
+        assert published["content_height_points"] < base_shell["content_height_points"]
+
     def test_retarget_seed_publishes_before_material_rebuild_work(
         self, mock_pyobjc
     ):

@@ -6142,6 +6142,18 @@ class CommandOverlay(NSObject):
         if container is not None and hasattr(container, "setContainerSize_"):
             container.setContainerSize_((_OVERLAY_WIDTH - 24, 1.0e7))
 
+    def _layout_should_preserve_materialization_shell(self) -> bool:
+        if getattr(self, "_materialization_timer", None) is not None:
+            return True
+        if getattr(self, "_deferred_materialization_shell_config", None) is not None:
+            return True
+        if getattr(self, "_optical_lifecycle_trajectory", None) in {
+            "summoning",
+            "dismissing",
+        }:
+            return True
+        return False
+
     def _update_layout(self) -> None:
         """Resize window and scroll to bottom after text change."""
         try:
@@ -6180,7 +6192,7 @@ class CommandOverlay(NSObject):
                 display_shell_config = self._display_local_optical_shell_config()
                 if compositor is not None and display_shell_config is not None:
                     self._materialization_final_shell_config = dict(display_shell_config)
-                    if getattr(self, "_materialization_timer", None) is not None:
+                    if self._layout_should_preserve_materialization_shell():
                         display_shell_config = _materialized_optical_shell_config(
                             display_shell_config,
                             getattr(self, "_materialization_progress", 1.0),
