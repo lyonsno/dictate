@@ -10,7 +10,7 @@ export SPOKE_BACKDROP_FRAME_TIMING="1"
 # stress window. The camera starts immediately, but this smoke surface is
 # manual: it must not post synthetic chords into the operator's active app.
 export SPOKE_RETINA_LASSO_AUTO_WITNESS="1"
-export SPOKE_RETINA_LASSO_WATCH_TRACE="0"
+export SPOKE_RETINA_LASSO_WATCH_TRACE="1"
 export SPOKE_RETINA_LASSO_WATCH_TIMEOUT_SECONDS="7200"
 export SPOKE_RETINA_LASSO_EVENT_CAPTURE_DURATION_SECONDS="1.5"
 export SPOKE_RETINA_LASSO_WATCH_MAX_CAPTURES="96"

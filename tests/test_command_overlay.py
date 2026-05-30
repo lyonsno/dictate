@@ -575,7 +575,7 @@ class TestOpticalShellMaterialization:
         assert overlay._deferred_materialization_shell_config is None
 
     def test_optical_dismiss_uses_stretched_faster_reverse_timeline(
-        self, mock_pyobjc
+        self, mock_pyobjc, monkeypatch
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
         shell_config = {
@@ -589,6 +589,13 @@ class TestOpticalShellMaterialization:
         overlay._fullscreen_compositor = MagicMock()
         overlay._display_local_optical_shell_config = MagicMock(return_value=shell_config)
         overlay._start_materialization_animation = MagicMock()
+        traces = []
+        monkeypatch.setattr(mod.time, "perf_counter", lambda: 123.0)
+        monkeypatch.setattr(
+            mod,
+            "record_command_overlay_trace",
+            lambda event, **fields: traces.append((event, fields)),
+        )
 
         def _schedule(interval, _target, selector, _userinfo, _repeats):
             scheduled.append((interval, selector))
@@ -631,6 +638,12 @@ class TestOpticalShellMaterialization:
             ),
             "fadeStep:",
         )
+        fade_start = next(fields for event, fields in traces if event == "overlay.fade_out.start")
+        assert fade_start["fade_duration"] == pytest.approx(
+            mod._OPTICAL_MATERIALIZATION_DISMISS_TOTAL_S
+        )
+        assert fade_start["has_compositor"] is True
+        assert fade_start["has_shell_config"] is True
 
     def test_toggle_cancel_dismiss_uses_optical_reverse_when_compositor_is_active(
         self, mock_pyobjc
@@ -1522,16 +1535,24 @@ class TestOpticalShellMaterialization:
         overlay._window.setAlphaValue_.assert_called_with(1.0)
 
     def test_optical_dismiss_shutdown_does_not_reveal_local_rectangular_shell(
-        self, mock_pyobjc
+        self, mock_pyobjc, monkeypatch
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
         events = []
+        traces = []
         compositor = MagicMock()
         compositor.stop.side_effect = lambda: events.append("compositor-stop")
         overlay._fullscreen_compositor = compositor
         overlay._fade_direction = -1
         overlay._fade_from = 1.0
         overlay._fade_step = mod._FADE_STEPS - 1
+        overlay._fade_started_at = 10.0
+        monkeypatch.setattr(mod.time, "perf_counter", lambda: 10.25)
+        monkeypatch.setattr(
+            mod,
+            "record_command_overlay_trace",
+            lambda event, **fields: traces.append((event, fields)),
+        )
         overlay._backdrop_renderer.stop_live_stream.side_effect = (
             lambda: events.append("live-stream-stop")
         )
@@ -1548,6 +1569,9 @@ class TestOpticalShellMaterialization:
         assert ("backdrop-hidden", False) not in events
         assert "surface-theme" not in events
         assert events.index("compositor-stop") < events.index("order-out")
+        fade_complete = next(fields for event, fields in traces if event == "overlay.fade_out.complete")
+        assert fade_complete["elapsed"] == pytest.approx(0.25)
+        assert fade_complete["had_compositor"] is True
 
     def test_pulse_does_not_override_fill_opacity_during_materialization(
         self, mock_pyobjc

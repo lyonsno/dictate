@@ -1494,6 +1494,7 @@ class CommandOverlay(NSObject):
         self._fade_step = 0
         self._fade_from = 0.0
         self._fade_direction = 0
+        self._fade_started_at = 0.0
         self._cancel_timer_anim: NSTimer | None = None
         self._cancel_elapsed = 0.0
         self._cancel_phase = ""
@@ -3256,6 +3257,7 @@ class CommandOverlay(NSObject):
                 ):
                     self._start_pulse_timer()
             elif self._fade_direction == -1:
+                had_compositor = getattr(self, "_fullscreen_compositor", None) is not None
                 self._window.setAlphaValue_(0.0)
                 self._reset_backdrop_layer()
                 if self._backdrop_renderer is not None and hasattr(self._backdrop_renderer, "stop_live_stream"):
@@ -3263,6 +3265,14 @@ class CommandOverlay(NSObject):
                 self._stop_fullscreen_compositor(reveal_local_shell=False)
                 self._window.orderOut_(None)
                 self._cancel_pulse()  # now kill the pulse
+                started_at = float(getattr(self, "_fade_started_at", 0.0) or 0.0)
+                elapsed = time.perf_counter() - started_at if started_at > 0.0 else None
+                record_command_overlay_trace(
+                    "overlay.fade_out.complete",
+                    elapsed=elapsed,
+                    fade_steps=self._fade_step,
+                    had_compositor=had_compositor,
+                )
             else:
                 self._window.setAlphaValue_(1.0)
 
@@ -3741,7 +3751,17 @@ class CommandOverlay(NSObject):
         self._fade_step = 0
         self._fade_from = self._window.alphaValue() if self._window else 1.0
         self._fade_direction = -1
+        self._fade_started_at = time.perf_counter()
         interval = fade_duration / _FADE_STEPS
+        record_command_overlay_trace(
+            "overlay.fade_out.start",
+            fade_duration=fade_duration,
+            fade_steps=_FADE_STEPS,
+            fade_interval=interval,
+            fade_from=self._fade_from,
+            has_compositor=compositor is not None,
+            has_shell_config=shell_config is not None,
+        )
         self._fade_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             interval, self, "fadeStep:", None, True
         )
