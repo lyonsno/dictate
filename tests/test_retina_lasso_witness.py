@@ -232,6 +232,7 @@ def test_wait_for_open_ready_trace_returns_ready_event_after_offset(tmp_path):
                     "event": "overlay.visual_ready.push",
                     "presentation_text_state": "hidden",
                     "presentation_body_state": "body_ready",
+                    "presentation_generation": 2,
                 }
             )
             + "\n"
@@ -240,9 +241,21 @@ def test_wait_for_open_ready_trace_returns_ready_event_after_offset(tmp_path):
             json.dumps(
                 {
                     "timestamp": "2026-05-22T00:00:02Z",
+                    "event": "overlay.show.begin",
+                    "presentation_requested_state": "opening",
+                    "presentation_generation": 2,
+                }
+            )
+            + "\n"
+        )
+        handle.write(
+            json.dumps(
+                {
+                    "timestamp": "2026-05-22T00:00:03Z",
                     "event": "overlay.visual_ready.push",
                     "presentation_text_state": "visible",
                     "presentation_body_state": "body_ready",
+                    "presentation_generation": 2,
                 }
             )
             + "\n"
@@ -260,7 +273,74 @@ def test_wait_for_open_ready_trace_returns_ready_event_after_offset(tmp_path):
 
     assert new_offset == trace_path.stat().st_size
     assert event is not None
-    assert event["timestamp"] == "2026-05-22T00:00:02Z"
+    assert event["timestamp"] == "2026-05-22T00:00:03Z"
+
+
+def test_wait_for_open_ready_trace_ignores_stale_and_mismatched_ready_events(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text("", encoding="utf-8")
+    with trace_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "timestamp": "2026-05-22T00:00:01Z",
+                    "event": "overlay.visual_ready.push",
+                    "presentation_text_state": "visible",
+                    "presentation_body_state": "body_ready",
+                    "presentation_generation": 1,
+                }
+            )
+            + "\n"
+        )
+        handle.write(
+            json.dumps(
+                {
+                    "timestamp": "2026-05-22T00:00:02Z",
+                    "event": "overlay.show.begin",
+                    "presentation_requested_state": "opening",
+                    "presentation_generation": 2,
+                }
+            )
+            + "\n"
+        )
+        handle.write(
+            json.dumps(
+                {
+                    "timestamp": "2026-05-22T00:00:03Z",
+                    "event": "overlay.visual_ready.push",
+                    "presentation_text_state": "visible",
+                    "presentation_body_state": "body_ready",
+                    "presentation_generation": 1,
+                }
+            )
+            + "\n"
+        )
+        handle.write(
+            json.dumps(
+                {
+                    "timestamp": "2026-05-22T00:00:04Z",
+                    "event": "overlay.visual_ready.push",
+                    "presentation_text_state": "visible",
+                    "presentation_body_state": "body_ready",
+                    "presentation_generation": 2,
+                }
+            )
+            + "\n"
+        )
+
+    calls = iter([0.0, 0.01])
+    new_offset, event = wait_for_open_ready_trace(
+        trace_path,
+        offset=0,
+        timeout_seconds=1.0,
+        poll_interval_seconds=0.01,
+        monotonic=lambda: next(calls),
+        sleep=lambda _seconds: None,
+    )
+
+    assert new_offset == trace_path.stat().st_size
+    assert event is not None
+    assert event["timestamp"] == "2026-05-22T00:00:04Z"
 
 
 def test_drive_retarget_during_dismiss_pattern_waits_for_open_ready_trace(tmp_path):
@@ -274,9 +354,12 @@ def test_drive_retarget_during_dismiss_pattern_waits_for_open_ready_trace(tmp_pa
     def ready_waiter(path, **kwargs):
         assert path == trace_path
         calls.append(("wait_ready", kwargs["offset"]))
-        return kwargs["offset"] + 10, {"event": "overlay.visual_ready.push"}
+        return kwargs["offset"] + 10, {
+            "event": "overlay.visual_ready.push",
+            "presentation_generation": kwargs["offset"] + 1,
+        }
 
-    drive_retarget_during_dismiss_pattern(
+    results = drive_retarget_during_dismiss_pattern(
         repeats=1,
         open_dwell_seconds=0.7,
         dismiss_retarget_delay_seconds=0.08,
@@ -298,6 +381,10 @@ def test_drive_retarget_during_dismiss_pattern_waits_for_open_ready_trace(tmp_pa
         ("wait_ready", 10),
         ("sleep", 0.6),
         "toggle",
+    ]
+    assert results == [
+        {"cycle": 1, "phase": "open", "status": "ready", "presentation_generation": 1},
+        {"cycle": 1, "phase": "reopen", "status": "ready", "presentation_generation": 11},
     ]
 
 
@@ -342,6 +429,24 @@ def test_read_trace_events_from_offset_returns_only_new_valid_jsonl(tmp_path):
         handle.write(json.dumps({"timestamp": "2026-05-22T00:00:01Z", "event": "overlay.show.begin"}) + "\n")
 
     new_offset, events = read_trace_events_from_offset(trace_path, offset=offset)
+
+    assert new_offset == trace_path.stat().st_size
+    assert [event["event"] for event in events] == ["overlay.show.begin"]
+
+
+def test_read_trace_events_from_offset_resets_after_trace_truncation(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text(
+        json.dumps({"timestamp": "2026-05-22T00:00:00Z", "event": "before", "padding": "x" * 200}) + "\n",
+        encoding="utf-8",
+    )
+    stale_offset = trace_path.stat().st_size
+    trace_path.write_text(
+        json.dumps({"timestamp": "2026-05-22T00:00:01Z", "event": "overlay.show.begin"}) + "\n",
+        encoding="utf-8",
+    )
+
+    new_offset, events = read_trace_events_from_offset(trace_path, offset=stale_offset)
 
     assert new_offset == trace_path.stat().st_size
     assert [event["event"] for event in events] == ["overlay.show.begin"]
@@ -456,6 +561,7 @@ def test_autonomous_retarget_witness_starts_capture_before_stimulus(tmp_path):
 
     def retarget_driver(**kwargs):
         calls.append(("stimulus_start", kwargs["repeats"]))
+        return [{"cycle": 1, "phase": "open", "status": "ready", "presentation_generation": 7}]
 
     index_path = run_autonomous_hammer_witness(
         trace_path=trace_path,
@@ -479,8 +585,12 @@ def test_autonomous_retarget_witness_starts_capture_before_stimulus(tmp_path):
     assert payload["stimulus"]["mode"] == "retarget-during-dismiss"
     assert payload["stimulus"]["repeats"] == 2
     assert payload["stimulus"]["open_ready_gate"] == (
-        "overlay.visual_ready.push with visible text and body_ready"
+        "fresh overlay.show.begin followed by overlay.visual_ready.push "
+        "with matching generation, visible text, and body_ready"
     )
+    assert payload["stimulus"]["retarget_gate_results"] == [
+        {"cycle": 1, "phase": "open", "status": "ready", "presentation_generation": 7}
+    ]
     assert payload["frame_count"] == 1
     assert [event["event"] for event in payload["trace_events"]] == [
         "overlay.cancel_dismiss.begin",

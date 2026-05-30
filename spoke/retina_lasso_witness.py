@@ -181,6 +181,8 @@ def read_trace_events_from_offset(
     path = Path(trace_path).expanduser()
     if not path.exists():
         return 0, []
+    if offset > path.stat().st_size:
+        offset = 0
     events: list[dict[str, Any]] = []
     with path.open("rb") as handle:
         handle.seek(offset)
@@ -316,6 +318,15 @@ def trace_event_is_open_ready(event: dict[str, Any]) -> bool:
     )
 
 
+def _trace_event_open_generation(event: dict[str, Any]) -> int | None:
+    if event.get("event") != "overlay.show.begin":
+        return None
+    if event.get("presentation_requested_state") != "opening":
+        return None
+    generation = event.get("presentation_generation")
+    return generation if isinstance(generation, int) else None
+
+
 def wait_for_open_ready_trace(
     trace_path: str | Path,
     *,
@@ -325,7 +336,7 @@ def wait_for_open_ready_trace(
     monotonic: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> tuple[int, dict[str, Any] | None]:
-    """Wait until the trace certifies a human-publishable open state."""
+    """Wait until a fresh show transition reaches human-publishable open state."""
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
     if poll_interval_seconds <= 0:
@@ -333,15 +344,32 @@ def wait_for_open_ready_trace(
 
     deadline = monotonic() + timeout_seconds
     current_offset = offset
+    open_generation: int | None = None
     while monotonic() < deadline:
         current_offset, events = read_trace_events_from_offset(trace_path, offset=current_offset)
         for event in events:
-            if trace_event_is_open_ready(event):
+            generation = _trace_event_open_generation(event)
+            if generation is not None:
+                open_generation = generation
+                continue
+            if (
+                open_generation is not None
+                and event.get("presentation_generation") == open_generation
+                and trace_event_is_open_ready(event)
+            ):
                 return current_offset, event
         sleep(poll_interval_seconds)
     current_offset, events = read_trace_events_from_offset(trace_path, offset=current_offset)
     for event in events:
-        if trace_event_is_open_ready(event):
+        generation = _trace_event_open_generation(event)
+        if generation is not None:
+            open_generation = generation
+            continue
+        if (
+            open_generation is not None
+            and event.get("presentation_generation") == open_generation
+            and trace_event_is_open_ready(event)
+        ):
             return current_offset, event
     return current_offset, None
 
@@ -360,36 +388,60 @@ def drive_retarget_during_dismiss_pattern(
     toggle_chord: Callable[..., None] = post_space_enter_toggle_chord,
     sleep: Callable[[float], None] = time.sleep,
     ready_waiter: Callable[..., tuple[int, dict[str, Any] | None]] = wait_for_open_ready_trace,
-) -> None:
+) -> list[dict[str, Any]]:
     if repeats < 0:
         raise ValueError("repeats must be non-negative")
     trace_offset = Path(trace_path).expanduser().stat().st_size if trace_path and Path(trace_path).expanduser().exists() else 0
+    results: list[dict[str, Any]] = []
     for index in range(repeats):
         toggle_chord(key_pause_seconds=key_pause_seconds)
         if trace_path is not None:
-            trace_offset, _event = ready_waiter(
+            trace_offset, event = ready_waiter(
                 trace_path,
                 offset=trace_offset,
                 timeout_seconds=open_ready_timeout_seconds,
                 poll_interval_seconds=open_ready_poll_interval_seconds,
                 sleep=sleep,
             )
+            results.append(
+                {
+                    "cycle": index + 1,
+                    "phase": "open",
+                    "status": "ready" if event is not None else "timeout",
+                    "presentation_generation": event.get("presentation_generation") if event else None,
+                }
+            )
+            if event is None:
+                toggle_chord(key_pause_seconds=key_pause_seconds)
+                if index < repeats - 1:
+                    sleep(cycle_pause_seconds)
+                continue
         sleep(open_dwell_seconds)
         toggle_chord(key_pause_seconds=key_pause_seconds)
         sleep(dismiss_retarget_delay_seconds)
         toggle_chord(key_pause_seconds=key_pause_seconds)
         if trace_path is not None:
-            trace_offset, _event = ready_waiter(
+            trace_offset, event = ready_waiter(
                 trace_path,
                 offset=trace_offset,
                 timeout_seconds=open_ready_timeout_seconds,
                 poll_interval_seconds=open_ready_poll_interval_seconds,
                 sleep=sleep,
             )
-        sleep(reopen_dwell_seconds)
+            results.append(
+                {
+                    "cycle": index + 1,
+                    "phase": "reopen",
+                    "status": "ready" if event is not None else "timeout",
+                    "presentation_generation": event.get("presentation_generation") if event else None,
+                }
+            )
+        if trace_path is None or event is not None:
+            sleep(reopen_dwell_seconds)
         toggle_chord(key_pause_seconds=key_pause_seconds)
         if index < repeats - 1:
             sleep(cycle_pause_seconds)
+    return results
 
 
 def build_evidence_split(
@@ -563,7 +615,7 @@ def run_autonomous_hammer_witness(
     try:
         sleep(pre_hammer_delay_seconds)
         if retarget_during_dismiss_repeats:
-            retarget_driver(
+            retarget_results = retarget_driver(
                 repeats=retarget_during_dismiss_repeats,
                 open_dwell_seconds=open_dwell_seconds,
                 dismiss_retarget_delay_seconds=dismiss_retarget_delay_seconds,
@@ -582,7 +634,11 @@ def run_autonomous_hammer_witness(
                 "cycle_pause_seconds": cycle_pause_seconds,
                 "open_ready_timeout_seconds": open_ready_timeout_seconds,
                 "open_ready_poll_interval_seconds": open_ready_poll_interval_seconds,
-                "open_ready_gate": "overlay.visual_ready.push with visible text and body_ready",
+                "open_ready_gate": (
+                    "fresh overlay.show.begin followed by overlay.visual_ready.push "
+                    "with matching generation, visible text, and body_ready"
+                ),
+                "retarget_gate_results": retarget_results or [],
             }
         else:
             hammer_driver(
