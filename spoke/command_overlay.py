@@ -2475,9 +2475,15 @@ class CommandOverlay(NSObject):
             retarget_decision = retarget_progress_for_dismiss(dismiss_reversal_progress)
             if retarget_decision.should_retarget:
                 summon_retarget_progress = retarget_decision.start_progress
+        had_compositor = getattr(self, "_fullscreen_compositor", None) is not None
         self._cancel_all_timers()
         self._reset_fill_generation_latches_for_show()
-        had_compositor = getattr(self, "_fullscreen_compositor", None) is not None
+        retarget_seeded_for_show = False
+        if had_compositor and summon_retarget_progress is not None:
+            retarget_seeded_for_show = self._retarget_fullscreen_compositor_for_show(
+                dismiss_progress=dismiss_reversal_progress,
+                start_progress=summon_retarget_progress,
+            )
         if had_compositor and summon_retarget_progress is None:
             self._stop_fullscreen_compositor(reveal_local_shell=False)
         self._visible = True
@@ -2566,10 +2572,11 @@ class CommandOverlay(NSObject):
                 summon_retarget_progress is not None
                 and getattr(self, "_fullscreen_compositor", None) is not None
             ):
-                self._retarget_fullscreen_compositor_for_show(
-                    dismiss_progress=dismiss_reversal_progress,
-                    start_progress=summon_retarget_progress,
-                )
+                if not retarget_seeded_for_show:
+                    self._retarget_fullscreen_compositor_for_show(
+                        dismiss_progress=dismiss_reversal_progress,
+                        start_progress=summon_retarget_progress,
+                    )
             else:
                 self._start_fullscreen_compositor()
             if getattr(self, "_fullscreen_compositor", None) is None:
@@ -5494,14 +5501,14 @@ class CommandOverlay(NSObject):
         *,
         dismiss_progress: float | None = None,
         start_progress: float,
-    ) -> None:
+    ) -> bool:
         """Reverse an in-flight optical dismiss into a summon without restart."""
         compositor = getattr(self, "_fullscreen_compositor", None)
         if compositor is None:
-            return
+            return False
         final_shell_config = self._display_local_optical_shell_config()
         if final_shell_config is None:
-            return
+            return False
         start_progress = _clamp01(float(start_progress))
         generation = self._current_optical_presentation_generation()
         if generation is not None:
@@ -5559,7 +5566,17 @@ class CommandOverlay(NSObject):
             config_identity = optical_presentation_config_identity(start_shell_config)
             published = compositor.update_shell_config(start_shell_config)
             if published is False:
-                return
+                return False
+            record_command_overlay_trace(
+                "overlay.show.retarget_seeded",
+                dismiss_progress=dismiss_progress,
+                start_progress=start_progress,
+                presentation_generation=generation,
+                presentation_config_identity=config_identity,
+                shell_width=start_shell_config.get("content_width_points"),
+                shell_height=start_shell_config.get("content_height_points"),
+                shell_magnification=start_shell_config.get("core_magnification"),
+            )
             if generation is not None:
                 self._optical_compositor_config_generation = generation
                 self._optical_compositor_config_identity = config_identity
@@ -5573,6 +5590,7 @@ class CommandOverlay(NSObject):
                     pass
         except Exception:
             logger.debug("Failed to seed retargeted command materialization", exc_info=True)
+            return False
         try:
             content_frame = self._content_view.frame()
             self._apply_ridge_masks(
@@ -5583,6 +5601,7 @@ class CommandOverlay(NSObject):
         finally:
             self._suppress_stale_fill_until_ready = suppress_stale_fill
         self._start_deferred_materialization_if_ready()
+        return True
 
     def _start_fullscreen_compositor(self):
         """Start the full-screen compositor for zero-seam optical shell."""
