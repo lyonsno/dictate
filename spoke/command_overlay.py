@@ -2476,7 +2476,6 @@ class CommandOverlay(NSObject):
             if retarget_decision.should_retarget:
                 summon_retarget_progress = retarget_decision.start_progress
         had_compositor = getattr(self, "_fullscreen_compositor", None) is not None
-        self._cancel_all_timers()
         self._reset_fill_generation_latches_for_show()
         retarget_seeded_for_show = False
         if had_compositor and summon_retarget_progress is not None:
@@ -2484,6 +2483,9 @@ class CommandOverlay(NSObject):
                 dismiss_progress=dismiss_reversal_progress,
                 start_progress=summon_retarget_progress,
             )
+        self._cancel_all_timers()
+        if retarget_seeded_for_show:
+            self._start_deferred_materialization_if_ready()
         if had_compositor and summon_retarget_progress is None:
             self._stop_fullscreen_compositor(reveal_local_shell=False)
         self._visible = True
@@ -5523,41 +5525,12 @@ class CommandOverlay(NSObject):
             start_progress=start_progress,
             presentation_generation=generation,
         )
-        self._cancel_brightness_sampling()
-        self._brightness_target = final_shell_config["initial_brightness"]
-        self._brightness_sample_tick = -_BRIGHTNESS_COMPOSITOR_STARTUP_GRACE_TICKS
-        self._cancel_backdrop_refresh()
-        if self._backdrop_layer is not None:
-            self._backdrop_layer.setHidden_(True)
-        old_dl = getattr(self, "_metal_display_link_renderer", None)
-        if old_dl is not None:
-            try:
-                old_dl.stop()
-            except Exception:
-                pass
-            self._metal_display_link_renderer = None
         self._sdf_appearance_b = -1.0
         self._fill_image_brightness = -1.0
         self._materialization_progress = start_progress
         self._deferred_materialization_shell_config = dict(final_shell_config)
         self._deferred_materialization_start_progress = start_progress
         self._enable_text_punchthrough(False)
-        suppress_stale_fill = getattr(
-            self,
-            "_suppress_stale_fill_until_ready",
-            False,
-        )
-        self._suppress_stale_fill_until_ready = True
-        sampled_brightness = self._seed_brightness_from_optical_compositor()
-        if sampled_brightness is not None:
-            final_shell_config["initial_brightness"] = sampled_brightness
-            final_shell_config["gpu_material_brightness"] = sampled_brightness
-            self._deferred_materialization_shell_config[
-                "initial_brightness"
-            ] = sampled_brightness
-            self._deferred_materialization_shell_config[
-                "gpu_material_brightness"
-            ] = sampled_brightness
         try:
             start_shell_config = _materialized_optical_shell_config(
                 final_shell_config,
@@ -5591,6 +5564,36 @@ class CommandOverlay(NSObject):
         except Exception:
             logger.debug("Failed to seed retargeted command materialization", exc_info=True)
             return False
+
+        self._cancel_brightness_sampling()
+        self._brightness_target = final_shell_config["initial_brightness"]
+        self._brightness_sample_tick = -_BRIGHTNESS_COMPOSITOR_STARTUP_GRACE_TICKS
+        self._cancel_backdrop_refresh()
+        if self._backdrop_layer is not None:
+            self._backdrop_layer.setHidden_(True)
+        old_dl = getattr(self, "_metal_display_link_renderer", None)
+        if old_dl is not None:
+            try:
+                old_dl.stop()
+            except Exception:
+                pass
+            self._metal_display_link_renderer = None
+        suppress_stale_fill = getattr(
+            self,
+            "_suppress_stale_fill_until_ready",
+            False,
+        )
+        self._suppress_stale_fill_until_ready = True
+        sampled_brightness = self._seed_brightness_from_optical_compositor()
+        if sampled_brightness is not None:
+            final_shell_config["initial_brightness"] = sampled_brightness
+            final_shell_config["gpu_material_brightness"] = sampled_brightness
+            self._deferred_materialization_shell_config[
+                "initial_brightness"
+            ] = sampled_brightness
+            self._deferred_materialization_shell_config[
+                "gpu_material_brightness"
+            ] = sampled_brightness
         try:
             content_frame = self._content_view.frame()
             self._apply_ridge_masks(

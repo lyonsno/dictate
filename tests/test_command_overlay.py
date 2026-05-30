@@ -1071,6 +1071,111 @@ class TestOpticalShellMaterialization:
         assert seed_config["content_width_points"] < shell_config["content_width_points"]
         assert seed_config["content_height_points"] < shell_config["content_height_points"]
 
+    def test_dismiss_retarget_seeds_compositor_before_timer_cancellation(
+        self, mock_pyobjc, monkeypatch
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        monkeypatch.setattr(mod, "_COMMAND_BACKDROP_OPTICAL_SHELL_ENABLED", True)
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "initial_brightness": 0.35,
+            "gpu_material_brightness": 0.35,
+        }
+        events = []
+        compositor = MagicMock()
+        compositor.update_shell_config.side_effect = (
+            lambda config: events.append(("compositor_seed", dict(config))) or True
+        )
+        overlay._fullscreen_compositor = compositor
+        overlay._visible = False
+        overlay._materialization_timer = MagicMock()
+        overlay._materialization_direction = -1
+        overlay._materialization_progress = 0.47
+        overlay._materialization_final_shell_config = dict(shell_config)
+        overlay._display_local_optical_shell_config = MagicMock(return_value=shell_config)
+        overlay._update_scroll_materialization_mask = MagicMock(
+            side_effect=lambda *_args, **_kwargs: events.append(("mask_reset", None))
+        )
+        overlay._start_materialization_animation = MagicMock(
+            side_effect=lambda *_args, **kwargs: events.append(
+                ("materialize", kwargs.get("start_progress"))
+            )
+        )
+        original_cancel_all = overlay._cancel_all_timers
+        overlay._cancel_all_timers = MagicMock(
+            side_effect=lambda: events.append(("cancel_all", None)) or original_cancel_all()
+        )
+
+        overlay.show(
+            initial_utterance="ask again",
+            initial_response="answer again",
+            start_thinking_timer=False,
+        )
+
+        event_names = [event[0] for event in events]
+        assert event_names.index("compositor_seed") < event_names.index("cancel_all")
+        assert event_names.index("compositor_seed") < event_names.index("mask_reset")
+        assert event_names.index("cancel_all") < event_names.index("materialize")
+
+    def test_retarget_seed_publishes_before_material_rebuild_work(
+        self, mock_pyobjc
+    ):
+        overlay, _ = _make_overlay(mock_pyobjc)
+        shell_config = {
+            "center_x": 640.0,
+            "center_y": 1160.0,
+            "content_width_points": 1200.0,
+            "content_height_points": 208.0,
+            "corner_radius_points": 32.0,
+            "initial_brightness": 0.35,
+            "gpu_material_brightness": 0.35,
+        }
+        events = []
+        compositor = MagicMock()
+        compositor.update_shell_config.side_effect = (
+            lambda config: events.append(("compositor_seed", dict(config))) or True
+        )
+        overlay._fullscreen_compositor = compositor
+        overlay._display_local_optical_shell_config = MagicMock(return_value=shell_config)
+        overlay._cancel_brightness_sampling = MagicMock(
+            side_effect=lambda: events.append(("cancel_brightness", None))
+        )
+        overlay._cancel_backdrop_refresh = MagicMock(
+            side_effect=lambda: events.append(("cancel_backdrop", None))
+        )
+        overlay._seed_brightness_from_optical_compositor = MagicMock(
+            side_effect=lambda: events.append(("brightness_sample", None)) or 0.42
+        )
+        overlay._apply_ridge_masks = MagicMock(
+            side_effect=lambda *_args, **_kwargs: events.append(("ridge_masks", None))
+        )
+        overlay._apply_surface_theme = MagicMock(
+            side_effect=lambda: events.append(("surface_theme", None))
+        )
+        overlay._start_deferred_materialization_if_ready = MagicMock(
+            side_effect=lambda: events.append(("start_deferred", None))
+        )
+
+        assert overlay._retarget_fullscreen_compositor_for_show(
+            dismiss_progress=0.47,
+            start_progress=0.04,
+        )
+
+        event_names = [event[0] for event in events]
+        assert event_names[0] == "compositor_seed"
+        for slow_event in (
+            "cancel_brightness",
+            "cancel_backdrop",
+            "brightness_sample",
+            "ridge_masks",
+            "surface_theme",
+        ):
+            assert event_names.index("compositor_seed") < event_names.index(slow_event)
+
     def test_body_ready_dismiss_retarget_is_capped_below_full_open_flash(
         self, mock_pyobjc
     ):
