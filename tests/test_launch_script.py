@@ -402,6 +402,8 @@ class TestLauncherRetinaLassoWitness:
         assert "SPOKE_RETINA_LASSO_HAMMER_TOGGLES" in text
         assert "--retarget-during-dismiss-repeats" in text
         assert "--pre-hammer-delay" in text
+        assert "SPOKE_RETINA_LASSO_OPEN_READY_TIMEOUT_SECONDS" in text
+        assert "--open-ready-timeout" in text
 
     @pytest.mark.parametrize("script_text", [_main_script_text, _target_script_text])
     def test_capture_first_witness_suppresses_post_trigger_watch_mode(self, script_text):

@@ -14,7 +14,9 @@ from spoke.retina_lasso_witness import (
     drive_retarget_during_dismiss_pattern,
     read_trace_events_from_offset,
     run_autonomous_hammer_witness,
+    trace_event_is_open_ready,
     trace_event_output_slug,
+    wait_for_open_ready_trace,
     write_witness_index,
 )
 
@@ -181,6 +183,122 @@ def test_drive_retarget_during_dismiss_pattern_hits_ordered_edges():
 
     assert calls == [{"key_pause_seconds": 0.01}] * 8
     assert sleeps == [0.7, 0.08, 0.6, 0.2, 0.7, 0.08, 0.6]
+
+
+def test_trace_event_is_open_ready_requires_visible_text_and_ready_body():
+    assert trace_event_is_open_ready(
+        {
+            "event": "overlay.visual_ready.push",
+            "presentation_text_state": "visible",
+            "presentation_body_state": "body_ready",
+        }
+    )
+    assert not trace_event_is_open_ready(
+        {
+            "event": "overlay.visual_ready.push",
+            "presentation_text_state": "hidden",
+            "presentation_body_state": "body_ready",
+        }
+    )
+    assert not trace_event_is_open_ready(
+        {
+            "event": "overlay.visual_ready.push",
+            "presentation_text_state": "visible",
+            "presentation_body_state": "materializing",
+        }
+    )
+
+
+def test_wait_for_open_ready_trace_returns_ready_event_after_offset(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-05-22T00:00:00Z",
+                "event": "overlay.visual_ready.push",
+                "presentation_text_state": "visible",
+                "presentation_body_state": "body_ready",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    offset = trace_path.stat().st_size
+    with trace_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "timestamp": "2026-05-22T00:00:01Z",
+                    "event": "overlay.visual_ready.push",
+                    "presentation_text_state": "hidden",
+                    "presentation_body_state": "body_ready",
+                }
+            )
+            + "\n"
+        )
+        handle.write(
+            json.dumps(
+                {
+                    "timestamp": "2026-05-22T00:00:02Z",
+                    "event": "overlay.visual_ready.push",
+                    "presentation_text_state": "visible",
+                    "presentation_body_state": "body_ready",
+                }
+            )
+            + "\n"
+        )
+
+    calls = iter([0.0, 0.01])
+    new_offset, event = wait_for_open_ready_trace(
+        trace_path,
+        offset=offset,
+        timeout_seconds=1.0,
+        poll_interval_seconds=0.01,
+        monotonic=lambda: next(calls),
+        sleep=lambda _seconds: None,
+    )
+
+    assert new_offset == trace_path.stat().st_size
+    assert event is not None
+    assert event["timestamp"] == "2026-05-22T00:00:02Z"
+
+
+def test_drive_retarget_during_dismiss_pattern_waits_for_open_ready_trace(tmp_path):
+    trace_path = tmp_path / "trace.jsonl"
+    trace_path.write_text("", encoding="utf-8")
+    calls = []
+
+    def toggle_chord(**kwargs):
+        calls.append("toggle")
+
+    def ready_waiter(path, **kwargs):
+        assert path == trace_path
+        calls.append(("wait_ready", kwargs["offset"]))
+        return kwargs["offset"] + 10, {"event": "overlay.visual_ready.push"}
+
+    drive_retarget_during_dismiss_pattern(
+        repeats=1,
+        open_dwell_seconds=0.7,
+        dismiss_retarget_delay_seconds=0.08,
+        reopen_dwell_seconds=0.6,
+        key_pause_seconds=0.01,
+        trace_path=trace_path,
+        toggle_chord=toggle_chord,
+        ready_waiter=ready_waiter,
+        sleep=lambda seconds: calls.append(("sleep", seconds)),
+    )
+
+    assert calls == [
+        "toggle",
+        ("wait_ready", 0),
+        ("sleep", 0.7),
+        "toggle",
+        ("sleep", 0.08),
+        "toggle",
+        ("wait_ready", 10),
+        ("sleep", 0.6),
+        "toggle",
+    ]
 
 
 def test_collect_trace_events_filters_to_capture_window(tmp_path):
@@ -360,6 +478,9 @@ def test_autonomous_retarget_witness_starts_capture_before_stimulus(tmp_path):
     assert "capture_wait" in calls
     assert payload["stimulus"]["mode"] == "retarget-during-dismiss"
     assert payload["stimulus"]["repeats"] == 2
+    assert payload["stimulus"]["open_ready_gate"] == (
+        "overlay.visual_ready.push with visible text and body_ready"
+    )
     assert payload["frame_count"] == 1
     assert [event["event"] for event in payload["trace_events"]] == [
         "overlay.cancel_dismiss.begin",

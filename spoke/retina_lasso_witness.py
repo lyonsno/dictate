@@ -308,6 +308,44 @@ def drive_hammer_toggles(
             sleep(interval_seconds)
 
 
+def trace_event_is_open_ready(event: dict[str, Any]) -> bool:
+    return (
+        event.get("event") == "overlay.visual_ready.push"
+        and event.get("presentation_text_state") == "visible"
+        and event.get("presentation_body_state") == "body_ready"
+    )
+
+
+def wait_for_open_ready_trace(
+    trace_path: str | Path,
+    *,
+    offset: int = 0,
+    timeout_seconds: float = 2.0,
+    poll_interval_seconds: float = 0.025,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+) -> tuple[int, dict[str, Any] | None]:
+    """Wait until the trace certifies a human-publishable open state."""
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    if poll_interval_seconds <= 0:
+        raise ValueError("poll_interval_seconds must be positive")
+
+    deadline = monotonic() + timeout_seconds
+    current_offset = offset
+    while monotonic() < deadline:
+        current_offset, events = read_trace_events_from_offset(trace_path, offset=current_offset)
+        for event in events:
+            if trace_event_is_open_ready(event):
+                return current_offset, event
+        sleep(poll_interval_seconds)
+    current_offset, events = read_trace_events_from_offset(trace_path, offset=current_offset)
+    for event in events:
+        if trace_event_is_open_ready(event):
+            return current_offset, event
+    return current_offset, None
+
+
 def drive_retarget_during_dismiss_pattern(
     *,
     repeats: int,
@@ -315,18 +353,39 @@ def drive_retarget_during_dismiss_pattern(
     dismiss_retarget_delay_seconds: float,
     reopen_dwell_seconds: float,
     cycle_pause_seconds: float = 0.2,
+    trace_path: str | Path | None = None,
+    open_ready_timeout_seconds: float = 2.0,
+    open_ready_poll_interval_seconds: float = 0.025,
     key_pause_seconds: float = 0.035,
     toggle_chord: Callable[..., None] = post_space_enter_toggle_chord,
     sleep: Callable[[float], None] = time.sleep,
+    ready_waiter: Callable[..., tuple[int, dict[str, Any] | None]] = wait_for_open_ready_trace,
 ) -> None:
     if repeats < 0:
         raise ValueError("repeats must be non-negative")
+    trace_offset = Path(trace_path).expanduser().stat().st_size if trace_path and Path(trace_path).expanduser().exists() else 0
     for index in range(repeats):
         toggle_chord(key_pause_seconds=key_pause_seconds)
+        if trace_path is not None:
+            trace_offset, _event = ready_waiter(
+                trace_path,
+                offset=trace_offset,
+                timeout_seconds=open_ready_timeout_seconds,
+                poll_interval_seconds=open_ready_poll_interval_seconds,
+                sleep=sleep,
+            )
         sleep(open_dwell_seconds)
         toggle_chord(key_pause_seconds=key_pause_seconds)
         sleep(dismiss_retarget_delay_seconds)
         toggle_chord(key_pause_seconds=key_pause_seconds)
+        if trace_path is not None:
+            trace_offset, _event = ready_waiter(
+                trace_path,
+                offset=trace_offset,
+                timeout_seconds=open_ready_timeout_seconds,
+                poll_interval_seconds=open_ready_poll_interval_seconds,
+                sleep=sleep,
+            )
         sleep(reopen_dwell_seconds)
         toggle_chord(key_pause_seconds=key_pause_seconds)
         if index < repeats - 1:
@@ -462,6 +521,8 @@ def run_autonomous_hammer_witness(
     dismiss_retarget_delay_seconds: float = 0.08,
     reopen_dwell_seconds: float = 0.75,
     cycle_pause_seconds: float = 0.2,
+    open_ready_timeout_seconds: float = 2.0,
+    open_ready_poll_interval_seconds: float = 0.025,
     lane: str = DEFAULT_LANE,
     diaulos: str = DEFAULT_DIAULOS,
     source_app: str = DEFAULT_SOURCE_APP,
@@ -508,6 +569,9 @@ def run_autonomous_hammer_witness(
                 dismiss_retarget_delay_seconds=dismiss_retarget_delay_seconds,
                 reopen_dwell_seconds=reopen_dwell_seconds,
                 cycle_pause_seconds=cycle_pause_seconds,
+                trace_path=trace_path,
+                open_ready_timeout_seconds=open_ready_timeout_seconds,
+                open_ready_poll_interval_seconds=open_ready_poll_interval_seconds,
             )
             stimulus = {
                 "mode": "retarget-during-dismiss",
@@ -516,6 +580,9 @@ def run_autonomous_hammer_witness(
                 "dismiss_retarget_delay_seconds": dismiss_retarget_delay_seconds,
                 "reopen_dwell_seconds": reopen_dwell_seconds,
                 "cycle_pause_seconds": cycle_pause_seconds,
+                "open_ready_timeout_seconds": open_ready_timeout_seconds,
+                "open_ready_poll_interval_seconds": open_ready_poll_interval_seconds,
+                "open_ready_gate": "overlay.visual_ready.push with visible text and body_ready",
             }
         else:
             hammer_driver(
@@ -824,6 +891,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Seconds between retarget-during-dismiss cycles.",
     )
     parser.add_argument(
+        "--open-ready-timeout",
+        type=float,
+        default=2.0,
+        help="Maximum seconds to wait for a trace-certified open state before dismissing.",
+    )
+    parser.add_argument(
+        "--open-ready-poll-interval",
+        type=float,
+        default=0.025,
+        help="Seconds between trace polls while waiting for a trace-certified open state.",
+    )
+    parser.add_argument(
         "--launch-target",
         help=(
             "Optional explicit Spoke launcher target to start before capture. "
@@ -879,6 +958,8 @@ def main(argv: list[str] | None = None) -> int:
             dismiss_retarget_delay_seconds=args.dismiss_retarget_delay,
             reopen_dwell_seconds=args.reopen_dwell,
             cycle_pause_seconds=args.cycle_pause,
+            open_ready_timeout_seconds=args.open_ready_timeout,
+            open_ready_poll_interval_seconds=args.open_ready_poll_interval,
             lane=args.lane,
             diaulos=args.diaulos,
             source_app=args.source_app,

@@ -118,6 +118,13 @@ def _append_retina_lasso_stimulus_args(
         )
         args.extend(["--reopen-dwell", child_env.get("SPOKE_RETINA_LASSO_REOPEN_DWELL_SECONDS", "0.75")])
         args.extend(["--cycle-pause", child_env.get("SPOKE_RETINA_LASSO_CYCLE_PAUSE_SECONDS", "0.2")])
+        args.extend(["--open-ready-timeout", child_env.get("SPOKE_RETINA_LASSO_OPEN_READY_TIMEOUT_SECONDS", "2.0")])
+        args.extend(
+            [
+                "--open-ready-poll-interval",
+                child_env.get("SPOKE_RETINA_LASSO_OPEN_READY_POLL_INTERVAL_SECONDS", "0.025"),
+            ]
+        )
         capture_first = True
 
     if capture_first:
