@@ -492,7 +492,7 @@ class TestOpticalShellMaterialization:
     def test_optical_entrance_waits_for_body_materialization_before_fade(
         self, mock_pyobjc
     ):
-        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay, mod = _make_overlay(mock_pyobjc)
         compositor = MagicMock()
         compositor.presented_count = 1
         overlay._fullscreen_compositor = compositor
@@ -501,7 +501,7 @@ class TestOpticalShellMaterialization:
 
         assert overlay._optical_entrance_ready() is False
 
-        overlay._materialization_progress = 0.75
+        overlay._materialization_progress = mod._optical_text_release_progress()
 
         assert overlay._optical_entrance_ready() is True
 
@@ -898,7 +898,7 @@ class TestOpticalShellMaterialization:
         assert alpha_state["value"] == pytest.approx(0.0)
         assert overlay._text_publication_state() == "hidden"
 
-    def test_body_ready_entrance_materialization_releases_text_plane(
+    def test_body_ready_scalar_without_readable_body_keeps_text_quarantined(
         self, mock_pyobjc
     ):
         overlay, mod = _make_overlay(mock_pyobjc)
@@ -913,6 +913,24 @@ class TestOpticalShellMaterialization:
             progress=progress,
         )
 
+        assert alphas[-1] == pytest.approx(0.0)
+
+    def test_readable_body_entrance_materialization_releases_text_plane(
+        self, mock_pyobjc
+    ):
+        overlay, mod = _make_overlay(mock_pyobjc)
+        alphas = []
+        overlay._scroll_view.setAlphaValue_.side_effect = alphas.append
+
+        progress = mod._optical_text_release_progress()
+        fill_state = mod._materialization_fill_state(progress)
+        overlay._update_scroll_materialization_mask(
+            fill_state["height_frac"],
+            direction=1,
+            progress=progress,
+        )
+
+        assert fill_state["height_frac"] >= mod._OPTICAL_TEXT_RELEASE_MIN_HEIGHT_FRAC
         assert alphas[-1] > 0.0
 
     def test_show_dismiss_retarget_consumes_lifecycle_adapter(
@@ -4276,13 +4294,13 @@ class TestAdaptiveCompositing:
     def test_materialization_ready_syncs_brightness_before_starting_entrance(
         self, mock_pyobjc
     ):
-        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay, mod = _make_overlay(mock_pyobjc)
         overlay._visible = True
         overlay._entrance_started = False
         overlay._visual_ready_brightness_synced = False
         overlay._brightness = 0.91
         overlay._brightness_target = 0.91
-        overlay._materialization_progress = 0.75
+        overlay._materialization_progress = mod._optical_text_release_progress()
         overlay._fill_hidden_until_signature = None
         overlay._content_view.frame.return_value = _make_rect(0.0, 0.0, 624.0, 208.0)
         events = []
@@ -4324,10 +4342,10 @@ class TestAdaptiveCompositing:
     def test_compositor_did_present_triggers_entrance_when_all_ready(
         self, mock_pyobjc
     ):
-        overlay, _ = _make_overlay(mock_pyobjc)
+        overlay, mod = _make_overlay(mock_pyobjc)
         overlay._visible = True
         overlay._entrance_started = False
-        overlay._materialization_progress = 0.75
+        overlay._materialization_progress = mod._optical_text_release_progress()
         overlay._fill_hidden_until_signature = None
         compositor = MagicMock()
         compositor.presented_count = 1
@@ -4366,10 +4384,10 @@ class TestAdaptiveCompositing:
         compositor.presented_count = 1
         overlay._fullscreen_compositor = compositor
         overlay._start_entrance_animation = MagicMock()
-        overlay._materialization_progress = 0.50
+        overlay._materialization_progress = mod._optical_text_release_progress() - 0.05
 
         # Simulate a materialization step that crosses the threshold
-        overlay._materialization_progress = 0.60
+        overlay._materialization_progress = mod._optical_text_release_progress()
         overlay._check_optical_entrance_readiness()
 
         overlay._start_entrance_animation.assert_called_once()

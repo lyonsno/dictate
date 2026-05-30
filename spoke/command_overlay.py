@@ -168,6 +168,7 @@ _OPTICAL_MATERIAL_FILL_FULL_AT = (
     * _OPTICAL_MATERIALIZATION_POST_SPREAD_TIME_SCALE
 ) / _OPTICAL_MATERIALIZATION_S
 _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC = 0.011
+_OPTICAL_TEXT_RELEASE_MIN_HEIGHT_FRAC = 1.0 / 3.0
 _OPTICAL_DISMISS_TEXT_BLOB_FRAC = 0.025
 _OPTICAL_DISMISS_TEXT_COLLAPSE_START_PROGRESS = min(
     1.0,
@@ -832,6 +833,49 @@ def _materialization_fill_state(progress: float) -> dict[str, float]:
         "opacity": _clamp01(opacity),
         "height_frac": _clamp01(height),
     }
+
+
+def _material_fill_progress_for_height(height_frac: float) -> float:
+    hf = _clamp01(height_frac)
+    if hf <= _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC:
+        return _OPTICAL_MATERIAL_FILL_SOLID_AT
+    fill_span = max(
+        _OPTICAL_MATERIAL_FILL_FULL_AT - _OPTICAL_MATERIAL_FILL_SOLID_AT,
+        1e-6,
+    )
+    normalized = (
+        (hf - _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC)
+        / max(1.0 - _OPTICAL_MATERIAL_FILL_MIN_HEIGHT_FRAC, 1e-6)
+    )
+    return _OPTICAL_MATERIAL_FILL_SOLID_AT + fill_span * (normalized ** (1.0 / 3.0))
+
+
+def _optical_text_release_progress() -> float:
+    return max(
+        _OPTICAL_MATERIALIZATION_BODY_READY,
+        _material_fill_progress_for_height(_OPTICAL_TEXT_RELEASE_MIN_HEIGHT_FRAC),
+    )
+
+
+def _optical_entrance_text_ready(
+    progress: float | None,
+    height_frac: float | None = None,
+) -> bool:
+    if progress is None:
+        return (
+            height_frac is not None
+            and _clamp01(height_frac) >= _OPTICAL_TEXT_RELEASE_MIN_HEIGHT_FRAC
+        )
+    p = _clamp01(progress)
+    hf = (
+        _materialization_fill_state(p)["height_frac"]
+        if height_frac is None
+        else _clamp01(height_frac)
+    )
+    return (
+        p >= _OPTICAL_MATERIALIZATION_BODY_READY
+        and hf >= _OPTICAL_TEXT_RELEASE_MIN_HEIGHT_FRAC
+    )
 
 
 def _dismiss_materialization_fill_state(progress: float) -> dict[str, float]:
@@ -4081,8 +4125,8 @@ class CommandOverlay(NSObject):
         self._apply_materialization_fill_state(progress)
         if (
             getattr(self, "_materialization_direction", 1) > 0
-            and prev_progress < _OPTICAL_MATERIALIZATION_BODY_READY
-            and progress >= _OPTICAL_MATERIALIZATION_BODY_READY
+            and not _optical_entrance_text_ready(prev_progress)
+            and _optical_entrance_text_ready(progress)
         ):
             self._check_optical_entrance_readiness()
         try:
@@ -4437,7 +4481,9 @@ class CommandOverlay(NSObject):
             # alpha-zero window ordering is not a sufficient publication guard
             # under hammered transition reversals.
             if hasattr(scroll, "setAlphaValue_"):
-                if progress is not None and progress < _OPTICAL_MATERIALIZATION_BODY_READY:
+                if not _optical_entrance_text_ready(progress, hf):
+                    if hasattr(scroll, "setHidden_"):
+                        scroll.setHidden_(True)
                     alpha = 0.0
                 else:
                     if hasattr(scroll, "setHidden_"):
@@ -4734,9 +4780,8 @@ class CommandOverlay(NSObject):
         )
 
     def _optical_body_content_ready(self) -> bool:
-        return (
+        return _optical_entrance_text_ready(
             getattr(self, "_materialization_progress", 1.0)
-            >= _OPTICAL_MATERIALIZATION_BODY_READY
         )
 
     def _optical_compositor_has_presented(self) -> bool:
