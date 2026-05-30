@@ -862,18 +862,17 @@ def _dismiss_text_collapse_state(progress: float) -> dict[str, float]:
             "alpha": 0.0,
         }
     if p <= blob_at:
-        fade = _smoothstep((p - gone_at) / max(blob_at - gone_at, 1e-6))
         return {
             "width_frac": blob,
             "height_frac": blob,
-            "alpha": fade,
+            "alpha": 0.0,
         }
     t = _smoothstep((p - blob_at) / max(collapse_start - blob_at, 1e-6))
     frac = _lerp(blob, 1.0, t)
     return {
         "width_frac": _clamp01(frac),
         "height_frac": _clamp01(frac),
-        "alpha": 1.0,
+        "alpha": _clamp01(t * t),
     }
 
 
@@ -4416,6 +4415,14 @@ class CommandOverlay(NSObject):
             x_offset = (w - visible_w) * 0.5
             if hasattr(scroll, "setAlphaValue_"):
                 scroll.setAlphaValue_(text_state["alpha"])
+            record_command_overlay_trace(
+                "overlay.materialization.dismiss_text_mask",
+                progress=progress,
+                body_height_frac=hf,
+                text_width_frac=text_state["width_frac"],
+                text_height_frac=text_state["height_frac"],
+                text_alpha=text_state["alpha"],
+            )
         y_offset = (h - visible_h) * 0.5
         corner_r = min(12.0, visible_h * 0.5, visible_w * 0.5)
         mask = getattr(self, "_scroll_materialization_mask", None)

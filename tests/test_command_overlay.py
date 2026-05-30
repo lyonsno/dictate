@@ -2093,10 +2093,29 @@ class TestOpticalShellMaterialization:
 
         assert before_pucker["width_frac"] <= 0.04
         assert before_pucker["height_frac"] <= 0.04
-        assert before_pucker["alpha"] > 0.0
+        assert before_pucker["alpha"] == pytest.approx(0.0)
         assert at_pucker["width_frac"] <= 0.04
         assert at_pucker["height_frac"] <= 0.04
         assert at_pucker["alpha"] == pytest.approx(0.0)
+
+    def test_reverse_materialization_text_fades_while_collapsing(
+        self, mock_pyobjc
+    ):
+        _overlay, mod = _make_overlay(mock_pyobjc)
+
+        collapse_start = mod._OPTICAL_DISMISS_TEXT_COLLAPSE_START_PROGRESS
+        blob_at = mod._OPTICAL_DISMISS_TEXT_BLOB_AT_PROGRESS
+        mid_collapse = (collapse_start + blob_at) * 0.5
+
+        full_text = mod._dismiss_text_collapse_state(collapse_start + 0.02)
+        collapsing_text = mod._dismiss_text_collapse_state(mid_collapse)
+        blob_text = mod._dismiss_text_collapse_state(blob_at)
+
+        assert full_text["alpha"] == pytest.approx(1.0)
+        assert collapsing_text["width_frac"] < 0.6
+        assert collapsing_text["alpha"] < 0.35
+        assert blob_text["width_frac"] <= 0.04
+        assert blob_text["alpha"] == pytest.approx(0.0)
 
     def test_reverse_materialization_prearms_radial_pucker_before_slit_closes(
         self, mock_pyobjc, monkeypatch
