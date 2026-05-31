@@ -1,8 +1,90 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+import struct
+import zlib
 
 from spoke import perceptasia_throughglass_witness as witness
+
+
+def _write_rgb_png(path: Path, width: int, height: int, pixels: list[tuple[int, int, int]]) -> None:
+    rows = []
+    stride = width * 3
+    for row in range(height):
+        start = row * width
+        raw = bytearray()
+        for red, green, blue in pixels[start : start + width]:
+            raw.extend((red, green, blue))
+        rows.append(b"\x00" + bytes(raw[:stride]))
+    payload = zlib.compress(b"".join(rows))
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    path.write_bytes(
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", payload)
+        + chunk(b"IEND", b"")
+    )
+
+
+def _blank_frosted_frame(path: Path) -> None:
+    width, height = 220, 150
+    pixels: list[tuple[int, int, int]] = []
+    for y in range(height):
+        for x in range(width):
+            color = (38, 38, 38)
+            if 28 <= x <= 190 and 20 <= y <= 126:
+                color = (122, 122, 122)
+                if x < 35 or x > 183 or y < 28 or y > 118:
+                    color = (82, 82, 82)
+            pixels.append(color)
+    _write_rgb_png(path, width, height, pixels)
+
+
+def _perceptasia_like_frame(path: Path) -> None:
+    width, height = 220, 150
+    pixels: list[tuple[int, int, int]] = []
+    for y in range(height):
+        for x in range(width):
+            color = (30, 32, 34)
+            if 24 <= x <= 194 and 18 <= y <= 130:
+                color = (18, 20, 22)
+                if x < 34 or x > 184 or y < 28 or y > 120:
+                    color = (74, 76, 78)
+                if (x + y * 2) % 17 == 0 and 40 <= x <= 178:
+                    color = (80, 155, 135)
+                if (x * 3 - y) % 29 == 0 and 30 <= y <= 118:
+                    color = (80, 110, 180)
+                if abs((x - 40) - (y - 28) * 2) < 2:
+                    color = (185, 95, 118)
+                if abs((x - 178) + (y - 112) * 3) < 2:
+                    color = (170, 150, 78)
+                if (x - 108) ** 2 + (y - 74) ** 2 < 13**2:
+                    color = (68, 128, 170) if (x + y) % 4 else (210, 222, 230)
+            pixels.append(color)
+    _write_rgb_png(path, width, height, pixels)
+
+
+def _good_throughglass_log(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "Perceptasia Throughglass: setup begin url=http://localhost:8753",
+                "Perceptasia Throughglass: WKWebView request loaded",
+                "Perceptasia Throughglass: content verified",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def test_default_output_dir_is_throughglass_named(tmp_path, monkeypatch):
@@ -19,7 +101,7 @@ def test_throughglass_witness_defaults_to_passive_capture(tmp_path, monkeypatch,
         index = Path(kwargs["output_dir"]) / "witness-index.json"
         index.parent.mkdir(parents=True)
         index.write_text(
-            '{"throughglass_contract":{"passed":true,"content_verified":true}}\n',
+            '{"throughglass_contract":{"passed":true,"content_verified":true,"visual_content":{"passed":true,"classifier_version":"throughglass_pixels.v2"}}}\n',
             encoding="utf-8",
         )
         return index
@@ -47,7 +129,7 @@ def test_throughglass_witness_launch_mode_uses_selected_target_contract(tmp_path
         index = Path(kwargs["output_dir"]) / "witness-index.json"
         index.parent.mkdir(parents=True)
         index.write_text(
-            '{"throughglass_contract":{"passed":true,"content_verified":true}}\n',
+            '{"throughglass_contract":{"passed":true,"content_verified":true,"visual_content":{"passed":true,"classifier_version":"throughglass_pixels.v2"}}}\n',
             encoding="utf-8",
         )
         return index
@@ -86,3 +168,34 @@ def test_throughglass_witness_fails_when_capture_lacks_content_proof(tmp_path, m
         )
         == 2
     )
+
+
+def test_throughglass_contract_rejects_blank_frosted_pixels_even_when_logs_pass(tmp_path):
+    index = tmp_path / "witness-index.json"
+    frame = tmp_path / "screen-capture-000.png"
+    log = tmp_path / "spoke.log"
+    _blank_frosted_frame(frame)
+    _good_throughglass_log(log)
+    index.write_text(json.dumps({"frame_count": 1}) + "\n", encoding="utf-8")
+
+    contract = witness.annotate_throughglass_contract(index, log_paths=[log])
+
+    assert contract["webview_loaded"] is True
+    assert contract["content_verified"] is True
+    assert contract["visual_content"]["passed"] is False
+    assert contract["passed"] is False
+    assert contract["visual_content"]["failure_reason"] == "captured_pixels_do_not_show_throughglass_content"
+
+
+def test_throughglass_contract_accepts_visible_perceptasia_like_pixels(tmp_path):
+    index = tmp_path / "witness-index.json"
+    frame = tmp_path / "screen-capture-000.png"
+    log = tmp_path / "spoke.log"
+    _perceptasia_like_frame(frame)
+    _good_throughglass_log(log)
+    index.write_text(json.dumps({"frame_count": 1}) + "\n", encoding="utf-8")
+
+    contract = witness.annotate_throughglass_contract(index, log_paths=[log])
+
+    assert contract["visual_content"]["passed"] is True
+    assert contract["passed"] is True
