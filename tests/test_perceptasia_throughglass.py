@@ -231,3 +231,41 @@ def test_throughglass_content_verification_releases_deferred_smoke(mock_pyobjc, 
     assert panel.orderFrontRegardless.call_count == 2
     assert host.add_client.call_count == 1
     assert host.update_client_config.call_count == 1
+
+
+def test_throughglass_probe_rejects_canvas_count_without_pixel_signal(mock_pyobjc):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+
+    matches = graft._PerceptasiaThroughglassGraft__content_probe_matches_perceptasia(
+        {
+            "title": "Perceptasia 3D",
+            "readyState": "complete",
+            "bodyText": "Perceptasia",
+            "canvasCount": 2,
+            "canvasSampledPixels": 1024,
+            "canvasVisualSignal": 0.0,
+        }
+    )
+
+    assert matches is False
+
+
+def test_throughglass_probe_accepts_perceptasia_canvas_with_pixel_signal(mock_pyobjc):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+
+    matches = graft._PerceptasiaThroughglassGraft__content_probe_matches_perceptasia(
+        {
+            "title": "Perceptasia 3D",
+            "readyState": "complete",
+            "bodyText": "Perceptasia",
+            "canvasCount": 2,
+            "canvasSampledPixels": 1024,
+            "canvasVisualSignal": 0.037,
+        }
+    )
+
+    assert matches is True

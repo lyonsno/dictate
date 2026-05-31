@@ -101,7 +101,7 @@ def test_throughglass_witness_defaults_to_passive_capture(tmp_path, monkeypatch,
         index = Path(kwargs["output_dir"]) / "witness-index.json"
         index.parent.mkdir(parents=True)
         index.write_text(
-            '{"throughglass_contract":{"passed":true,"content_verified":true,"visual_content":{"passed":true,"classifier_version":"throughglass_pixels.v2"}}}\n',
+            '{"throughglass_contract":{"passed":true,"content_verified":true,"visual_content":{"passed":true,"classifier_version":"throughglass_pixels.v3"}}}\n',
             encoding="utf-8",
         )
         return index
@@ -129,7 +129,7 @@ def test_throughglass_witness_launch_mode_uses_selected_target_contract(tmp_path
         index = Path(kwargs["output_dir"]) / "witness-index.json"
         index.parent.mkdir(parents=True)
         index.write_text(
-            '{"throughglass_contract":{"passed":true,"content_verified":true,"visual_content":{"passed":true,"classifier_version":"throughglass_pixels.v2"}}}\n',
+            '{"throughglass_contract":{"passed":true,"content_verified":true,"visual_content":{"passed":true,"classifier_version":"throughglass_pixels.v3"}}}\n',
             encoding="utf-8",
         )
         return index
@@ -199,3 +199,28 @@ def test_throughglass_contract_accepts_visible_perceptasia_like_pixels(tmp_path)
 
     assert contract["visual_content"]["passed"] is True
     assert contract["passed"] is True
+
+
+def test_throughglass_contract_rejects_early_content_when_settled_tail_is_blank(tmp_path):
+    index = tmp_path / "witness-index.json"
+    log = tmp_path / "spoke.log"
+    _good_throughglass_log(log)
+    frames = []
+    for index_number in range(8):
+        frame = tmp_path / f"screen-capture-{index_number:03d}.png"
+        if index_number < 3:
+            _perceptasia_like_frame(frame)
+        else:
+            _blank_frosted_frame(frame)
+        frames.append(str(frame))
+    index.write_text(
+        json.dumps({"frame_count": len(frames), "retina_lasso_manifest": str(tmp_path / "manifest.json")}) + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "manifest.json").write_text(json.dumps({"frames": frames}) + "\n", encoding="utf-8")
+
+    contract = witness.annotate_throughglass_contract(index, log_paths=[log])
+
+    assert contract["visual_content"]["passed"] is False
+    assert contract["passed"] is False
+    assert contract["visual_content"]["failure_reason"] == "settled_tail_lacks_throughglass_content"

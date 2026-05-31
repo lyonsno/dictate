@@ -31,7 +31,12 @@ DEFAULT_LOG_PATHS = (
     Path.home() / "Library" / "Logs" / "spoke-main-launch.log",
     Path.home() / "Library" / "Logs" / "spoke-launch-target.log",
 )
-VISUAL_CONTENT_CLASSIFIER_VERSION = "throughglass_pixels.v2"
+VISUAL_CONTENT_CLASSIFIER_VERSION = "throughglass_pixels.v3"
+_VISUAL_PASS_THRESHOLDS = {
+    "panel_material_fraction": 0.07,
+    "saturated_pixel_fraction": 0.04,
+    "edge_density": 0.09,
+}
 
 
 def _timestamp_slug() -> str:
@@ -375,9 +380,9 @@ def _frame_visual_metrics(path: Path, *, panel_rect_points: dict | None = None) 
         5,
     )
     visual["passed"] = bool(
-        visual["panel_material_fraction"] >= 0.07
-        and visual["saturated_pixel_fraction"] >= 0.006
-        and visual["edge_density"] >= 0.012
+        visual["panel_material_fraction"] >= _VISUAL_PASS_THRESHOLDS["panel_material_fraction"]
+        and visual["saturated_pixel_fraction"] >= _VISUAL_PASS_THRESHOLDS["saturated_pixel_fraction"]
+        and visual["edge_density"] >= _VISUAL_PASS_THRESHOLDS["edge_density"]
     )
     return visual
 
@@ -424,17 +429,32 @@ def _visual_content_contract(index_path: Path, payload: dict, *, panel_rect_poin
         except Exception as exc:
             errors.append({"path": str(path), "error": type(exc).__name__, "detail": str(exc)})
     passed_metrics = [metric for metric in metrics if metric.get("passed") is True]
+    tail_count = min(12, max(1, len(metrics) // 4)) if metrics else 0
+    settled_tail = metrics[-tail_count:] if tail_count else []
+    settled_tail_passed_metrics = [metric for metric in settled_tail if metric.get("passed") is True]
     best = max(metrics, key=lambda metric: metric.get("score", 0.0), default=None)
+    passed = bool(settled_tail_passed_metrics)
+    if passed:
+        failure_reason = None
+    elif passed_metrics:
+        failure_reason = "settled_tail_lacks_throughglass_content"
+    else:
+        failure_reason = "captured_pixels_do_not_show_throughglass_content"
     return {
         "classifier_version": VISUAL_CONTENT_CLASSIFIER_VERSION,
-        "passed": bool(passed_metrics),
-        "failure_reason": None if passed_metrics else "captured_pixels_do_not_show_throughglass_content",
+        "passed": passed,
+        "failure_reason": failure_reason,
         "frame_count": len(frame_paths),
         "frames_analyzed": len(metrics),
+        "pass_thresholds": _VISUAL_PASS_THRESHOLDS,
+        "settled_tail_policy": "last_min_12_or_quarter_frames_must_contain_content",
+        "settled_tail_frame_count": tail_count,
+        "settled_tail_pass_count": len(settled_tail_passed_metrics),
         "best_score": best.get("score") if best else None,
         "best_frame": best.get("path") if best else None,
         "best_metrics": best,
         "sample_metrics": metrics[:6],
+        "settled_tail_sample_metrics": settled_tail[:6],
         "errors": errors[:6],
     }
 

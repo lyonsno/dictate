@@ -319,12 +319,45 @@ class PerceptasiaThroughglassGraft(NSObject):
             return
         self._content_probe_attempts += 1
         script = (
-            "(() => ({"
+            "(() => {"
+            "const canvases = Array.from(document.querySelectorAll('canvas'));"
+            "let sampledPixels = 0;"
+            "let visualSignal = 0;"
+            "for (const source of canvases) {"
+            "const sw = source.width || source.clientWidth || 0;"
+            "const sh = source.height || source.clientHeight || 0;"
+            "if (sw < 8 || sh < 8) continue;"
+            "const w = Math.min(64, Math.max(8, Math.floor(sw)));"
+            "const h = Math.min(64, Math.max(8, Math.floor(sh)));"
+            "const sample = document.createElement('canvas');"
+            "sample.width = w; sample.height = h;"
+            "const ctx = sample.getContext('2d', {willReadFrequently: true});"
+            "if (!ctx) continue;"
+            "try {"
+            "ctx.drawImage(source, 0, 0, w, h);"
+            "const data = ctx.getImageData(0, 0, w, h).data;"
+            "let minL = 255, maxL = 0, chroma = 0, active = 0;"
+            "for (let i = 0; i < data.length; i += 4) {"
+            "const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];"
+            "const l = 0.2126 * r + 0.7152 * g + 0.0722 * b;"
+            "minL = Math.min(minL, l);"
+            "maxL = Math.max(maxL, l);"
+            "chroma += (Math.max(r, g, b) - Math.min(r, g, b)) / 255;"
+            "if (a > 8 && l > 8) active += 1;"
+            "}"
+            "sampledPixels += w * h;"
+            "visualSignal = Math.max(visualSignal, (maxL - minL) / 255 + chroma / (w * h) + active / (w * h) * 0.25);"
+            "} catch (e) {}"
+            "}"
+            "return {"
             "title: document.title || '',"
             "readyState: document.readyState || '',"
             "bodyText: (document.body && document.body.innerText || '').slice(0, 512),"
-            "canvasCount: document.querySelectorAll('canvas').length"
-            "}))()"
+            "canvasCount: canvases.length,"
+            "canvasSampledPixels: sampledPixels,"
+            "canvasVisualSignal: visualSignal"
+            "};"
+            "})()"
         )
 
         def _completion(result, error):
@@ -353,17 +386,36 @@ class PerceptasiaThroughglassGraft(NSObject):
             canvas_count = int(canvas_count)
         except (TypeError, ValueError):
             canvas_count = 0
-        return "perceptasia" in haystack and canvas_count >= 1
+        sampled_pixels = result.get("canvasSampledPixels", 0)
+        visual_signal = result.get("canvasVisualSignal", 0.0)
+        try:
+            sampled_pixels = int(sampled_pixels)
+        except (TypeError, ValueError):
+            sampled_pixels = 0
+        try:
+            visual_signal = float(visual_signal)
+        except (TypeError, ValueError):
+            visual_signal = 0.0
+        return (
+            "perceptasia" in haystack
+            and canvas_count >= 1
+            and sampled_pixels >= 64
+            and visual_signal >= 0.015
+        )
 
     def __mark_content_verified(self, result) -> None:
         self._content_verified = True
         self._content_failure = None
         result_title = result.get("title") if isinstance(result, Mapping) else result
         canvas_count = result.get("canvasCount") if isinstance(result, Mapping) else None
+        sampled_pixels = result.get("canvasSampledPixels") if isinstance(result, Mapping) else None
+        visual_signal = result.get("canvasVisualSignal") if isinstance(result, Mapping) else None
         logger.info(
-            "Perceptasia Throughglass: content verified title=%r canvas_count=%s",
+            "Perceptasia Throughglass: content verified title=%r canvas_count=%s canvas_sampled_pixels=%s canvas_signal=%s",
             result_title,
             canvas_count,
+            sampled_pixels,
+            visual_signal,
         )
         if self._pending_show:
             self.__show_verified()
