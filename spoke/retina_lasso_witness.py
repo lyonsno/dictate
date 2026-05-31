@@ -45,6 +45,16 @@ DEFAULT_TRACE_TRIGGER_EVENTS = {
 DEFAULT_TRACE_TRIGGER_MAX_LAG_SECONDS = 1.0
 
 
+def should_delegate_to_throughglass_witness() -> bool:
+    """Return true when the generic launcher-side witness is pointed at Throughglass."""
+
+    witness_kind = os.environ.get("SPOKE_RETINA_LASSO_WITNESS_KIND", "").strip().lower()
+    if witness_kind in {"perceptasia-throughglass", "throughglass"}:
+        return True
+    smoke_flag = os.environ.get("SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE", "").strip()
+    return smoke_flag not in {"", "0", "false", "False", "no", "off"}
+
+
 def _default_uv_command() -> str:
     env_uv = os.environ.get("UV_BIN")
     if env_uv:
@@ -1010,6 +1020,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if should_delegate_to_throughglass_witness():
+        from .perceptasia_throughglass_witness import main as throughglass_main
+
+        return throughglass_main(argv)
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     stimulus_mode = bool(

@@ -170,6 +170,7 @@ def test_throughglass_panel_is_click_through_until_input_mode(mock_pyobjc, monke
     graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
     graft.setup()
 
+    panel.setLevel_.assert_called_once_with(25)
     panel.setIgnoresMouseEvents_.assert_called_once_with(True)
 
 
@@ -227,6 +228,6 @@ def test_throughglass_content_verification_releases_deferred_smoke(mock_pyobjc, 
     assert graft.show() is False
     graft.mark_content_verified_for_test("Perceptasia 3D")
 
-    panel.orderFrontRegardless.assert_called_once_with()
+    assert panel.orderFrontRegardless.call_count == 2
     assert host.add_client.call_count == 1
     assert host.update_client_config.call_count == 1

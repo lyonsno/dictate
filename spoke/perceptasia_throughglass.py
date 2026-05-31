@@ -52,6 +52,7 @@ _DISCOVERY_PORTS = (8742, 8753, 8754, 8755, 8764, 8797, 8798, 8799, 8896)
 _NSWindowStyleMaskClosable = 1 << 1
 _NSWindowStyleMaskResizable = 1 << 3
 _NSWindowStyleMaskUtilityWindow = 1 << 4
+_THROUGHGLASS_WINDOW_LEVEL = 25
 
 
 def _env_flag(name: str) -> bool:
@@ -185,7 +186,9 @@ class PerceptasiaThroughglassGraft(NSObject):
             False,
         )
         panel.setTitle_("Perceptasia Throughglass Graft")
-        panel.setLevel_(1000)
+        # Above the shared compositor (24) but below the command overlay (26),
+        # so the graft can show content without covering dictation.
+        panel.setLevel_(_THROUGHGLASS_WINDOW_LEVEL)
         panel.setOpaque_(False)
         panel.setHasShadow_(False)
         panel.setBackgroundColor_(NSColor.clearColor())
@@ -253,6 +256,9 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._pending_show = False
         self.__publish_shell_state("materialize")
         self.__publish_shell_state("rest")
+        # Starting the compositor can perturb ordering; reassert the content
+        # panel above the optical field after the shell has been published.
+        self._panel.orderFrontRegardless()
         logger.info(
             "Perceptasia Throughglass: show complete content_kind=%s content_verified=%s",
             self._content_kind,

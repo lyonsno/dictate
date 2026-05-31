@@ -73,4 +73,16 @@ def test_throughglass_witness_fails_when_capture_lacks_content_proof(tmp_path, m
     monkeypatch.setattr(witness, "_timestamp_slug", lambda: "20260531T010203Z")
     monkeypatch.setattr(witness, "run_witness_window", run_witness_window)
 
-    assert witness.main(["--output-root", str(tmp_path), "--duration", "1.25"]) == 2
+    assert (
+        witness.main(
+            [
+                "--output-root",
+                str(tmp_path),
+                "--duration",
+                "1.25",
+                "--log-path",
+                str(tmp_path / "missing.log"),
+            ]
+        )
+        == 2
+    )

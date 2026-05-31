@@ -141,6 +141,13 @@ def test_build_launch_target_command_uses_repo_script(tmp_path):
     assert command == [str(tmp_path / "scripts" / "launch-target.sh"), "habeas_target"]
 
 
+def test_generic_witness_delegates_when_throughglass_env_is_active(monkeypatch):
+    monkeypatch.setenv("SPOKE_RETINA_LASSO_WITNESS_KIND", "perceptasia-throughglass")
+    monkeypatch.delenv("SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE", raising=False)
+
+    assert witness.should_delegate_to_throughglass_witness()
+
+
 def test_drive_hammer_toggles_posts_exact_count_without_trailing_sleep():
     calls = []
     sleeps = []
