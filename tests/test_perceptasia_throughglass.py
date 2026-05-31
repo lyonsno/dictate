@@ -74,6 +74,7 @@ def test_throughglass_real_pyobjc_import_accepts_private_helpers():
         [
             sys.executable,
             "-c",
+            "from WebKit import WKWebView; "
             "from spoke.perceptasia_throughglass import PerceptasiaThroughglassGraft; "
             "print(PerceptasiaThroughglassGraft.__name__)",
         ],
