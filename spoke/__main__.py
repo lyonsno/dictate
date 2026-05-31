@@ -1399,6 +1399,15 @@ class SpokeAppDelegate(NSObject):
         self._preview_warp_hud = PreviewWarpHUD.alloc().initWithOverlay_(self._overlay)
         self._preview_warp_hud.restore_visibility()
         self._menubar._on_toggle_preview_warp = self._preview_warp_hud.toggle
+        from .perceptasia_throughglass import PerceptasiaThroughglassGraft
+        self._perceptasia_throughglass = (
+            PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(
+                self._overlay_compositor_registry
+            )
+        )
+        self._menubar._on_toggle_perceptasia_throughglass = (
+            self._perceptasia_throughglass.toggle
+        )
         if getattr(self, "_command_overlay", None) is not None:
             from .seam_pucker_hud import SeamPuckerHUD
             self._seam_pucker_hud = SeamPuckerHUD.alloc().initWithOverlay_(
@@ -1411,6 +1420,7 @@ class SpokeAppDelegate(NSObject):
         if handsfree_env_ready():
             self._menubar._on_toggle_handsfree = self._toggle_handsfree
         self._menubar.refresh_menu()
+        self._maybe_show_perceptasia_throughglass_smoke()
 
         # Iron Giant: install event tap and probe mic in parallel.
         # The event tap (spacebar interception) only needs Accessibility permission,
@@ -3780,6 +3790,19 @@ class SpokeAppDelegate(NSObject):
         )
         if self._menubar is not None:
             self._menubar.set_status_text("Diaulos card smoke")
+        return True
+
+    def _maybe_show_perceptasia_throughglass_smoke(self) -> bool:
+        """Open the Perceptasia Throughglass surface when explicit smoke env is enabled."""
+        value = os.environ.get("SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE", "")
+        if value in {"", "0", "false", "False", "no", "off"}:
+            return False
+        graft = getattr(self, "_perceptasia_throughglass", None)
+        if graft is None:
+            return False
+        graft.show()
+        if self._menubar is not None:
+            self._menubar.set_status_text("Perceptasia Throughglass smoke")
         return True
 
     def _tray_entry_deck(self, entry: TrayEntry | str) -> str:
@@ -7320,6 +7343,11 @@ class SpokeAppDelegate(NSObject):
             self._preview_warp_hud.cleanup()
         if hasattr(self, "_seam_pucker_hud") and self._seam_pucker_hud is not None:
             self._seam_pucker_hud.cleanup()
+        if (
+            hasattr(self, "_perceptasia_throughglass")
+            and self._perceptasia_throughglass is not None
+        ):
+            self._perceptasia_throughglass.cleanup()
         self._close_clients()
         NSApp.terminate_(None)
 
@@ -7477,6 +7505,11 @@ def main() -> None:
             delegate._preview_warp_hud.cleanup()
         if hasattr(delegate, "_seam_pucker_hud") and delegate._seam_pucker_hud is not None:
             delegate._seam_pucker_hud.cleanup()
+        if (
+            hasattr(delegate, "_perceptasia_throughglass")
+            and delegate._perceptasia_throughglass is not None
+        ):
+            delegate._perceptasia_throughglass.cleanup()
         if delegate._menubar is not None:
             delegate._menubar.cleanup()
         # Remove heartbeat so next launch doesn't see us as a zombie.
