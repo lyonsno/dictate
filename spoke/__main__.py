@@ -3830,11 +3830,13 @@ class SpokeAppDelegate(NSObject):
             logger.warning("Perceptasia Throughglass smoke requested but graft is unavailable")
             return False
         logger.info("Perceptasia Throughglass smoke: showing graft")
-        graft.show()
+        shown = bool(graft.show())
         if self._menubar is not None:
-            self._menubar.set_status_text("Perceptasia Throughglass smoke")
-        logger.info("Perceptasia Throughglass smoke: show requested")
-        return True
+            self._menubar.set_status_text(
+                "Perceptasia Throughglass smoke" if shown else "Perceptasia Throughglass waiting"
+            )
+        logger.info("Perceptasia Throughglass smoke: show requested shown=%s", shown)
+        return shown
 
     def _tray_entry_deck(self, entry: TrayEntry | str) -> str:
         """Return the user-visible tray deck for a legacy stack entry."""

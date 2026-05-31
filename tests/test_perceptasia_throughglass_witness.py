@@ -18,7 +18,10 @@ def test_throughglass_witness_defaults_to_passive_capture(tmp_path, monkeypatch,
         calls.append(kwargs)
         index = Path(kwargs["output_dir"]) / "witness-index.json"
         index.parent.mkdir(parents=True)
-        index.write_text("{}\n", encoding="utf-8")
+        index.write_text(
+            '{"throughglass_contract":{"passed":true,"content_verified":true}}\n',
+            encoding="utf-8",
+        )
         return index
 
     monkeypatch.setattr(witness, "_timestamp_slug", lambda: "20260531T010203Z")
@@ -43,7 +46,10 @@ def test_throughglass_witness_launch_mode_uses_selected_target_contract(tmp_path
         calls.append(kwargs)
         index = Path(kwargs["output_dir"]) / "witness-index.json"
         index.parent.mkdir(parents=True)
-        index.write_text("{}\n", encoding="utf-8")
+        index.write_text(
+            '{"throughglass_contract":{"passed":true,"content_verified":true}}\n',
+            encoding="utf-8",
+        )
         return index
 
     monkeypatch.setattr(witness, "run_autonomous_hammer_witness", run_autonomous_hammer_witness)
@@ -55,3 +61,16 @@ def test_throughglass_witness_launch_mode_uses_selected_target_contract(tmp_path
     assert calls[0]["launch_target"] == "perceptasia_throughglass_graft"
     assert calls[0]["hammer_toggles"] == 0
     assert calls[0]["source_app"] == "Spoke"
+
+
+def test_throughglass_witness_fails_when_capture_lacks_content_proof(tmp_path, monkeypatch):
+    def run_witness_window(**kwargs):
+        index = Path(kwargs["output_dir"]) / "witness-index.json"
+        index.parent.mkdir(parents=True)
+        index.write_text('{"frame_count":96}\n', encoding="utf-8")
+        return index
+
+    monkeypatch.setattr(witness, "_timestamp_slug", lambda: "20260531T010203Z")
+    monkeypatch.setattr(witness, "run_witness_window", run_witness_window)
+
+    assert witness.main(["--output-root", str(tmp_path), "--duration", "1.25"]) == 2

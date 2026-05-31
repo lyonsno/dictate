@@ -155,10 +155,21 @@ def _start_retina_lasso_witness(
         log.write("Retina Lasso auto witness skipped: SPOKE_COMMAND_OVERLAY_TRACE_PATH is unset.\n")
         return
 
-    script = repo_root / "scripts" / "command-overlay-retina-lasso-witness.py"
+    witness_kind = child_env.get("SPOKE_RETINA_LASSO_WITNESS_KIND", "").strip()
+    throughglass_witness = witness_kind == "perceptasia-throughglass" or _env_flag(
+        child_env, "SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE"
+    )
+    script_name = (
+        "perceptasia-throughglass-witness.py"
+        if throughglass_witness
+        else "command-overlay-retina-lasso-witness.py"
+    )
+    script = repo_root / "scripts" / script_name
     if not script.is_file():
         log.write(f"Retina Lasso auto witness skipped: witness script missing at {script}.\n")
         return
+    if throughglass_witness:
+        log.write("Retina Lasso auto witness: using Perceptasia Throughglass contract gate.\n")
 
     perceptasia_root = Path(
         child_env.get(

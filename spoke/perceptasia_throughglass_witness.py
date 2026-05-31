@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 
 from .retina_lasso_witness import (
     DEFAULT_PASSIVE_CAPTURE_PROFILE,
@@ -21,6 +23,10 @@ DEFAULT_LANE = "perceptasia-throughglass-graft"
 DEFAULT_DIAULOS = "Warpstorm Pit Boss"
 DEFAULT_SOURCE_APP = "Spoke"
 DEFAULT_SOURCE_WINDOW = "Perceptasia Throughglass / Assistant Overlay"
+DEFAULT_LOG_PATHS = (
+    Path.home() / "Library" / "Logs" / "spoke-main-launch.log",
+    Path.home() / "Library" / "Logs" / "spoke-launch-target.log",
+)
 
 
 def _timestamp_slug() -> str:
@@ -54,6 +60,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-window", default=DEFAULT_SOURCE_WINDOW)
     parser.add_argument("--capture-command")
     parser.add_argument(
+        "--allow-unproven",
+        action="store_true",
+        help="Write the witness index but return success even if Throughglass content proof is absent.",
+    )
+    parser.add_argument(
+        "--log-path",
+        action="append",
+        dest="log_paths",
+        help="Spoke runtime log to inspect for Throughglass content-proof receipts.",
+    )
+    parser.add_argument("--perceptasia-root", help=argparse.SUPPRESS)
+    parser.add_argument("--watch-trace", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--watch-timeout", type=float, default=7200.0, help=argparse.SUPPRESS)
+    parser.add_argument("--event-capture-duration", type=float, default=1.5, help=argparse.SUPPRESS)
+    parser.add_argument("--watch-max-captures", type=int, default=96, help=argparse.SUPPRESS)
+    parser.add_argument("--max-trigger-lag", type=float, default=1.0, help=argparse.SUPPRESS)
+    parser.add_argument("--open-ready-timeout", type=float, default=2.0, help=argparse.SUPPRESS)
+    parser.add_argument("--open-ready-poll-interval", type=float, default=0.025, help=argparse.SUPPRESS)
+    parser.add_argument(
         "--launch",
         action="store_true",
         help="Launch the Throughglass target before capture; this may replace the current live Spoke process.",
@@ -69,6 +94,78 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reopen-dwell", type=float, default=0.75)
     parser.add_argument("--cycle-pause", type=float, default=0.2)
     return parser
+
+
+def _load_index(index_path: Path) -> dict:
+    try:
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_index(index_path: Path, payload: dict) -> None:
+    index_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _runtime_log_contract(log_paths: list[Path]) -> dict:
+    for path in log_paths:
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        latest_setup = -1
+        latest_url = None
+        for index, line in enumerate(lines):
+            match = re.search(r"Perceptasia Throughglass: setup begin url=([^\s]+)", line)
+            if match:
+                latest_setup = index
+                latest_url = match.group(1)
+        if latest_setup < 0:
+            continue
+        scoped = lines[latest_setup:]
+        content_verified = any("Perceptasia Throughglass: content verified" in line for line in scoped)
+        webview_loaded = any("Perceptasia Throughglass: WKWebView request loaded" in line for line in scoped)
+        fallback_seen = any(
+            marker in line
+            for line in scoped
+            for marker in (
+                "WKWebView unavailable",
+                "provider unavailable",
+                "content verification failed",
+            )
+        )
+        return {
+            "latest_setup_seen": True,
+            "log_path": str(path),
+            "provider_url": latest_url,
+            "webview_loaded": webview_loaded,
+            "content_verified": content_verified,
+            "fallback_seen": fallback_seen,
+            "passed": bool(content_verified and webview_loaded and not fallback_seen),
+        }
+    return {
+        "latest_setup_seen": False,
+        "provider_url": None,
+        "webview_loaded": False,
+        "content_verified": False,
+        "fallback_seen": False,
+        "passed": False,
+    }
+
+
+def annotate_throughglass_contract(index_path: Path, *, log_paths: list[Path]) -> dict:
+    payload = _load_index(index_path)
+    existing = payload.get("throughglass_contract")
+    if isinstance(existing, dict) and existing.get("passed") is True:
+        return existing
+    contract = _runtime_log_contract(log_paths)
+    frame_count = payload.get("frame_count")
+    if isinstance(frame_count, int):
+        contract["frame_count"] = frame_count
+    payload["throughglass_contract"] = contract
+    _write_index(index_path, payload)
+    return contract
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -118,8 +215,10 @@ def main(argv: list[str] | None = None) -> int:
             stimulus={"mode": "passive-throughglass"},
         )
 
+    log_paths = [Path(path).expanduser() for path in args.log_paths] if args.log_paths else list(DEFAULT_LOG_PATHS)
+    contract = annotate_throughglass_contract(Path(index_path), log_paths=log_paths)
     print(index_path)
-    return 0
+    return 0 if args.allow_unproven or contract.get("passed") is True else 2
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ first content source behind that contract.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import logging
 import os
@@ -51,6 +52,10 @@ _DISCOVERY_PORTS = (8742, 8753, 8754, 8755, 8764, 8797, 8798, 8799, 8896)
 _NSWindowStyleMaskClosable = 1 << 1
 _NSWindowStyleMaskResizable = 1 << 3
 _NSWindowStyleMaskUtilityWindow = 1 << 4
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip() not in {"", "0", "false", "False", "no", "off"}
 
 
 @dataclass(frozen=True)
@@ -150,6 +155,11 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._content_view = None
         self._visible = False
         self._manifest = PerceptasiaThroughglassManifest.from_env()
+        self._content_kind = "uninitialized"
+        self._content_verified = False
+        self._content_failure = None
+        self._content_probe_attempts = 0
+        self._pending_show = False
         return self
 
     def setup(self) -> None:
@@ -189,36 +199,69 @@ class PerceptasiaThroughglassGraft(NSObject):
         panel.setFloatingPanel_(True)
         panel.setBecomesKeyOnlyIfNeeded_(True)
 
-        content = (
+        content_result = (
             _make_content_view(self._manifest.url, width, height)
             if provider_reachable
             else _make_provider_unavailable_view(self._manifest.url, width, height)
         )
+        if isinstance(content_result, tuple) and len(content_result) == 2:
+            content, content_kind = content_result
+        else:
+            content = content_result
+            content_kind = "unverified"
+        self._content_kind = str(content_kind)
+        self._content_verified = False
+        self._content_failure = None
         panel.contentView().addSubview_(content)
         self._panel = panel
         self._content_view = content
+        if self._content_kind == "webview":
+            self.__schedule_content_probe(delay=0.25)
+        else:
+            self._content_failure = self._content_kind
         logger.info(
-            "Perceptasia Throughglass: setup complete x=%.1f y=%.1f w=%.1f h=%.1f",
+            "Perceptasia Throughglass: setup complete x=%.1f y=%.1f w=%.1f h=%.1f content_kind=%s",
             x,
             y,
             width,
             height,
+            self._content_kind,
         )
 
-    def show(self) -> None:
+    def show(self) -> bool:
         logger.info("Perceptasia Throughglass: show begin")
         if self._panel is None:
             self.setup()
         if self._panel is None:
             logger.warning("Perceptasia Throughglass: show aborted without panel")
-            return
+            return False
+        if self.__requires_verified_content() and not self._content_verified:
+            self._pending_show = True
+            logger.warning(
+                "Perceptasia Throughglass: show deferred until content verifies kind=%s failure=%s",
+                self._content_kind,
+                self._content_failure,
+            )
+            return False
+        return self.__show_verified()
+
+    def __show_verified(self) -> bool:
+        if self._panel is None:
+            return False
         self._panel.orderFrontRegardless()
         self._visible = True
+        self._pending_show = False
         self.__publish_shell_state("materialize")
         self.__publish_shell_state("rest")
-        logger.info("Perceptasia Throughglass: show complete")
+        logger.info(
+            "Perceptasia Throughglass: show complete content_kind=%s content_verified=%s",
+            self._content_kind,
+            self._content_verified,
+        )
+        return True
 
     def hide(self) -> None:
+        self._pending_show = False
         self._visible = False
         self.__publish_shell_state("dismiss")
         self.__publish_shell_state("hidden", visible=False)
@@ -239,6 +282,90 @@ class PerceptasiaThroughglassGraft(NSObject):
                 release(_CLIENT_ID)
         self._panel = None
         self._content_view = None
+
+    def mark_content_verified_for_test(self, title: str = "Perceptasia 3D") -> None:
+        self.__mark_content_verified({"title": title})
+
+    def probeThroughglassContent_(self, _sender) -> None:
+        self.__probe_content_ready()
+
+    def __requires_verified_content(self) -> bool:
+        return _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY") or _env_flag(
+            "SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE"
+        )
+
+    def __schedule_content_probe(self, *, delay: float) -> None:
+        scheduler = getattr(self, "performSelector_withObject_afterDelay_", None)
+        if callable(scheduler):
+            try:
+                scheduler("probeThroughglassContent:", None, delay)
+            except Exception:
+                logger.exception("Perceptasia Throughglass: content probe scheduling failed")
+                self.__mark_content_failed("probe-scheduler-failed")
+        else:
+            logger.info("Perceptasia Throughglass: content probe scheduler unavailable")
+
+    def __probe_content_ready(self) -> None:
+        view = self._content_view
+        evaluator = getattr(view, "evaluateJavaScript_completionHandler_", None)
+        if not callable(evaluator):
+            self.__mark_content_failed("webview-evaluator-unavailable")
+            return
+        self._content_probe_attempts += 1
+        script = (
+            "(() => ({"
+            "title: document.title || '',"
+            "readyState: document.readyState || '',"
+            "bodyText: (document.body && document.body.innerText || '').slice(0, 512),"
+            "canvasCount: document.querySelectorAll('canvas').length"
+            "}))()"
+        )
+
+        def _completion(result, error):
+            if error is not None:
+                self.__mark_content_failed(f"javascript-error:{error}")
+                return
+            if self.__content_probe_matches_perceptasia(result):
+                self.__mark_content_verified(result)
+                return
+            if self._content_probe_attempts < 10:
+                self.__schedule_content_probe(delay=0.25)
+                return
+            self.__mark_content_failed(f"probe-mismatch:{result!r}")
+
+        evaluator(script, _completion)
+
+    def __content_probe_matches_perceptasia(self, result) -> bool:
+        if not isinstance(result, Mapping):
+            return False
+        haystack = " ".join(
+            str(result.get(key, ""))
+            for key in ("title", "readyState", "bodyText")
+        ).lower()
+        canvas_count = result.get("canvasCount", 0)
+        try:
+            canvas_count = int(canvas_count)
+        except (TypeError, ValueError):
+            canvas_count = 0
+        return "perceptasia" in haystack and canvas_count >= 1
+
+    def __mark_content_verified(self, result) -> None:
+        self._content_verified = True
+        self._content_failure = None
+        result_title = result.get("title") if isinstance(result, Mapping) else result
+        canvas_count = result.get("canvasCount") if isinstance(result, Mapping) else None
+        logger.info(
+            "Perceptasia Throughglass: content verified title=%r canvas_count=%s",
+            result_title,
+            canvas_count,
+        )
+        if self._pending_show:
+            self.__show_verified()
+
+    def __mark_content_failed(self, reason: str) -> None:
+        self._content_verified = False
+        self._content_failure = reason
+        logger.warning("Perceptasia Throughglass: content verification failed reason=%s", reason)
 
     def _bounds(self) -> OpticalFieldBounds:
         if self._panel is None:
@@ -354,7 +481,7 @@ def _make_content_view(url: str, width: float, height: float):
         request = NSURLRequest.requestWithURL_(NSURL.URLWithString_(url))
         view.loadRequest_(request)
         logger.info("Perceptasia Throughglass: WKWebView request loaded")
-        return view
+        return view, "webview"
     except Exception:
         logger.warning("Perceptasia Throughglass: WKWebView unavailable, using fallback", exc_info=True)
         label = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, width, height))
@@ -365,7 +492,7 @@ def _make_content_view(url: str, width: float, height: float):
         label.setTextColor_(NSColor.colorWithWhite_alpha_(0.86, 1.0))
         label.setEditable_(False)
         label.setSelectable_(True)
-        return label
+        return label, "webkit-fallback"
 
 
 def _make_provider_unavailable_view(url: str, width: float, height: float):
@@ -377,4 +504,4 @@ def _make_provider_unavailable_view(url: str, width: float, height: float):
     label.setTextColor_(NSColor.colorWithWhite_alpha_(0.86, 1.0))
     label.setEditable_(False)
     label.setSelectable_(True)
-    return label
+    return label, "provider-unavailable"

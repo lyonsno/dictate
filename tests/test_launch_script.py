@@ -392,6 +392,8 @@ class TestLauncherRetinaLassoWitness:
         text = script_text()
         assert "SPOKE_RETINA_LASSO_AUTO_WITNESS" in text
         assert "command-overlay-retina-lasso-witness.py" in text
+        assert "perceptasia-throughglass-witness.py" in text
+        assert "SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE" in text
         assert "SPOKE_COMMAND_OVERLAY_TRACE_PATH" in text
         assert "SPOKE_RETINA_LASSO_PERCEPTASIA_ROOT" in text
         assert "SPOKE_RETINA_LASSO_OUTPUT_ROOT" in text
