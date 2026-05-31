@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import importlib.util
+import subprocess
+import sys
+
 import pytest
 
 from spoke.optical_field import OpticalFieldBounds
@@ -57,3 +61,23 @@ def test_throughglass_compiles_to_public_optical_field_shell_config(mock_pyobjc)
     assert "progress" not in config["optical_field"]
     assert "phase" not in config["optical_field"]
     assert config["gpu_material_enabled"] == pytest.approx(1.0)
+
+
+def test_throughglass_real_pyobjc_import_accepts_private_helpers():
+    if importlib.util.find_spec("objc") is None or importlib.util.find_spec("AppKit") is None:
+        pytest.skip("PyObjC/AppKit unavailable")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from spoke.perceptasia_throughglass import PerceptasiaThroughglassGraft; "
+            "print(PerceptasiaThroughglassGraft.__name__)",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "PerceptasiaThroughglassGraft" in result.stdout

@@ -198,14 +198,14 @@ class PerceptasiaThroughglassGraft(NSObject):
             return
         self._panel.orderFrontRegardless()
         self._visible = True
-        self._publish("materialize")
-        self._publish("rest")
+        self.__publish_shell_state("materialize")
+        self.__publish_shell_state("rest")
         logger.info("Perceptasia Throughglass: show complete")
 
     def hide(self) -> None:
         self._visible = False
-        self._publish("dismiss")
-        self._publish("hidden", visible=False)
+        self.__publish_shell_state("dismiss")
+        self.__publish_shell_state("hidden", visible=False)
         if self._panel is not None:
             self._panel.orderOut_(None)
 
@@ -235,7 +235,7 @@ class PerceptasiaThroughglassGraft(NSObject):
             height=float(frame.size.height),
         )
 
-    def _publish(self, state: str, *, visible: bool = True) -> bool:
+    def __publish_shell_state(self, state: str, *, visible: bool = True) -> bool:
         if self._registry is None or self._panel is None or self._content_view is None:
             logger.info("Perceptasia Throughglass: publish skipped state=%s", state)
             return False
