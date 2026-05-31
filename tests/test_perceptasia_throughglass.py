@@ -12,11 +12,16 @@ import pytest
 from spoke.optical_field import OpticalFieldBounds
 
 
+def _connection_refused(*_args, **_kwargs):
+    raise OSError("connection refused")
+
+
 def test_manifest_defaults_to_current_local_perceptasia_provider(mock_pyobjc, monkeypatch):
-    from spoke.perceptasia_throughglass import PerceptasiaThroughglassManifest
+    module = importlib.import_module("spoke.perceptasia_throughglass")
 
     monkeypatch.delenv("SPOKE_PERCEPTASIA_THROUGHGLASS_URL", raising=False)
-    manifest = PerceptasiaThroughglassManifest.from_env()
+    monkeypatch.setattr(module.urllib.request, "urlopen", _connection_refused)
+    manifest = module.PerceptasiaThroughglassManifest.from_env()
 
     assert manifest.schema == "spoke.perceptasia-throughglass.provider.v0"
     assert manifest.url == "http://localhost:8742"
@@ -25,13 +30,75 @@ def test_manifest_defaults_to_current_local_perceptasia_provider(mock_pyobjc, mo
 
 
 def test_manifest_env_override_is_provider_contract_not_window_lifecycle(mock_pyobjc, monkeypatch):
-    from spoke.perceptasia_throughglass import PerceptasiaThroughglassManifest
+    module = importlib.import_module("spoke.perceptasia_throughglass")
 
     monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_URL", "http://localhost:9999/")
-    manifest = PerceptasiaThroughglassManifest.from_env()
+    monkeypatch.setattr(module.urllib.request, "urlopen", _connection_refused)
+    manifest = module.PerceptasiaThroughglassManifest.from_env()
 
     assert manifest.url == "http://localhost:9999"
     assert manifest.scene_url == "http://localhost:9999/scene.json"
+
+
+def test_manifest_discovers_live_local_provider_when_requested_port_is_dead(mock_pyobjc, monkeypatch):
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_URL", "http://localhost:8742")
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_DISCOVERY_PORTS", "8753")
+
+    class _Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        if request.full_url == "http://localhost:8753":
+            return _Response()
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+
+    manifest = module.PerceptasiaThroughglassManifest.from_env()
+
+    assert manifest.url == "http://localhost:8753"
+    assert manifest.scene_url == "http://localhost:8753/scene.json"
+
+
+def test_manifest_skips_non_perceptasia_directory_listing(mock_pyobjc, monkeypatch):
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_URL", "http://localhost:8742")
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_DISCOVERY_PORTS", "8797,8798")
+
+    class _Response:
+        status = 200
+
+        def __init__(self, body: bytes):
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return self._body
+
+    def fake_urlopen(request, timeout=None):
+        if request.full_url == "http://localhost:8797":
+            return _Response(b"<title>Directory listing for /</title>")
+        if request.full_url == "http://localhost:8798":
+            return _Response(b"<title>Perceptasia 3D</title>")
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+
+    manifest = module.PerceptasiaThroughglassManifest.from_env()
+
+    assert manifest.url == "http://localhost:8798"
 
 
 def test_throughglass_request_is_independent_sibling_without_progress_custody(mock_pyobjc):

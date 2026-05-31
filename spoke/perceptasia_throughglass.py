@@ -12,6 +12,8 @@ from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
+import urllib.error
+import urllib.request
 
 import objc
 from AppKit import (
@@ -44,6 +46,7 @@ _DEFAULT_URL = "http://localhost:8742"
 _DEFAULT_WIDTH = 980.0
 _DEFAULT_HEIGHT = 560.0
 _MIN_MARGIN = 32.0
+_DISCOVERY_PORTS = (8742, 8753, 8754, 8755, 8764, 8797, 8798, 8799, 8896)
 
 _NSWindowStyleMaskClosable = 1 << 1
 _NSWindowStyleMaskResizable = 1 << 3
@@ -62,7 +65,8 @@ class PerceptasiaThroughglassManifest:
 
     @classmethod
     def from_env(cls) -> "PerceptasiaThroughglassManifest":
-        url = os.environ.get("SPOKE_PERCEPTASIA_THROUGHGLASS_URL", _DEFAULT_URL).rstrip("/")
+        requested_url = os.environ.get("SPOKE_PERCEPTASIA_THROUGHGLASS_URL", _DEFAULT_URL).rstrip("/")
+        url = _resolve_provider_url(requested_url)
         return cls(
             url=url,
             scene_url=os.environ.get(
@@ -152,6 +156,12 @@ class PerceptasiaThroughglassGraft(NSObject):
         if self._panel is not None:
             return
         logger.info("Perceptasia Throughglass: setup begin url=%s", self._manifest.url)
+        provider_reachable = _is_provider_reachable(self._manifest.url)
+        if not provider_reachable:
+            logger.warning(
+                "Perceptasia Throughglass: provider unavailable url=%s",
+                self._manifest.url,
+            )
         screen = NSScreen.mainScreen()
         screen_frame = screen.visibleFrame() if screen is not None else NSMakeRect(0, 0, 1440, 900)
         x, y, width, height = _default_panel_rect(screen_frame)
@@ -179,7 +189,11 @@ class PerceptasiaThroughglassGraft(NSObject):
         panel.setFloatingPanel_(True)
         panel.setBecomesKeyOnlyIfNeeded_(True)
 
-        content = _make_content_view(self._manifest.url, width, height)
+        content = (
+            _make_content_view(self._manifest.url, width, height)
+            if provider_reachable
+            else _make_provider_unavailable_view(self._manifest.url, width, height)
+        )
         panel.contentView().addSubview_(content)
         self._panel = panel
         self._content_view = content
@@ -270,6 +284,66 @@ def _default_panel_rect(frame) -> tuple[float, float, float, float]:
     return x, y, width, height
 
 
+def _discovery_ports() -> tuple[int, ...]:
+    raw = os.environ.get("SPOKE_PERCEPTASIA_THROUGHGLASS_DISCOVERY_PORTS", "")
+    if not raw.strip():
+        return _DISCOVERY_PORTS
+    ports: list[int] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            ports.append(int(item))
+        except ValueError:
+            logger.warning("Perceptasia Throughglass: ignoring invalid discovery port %r", item)
+    return tuple(ports) or _DISCOVERY_PORTS
+
+
+def _candidate_provider_urls(requested_url: str) -> tuple[str, ...]:
+    candidates = [requested_url.rstrip("/"), _DEFAULT_URL]
+    candidates.extend(f"http://localhost:{port}" for port in _discovery_ports())
+    seen: set[str] = set()
+    unique: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            unique.append(candidate)
+    return tuple(unique)
+
+
+def _is_provider_reachable(url: str, *, timeout: float = 0.35) -> bool:
+    try:
+        request = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = int(getattr(response, "status", 200))
+            if not 200 <= status < 400:
+                return False
+            read = getattr(response, "read", None)
+            if not callable(read):
+                return True
+            body = read(65536)
+            if not body:
+                return True
+            marker = body.decode("utf-8", errors="ignore").lower()
+            return "perceptasia" in marker or "scene.json" in marker
+    except (OSError, urllib.error.URLError, ValueError):
+        return False
+
+
+def _resolve_provider_url(requested_url: str) -> str:
+    for candidate in _candidate_provider_urls(requested_url):
+        if _is_provider_reachable(candidate):
+            if candidate != requested_url:
+                logger.info(
+                    "Perceptasia Throughglass: resolved provider %s from requested %s",
+                    candidate,
+                    requested_url,
+                )
+            return candidate
+    return requested_url
+
+
 def _make_content_view(url: str, width: float, height: float):
     try:
         from Foundation import NSURL, NSURLRequest
@@ -292,3 +366,15 @@ def _make_content_view(url: str, width: float, height: float):
         label.setEditable_(False)
         label.setSelectable_(True)
         return label
+
+
+def _make_provider_unavailable_view(url: str, width: float, height: float):
+    label = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, width, height))
+    label.setStringValue_(f"Perceptasia provider unavailable: {url}")
+    label.setBezeled_(False)
+    label.setDrawsBackground_(True)
+    label.setBackgroundColor_(NSColor.colorWithWhite_alpha_(0.08, 0.88))
+    label.setTextColor_(NSColor.colorWithWhite_alpha_(0.86, 1.0))
+    label.setEditable_(False)
+    label.setSelectable_(True)
+    return label
