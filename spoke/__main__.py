@@ -1395,10 +1395,18 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay._on_cancel_spring_threshold = self._on_cancel_spring_threshold
             self._refresh_command_model_options_async()
 
+        # Iron Giant: install event tap and probe mic before optional visual
+        # experiments. A slow/buggy optical consumer must not strand the core
+        # dictation path before the spacebar is live.
+        self._menubar.set_status_text("Starting up...")
+        self._setup_event_tap()
+        self._request_mic_permission()
+
         from .preview_warp_hud import PreviewWarpHUD
         self._preview_warp_hud = PreviewWarpHUD.alloc().initWithOverlay_(self._overlay)
         self._preview_warp_hud.restore_visibility()
         self._menubar._on_toggle_preview_warp = self._preview_warp_hud.toggle
+        logger.info("Perceptasia Throughglass: constructing graft")
         from .perceptasia_throughglass import PerceptasiaThroughglassGraft
         self._perceptasia_throughglass = (
             PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(
@@ -1408,6 +1416,7 @@ class SpokeAppDelegate(NSObject):
         self._menubar._on_toggle_perceptasia_throughglass = (
             self._perceptasia_throughglass.toggle
         )
+        logger.info("Perceptasia Throughglass: graft toggle registered")
         if getattr(self, "_command_overlay", None) is not None:
             from .seam_pucker_hud import SeamPuckerHUD
             self._seam_pucker_hud = SeamPuckerHUD.alloc().initWithOverlay_(
@@ -1420,17 +1429,6 @@ class SpokeAppDelegate(NSObject):
         if handsfree_env_ready():
             self._menubar._on_toggle_handsfree = self._toggle_handsfree
         self._menubar.refresh_menu()
-        self._maybe_show_perceptasia_throughglass_smoke()
-
-        # Iron Giant: install event tap and probe mic in parallel.
-        # The event tap (spacebar interception) only needs Accessibility permission,
-        # not mic access.  Under memory pressure the mic probe can fail even though
-        # the system has already granted mic permission, which previously blocked
-        # the entire app.  Now the spacebar works immediately and mic readiness is
-        # tracked independently.
-        self._menubar.set_status_text("Starting up…")
-        self._setup_event_tap()
-        self._request_mic_permission()
 
     def _request_mic_permission(self) -> None:
         """Check mic permission via AVCaptureDevice (no PortAudio allocation).
@@ -1606,6 +1604,7 @@ class SpokeAppDelegate(NSObject):
         self._hide_startup_status()
         self._maybe_show_operator_ping_token_smoke()
         self._maybe_show_diaulos_card_smoke()
+        self._maybe_show_perceptasia_throughglass_smoke()
 
         # Warn if cloud preview is active — each partial is a paid API call.
         if getattr(self, "_preview_backend", "local") == "cloud":
@@ -3796,13 +3795,17 @@ class SpokeAppDelegate(NSObject):
         """Open the Perceptasia Throughglass surface when explicit smoke env is enabled."""
         value = os.environ.get("SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE", "")
         if value in {"", "0", "false", "False", "no", "off"}:
+            logger.info("Perceptasia Throughglass smoke disabled")
             return False
         graft = getattr(self, "_perceptasia_throughglass", None)
         if graft is None:
+            logger.warning("Perceptasia Throughglass smoke requested before graft exists")
             return False
+        logger.info("Perceptasia Throughglass smoke: showing graft")
         graft.show()
         if self._menubar is not None:
             self._menubar.set_status_text("Perceptasia Throughglass smoke")
+        logger.info("Perceptasia Throughglass smoke: show requested")
         return True
 
     def _tray_entry_deck(self, entry: TrayEntry | str) -> str:

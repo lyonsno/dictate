@@ -151,6 +151,7 @@ class PerceptasiaThroughglassGraft(NSObject):
     def setup(self) -> None:
         if self._panel is not None:
             return
+        logger.info("Perceptasia Throughglass: setup begin url=%s", self._manifest.url)
         screen = NSScreen.mainScreen()
         screen_frame = screen.visibleFrame() if screen is not None else NSMakeRect(0, 0, 1440, 900)
         x, y, width, height = _default_panel_rect(screen_frame)
@@ -180,16 +181,26 @@ class PerceptasiaThroughglassGraft(NSObject):
         panel.contentView().addSubview_(content)
         self._panel = panel
         self._content_view = content
+        logger.info(
+            "Perceptasia Throughglass: setup complete x=%.1f y=%.1f w=%.1f h=%.1f",
+            x,
+            y,
+            width,
+            height,
+        )
 
     def show(self) -> None:
+        logger.info("Perceptasia Throughglass: show begin")
         if self._panel is None:
             self.setup()
         if self._panel is None:
+            logger.warning("Perceptasia Throughglass: show aborted without panel")
             return
         self._panel.orderFrontRegardless()
         self._visible = True
         self._publish("materialize")
         self._publish("rest")
+        logger.info("Perceptasia Throughglass: show complete")
 
     def hide(self) -> None:
         self._visible = False
@@ -226,18 +237,27 @@ class PerceptasiaThroughglassGraft(NSObject):
 
     def _publish(self, state: str, *, visible: bool = True) -> bool:
         if self._registry is None or self._panel is None or self._content_view is None:
+            logger.info("Perceptasia Throughglass: publish skipped state=%s", state)
             return False
         if self._host is None:
             host_for_screen = getattr(self._registry, "host_for_screen", None)
             if not callable(host_for_screen):
+                logger.info("Perceptasia Throughglass: registry has no host_for_screen")
                 return False
             self._host = host_for_screen(NSScreen.mainScreen())
         config = compile_perceptasia_shell_config(self._bounds(), state=state, visible=visible)
         if not getattr(self, "_client_registered", False):
             added = self._host.add_client(_CLIENT_ID, self._panel, self._content_view, config)
             self._client_registered = bool(added)
+            logger.info(
+                "Perceptasia Throughglass: publish state=%s registered=%s",
+                state,
+                self._client_registered,
+            )
             return bool(added)
-        return bool(self._host.update_client_config(_CLIENT_ID, config))
+        updated = bool(self._host.update_client_config(_CLIENT_ID, config))
+        logger.info("Perceptasia Throughglass: publish state=%s updated=%s", state, updated)
+        return updated
 
 
 def _default_panel_rect(frame) -> tuple[float, float, float, float]:
@@ -253,11 +273,14 @@ def _make_content_view(url: str, width: float, height: float):
         from Foundation import NSURL, NSURLRequest
         from WebKit import WKWebView
 
+        logger.info("Perceptasia Throughglass: creating WKWebView")
         view = WKWebView.alloc().initWithFrame_(NSMakeRect(0, 0, width, height))
         request = NSURLRequest.requestWithURL_(NSURL.URLWithString_(url))
         view.loadRequest_(request)
+        logger.info("Perceptasia Throughglass: WKWebView request loaded")
         return view
     except Exception:
+        logger.warning("Perceptasia Throughglass: WKWebView unavailable, using fallback", exc_info=True)
         label = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, width, height))
         label.setStringValue_(f"Perceptasia provider: {url}")
         label.setBezeled_(False)
