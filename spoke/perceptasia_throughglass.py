@@ -169,6 +169,8 @@ class PerceptasiaThroughglassGraft(NSObject):
         panel.setOpaque_(False)
         panel.setHasShadow_(False)
         panel.setBackgroundColor_(NSColor.clearColor())
+        # Visual-only grafts must not steal desktop clicks unless an input mode opts in.
+        panel.setIgnoresMouseEvents_(True)
         panel.setCollectionBehavior_(
             NSWindowCollectionBehaviorCanJoinAllSpaces
             | NSWindowCollectionBehaviorStationary

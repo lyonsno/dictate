@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import subprocess
 import sys
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -81,3 +84,22 @@ def test_throughglass_real_pyobjc_import_accepts_private_helpers():
 
     assert result.returncode == 0, result.stderr
     assert "PerceptasiaThroughglassGraft" in result.stdout
+
+
+def test_throughglass_panel_is_click_through_until_input_mode(mock_pyobjc, monkeypatch):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    panel = MagicMock()
+    panel.contentView.return_value = MagicMock()
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    module.NSScreen.mainScreen.return_value.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    monkeypatch.setattr(module, "_make_content_view", lambda url, width, height: MagicMock())
+
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+    graft.setup()
+
+    panel.setIgnoresMouseEvents_.assert_called_once_with(True)
