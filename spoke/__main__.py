@@ -1406,17 +1406,12 @@ class SpokeAppDelegate(NSObject):
         self._preview_warp_hud = PreviewWarpHUD.alloc().initWithOverlay_(self._overlay)
         self._preview_warp_hud.restore_visibility()
         self._menubar._on_toggle_preview_warp = self._preview_warp_hud.toggle
-        logger.info("Perceptasia Throughglass: constructing graft")
-        from .perceptasia_throughglass import PerceptasiaThroughglassGraft
-        self._perceptasia_throughglass = (
-            PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(
-                self._overlay_compositor_registry
-            )
-        )
+        self._perceptasia_throughglass = None
+        self._perceptasia_throughglass_constructing = False
         self._menubar._on_toggle_perceptasia_throughglass = (
-            self._perceptasia_throughglass.toggle
+            self._toggle_perceptasia_throughglass
         )
-        logger.info("Perceptasia Throughglass: graft toggle registered")
+        logger.info("Perceptasia Throughglass: lazy toggle registered")
         if getattr(self, "_command_overlay", None) is not None:
             from .seam_pucker_hud import SeamPuckerHUD
             self._seam_pucker_hud = SeamPuckerHUD.alloc().initWithOverlay_(
@@ -3791,15 +3786,48 @@ class SpokeAppDelegate(NSObject):
             self._menubar.set_status_text("Diaulos card smoke")
         return True
 
+    def _ensure_perceptasia_throughglass(self):
+        graft = getattr(self, "_perceptasia_throughglass", None)
+        if graft is not None:
+            return graft
+        if getattr(self, "_perceptasia_throughglass_constructing", False):
+            logger.warning("Perceptasia Throughglass: construction already in flight")
+            return None
+        self._perceptasia_throughglass_constructing = True
+        try:
+            logger.info("Perceptasia Throughglass: constructing graft")
+            from .perceptasia_throughglass import PerceptasiaThroughglassGraft
+
+            graft = PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(
+                self._overlay_compositor_registry
+            )
+            self._perceptasia_throughglass = graft
+            logger.info("Perceptasia Throughglass: graft constructed=%s", graft is not None)
+            return graft
+        except Exception:
+            self._perceptasia_throughglass = None
+            logger.exception("Perceptasia Throughglass: graft construction failed")
+            if self._menubar is not None:
+                self._menubar.set_status_text("Perceptasia Throughglass failed")
+            return None
+        finally:
+            self._perceptasia_throughglass_constructing = False
+
+    def _toggle_perceptasia_throughglass(self) -> None:
+        graft = self._ensure_perceptasia_throughglass()
+        if graft is None:
+            return
+        graft.toggle()
+
     def _maybe_show_perceptasia_throughglass_smoke(self) -> bool:
         """Open the Perceptasia Throughglass surface when explicit smoke env is enabled."""
         value = os.environ.get("SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE", "")
         if value in {"", "0", "false", "False", "no", "off"}:
             logger.info("Perceptasia Throughglass smoke disabled")
             return False
-        graft = getattr(self, "_perceptasia_throughglass", None)
+        graft = self._ensure_perceptasia_throughglass()
         if graft is None:
-            logger.warning("Perceptasia Throughglass smoke requested before graft exists")
+            logger.warning("Perceptasia Throughglass smoke requested but graft is unavailable")
             return False
         logger.info("Perceptasia Throughglass smoke: showing graft")
         graft.show()
