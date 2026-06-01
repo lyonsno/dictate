@@ -206,8 +206,12 @@ class PerceptasiaThroughglassGraft(NSObject):
         panel.setOpaque_(True)
         panel.setHasShadow_(False)
         panel.setBackgroundColor_(NSColor.colorWithWhite_alpha_(0.0, 1.0))
-        # Visual-only grafts must not steal desktop clicks unless an input mode opts in.
-        panel.setIgnoresMouseEvents_(True)
+        # Throughglass is a live Perceptasia viewer, so pointer input is
+        # accepted by default. Click-through remains available for witness/debug
+        # runs that only need a visual surface.
+        panel.setIgnoresMouseEvents_(
+            _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_CLICK_THROUGH")
+        )
         panel.setCollectionBehavior_(
             NSWindowCollectionBehaviorCanJoinAllSpaces
             | NSWindowCollectionBehaviorStationary

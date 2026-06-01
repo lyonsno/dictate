@@ -165,10 +165,11 @@ def test_throughglass_real_pyobjc_import_accepts_private_helpers():
     assert "PerceptasiaThroughglassGraft" in result.stdout
 
 
-def test_throughglass_panel_is_click_through_until_input_mode(mock_pyobjc, monkeypatch):
+def test_throughglass_panel_accepts_pointer_input_by_default(mock_pyobjc, monkeypatch):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")
 
+    monkeypatch.delenv("SPOKE_PERCEPTASIA_THROUGHGLASS_CLICK_THROUGH", raising=False)
     panel = MagicMock()
     panel.contentView.return_value = MagicMock()
     module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
@@ -182,6 +183,26 @@ def test_throughglass_panel_is_click_through_until_input_mode(mock_pyobjc, monke
     graft.setup()
 
     panel.setLevel_.assert_called_once_with(25)
+    panel.setIgnoresMouseEvents_.assert_called_once_with(False)
+
+
+def test_throughglass_panel_can_opt_into_click_through_debug_mode(mock_pyobjc, monkeypatch):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_CLICK_THROUGH", "1")
+    panel = MagicMock()
+    panel.contentView.return_value = MagicMock()
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    module.NSScreen.mainScreen.return_value.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    monkeypatch.setattr(module, "_make_content_view", lambda url, width, height: MagicMock())
+
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+    graft.setup()
+
     panel.setIgnoresMouseEvents_.assert_called_once_with(True)
 
 
