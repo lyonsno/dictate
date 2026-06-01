@@ -142,6 +142,12 @@ def compile_perceptasia_shell_config(
     request = build_perceptasia_optical_request(bounds, state=state, visible=visible)
     config = compile_placeholder_shell_config(request)
     config["visible"] = bool(visible and state != "hidden")
+    # The live WKWebView is the content-bearing surface. Throughglass may keep
+    # a compositor registration for optical continuity, but the shell cannot
+    # draw a material fill/blur slab that can look like the verified viewer.
+    config["gpu_material_enabled"] = 0.0
+    config["mip_blur_strength"] = 0.0
+    config["throughglass_content_carrier"] = "external_webview"
     return config
 
 

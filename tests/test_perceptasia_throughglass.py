@@ -130,7 +130,18 @@ def test_throughglass_compiles_to_public_optical_field_shell_config(mock_pyobjc)
     assert config["optical_field"]["state"] == "materialize"
     assert "progress" not in config["optical_field"]
     assert "phase" not in config["optical_field"]
-    assert config["gpu_material_enabled"] == pytest.approx(1.0)
+
+
+def test_throughglass_shell_cannot_substitute_for_live_webview_content(mock_pyobjc):
+    from spoke.perceptasia_throughglass import compile_perceptasia_shell_config
+
+    bounds = OpticalFieldBounds(100.0, 80.0, 900.0, 520.0)
+    config = compile_perceptasia_shell_config(bounds, state="rest")
+
+    assert config["client_id"] == "perceptasia.throughglass"
+    assert config["visible"] is True
+    assert config["gpu_material_enabled"] == pytest.approx(0.0)
+    assert config["mip_blur_strength"] == pytest.approx(0.0)
 
 
 def test_throughglass_real_pyobjc_import_accepts_private_helpers():
