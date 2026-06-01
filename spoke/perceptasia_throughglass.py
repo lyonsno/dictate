@@ -168,12 +168,15 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._content_verified = False
         self._content_failure = None
         self._content_probe_attempts = 0
+        self._content_generation = 0
+        self._client_registered = False
         self._pending_show = False
         return self
 
     def setup(self) -> None:
         if self._panel is not None:
             return
+        self._content_generation += 1
         logger.info("Perceptasia Throughglass: setup begin url=%s", self._manifest.url)
         provider_reachable = _is_provider_reachable(self._manifest.url)
         if not provider_reachable:
@@ -291,6 +294,8 @@ class PerceptasiaThroughglassGraft(NSObject):
             self.__publish_shell_state("hidden", visible=False)
         if self._panel is not None:
             self._panel.orderOut_(None)
+        self.__release_shell_client()
+        self.__teardown_content_carrier()
 
     def toggle(self) -> None:
         if self._visible:
@@ -300,10 +305,6 @@ class PerceptasiaThroughglassGraft(NSObject):
 
     def cleanup(self) -> None:
         self.hide()
-        if self._host is not None and getattr(self, "_client_registered", False):
-            release = getattr(self._host, "release_client", None)
-            if callable(release):
-                release(_CLIENT_ID)
         self._panel = None
         self._content_view = None
 
@@ -334,6 +335,7 @@ class PerceptasiaThroughglassGraft(NSObject):
 
     def __probe_content_ready(self) -> None:
         view = self._content_view
+        generation = self._content_generation
         evaluator = getattr(view, "evaluateJavaScript_completionHandler_", None)
         if not callable(evaluator):
             self.__mark_content_failed("webview-evaluator-unavailable")
@@ -382,6 +384,9 @@ class PerceptasiaThroughglassGraft(NSObject):
         )
 
         def _completion(result, error):
+            if generation != self._content_generation or view is not self._content_view:
+                logger.info("Perceptasia Throughglass: stale content probe ignored")
+                return
             if error is not None:
                 self.__mark_content_failed(f"javascript-error:{error}")
                 return
@@ -445,6 +450,37 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._content_verified = False
         self._content_failure = reason
         logger.warning("Perceptasia Throughglass: content verification failed reason=%s", reason)
+
+    def __release_shell_client(self) -> None:
+        if self._host is None or not getattr(self, "_client_registered", False):
+            return
+        release = getattr(self._host, "release_client", None)
+        if callable(release):
+            release(_CLIENT_ID)
+        self._client_registered = False
+
+    def __teardown_content_carrier(self) -> None:
+        content = self._content_view
+        panel = self._panel
+        if content is not None:
+            stop = getattr(content, "stopLoading", None)
+            if callable(stop):
+                stop()
+            load_blank = getattr(content, "loadHTMLString_baseURL_", None)
+            if callable(load_blank):
+                load_blank("", None)
+            remove = getattr(content, "removeFromSuperview", None)
+            if callable(remove):
+                remove()
+        self._content_generation += 1
+        self._panel = None
+        self._content_view = None
+        self._content_kind = "uninitialized"
+        self._content_verified = False
+        self._content_failure = None
+        self._content_probe_attempts = 0
+        if panel is not None:
+            logger.info("Perceptasia Throughglass: content carrier torn down")
 
     def _bounds(self) -> OpticalFieldBounds:
         if self._panel is None:

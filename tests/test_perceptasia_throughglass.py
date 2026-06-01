@@ -301,6 +301,87 @@ def test_throughglass_optical_shell_is_explicit_opt_in_for_live_webview(mock_pyo
     assert host.update_client_config.call_count == 1
 
 
+def test_throughglass_hide_unloads_live_webview_carrier(mock_pyobjc, monkeypatch):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.setattr(module, "_is_provider_reachable", lambda _url: True)
+
+    panel = MagicMock()
+    panel.contentView.return_value = MagicMock()
+    panel.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=100.0, y=80.0),
+        size=SimpleNamespace(width=900.0, height=520.0),
+    )
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    module.NSScreen.mainScreen.return_value.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    webview = MagicMock()
+    monkeypatch.setattr(module, "_make_content_view", lambda url, width, height: (webview, "webview"))
+
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+    graft.setup()
+    graft.mark_content_verified_for_test("Perceptasia 3D")
+    assert graft.show() is True
+
+    graft.hide()
+
+    panel.orderOut_.assert_called_once_with(None)
+    webview.stopLoading.assert_called_once_with()
+    webview.loadHTMLString_baseURL_.assert_called_once_with("", None)
+    webview.removeFromSuperview.assert_called_once_with()
+    assert graft._panel is None
+    assert graft._content_view is None
+    assert graft._content_verified is False
+
+
+def test_throughglass_rehydrates_content_after_hide(mock_pyobjc, monkeypatch):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY", "1")
+    monkeypatch.setattr(module, "_is_provider_reachable", lambda _url: True)
+
+    panel1 = MagicMock()
+    panel1.contentView.return_value = MagicMock()
+    panel1.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=100.0, y=80.0),
+        size=SimpleNamespace(width=900.0, height=520.0),
+    )
+    panel2 = MagicMock()
+    panel2.contentView.return_value = MagicMock()
+    panel2.frame.return_value = panel1.frame.return_value
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.side_effect = [
+        panel1,
+        panel2,
+    ]
+    module.NSScreen.mainScreen.return_value.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    webviews = [MagicMock(), MagicMock()]
+
+    def make_content(_url, _width, _height):
+        return webviews.pop(0), "webview"
+
+    monkeypatch.setattr(module, "_make_content_view", make_content)
+
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+    assert graft.show() is False
+    graft.mark_content_verified_for_test("Perceptasia 3D")
+    graft.hide()
+
+    assert graft.show() is False
+
+    panel1.orderOut_.assert_called_once_with(None)
+    assert panel2.orderFrontRegardless.call_count == 0
+    assert graft._pending_show is True
+    assert graft._content_verified is False
+    assert graft._content_view is not None
+
+
 def test_throughglass_probe_rejects_canvas_count_without_pixel_signal(mock_pyobjc):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")
