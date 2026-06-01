@@ -261,6 +261,41 @@ def test_throughglass_content_verification_releases_deferred_smoke(mock_pyobjc, 
     assert graft.show() is False
     graft.mark_content_verified_for_test("Perceptasia 3D")
 
+    assert panel.orderFrontRegardless.call_count == 1
+    host.add_client.assert_not_called()
+    host.update_client_config.assert_not_called()
+
+
+def test_throughglass_optical_shell_is_explicit_opt_in_for_live_webview(mock_pyobjc, monkeypatch):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY", "1")
+    monkeypatch.setenv("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL", "1")
+    monkeypatch.setattr(module, "_is_provider_reachable", lambda _url: True)
+
+    panel = MagicMock()
+    panel.contentView.return_value = MagicMock()
+    panel.frame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=100.0, y=80.0),
+        size=SimpleNamespace(width=900.0, height=520.0),
+    )
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    module.NSScreen.mainScreen.return_value.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    monkeypatch.setattr(module, "_make_content_view", lambda url, width, height: MagicMock())
+
+    host = MagicMock()
+    host.add_client.return_value = True
+    host.update_client_config.return_value = True
+    registry = SimpleNamespace(host_for_screen=MagicMock(return_value=host))
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(registry)
+
+    assert graft.show() is False
+    graft.mark_content_verified_for_test("Perceptasia 3D")
+
     assert panel.orderFrontRegardless.call_count == 2
     assert host.add_client.call_count == 1
     assert host.update_client_config.call_count == 1

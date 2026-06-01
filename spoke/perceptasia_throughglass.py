@@ -266,11 +266,16 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._panel.orderFrontRegardless()
         self._visible = True
         self._pending_show = False
-        self.__publish_shell_state("materialize")
-        self.__publish_shell_state("rest")
-        # Starting the compositor can perturb ordering; reassert the content
-        # panel above the optical field after the shell has been published.
-        self._panel.orderFrontRegardless()
+        if self.__should_publish_shell():
+            self.__publish_shell_state("materialize")
+            self.__publish_shell_state("rest")
+            # Starting the compositor can perturb ordering; reassert the content
+            # panel above the optical field after the shell has been published.
+            self._panel.orderFrontRegardless()
+        else:
+            logger.info(
+                "Perceptasia Throughglass: shell publish skipped for live content carrier"
+            )
         logger.info(
             "Perceptasia Throughglass: show complete content_kind=%s content_verified=%s",
             self._content_kind,
@@ -281,8 +286,9 @@ class PerceptasiaThroughglassGraft(NSObject):
     def hide(self) -> None:
         self._pending_show = False
         self._visible = False
-        self.__publish_shell_state("dismiss")
-        self.__publish_shell_state("hidden", visible=False)
+        if getattr(self, "_client_registered", False):
+            self.__publish_shell_state("dismiss")
+            self.__publish_shell_state("hidden", visible=False)
         if self._panel is not None:
             self._panel.orderOut_(None)
 
@@ -294,7 +300,7 @@ class PerceptasiaThroughglassGraft(NSObject):
 
     def cleanup(self) -> None:
         self.hide()
-        if self._host is not None:
+        if self._host is not None and getattr(self, "_client_registered", False):
             release = getattr(self._host, "release_client", None)
             if callable(release):
                 release(_CLIENT_ID)
@@ -311,6 +317,9 @@ class PerceptasiaThroughglassGraft(NSObject):
         return _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_REQUIRE_CONTENT_READY") or _env_flag(
             "SPOKE_PERCEPTASIA_THROUGHGLASS_SMOKE"
         )
+
+    def __should_publish_shell(self) -> bool:
+        return _env_flag("SPOKE_PERCEPTASIA_THROUGHGLASS_PUBLISH_SHELL")
 
     def __schedule_content_probe(self, *, delay: float) -> None:
         scheduler = getattr(self, "performSelector_withObject_afterDelay_", None)
