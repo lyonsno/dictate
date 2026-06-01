@@ -1119,6 +1119,9 @@ class SpokeAppDelegate(NSObject):
         self._glow: GlowOverlay | None = None
         self._overlay: TranscriptionOverlay | None = None
         self._overlay_compositor_registry = None
+        self._witness_control_path: Path | None = None
+        self._witness_control_offset = 0
+        self._witness_control_timer = None
         self._transcribing = False
         self._transcription_token = 0
         self._parallel_insert_token = 0
@@ -1394,6 +1397,7 @@ class SpokeAppDelegate(NSObject):
             self._command_overlay.set_compositor_registry(self._overlay_compositor_registry)
             self._command_overlay._on_cancel_spring_threshold = self._on_cancel_spring_threshold
             self._refresh_command_model_options_async()
+        self._start_witness_control_if_configured()
 
         # Iron Giant: install event tap and probe mic before optional visual
         # experiments. A slow/buggy optical consumer must not strand the core
@@ -1424,6 +1428,78 @@ class SpokeAppDelegate(NSObject):
         if handsfree_env_ready():
             self._menubar._on_toggle_handsfree = self._toggle_handsfree
         self._menubar.refresh_menu()
+
+    def _start_witness_control_if_configured(self) -> None:
+        raw_path = os.environ.get("SPOKE_WITNESS_CONTROL_PATH", "").strip()
+        if not raw_path:
+            return
+        path = Path(raw_path).expanduser()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch(exist_ok=True)
+            self._witness_control_path = path
+            self._witness_control_offset = path.stat().st_size
+        except Exception as exc:
+            logger.warning("Witness control disabled: cannot prepare %s: %s", path, exc)
+            record_command_overlay_trace(
+                "witness.control.disabled",
+                path=str(path),
+                reason="prepare_failed",
+                error=str(exc),
+            )
+            return
+        self._witness_control_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.05, self, "witnessControlTimerFired:", None, True
+        )
+        logger.info("Witness control armed at %s", path)
+        record_command_overlay_trace("witness.control.armed", path=str(path))
+
+    def witnessControlTimerFired_(self, _timer) -> None:
+        self._poll_witness_control()
+
+    def _poll_witness_control(self) -> None:
+        path = getattr(self, "_witness_control_path", None)
+        if path is None:
+            return
+        try:
+            if not path.exists():
+                return
+            if path.stat().st_size < getattr(self, "_witness_control_offset", 0):
+                self._witness_control_offset = 0
+            with path.open("rb") as handle:
+                handle.seek(getattr(self, "_witness_control_offset", 0))
+                lines = handle.readlines()
+                self._witness_control_offset = handle.tell()
+        except Exception as exc:
+            logger.warning("Witness control poll failed: %s", exc)
+            record_command_overlay_trace(
+                "witness.control.poll_failed",
+                path=str(path),
+                error=str(exc),
+            )
+            return
+        for raw_line in lines:
+            try:
+                payload = json.loads(raw_line.decode("utf-8"))
+            except Exception:
+                record_command_overlay_trace("witness.control.invalid_json", path=str(path))
+                continue
+            action = payload.get("action")
+            record_command_overlay_trace(
+                "witness.control.received",
+                path=str(path),
+                action=action,
+                nonce=payload.get("nonce"),
+            )
+            if action == "toggle_command_overlay":
+                self._toggle_command_overlay()
+            else:
+                record_command_overlay_trace(
+                    "witness.control.ignored",
+                    path=str(path),
+                    action=action,
+                    nonce=payload.get("nonce"),
+                )
 
     def _request_mic_permission(self) -> None:
         """Check mic permission via AVCaptureDevice (no PortAudio allocation).

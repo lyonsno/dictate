@@ -76,6 +76,32 @@ def _make_delegate(main_module, monkeypatch):
     return delegate
 
 
+def test_witness_control_poll_toggles_command_overlay(main_module, monkeypatch, tmp_path):
+    delegate = _make_delegate(main_module, monkeypatch)
+    delegate._command_client = MagicMock()
+    delegate._command_overlay = MagicMock(_visible=False)
+    delegate._witness_control_path = tmp_path / "witness-control.jsonl"
+    delegate._witness_control_offset = 0
+    delegate._toggle_command_overlay = MagicMock()
+    delegate._witness_control_path.write_text(
+        json.dumps(
+            {
+                "schema": "spoke.witness_control.v1",
+                "timestamp": "2026-06-01T00:00:00Z",
+                "action": "toggle_command_overlay",
+                "nonce": "operator-overlay-witness",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    delegate._poll_witness_control()
+
+    delegate._toggle_command_overlay.assert_called_once_with()
+    assert delegate._witness_control_offset == delegate._witness_control_path.stat().st_size
+
+
 class TestOperatorPingTokenSmokeHook:
     def test_smoke_hook_is_quiet_without_env(self, main_module, monkeypatch):
         d = _make_delegate(main_module, monkeypatch)

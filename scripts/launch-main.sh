@@ -239,6 +239,12 @@ def _start_retina_lasso_witness(
     )
     if capture_command:
         args.extend(["--capture-command", capture_command])
+    toggle_control_path = (
+        child_env.get("SPOKE_RETINA_LASSO_TOGGLE_CONTROL_PATH", "").strip()
+        or child_env.get("SPOKE_WITNESS_CONTROL_PATH", "").strip()
+    )
+    if toggle_control_path:
+        args.extend(["--toggle-control-path", toggle_control_path])
     capture_first_stimulus = _append_retina_lasso_stimulus_args(args, child_env=child_env, log=log)
     if _env_flag(child_env, "SPOKE_RETINA_LASSO_WATCH_TRACE") and not capture_first_stimulus:
         args.append("--watch-trace")

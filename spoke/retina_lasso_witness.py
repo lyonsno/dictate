@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import time
+import uuid
 from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -305,6 +306,35 @@ def post_space_enter_toggle_chord(*, key_pause_seconds: float = 0.035) -> None:
     post_key_event(SPACEBAR_KEYCODE, False)
 
 
+def write_witness_control_action(
+    control_path: str | Path,
+    *,
+    action: str,
+    nonce: str | None = None,
+    now: Callable[[], datetime] = _utc_now,
+) -> dict[str, Any]:
+    """Append one local witness-control action for a running Spoke process."""
+    path = Path(control_path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": "spoke.witness_control.v1",
+        "timestamp": _format_instant(now()),
+        "action": action,
+        "nonce": nonce or uuid.uuid4().hex,
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        handle.flush()
+    return payload
+
+
+def build_witness_control_toggle(control_path: str | Path) -> Callable[..., None]:
+    def toggle(**_kwargs) -> None:
+        write_witness_control_action(control_path, action="toggle_command_overlay")
+
+    return toggle
+
+
 def drive_hammer_toggles(
     *,
     count: int,
@@ -593,6 +623,7 @@ def run_autonomous_hammer_witness(
     source_app: str = DEFAULT_SOURCE_APP,
     source_window: str = DEFAULT_SOURCE_WINDOW,
     capture_command: str | Path | None = None,
+    toggle_control_path: str | Path | None = None,
     launch_target: str | None = None,
     launch_wait_seconds: float = 3.0,
     runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
@@ -607,6 +638,11 @@ def run_autonomous_hammer_witness(
     if launch_target:
         runner(build_launch_target_command(repo_root, launch_target), check=True)
         sleep(launch_wait_seconds)
+    toggle_chord = (
+        build_witness_control_toggle(toggle_control_path)
+        if toggle_control_path is not None
+        else post_space_enter_toggle_chord
+    )
 
     count = capture_count_for_window(duration_seconds, fps)
     interval = capture_interval_for_fps(fps)
@@ -637,6 +673,7 @@ def run_autonomous_hammer_witness(
                 trace_path=trace_path,
                 open_ready_timeout_seconds=open_ready_timeout_seconds,
                 open_ready_poll_interval_seconds=open_ready_poll_interval_seconds,
+                toggle_chord=toggle_chord,
             )
             stimulus = {
                 "mode": "retarget-during-dismiss",
@@ -652,16 +689,23 @@ def run_autonomous_hammer_witness(
                     "with matching generation, visible text, and body_ready"
                 ),
                 "retarget_gate_results": retarget_results or [],
+                "toggle_control_path": str(Path(toggle_control_path).expanduser())
+                if toggle_control_path is not None
+                else None,
             }
         else:
             hammer_driver(
                 count=hammer_toggles,
                 interval_seconds=toggle_interval_seconds,
+                toggle_chord=toggle_chord,
             )
             stimulus = {
                 "mode": "hammer",
                 "toggle_count": hammer_toggles,
                 "toggle_interval_seconds": toggle_interval_seconds,
+                "toggle_control_path": str(Path(toggle_control_path).expanduser())
+                if toggle_control_path is not None
+                else None,
             }
         return_code = capture.wait()
     except BaseException:
@@ -967,6 +1011,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Seconds after capture starts before hammer-mode input begins.",
     )
     parser.add_argument(
+        "--toggle-control-path",
+        default=(
+            os.environ.get("SPOKE_RETINA_LASSO_TOGGLE_CONTROL_PATH")
+            or os.environ.get("SPOKE_WITNESS_CONTROL_PATH")
+            or None
+        ),
+        help=(
+            "Append local witness-control toggle requests to this JSONL path instead of "
+            "posting synthetic global key events."
+        ),
+    )
+    parser.add_argument(
         "--retarget-during-dismiss-repeats",
         type=int,
         default=0,
@@ -1076,6 +1132,7 @@ def main(argv: list[str] | None = None) -> int:
             source_app=args.source_app,
             source_window=args.source_window,
             capture_command=args.capture_command,
+            toggle_control_path=args.toggle_control_path,
             launch_target=args.launch_target,
             launch_wait_seconds=args.launch_wait,
         )

@@ -96,6 +96,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--launch-target", default=DEFAULT_LAUNCH_TARGET)
     parser.add_argument("--launch-wait", type=float, default=3.0)
     parser.add_argument("--hammer-toggles", type=int, default=0)
+    parser.add_argument("--toggle-control-path", help=argparse.SUPPRESS)
     parser.add_argument("--toggle-interval", type=float, default=0.18)
     parser.add_argument("--pre-hammer-delay", type=float, default=0.35)
     parser.add_argument("--retarget-during-dismiss-repeats", type=int, default=0)
@@ -512,6 +513,7 @@ def main(argv: list[str] | None = None) -> int:
             source_app=args.source_app,
             source_window=args.source_window,
             capture_command=args.capture_command,
+            toggle_control_path=args.toggle_control_path,
             launch_target=args.launch_target if args.launch else None,
             launch_wait_seconds=args.launch_wait,
         )

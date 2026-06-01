@@ -18,6 +18,7 @@ from spoke.retina_lasso_witness import (
     trace_event_is_open_ready,
     trace_event_output_slug,
     wait_for_open_ready_trace,
+    write_witness_control_action,
     write_witness_index,
 )
 
@@ -169,6 +170,25 @@ def test_drive_hammer_toggles_posts_exact_count_without_trailing_sleep():
         {"key_pause_seconds": 0.01},
     ]
     assert sleeps == [0.2, 0.2]
+
+
+def test_write_witness_control_action_appends_toggle_receipt(tmp_path):
+    control_path = tmp_path / "witness-control.jsonl"
+
+    payload = write_witness_control_action(
+        control_path,
+        action="toggle_command_overlay",
+        nonce="test-nonce",
+        now=lambda: datetime(2026, 6, 1, 0, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert payload == {
+        "schema": "spoke.witness_control.v1",
+        "timestamp": "2026-06-01T00:00:00Z",
+        "action": "toggle_command_overlay",
+        "nonce": "test-nonce",
+    }
+    assert json.loads(control_path.read_text(encoding="utf-8")) == payload
 
 
 def test_drive_retarget_during_dismiss_pattern_hits_ordered_edges():
