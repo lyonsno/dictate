@@ -174,6 +174,28 @@ def test_throughglass_panel_is_click_through_until_input_mode(mock_pyobjc, monke
     panel.setIgnoresMouseEvents_.assert_called_once_with(True)
 
 
+def test_throughglass_webview_panel_is_opaque_content_carrier(mock_pyobjc, monkeypatch):
+    sys.modules.pop("spoke.perceptasia_throughglass", None)
+    module = importlib.import_module("spoke.perceptasia_throughglass")
+
+    monkeypatch.setattr(module, "_is_provider_reachable", lambda _url: True)
+    panel = MagicMock()
+    panel.contentView.return_value = MagicMock()
+    module.NSPanel.alloc.return_value.initWithContentRect_styleMask_backing_defer_.return_value = panel
+    module.NSScreen.mainScreen.return_value.visibleFrame.return_value = SimpleNamespace(
+        origin=SimpleNamespace(x=0.0, y=0.0),
+        size=SimpleNamespace(width=1440.0, height=900.0),
+    )
+    monkeypatch.setattr(module, "_make_content_view", lambda url, width, height: MagicMock())
+
+    graft = module.PerceptasiaThroughglassGraft.alloc().initWithCompositorRegistry_(None)
+    graft.setup()
+
+    panel.setOpaque_.assert_called_once_with(True)
+    module.NSColor.colorWithWhite_alpha_.assert_any_call(0.0, 1.0)
+    panel.setBackgroundColor_.assert_called()
+
+
 def test_throughglass_smoke_defers_unverified_webview_content(mock_pyobjc, monkeypatch):
     sys.modules.pop("spoke.perceptasia_throughglass", None)
     module = importlib.import_module("spoke.perceptasia_throughglass")

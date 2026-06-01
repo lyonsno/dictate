@@ -53,6 +53,8 @@ _NSWindowStyleMaskClosable = 1 << 1
 _NSWindowStyleMaskResizable = 1 << 3
 _NSWindowStyleMaskUtilityWindow = 1 << 4
 _THROUGHGLASS_WINDOW_LEVEL = 25
+_NSViewWidthSizable = 1 << 1
+_NSViewHeightSizable = 1 << 4
 
 
 def _env_flag(name: str) -> bool:
@@ -189,9 +191,12 @@ class PerceptasiaThroughglassGraft(NSObject):
         # Above the shared compositor (24) but below the command overlay (26),
         # so the graft can show content without covering dictation.
         panel.setLevel_(_THROUGHGLASS_WINDOW_LEVEL)
-        panel.setOpaque_(False)
+        # WKWebView/WebGL content is the load-bearing visible surface here. A
+        # clear carrier can let the optical material shell become the only
+        # visible layer even after WebKit reports rendered pixels.
+        panel.setOpaque_(True)
         panel.setHasShadow_(False)
-        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setBackgroundColor_(NSColor.colorWithWhite_alpha_(0.0, 1.0))
         # Visual-only grafts must not steal desktop clicks unless an input mode opts in.
         panel.setIgnoresMouseEvents_(True)
         panel.setCollectionBehavior_(
@@ -215,6 +220,7 @@ class PerceptasiaThroughglassGraft(NSObject):
         self._content_kind = str(content_kind)
         self._content_verified = False
         self._content_failure = None
+        _configure_content_carrier(panel.contentView(), content, width, height)
         panel.contentView().addSubview_(content)
         self._panel = panel
         self._content_view = content
@@ -536,6 +542,7 @@ def _make_content_view(url: str, width: float, height: float):
 
         logger.info("Perceptasia Throughglass: creating WKWebView")
         view = WKWebView.alloc().initWithFrame_(NSMakeRect(0, 0, width, height))
+        _set_view_autoresizing(view)
         request = NSURLRequest.requestWithURL_(NSURL.URLWithString_(url))
         view.loadRequest_(request)
         logger.info("Perceptasia Throughglass: WKWebView request loaded")
@@ -550,6 +557,7 @@ def _make_content_view(url: str, width: float, height: float):
         label.setTextColor_(NSColor.colorWithWhite_alpha_(0.86, 1.0))
         label.setEditable_(False)
         label.setSelectable_(True)
+        _set_view_autoresizing(label)
         return label, "webkit-fallback"
 
 
@@ -562,4 +570,27 @@ def _make_provider_unavailable_view(url: str, width: float, height: float):
     label.setTextColor_(NSColor.colorWithWhite_alpha_(0.86, 1.0))
     label.setEditable_(False)
     label.setSelectable_(True)
+    _set_view_autoresizing(label)
     return label, "provider-unavailable"
+
+
+def _set_view_autoresizing(view) -> None:
+    setter = getattr(view, "setAutoresizingMask_", None)
+    if callable(setter):
+        setter(_NSViewWidthSizable | _NSViewHeightSizable)
+
+
+def _configure_content_carrier(content_root, content, width: float, height: float) -> None:
+    frame_setter = getattr(content, "setFrame_", None)
+    if callable(frame_setter):
+        frame_setter(NSMakeRect(0, 0, width, height))
+    _set_view_autoresizing(content)
+    root_layer_setter = getattr(content_root, "setWantsLayer_", None)
+    if callable(root_layer_setter):
+        root_layer_setter(True)
+    root_layer_getter = getattr(content_root, "layer", None)
+    root_layer = root_layer_getter() if callable(root_layer_getter) else None
+    background_setter = getattr(root_layer, "setBackgroundColor_", None)
+    cg_color_getter = getattr(NSColor.colorWithWhite_alpha_(0.0, 1.0), "CGColor", None)
+    if callable(background_setter) and callable(cg_color_getter):
+        background_setter(cg_color_getter())
